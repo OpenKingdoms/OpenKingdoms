@@ -25,6 +25,7 @@
 #include "tak_hud.h"
 #include "tak_ingame.h"
 #include "tak_loading.h"
+#include "tak_minimap.h"
 #include "tak_platform.h"
 #include "tak_terrain.h"
 #include "tak_ui.h"
@@ -382,6 +383,57 @@ TEST(a_scroll_in_3d_moves_the_classic_camera_with_it) {
     ASSERT(frame(&platform, &timer));
     ASSERT_EQ_INT(900 + world->viewport_w / 2, (int)cam->target_x);
     ASSERT_EQ_INT(700 + world->viewport_h / 2, (int)cam->target_z);
+    shutdown_all(&platform);
+}
+
+/* A look through the minimap on the right button moves the 3D view as
+ * it does the classic one, with a unit selected (legacy:243714-243716,
+ * legacy:243774-243783). */
+TEST(a_minimap_look_with_a_selection_moves_the_3d_view) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    Timer timer;
+    Timer_Init(&timer);
+    ASSERT_EQ_INT(1, InGame_SetView3D(1));
+    ASSERT(frame(&platform, &timer));
+    SDL_Rect r;
+    ASSERT(Minimap_DebugMapRect(&platform, &r));
+    int own = -1, n = 0;
+    const Unit *units = Units_GetActive(&n);
+    for (int i = 0; i < n && own < 0; i++)
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 1) own = i;
+    ASSERT(own >= 0);
+    Units_SelectSingle(own);
+    const Camera3D *cam = View3D_Camera();
+    platform.has_focus = 1;
+    const int px[2] = { r.x + r.w / 4, r.x + 3 * r.w / 4 };
+    const int py[2] = { r.y + r.h / 4, r.y + 3 * r.h / 4 };
+    for (int step = 0; step < 2; step++) {
+        int32_t x = (int32_t)((int64_t)(px[step] - r.x) * world->map_pixels_w / r.w)
+                    - world->viewport_w / 2;
+        int32_t y = (int32_t)((int64_t)(py[step] - r.y) * world->map_pixels_h / r.h)
+                    - world->viewport_h / 2;
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+        if (x > world->map_pixels_w - world->viewport_w) x = world->map_pixels_w - world->viewport_w;
+        if (y > world->map_pixels_h - world->viewport_h) y = world->map_pixels_h - world->viewport_h;
+        InGame_DebugMouse(1, px[step], py[step], SDL_BUTTON(SDL_BUTTON_RIGHT));
+        ASSERT(frame(&platform, &timer));
+        printf("(step %d: classic %d,%d want %d,%d, 3D over %.0f,%.0f) ", step,
+               (int)world->cam_x, (int)world->cam_y, (int)x, (int)y,
+               cam->target_x, cam->target_z);
+        ASSERT_EQ_INT((int)x, (int)world->cam_x);
+        ASSERT_EQ_INT((int)y, (int)world->cam_y);
+        ASSERT_EQ_INT((int)x + world->viewport_w / 2, (int)cam->target_x);
+        ASSERT_EQ_INT((int)y + world->viewport_h / 2, (int)cam->target_z);
+    }
+    InGame_DebugMouse(1, px[1], py[1], 0);
+    ASSERT(frame(&platform, &timer));
+    InGame_DebugMouse(0, 0, 0, 0);
+    platform.has_focus = 0;
     shutdown_all(&platform);
 }
 
@@ -2441,6 +2493,7 @@ int main(int argc, char **argv) {
     RUN_NAMED(the_3d_pointer_picks_a_flyer_where_it_is_drawn);
     RUN_NAMED(the_first_switch_to_3d_stays_over_the_same_ground);
     RUN_NAMED(a_scroll_in_3d_moves_the_classic_camera_with_it);
+    RUN_NAMED(a_minimap_look_with_a_selection_moves_the_3d_view);
     RUN_NAMED(the_accessors_hand_out_the_baked_model_and_its_pose);
     RUN_NAMED(a_walking_units_pieces_move_in_the_3d_pose);
     RUN_NAMED(the_build_ghost_in_3d_is_judged_where_the_pointer_lands);
