@@ -1309,8 +1309,16 @@ static int spawn_projectile(int32_t x, int32_t y,
         } else if (meets && lw && p->speed_ppt > 0.0f && len >= 1.0f) {
             /* Any other shot flies straight from the muzzle to the point
              * it aims at (legacy:246851-246866). */
-            float aim = shot_aim_height(lw, tx, ty, target_handle);
-            p->vel_up_ppt = (aim - p->height) * p->speed_ppt / len;
+            float rise = shot_aim_height(lw, tx, ty, target_handle) - p->height;
+            if (p->mind_control) {
+                /* weaponvelocity along the line, so a steep shot crosses
+                 * the ground slower (legacy:246885-246892). */
+                float line = sqrtf(len * len + rise * rise);
+                p->vel_up_ppt = rise * p->speed_ppt / line;
+                p->speed_ppt  = p->speed_ppt * len / line;
+            } else {
+                p->vel_up_ppt = rise * p->speed_ppt / len;
+            }
             if (p->spin_pitch == 0.0f && p->spin_heading == 0.0f &&
                 p->spin_roll == 0.0f)
                 p->pitch = tak_atan2f(p->vel_up_ppt, p->speed_ppt);
@@ -1322,6 +1330,12 @@ static int spawn_projectile(int32_t x, int32_t y,
     int ttl = (int)(len / (p->speed_ppt > 0 ? p->speed_ppt : 1) * 1.5f);
     if (ttl < 30) ttl = 30;
     if (ttl > 1200) ttl = 1200;   /* slow weapons at long range */
+    if (p->mind_control && source_weapon && p->speed_ppt > 0.0f) {
+        /* Its range over its speed across the ground in 30 Hz frames,
+         * and one more, each frame two ticks (legacy:246919-246922). */
+        int frames = (int)((float)source_weapon->range / (2.0f * p->speed_ppt)) + 1;
+        ttl = frames < 16000 ? 2 * frames + 1 : 32000;
+    }
     p->ttl_ticks = (int16_t)ttl;
     p->alive = 1;
     p->player_id = player_id;
@@ -1991,6 +2005,32 @@ static void obj_span_node(const Obj3DNode *n, float ax, float ay, float az,
         obj_span_node(c, o[0], o[1], o[2], mn, mx);
 }
 
+/* No model: the footprint, wound the way shipped quads are. */
+static void def_footprint_quad(UnitDef *d) {
+    int32_t hx = (d->footprint_x > 0 ? d->footprint_x : 1) * 8 * 65536;
+    int32_t hz = (d->footprint_z > 0 ? d->footprint_z : 1) * 8 * 65536;
+    const int32_t q[4][2] = { { -hx, hz }, { hx, hz }, { hx, -hz }, { -hx, -hz } };
+    memcpy(d->body_quad, q, sizeof(q));
+    d->body_quad_set = 1;
+}
+
+/* The root's selection primitive, its fourth corner first
+ * (legacy:237007-237020). */
+static void def_selection_quad(UnitDef *d, const Obj3DNode *root) {
+    d->body_quad_set = 0;
+    uint32_t sel = root->selection_marker;
+    if (sel >= (uint32_t)root->num_primitives) return;
+    const Obj3DPrimitive *prim = &root->primitives[sel];
+    if (prim->num_vert_indices < 4 || !prim->vert_indices) return;
+    for (int k = 0; k < 4; k++) {
+        int vi = prim->vert_indices[3 - k];
+        if (vi < 0 || vi >= root->num_vertices) return;
+        d->body_quad[k][0] = (int32_t)root->vertices[vi].x;
+        d->body_quad[k][1] = (int32_t)root->vertices[vi].z;
+    }
+    d->body_quad_set = 1;
+}
+
 /* A def's model span in whole px (the original's def+0x13e, def+0x14a),
  * read from its 3DO on first use, never from a bake. No model counts as
  * 0 to 32. */
@@ -2005,12 +2045,14 @@ static void def_body_span(int def_idx, int *lo, int *hi) {
         d->body_min_x_px = d->body_max_x_px = 0;
         d->body_min_z_px = d->body_max_z_px = 0;
         d->body_span_set = 1;
+        def_footprint_quad(d);
         char obj_lc[TAK_UNITDEF_OBJ_MAX];
         char path[TAK_UNITDEF_OBJ_MAX + 16];
         Obj3DFile *obj = NULL;
         lowercase_into(obj_lc, sizeof(obj_lc), d->objectname);
         snprintf(path, sizeof(path), "objects3d/%s.3do", obj_lc);
         if (d->objectname[0] && Obj3D_Load(&obj, path) == 0 && obj && obj->root) {
+            def_selection_quad(d, obj->root);
             float mn[3] = { 1e30f, 1e30f, 1e30f }, mx[3] = { -1e30f, -1e30f, -1e30f };
             obj_span_node(obj->root, 0.0f, 0.0f, 0.0f, mn, mx);
             /* Whole model units, so the division is exact. */
@@ -2044,6 +2086,38 @@ static void unit_body_span(const Unit *v, int *base, int *bottom, int *top) {
     *top = b + hi;
 }
 
+/* Is (x, y) inside unit v's selection quad turned with it, every edge
+ * keeping the point strictly on its inner side (legacy:237007-237027,
+ * the test at legacy:272731-272744)? */
+static int unit_quad_holds(const Unit *v, int32_t x, int32_t y) {
+    int lo, hi;
+    def_body_span(v->def_idx, &lo, &hi);
+    const UnitDef *d = Units_GetDef(v->def_idx);
+    if (!d || !d->body_quad_set) return 0;
+    /* The original's heading turns the other way: its mover runs along
+     * (-sin, -cos) where ours runs along (sin, -cos) (legacy:183366). */
+    int16_t a = (int16_t)(uint16_t)(int32_t)(-v->heading * (65536.0f / 6.2831853f));
+    float c = 1.0f, s = 0.0f;
+    if (a != 0) {
+        float r = (float)a * (6.2831853f / 65536.0f);
+        c = tak_cosf(r);
+        s = tak_sinf(r);
+    }
+    int64_t px[4], pz[4];
+    for (int k = 0; k < 4; k++) {
+        float mx = (float)d->body_quad[k][0], mz = (float)d->body_quad[k][1];
+        float rx = floorf(mx * c - mz * s + 0.5f);
+        float rz = floorf(mx * s + mz * c + 0.5f);
+        px[k] = v->world_x + (int64_t)floorf(rx / 65536.0f);
+        pz[k] = v->world_y + (int64_t)floorf(rz / 65536.0f);
+    }
+    for (int k = 0; k < 4; k++) {
+        int n = (k + 1) & 3;
+        if ((pz[n] - pz[k]) * (x - px[k]) <= (y - pz[k]) * (px[n] - px[k])) return 0;
+    }
+    return 1;
+}
+
 /* Flyers, gathered once a tick before anything fires. */
 static int16_t g_shot_flyers[TAK_MAX_UNITS];
 static int     g_shot_flyer_count;
@@ -2061,18 +2135,27 @@ static void shot_flyers_rebuild(void) {
     }
 }
 
+/* Where the shot asking is, and whether it also needs the selection
+ * quad. */
+typedef struct ShotBodyAt {
+    int32_t x, y;
+    uint8_t quad;
+} ShotBodyAt;
+
 /* The unit holding the occupancy cell stops a shot of another player
  * whose height is between its base and the top of its model
- * (legacy:245414-245424, :236955-236958). */
+ * (legacy:245414-245424, :236955-236958). A mind control shot must be
+ * inside its quad too (legacy:237007-237027). */
 static int shot_body_ground(void *user, int handle, int owner, int h) {
-    (void)user;
+    const ShotBodyAt *at = (const ShotBodyAt *)user;
     if (handle < 0 || handle >= g_unit_count) return 0;
     const Unit *v = &g_units[handle];
     if (v->alive != UNIT_ALIVE_ACTIVE || v->carried_by >= 0) return 0;
     if ((int)v->player_id == owner) return 0;
     int base, bottom, top;
     unit_body_span(v, &base, &bottom, &top);
-    return h >= base && h <= top;
+    if (h < base || h > top) return 0;
+    return !(at && at->quad) || unit_quad_holds(v, at->x, at->y);
 }
 
 /* A flyer over the cell, when the shot's height is inside its model
@@ -2101,10 +2184,6 @@ static int shot_body_air(void *user, int32_t x, int32_t y, int h, int owner) {
     }
     return -1;
 }
-
-static const TAK_ShotBodies g_shot_bodies = {
-    shot_body_ground, shot_body_air, NULL
-};
 
 /* A shot comes down on unit vi, its target or one in its way. A blast
  * when the weapon's areaofeffect is 17 or more, else that unit takes
@@ -2160,10 +2239,11 @@ static void shot_burst(Projectile *p, int idx) {
  * through the cell test (legacy:250425-250433). On each step the
  * intended target is met first, within 24 px of its body in 3D, or the
  * fuse when `fuse` is set, then the cell. The cells on the way to where
- * the target is met still stop the shot. Returns the TAK_SHOT_* kind
- * that ended the walk, TAK_SHOT_UNIT with *struck the target when it
- * was reached, SHOT_FUSE, or TAK_SHOT_FLY when nothing did. *ox, *oy,
- * *oh are where it ended. */
+ * the target is met still stop the shot. A mind control shot has only
+ * the cell (legacy:247736). Returns the TAK_SHOT_* kind that ended the
+ * walk, TAK_SHOT_UNIT with *struck the target when it was reached,
+ * SHOT_FUSE, or TAK_SHOT_FLY when nothing did. *ox, *oy, *oh are where
+ * it ended. */
 static int shot_walk(const Projectile *p, int32_t x0, int32_t y0, float h0,
                      int32_t x1, int32_t y1, float h1, int target, int fuse,
                      int32_t *ox, int32_t *oy, float *oh, int *struck) {
@@ -2174,8 +2254,11 @@ static int shot_walk(const Projectile *p, int32_t x0, int32_t y0, float h0,
     uint32_t flags = p->path_flags & 0x07u;
     *struck = -1;
     *ox = x1; *oy = y1; *oh = h1;
+    ShotBodyAt at = { 0, 0, p->mind_control };
+    const TAK_ShotBodies bodies = { shot_body_ground, shot_body_air, &at };
     /* The target's body from its bottom to its top, in whole px. */
-    const Unit *t = (target >= 0 && target < g_unit_count) ? &g_units[target] : NULL;
+    const Unit *t = (!p->mind_control && target >= 0 && target < g_unit_count)
+                  ? &g_units[target] : NULL;
     int t_base = 0, t_lo = 0, t_hi = 0;
     if (t) unit_body_span(t, &t_base, &t_lo, &t_hi);
     for (int k = 1; k <= n; k++) {
@@ -2205,9 +2288,10 @@ static int shot_walk(const Projectile *p, int32_t x0, int32_t y0, float h0,
                     int32_t cx = ax + (px - ax) * c / 2;
                     int32_t cy = ay + (py - ay) * c / 2;
                     float ch = ah + (ph - ah) * (float)c * 0.5f;
+                    at.x = cx; at.y = cy;
                     int kind = ShotPath_Test(gw, cx, cy, (int)floorf(ch),
                                              p->player_id, flags,
-                                             &g_shot_bodies, struck);
+                                             &bodies, struck);
                     if (kind == TAK_SHOT_FLY ||
                         (kind == TAK_SHOT_UNIT && *struck == target)) continue;
                     *ox = cx; *oy = cy; *oh = ch;
@@ -2223,8 +2307,9 @@ static int shot_walk(const Projectile *p, int32_t x0, int32_t y0, float h0,
                                            ax, ay, sx, sy) <= (int64_t)24 * 24) {
             return SHOT_FUSE;
         }
+        at.x = sx; at.y = sy;
         int kind = ShotPath_Test(gw, sx, sy, (int)floorf(sh), p->player_id,
-                                 flags, &g_shot_bodies, struck);
+                                 flags, &bodies, struck);
         if (kind != TAK_SHOT_FLY) return kind;
         ax = sx; ay = sy; ah = sh;
     }
@@ -2402,6 +2487,13 @@ static int shell_meets_ground(const GameWorld *w, const Projectile *p) {
     return 0;
 }
 
+/* The unit that fired the shot is still standing or carried. */
+static int shot_caster_stands(const Projectile *p) {
+    if (p->shooter < 0 || p->shooter >= g_unit_count) return 0;
+    uint8_t a = g_units[p->shooter].alive;
+    return a == UNIT_ALIVE_ACTIVE || a == UNIT_ALIVE_TRANSPORTED;
+}
+
 /* Per-tick: advance projectiles, hit-test against target, apply damage. */
 static void tick_projectiles(void) {
     /* Effects are visuals only. One with a life ends at that age, a
@@ -2440,6 +2532,9 @@ static void tick_projectiles(void) {
         Projectile *p = &g_projectiles[i];
         if (!p->alive) continue;
         if (--p->ttl_ticks <= 0) { p->alive = 0; continue; }
+        /* A mind control shot whose caster is dead or dying takes this
+         * step and is gone (legacy:247710-247713). */
+        int last = p->mind_control && !shot_caster_stands(p);
         /* Beams already dealt their damage at fire — hold, don't move. */
         if (p->is_beam) {
             if (p->visual_kind == UNIT_PROJECTILE_VIS_FLAME) flame_particle(p, i);
@@ -2492,6 +2587,7 @@ static void tick_projectiles(void) {
             p->target = -1;
         if (tested) {
             projectile_fly(p, i, old_x, old_y, old_h);
+            if (last) p->alive = 0;
             continue;
         }
         /* A ballistic ground shot tests the ground under it on every
@@ -11262,6 +11358,24 @@ static int weapon_aim_ready(Unit *u, int slot, int aim_key,
     return !has_ret || ret != 0;
 }
 
+/* A mind control shot aims where its target will be: the sweet spot
+ * plus four fifths of the target's velocity over the flight from the
+ * caster (legacy:234031-234060, the 0xcccc at legacy:234049). */
+static void mind_control_lead(const GameWorld *w, const Unit *u, const Unit *t,
+                              int target_handle, float speed_pps,
+                              int32_t *tx, int32_t *ty) {
+    float v = t->cur_speed_ppt;
+    if (v <= 0.0f || speed_pps <= 0.0f) return;
+    float dx = (float)(t->world_x - u->world_x);
+    float dy = (float)(t->world_y - u->world_y);
+    float dh = shot_aim_height(w, t->world_x, t->world_y, target_handle) -
+               unit_base_height(w, u);
+    float flight = sqrtf(dx * dx + dy * dy + dh * dh) / (speed_pps / 60.0f);
+    float ahead = flight * (52428.0f / 65536.0f) * v;
+    *tx += (int32_t)floorf(tak_sinf(t->heading) * ahead + 0.5f);
+    *ty += (int32_t)floorf(-tak_cosf(t->heading) * ahead + 0.5f);
+}
+
 static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
                              const UnitWeapon *wp, int target_handle,
                              int burst_ordinal, int run_fire_script) {
@@ -11434,6 +11548,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
             ty += (int32_t)(ny * offset);
         }
     }
+    if (wp->mind_control && sw) mind_control_lead(sw, u, t, target_handle, speed, &tx, &ty);
 
     int shot = spawn_projectile(u->world_x, u->world_y,
                       tx, ty,
@@ -17666,6 +17781,22 @@ int Units_DebugRemove(int handle) {
     if (handle < 0 || handle >= g_unit_count) return -1;
     if (g_units[handle].alive == UNIT_ALIVE_DEAD) return -1;
     unit_remove_now(handle);
+    return 0;
+}
+
+int Units_DebugQuadHolds(int handle, int32_t x, int32_t y) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    return unit_quad_holds(&g_units[handle], x, y);
+}
+
+int Units_DebugPlace(int handle, int32_t x, int32_t y) {
+    if (handle < 0 || handle >= g_unit_count) return -1;
+    if (g_units[handle].alive != UNIT_ALIVE_ACTIVE) return -1;
+    occ_lift(handle);
+    g_units[handle].world_x = x;
+    g_units[handle].world_y = y;
+    occ_refresh(handle);
+    occ_sync_mobile(handle);
     return 0;
 }
 

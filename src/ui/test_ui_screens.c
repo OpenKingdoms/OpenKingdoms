@@ -13328,6 +13328,90 @@ TEST(an_archer_against_a_swordsman_ends_as_the_originals_rules_give) {
     ASSERT(f.ticks >= 60 * 15 && f.ticks <= 60 * 19);
 }
 
+/* ── The Harpy's mind control ───────────────────────────────────────
+ * docs/notes/2026-09-19-the-harpy-takes-units-over.md, The shot's flight. */
+
+#define MC_DUEL_TICKS 900
+#define MC_DUEL_SLOTS 512
+
+/* A Harpy gap px west of an ARASWORD, still or walking across. The tick it
+ * came over, -1 for never, -2 when unset. *shots counts the Harpy's shots. */
+static int mc_duel(GameWorld *world, int32_t cx, int32_t cy, int gap, int walking,
+                   uint32_t seed, int *shots) {
+    *shots = 0;
+    int hdef = Units_FindDefByName("ZONHARP"), pdef = Units_FindDefByName("ARASWORD");
+    if (hdef < 0 || pdef < 0) return -2;
+    int harpy = Units_Spawn(hdef, 1, 0, cx - gap, cy);
+    int prey = Units_Spawn(pdef, 2, 1, cx, walking ? cy - 200 : cy);
+    if (harpy < 0 || prey < 0) return -2;
+    Units_DebugSetAggro(prey, UNIT_AGGRO_PASSIVE);
+    ad_tick(world, 2);
+    float cur = 0.0f, max = 0.0f;
+    if (Units_GetMana(harpy, &cur, &max)) Units_DebugSetMana(harpy, max);
+    World_SeedRand(seed);
+    uint32_t prey_id = Units_GetStableId(prey);
+    if (walking) Units_OrderMove(prey, cx, cy + 400);
+    Units_OrderAttack(harpy, prey);
+    static uint8_t live[MC_DUEL_SLOTS];
+    memset(live, 0, sizeof(live));
+    int took = -1;
+    for (int t = 0; t < MC_DUEL_TICKS && took < 0; t++) {
+        ad_tick(world, 1);
+        int n = 0;
+        const Projectile *p = Units_GetProjectiles(&n);
+        for (int i = 0; i < n && i < MC_DUEL_SLOTS; i++) {
+            uint8_t now = p[i].alive && p[i].mind_control && p[i].shooter == harpy;
+            if (now && !live[i]) (*shots)++;
+            live[i] = now;
+        }
+        for (int i = n; i < MC_DUEL_SLOTS; i++) live[i] = 0;
+        if (Units_FindByStableId(prey_id) < 0) took = t;
+    }
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    for (int i = 0; i < n; i++)
+        if (u[i].alive == UNIT_ALIVE_ACTIVE && (int)u[i].def_idx == pdef)
+            Units_DebugRemove(i);
+    Units_DebugRemove(harpy);
+    ad_tick(world, 30);
+    return took;
+}
+
+TEST(a_harpy_takes_a_swordsman_standing_or_walking_across) {
+    TAK_Platform platform;
+    int rc = ad_boot(&platform, 0);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    GameWorld *world = World_Get();
+    int32_t cx = 0, cy = 0;
+    int ok = ad_arena(world, 900, 700, &cx, &cy);
+    int still = 0, walking = 0, still_shots = 0, walking_shots = 0, set = 1;
+    for (int k = 0; ok && k < 4; k++) {
+        uint32_t seed = 1000u + (uint32_t)k * 7919u;
+        int shots = 0;
+        int took = mc_duel(world, cx, cy, 220, 0, seed, &shots);
+        if (took < -1) set = 0;
+        if (took >= 0) still++;
+        still_shots += shots;
+        printf("\n    still, seed %u: %d shots, taken at %d", (unsigned)seed, shots, took);
+        took = mc_duel(world, cx, cy, 220, 1, seed, &shots);
+        if (took < -1) set = 0;
+        if (took >= 0) walking++;
+        walking_shots += shots;
+        printf("\n    walking, seed %u: %d shots, taken at %d", (unsigned)seed, shots, took);
+    }
+    printf("\n    ");
+    corpse_shutdown(&platform);
+    ASSERT(ok);
+    ASSERT(set);
+    /* Pinned. A shot lands slower than the Harpy reloads, so a second is
+     * often in the air when the first takes its target. */
+    ASSERT_EQ_INT(4, still);
+    ASSERT_EQ_INT(9, still_shots);
+    ASSERT_EQ_INT(4, walking);
+    ASSERT_EQ_INT(10, walking_shots);
+}
+
 /* Use Crusades Units loads the Crusades balance set, unitscb/ in place
  * of units/ (legacy:162511-162515), with its 3000 hp swordsman. */
 TEST(crusades_units_load_the_crusades_balance_set) {
@@ -29951,6 +30035,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_caster_pays_for_a_spell_as_it_leaves);
     RUN_UI_TEST(a_blow_the_target_steps_out_of_is_spent);
     RUN_UI_TEST(an_archer_against_a_swordsman_ends_as_the_originals_rules_give);
+    RUN_UI_TEST(a_harpy_takes_a_swordsman_standing_or_walking_across);
     RUN_UI_TEST(crusades_units_load_the_crusades_balance_set);
     RUN_UI_TEST(eight_idle_swordsmen_beat_eight_archers);
     RUN_UI_TEST(a_lodestone_death_whites_out_and_fades);

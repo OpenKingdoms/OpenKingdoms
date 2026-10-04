@@ -156,9 +156,15 @@ target it had no way to shoot for as long as that target lived.
 ## What is still left out
 
 - The body test stops at the model's span. The original follows it
-  with a test against the model's pieces (legacy:236960-236975).
-- The original leads a moving target by its speed over the flight time
-  (legacy:234043-234055). The engine aims where the target is.
+  with a test of the shot's place against the selection quad of the
+  model's root piece, the primitive the 3DO header names at +0xC,
+  turned with the unit (legacy:237007-237027). A unit whose root has
+  none is never struck in its cell.
+- The original leads a moving target by four fifths of its speed over
+  the flight time (legacy:234043-234055). The engine aims where the
+  target is.
+- Since 2026-10-04 a mind control shot has both, and loses the 24 px
+  reach to its target (D-038). Every other shot still has neither.
 - Units neither hold fire nor move for a clear line before they shoot,
   which is the original's behaviour too.
 - Dropped ordnance, the egg bombs of the flyers, still hugs the ground
@@ -168,8 +174,8 @@ target it had no way to shoot for as long as that target lived.
 - Remote Effect spells (17 of them, Earthquake, Hail Shower, Firestorm,
   Ring of Fire, Tsunami and the Wind and Fire Waves among them) and
   Wandering shots (the Tornado and the vortexes) still land behind
-  ridges and walls, as in the original. So does Individual Mind
-  Control, which is `unitsonly`.
+  ridges and walls, as in the original. Individual Mind Control is a
+  straight shot without `unitsonly` and stops on them.
 - The flyer test walks every flyer on every step of a shot. Flyers are
   few, and the unit grid would serve if they are not.
 
