@@ -519,6 +519,10 @@ typedef struct UnitDef {
     int16_t  body_bottom_px;
     int16_t  body_top_px;
     uint8_t  body_span_set;
+    /* The same model's box across and along, def+0x13a to def+0x14e,
+     * which a blast measures to unturned (legacy:245164-245209). */
+    int16_t  body_min_x_px, body_max_x_px;
+    int16_t  body_min_z_px, body_max_z_px;
 
     /* A ship's hull in px from its 3DO (M-012): bow ahead of the centre,
      * stern behind, half the beam. hull_set is 0 until worked out, 1 for
@@ -1365,6 +1369,9 @@ const char *Units_ProjectileModelName(int art_idx);
 int         Units_FindSpriteArt(const char *name);
 /* Fires weapon `slot` of a unit at the ground, for tests. 1 when it fired. */
 int         Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y);
+/* Weapon `slot` of unit `handle` goes off on the ground at (x, y), as a
+ * shell that came down there. Returns 1 when it did. */
+int         Units_DebugBlastAt(int handle, int slot, int32_t x, int32_t y);
 /* Fires weapon `slot` of a unit at unit `target` once, for tests. 1 when
  * it fired. */
 int         Units_DebugFireAt(int handle, int slot, int target);
@@ -2062,10 +2069,14 @@ int               Units_TrySetYardOpen(int handle, int open);
 /* Read active weapon slot of first selected unit (-1 if none). */
 int               Units_GetSelectedWeaponSlot(void);
 int               Units_GetWeaponVisualKind(int def_idx, int weapon_slot);
+/* A blast's share at `dist` whole px from its centre: the radius is
+ * half the areaofeffect, nothing at or past it, all of it at 0, and
+ * edge + (1 - edge) * (dist / radius - 1)^2 between (legacy:245089,
+ * 245213-245217). The product is truncated like the original's. */
 int               Units_ComputeSplashDamage(int base_damage,
                                              int area_of_effect,
                                              float edge_effectiveness,
-                                             int64_t dist_sq);
+                                             int dist);
 int               Units_ComputeWeaponDamageForCategory(const UnitWeapon *wp,
                                                         const char *category);
 

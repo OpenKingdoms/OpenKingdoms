@@ -84,8 +84,11 @@
  * blocks a building site only on the cells it holds, the ones nearest
  * its centre, so a builder beside a sacred site leaves it free. 22: a
  * script runs until it sleeps, waits or ends within its tick, where it
- * stopped after 200 instructions, so a burning building keeps its pace. */
-#define TAK_ENGINE_BUILD_ID           22
+ * stopped after 200 instructions, so a burning building keeps its pace.
+ * 23: a blast reaches half its areaofeffect, measured to each unit's
+ * model, with the original's curved falloff, and a shot under 17 that
+ * strikes a unit hits it alone. */
+#define TAK_ENGINE_BUILD_ID           23
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

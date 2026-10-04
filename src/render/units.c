@@ -1327,22 +1327,18 @@ static int spawn_projectile(int32_t x, int32_t y,
 }
 
 int Units_ComputeSplashDamage(int base_damage, int area_of_effect,
-                              float edge_effectiveness, int64_t dist_sq) {
-    if (base_damage <= 0 || area_of_effect <= 0 || dist_sq < 0) return 0;
-    int64_t aoe2 = (int64_t)area_of_effect * (int64_t)area_of_effect;
-    if (dist_sq > aoe2) return 0;
+                              float edge_effectiveness, int dist) {
+    int radius = area_of_effect >> 1;
+    if (base_damage <= 0 || dist < 0 || dist >= radius) return 0;
+    if (dist == 0) return base_damage;
     if (edge_effectiveness < 0.0f) edge_effectiveness = 0.0f;
     if (edge_effectiveness > 1.0f) edge_effectiveness = 1.0f;
-
-    float dist_frac = 0.0f;
-    if (dist_sq > 0) {
-        dist_frac = sqrtf((float)dist_sq) / (float)area_of_effect;
-        if (dist_frac > 1.0f) dist_frac = 1.0f;
-    }
-    float scale = edge_effectiveness
-                + (1.0f - edge_effectiveness) * (1.0f - dist_frac);
-    int damage = (int)((float)base_damage * scale + 0.5f);
-    return damage > 0 ? damage : 0;
+    /* Rounded to single precision where the original stores its floats. */
+    double e = (double)edge_effectiveness;
+    float f = (float)((double)dist / (double)radius - 1.0);
+    float scale = (float)((1.0 - e) * (double)f * (double)f + e);
+    float damage = (float)((double)base_damage * (double)scale);
+    return damage > 0.0f ? (int)damage : 0;
 }
 
 static int projectile_base_damage_for_unit(const Projectile *p,
@@ -1657,11 +1653,41 @@ static void mind_control_strike(const Projectile *p, int victim_idx,
     Units_Capture(victim_idx, p->player_id);
 }
 
+/* A unit struck by a weapon whose areaofeffect is under this takes the
+ * whole hit and the blast goes no further (legacy:245029). */
+#define BLAST_DIRECT_BELOW 17
+
+static uint32_t unit_isqrt64(uint64_t v);
+static void unit_body_span(const Unit *v, int *base, int *bottom, int *top);
+
+/* How far a blast at (x, y, h) is from unit v: from the point to the
+ * model's box, unturned and set on the unit where it stands, in whole
+ * px, 0 inside it (legacy:245164-245209). */
+static int blast_unit_distance(const Unit *v, int32_t x, int32_t y, float h) {
+    int base, bottom, top;
+    unit_body_span(v, &base, &bottom, &top);
+    const UnitDef *d = Units_GetDef(v->def_idx);
+    int64_t lo[3] = { v->world_x, bottom, v->world_y };
+    int64_t hi[3] = { v->world_x, top,    v->world_y };
+    if (d) {
+        lo[0] += d->body_min_x_px; hi[0] += d->body_max_x_px;
+        lo[2] += d->body_min_z_px; hi[2] += d->body_max_z_px;
+    }
+    int64_t pt[3] = { x, (int64_t)floorf(h), y };
+    uint64_t sum = 0;
+    for (int a = 0; a < 3; a++) {
+        int64_t e = pt[a] < lo[a] ? lo[a] - pt[a] : pt[a] > hi[a] ? pt[a] - hi[a] : 0;
+        sum += (uint64_t)(e * e);
+    }
+    return (int)unit_isqrt64(sum);
+}
+
+/* The units in a blast: every one whose box is within half the
+ * areaofeffect takes its falloff share (legacy:245089-245233). */
 static void apply_projectile_area_damage(const Projectile *p) {
     if (!p) return;
     int aoe = p->area_of_effect;
-    if (aoe <= 0) return;
-    int64_t aoe2 = (int64_t)aoe * aoe;
+    if ((aoe >> 1) <= 0) return;
     /* A capture adds a unit. The splash reaches only those here now. */
     int standing = g_unit_count;
     for (int ui = 0; ui < standing; ui++) {
@@ -1671,19 +1697,17 @@ static void apply_projectile_area_damage(const Projectile *p) {
         if (ui == p->shooter) continue;
         if (!p->friendly_fire &&
             !unit_players_are_enemies(victim->player_id, p->player_id)) continue;
-        int64_t vx = victim->world_x - p->world_x;
-        int64_t vy = victim->world_y - p->world_y;
-        int64_t d2 = vx * vx + vy * vy;
-        if (d2 > aoe2) continue;
+        int d = blast_unit_distance(victim, p->world_x, p->world_y, p->height);
+        if (d >= (aoe >> 1)) continue;
         if (p->mind_control) {
             /* The roll takes the falloff damage would (legacy:245224). */
             mind_control_strike(p, ui, Units_ComputeSplashDamage(
-                100, aoe, p->edge_effectiveness, d2));
+                100, aoe, p->edge_effectiveness, d));
             continue;
         }
         int base_damage = projectile_base_damage_for_unit(p, victim);
         int damage = Units_ComputeSplashDamage(base_damage, aoe,
-                                                p->edge_effectiveness, d2);
+                                                p->edge_effectiveness, d);
         if (damage <= 0) continue;
         unit_take_hit(victim, p->shooter, (int)p->player_id, damage);
         unit_alarm_on_damage(victim, p->shooter);
@@ -1811,10 +1835,9 @@ static int projectile_struck_unit(const Projectile *p) {
     return -1;
 }
 
-/* Detonate where the shot came down: splash when the weapon has an
- * areaofeffect, else a direct hit on whatever stands there. Legacy
- * picks between the two on the same field (legacy:245029). A splash
- * takes only its sound from the unit it landed on. */
+/* Detonate where the shot came down. A unit struck by a weapon with
+ * an areaofeffect under 17 takes the whole hit and nothing else does,
+ * else the blast reaches all around (legacy:245029-245036). */
 static void projectile_detonate_at(Projectile *p, int idx) {
     int struck = -1;
     if (p->area_of_effect > 0) {
@@ -1831,11 +1854,11 @@ static void projectile_detonate_at(Projectile *p, int idx) {
         }
     }
     projectile_impact_fx(p, struck >= 0 ? &g_units[struck] : NULL, (uint32_t)idx);
-    if (p->area_of_effect > 0) {
+    if (p->area_of_effect >= BLAST_DIRECT_BELOW || struck < 0) {
         apply_projectile_area_damage(p);
-    } else if (struck >= 0 && p->mind_control) {
+    } else if (p->mind_control) {
         mind_control_strike(p, struck, 100);
-    } else if (struck >= 0) {
+    } else {
         Unit *v = &g_units[struck];
         unit_take_hit(v, p->shooter, (int)p->player_id,
                       projectile_base_damage_for_unit(p, v));
@@ -1866,8 +1889,12 @@ static void unit_mobile_footprint(const GameWorld *w, const UnitDef *d,
 /* The lowest and highest points of a model node and all below it, in
  * model units over the model's base, as the bake finds them: every
  * drawn primitive, the selection mesh left out. */
-static void obj_span_node(const Obj3DNode *n, float ay, float *lo, float *hi) {
-    float ny = ay + (float)n->offset_y;
+/* The model's box in TA units over x, y and z, each piece at its
+ * offset. mn and mx hold three axes each. */
+static void obj_span_node(const Obj3DNode *n, float ax, float ay, float az,
+                          float *mn, float *mx) {
+    float o[3] = { ax + (float)n->offset_x, ay + (float)n->offset_y,
+                   az + (float)n->offset_z };
     int p0 = (n->selection_marker != 0xFFFFFFFFu) ? 1 : 0;
     for (int p = p0; p < n->num_primitives; p++) {
         const Obj3DPrimitive *prim = &n->primitives[p];
@@ -1875,13 +1902,16 @@ static void obj_span_node(const Obj3DNode *n, float ay, float *lo, float *hi) {
         for (int k = 0; k < prim->num_vert_indices; k++) {
             int vi = prim->vert_indices[k];
             if (vi < 0 || vi >= n->num_vertices) continue;
-            float wy = n->vertices[vi].y + ny;
-            if (wy < *lo) *lo = wy;
-            if (wy > *hi) *hi = wy;
+            float v[3] = { n->vertices[vi].x + o[0], n->vertices[vi].y + o[1],
+                           n->vertices[vi].z + o[2] };
+            for (int a = 0; a < 3; a++) {
+                if (v[a] < mn[a]) mn[a] = v[a];
+                if (v[a] > mx[a]) mx[a] = v[a];
+            }
         }
     }
     for (const Obj3DNode *c = n->first_child; c; c = c->next_sibling)
-        obj_span_node(c, ny, lo, hi);
+        obj_span_node(c, o[0], o[1], o[2], mn, mx);
 }
 
 /* A def's model span in whole px (the original's def+0x13e, def+0x14a),
@@ -1895,6 +1925,8 @@ static void def_body_span(int def_idx, int *lo, int *hi) {
     if (!d->body_span_set) {
         d->body_bottom_px = 0;
         d->body_top_px = 32;
+        d->body_min_x_px = d->body_max_x_px = 0;
+        d->body_min_z_px = d->body_max_z_px = 0;
         d->body_span_set = 1;
         char obj_lc[TAK_UNITDEF_OBJ_MAX];
         char path[TAK_UNITDEF_OBJ_MAX + 16];
@@ -1902,12 +1934,19 @@ static void def_body_span(int def_idx, int *lo, int *hi) {
         lowercase_into(obj_lc, sizeof(obj_lc), d->objectname);
         snprintf(path, sizeof(path), "objects3d/%s.3do", obj_lc);
         if (d->objectname[0] && Obj3D_Load(&obj, path) == 0 && obj && obj->root) {
-            float mn = 1e30f, mx = -1e30f;
-            obj_span_node(obj->root, 0.0f, &mn, &mx);
+            float mn[3] = { 1e30f, 1e30f, 1e30f }, mx[3] = { -1e30f, -1e30f, -1e30f };
+            obj_span_node(obj->root, 0.0f, 0.0f, 0.0f, mn, mx);
             /* Whole model units, so the division is exact. */
-            if (mn <= mx && mn > -2.0e9f && mx < 2.0e9f) {
-                d->body_bottom_px = (int16_t)floorf(mn / 65536.0f);
-                d->body_top_px    = (int16_t)floorf(mx / 65536.0f);
+            int ok = 1;
+            for (int a = 0; a < 3; a++)
+                if (!(mn[a] <= mx[a] && mn[a] > -2.0e9f && mx[a] < 2.0e9f)) ok = 0;
+            if (ok) {
+                d->body_bottom_px = (int16_t)floorf(mn[1] / 65536.0f);
+                d->body_top_px    = (int16_t)floorf(mx[1] / 65536.0f);
+                d->body_min_x_px  = (int16_t)floorf(mn[0] / 65536.0f);
+                d->body_max_x_px  = (int16_t)floorf(mx[0] / 65536.0f);
+                d->body_min_z_px  = (int16_t)floorf(mn[2] / 65536.0f);
+                d->body_max_z_px  = (int16_t)floorf(mx[2] / 65536.0f);
             }
         }
         Obj3D_Close(obj);
@@ -1990,15 +2029,15 @@ static const TAK_ShotBodies g_shot_bodies = {
     shot_body_ground, shot_body_air, NULL
 };
 
-/* A shot comes down on unit vi, its target or one in its way. A splash
- * when the weapon has an areaofeffect, else that unit takes the hit
- * whether or not it was aimed at (legacy:245029-245031). A unit of
- * another player that is no enemy stops the shot and takes nothing
+/* A shot comes down on unit vi, its target or one in its way. A blast
+ * when the weapon's areaofeffect is 17 or more, else that unit takes
+ * the hit whether or not it was aimed at (legacy:245029-245031). A unit
+ * of another player that is no enemy stops the shot and takes nothing
  * (D-024). Leaves the shot alive: the caller ends it. */
 static void shot_strike_unit(Projectile *p, int idx, int vi) {
     Unit *v = &g_units[vi];
     projectile_impact_fx(p, v, (uint32_t)idx);
-    if (p->area_of_effect > 0) {
+    if (p->area_of_effect >= BLAST_DIRECT_BELOW) {
         apply_projectile_area_damage(p);
         return;
     }
@@ -2409,7 +2448,7 @@ static void tick_projectiles(void) {
                                                       p->world_x, p->world_y);
                 if (d2 <= (int64_t)24*24) {
                     projectile_impact_fx(p, t, (uint32_t)i);
-                    if (p->area_of_effect > 0) {
+                    if (p->area_of_effect >= BLAST_DIRECT_BELOW) {
                         apply_projectile_area_damage(p);
                         p->alive = 0;
                         continue;
@@ -11031,7 +11070,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
         /* LOS hits still play the weapon's explosionclass at the
          * strike point (legacy:245025). */
         projectile_impact_fx(b, t, (uint32_t)bslot);
-        if (b->area_of_effect > 0) {
+        if (b->area_of_effect >= BLAST_DIRECT_BELOW) {
             apply_projectile_area_damage(b);
         } else {
             unit_take_hit(t, shooter_idx, (int)g_units[shooter_idx].player_id,
@@ -16657,6 +16696,24 @@ int Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y) {
     u->cmd_x = x;
     u->cmd_y = y;
     fire_ground_shot(u, handle, slot, &d->weapons[slot]);
+    return 1;
+}
+
+int Units_DebugBlastAt(int handle, int slot, int32_t x, int32_t y) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    Unit *u = &g_units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (u->alive != UNIT_ALIVE_ACTIVE || !d || slot < 0 || slot >= d->num_weapons) return 0;
+    const UnitWeapon *wp = &d->weapons[slot];
+    int pi = spawn_projectile(x, y, x, y, 1.0f, wp->damage, wp->area_of_effect,
+                              wp->edge_effectiveness, wp, weapon_visual_kind(wp),
+                              -1, handle, u->player_id, u->team_color_idx);
+    if (pi < 0) return 0;
+    Projectile *p = &g_projectiles[pi];
+    p->world_x = x;
+    p->world_y = y;
+    p->height = (float)Terrain_SampleHeight(World_Get(), x, y);
+    projectile_detonate(p, pi);
     return 1;
 }
 

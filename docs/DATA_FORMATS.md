@@ -582,7 +582,7 @@ meteor, and earthen wave spells, plus mana costs, nimbus effects, etc.)
 | reloadtime | float | Seconds between shots |
 | weaponvelocity | int | Projectile speed |
 | aimtolerance | int | Aim cone width (angular units) |
-| areaofeffect | int | Splash damage radius |
+| areaofeffect | int | Blast diameter: a blast reaches half of it |
 | edgeeffectiveness | float | Damage at edge of AoE (0.0-1.0) |
 | model | string | 3DO model for projectile |
 | manapershot | int | Mana cost per firing |

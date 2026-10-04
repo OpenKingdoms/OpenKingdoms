@@ -114,12 +114,21 @@ before the next shot. The height is cut to the byte the original keeps
 and rocks are, stops shots at 44 over its floor, and one authored 200 at
 200.
 
-What a struck unit takes: a shot with an areaofeffect splashes where it
-stopped, and one without hits the unit that stopped it, target or not.
-An ally that stops a shot takes nothing (D-024). A shot that ends on a
-feature, the sea or the ground does the harm of its splash and nothing
-else. A shot fired at a point on the ground keeps the burst it always
-had.
+What a struck unit takes: a shot with an areaofeffect of 17 or more
+bursts where it stopped, and one under 17 hits the unit that stopped it,
+target or not, and nothing else (legacy:245029-245031). An ally that
+stops a shot takes nothing (D-024). A shot that ends on a feature, the
+sea or the ground does the harm of its burst and nothing else. A shot
+fired at a point on the ground keeps the burst it always had.
+
+A burst reaches half the areaofeffect (legacy:245089). Each unit is
+measured from the burst to the nearest point of its model's box, the
+box set unturned on the unit where it stands, in whole pixels
+(legacy:245164-245209). Inside the radius a unit takes the whole hit at
+0 and edge + (1 - edge) x (d / r - 1)^2 of it further out, where edge is
+the weapon's edgeeffectiveness (legacy:245213-245217). A catapult's ball,
+1250 with an edge of 0.1 over an areaofeffect of 100, gives 845 at 10 px,
+406 at 25 and 125 at 49, and nothing from 50.
 
 ## A unit that keeps hitting the hill
 
@@ -153,9 +162,6 @@ target it had no way to shoot for as long as that target lived.
   with a test against the model's pieces (legacy:236960-236975).
 - The original leads a moving target by its speed over the flight time
   (legacy:234043-234055). The engine aims where the target is.
-- The original gives the struck unit the full hit, with no splash, when
-  the areaofeffect is under 17 (legacy:245029-245031). The engine
-  splashes whenever the areaofeffect is above zero, as before.
 - Units neither hold fire nor move for a clear line before they shoot,
   which is the original's behaviour too.
 - Dropped ordnance, the egg bombs of the flyers, still hugs the ground

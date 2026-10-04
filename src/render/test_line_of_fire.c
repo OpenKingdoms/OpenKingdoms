@@ -35,7 +35,7 @@ enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_VICTIM, LF_SWORD, LF_SPOTTER, LF_KEEP, LF_TOWER, LF_KING, LF_QUICK,
        LF_SPLASH, LF_POST, LF_BONE, LF_STAFF, LF_BOWBLADE, LF_VETERAN,
        LF_HOLDER, LF_ROVER, LF_PICKER, LF_SEEKER, LF_SEEKFAR, LF_ROAMER,
-       LF_FLYPICK, LF_BLADEPICK,
+       LF_FLYPICK, LF_BLADEPICK, LF_BROAD, LF_SWIRL,
        LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
@@ -270,6 +270,15 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     strncpy(defs[LF_ROAMER].unitname, "TESTROAM", sizeof(defs[LF_ROAMER].unitname) - 1);
     defs[LF_ROAMER].roams = 1;
 
+    /* A dummy whose model reaches 24 px either side of its centre. */
+    lf_fill(&defs[LF_BROAD], "TESTBROAD", 1.2f, 1000);
+    defs[LF_BROAD].body_min_x_px = -24;
+    defs[LF_BROAD].body_max_x_px = 24;
+    /* A bolt whose areaofeffect is under 17, the Fire Swirl's 10. */
+    lf_fill(&defs[LF_SWIRL], "TESTSWIRL", 1.2f, 300);
+    wp = lf_weapon(&defs[LF_SWIRL], "TESTSWIRLW", "Line of Sight", 400, 550, 40);
+    wp->area_of_effect = 10;
+    wp->edge_effectiveness = 1.0f;
     FeatureDef rock;
     memset(&rock, 0, sizeof rock);
     strncpy(rock.name, "TESTROCK", sizeof(rock.name) - 1);
@@ -860,6 +869,54 @@ TEST(a_remote_spell_behind_a_ridge_still_lands) {
     LfShot r = lf_fire(s, t, 300);
     ASSERT(r.fired);
     ASSERT(lf_unit(t)->health < 1000);
+    lf_end();
+}
+
+/* ── blasts ────────────────────────────────────────────────────────── */
+
+/* The original's falloff: half the areaofeffect, all of it at the
+ * centre, edge + (1 - edge) * (d / r - 1)^2 out to the radius
+ * (legacy:245089, 245213-245217). A catapult's ball and a cannon's. */
+TEST(a_blast_falls_off_like_the_originals) {
+    ASSERT_EQ_INT(1250, Units_ComputeSplashDamage(1250, 100, 0.1f, 0));
+    ASSERT_EQ_INT(845, Units_ComputeSplashDamage(1250, 100, 0.1f, 10));
+    ASSERT_EQ_INT(406, Units_ComputeSplashDamage(1250, 100, 0.1f, 25));
+    ASSERT_EQ_INT(125, Units_ComputeSplashDamage(1250, 100, 0.1f, 49));
+    ASSERT_EQ_INT(0, Units_ComputeSplashDamage(1250, 100, 0.1f, 50));
+    ASSERT_EQ_INT(1209, Units_ComputeSplashDamage(2000, 90, 0.0f, 10));
+    ASSERT_EQ_INT(0, Units_ComputeSplashDamage(2000, 90, 0.0f, 45));
+}
+
+/* A blast with an areaofeffect of 48 reaches 24 px, measured to the
+ * side of each model (legacy:245089, 245164-245209). */
+TEST(a_blast_reaches_half_its_area_to_the_side_of_a_unit) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int s = lf_spawn(LF_SPLASH, 1, LF_SX, LF_ROW);
+    int near = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW + 16);
+    int far = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW - 32);
+    int broad = lf_spawn(LF_BROAD, 2, LF_TX + 44, LF_ROW);
+    ASSERT(s >= 0 && near >= 0 && far >= 0 && broad >= 0);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    ASSERT(Units_DebugBlastAt(s, 0, LF_TX, LF_ROW));
+    ASSERT_EQ_INT(960, lf_unit(near)->health);
+    ASSERT_EQ_INT(1000, lf_unit(far)->health);
+    ASSERT_EQ_INT(960, lf_unit(broad)->health);
+    lf_end();
+}
+
+/* A shot whose areaofeffect is under 17 that strikes a unit hits that
+ * unit alone (legacy:245029). */
+TEST(a_small_blast_on_a_unit_hits_it_alone) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int s = lf_spawn(LF_SWIRL, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW);
+    int by = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW + 6);
+    ASSERT(s >= 0 && t >= 0 && by >= 0);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    ASSERT(Units_DebugFireAt(s, 0, t));
+    for (int i = 0; i < 150; i++) Units_TickEngines();
+    ASSERT_EQ_INT(960, lf_unit(t)->health);
+    ASSERT_EQ_INT(1000, lf_unit(by)->health);
     lf_end();
 }
 
@@ -1809,6 +1866,10 @@ int main(int argc, char **argv) {
     RUN(a_beam_with_the_pool_full_strikes_what_is_in_its_way);
     RUN(a_remote_spell_behind_a_ridge_still_lands);
     RUN(a_shot_at_the_shooters_feet_leaves_the_shooter_whole);
+    TEST_SUITE("Blasts");
+    RUN(a_blast_falls_off_like_the_originals);
+    RUN(a_blast_reaches_half_its_area_to_the_side_of_a_unit);
+    RUN(a_small_blast_on_a_unit_hits_it_alone);
     TEST_SUITE("State hash");
     RUN(a_blocked_volley_hashes_the_same);
     TEST_SUITE("What a side sees");
