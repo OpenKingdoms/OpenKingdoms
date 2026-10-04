@@ -5713,9 +5713,9 @@ TEST(campaign_loading_spawns_units_and_renders) {
         ASSERT_EQ_INT(UNIT_PROJECTILE_VIS_CANNON,
                       Units_GetWeaponVisualKind(war_galley, 0));
         ASSERT_EQ_INT(100, Units_ComputeSplashDamage(100, 100, 0.25f, 0));
-        ASSERT_EQ_INT(63, Units_ComputeSplashDamage(100, 100, 0.25f, 50 * 50));
-        ASSERT_EQ_INT(25, Units_ComputeSplashDamage(100, 100, 0.25f, 100 * 100));
-        ASSERT_EQ_INT(0, Units_ComputeSplashDamage(100, 100, 0.25f, 101 * 101));
+        ASSERT_EQ_INT(43, Units_ComputeSplashDamage(100, 100, 0.25f, 25));
+        ASSERT_EQ_INT(25, Units_ComputeSplashDamage(100, 100, 0.25f, 49));
+        ASSERT_EQ_INT(0, Units_ComputeSplashDamage(100, 100, 0.25f, 50));
     }
     {
         int king_def_idx = Units_FindDefByName("ARAKING");
