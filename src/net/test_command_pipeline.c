@@ -2286,10 +2286,8 @@ static int cp_mind_pair(int32_t prey_x, int32_t prey_y, int *out_prey) {
     return harpy;
 }
 
-/* The shot strikes only a body in its own cell, inside that unit's
- * selection quad (legacy:236955-237027). A unit that steps 20 px off
- * the line still holds the cell the shot crosses and is passed, and
- * nothing is rolled. */
+/* A shot strikes only inside the selection quad of the unit holding its
+ * cell (legacy:236955-237027), so one 20 px off the line is passed unrolled. */
 TEST(a_mind_control_shot_passes_a_unit_that_stepped_aside) {
     ASSERT_NOT_NULL(cp_world());
     int prey = -1;
@@ -2368,10 +2366,8 @@ TEST(a_mind_control_shot_dies_with_its_caster) {
     cp_end();
 }
 
-/* A still recruit is struck by every shot and taken on a draw under 80
- * (legacy:247788-247793). Each seed's first draw says which, and these
- * ten draw under 80 eight times. Seeding forces the low bit, so the
- * seeds are odd. */
+/* A still recruit is struck every time and taken on a first draw under 80
+ * (legacy:247788-247793). These ten odd seeds draw under 80 eight times. */
 TEST(a_still_recruit_is_struck_and_taken_four_times_in_five) {
     int taken = 0;
     for (uint32_t seed = 1; seed < 20; seed += 2) {

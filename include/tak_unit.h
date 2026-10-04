@@ -546,11 +546,9 @@ typedef struct UnitDef {
      * which a blast measures to unturned (legacy:245164-245209). */
     int16_t  body_min_x_px, body_max_x_px;
     int16_t  body_min_z_px, body_max_z_px;
-    /* The root piece's selection quad across and along, in model units,
-     * corners in the order the original walks them. A shot in the
-     * unit's cell strikes only inside it (legacy:237007-237027). A
-     * model with none has body_quad_set 0, and no model takes its
-     * footprint. Read with the span. */
+    /* The root piece's selection quad in model units, read with the span.
+     * A shot in the unit's cell strikes only inside it (legacy:237007-237027).
+     * No model takes its footprint, a model without one leaves it unset. */
     int32_t  body_quad[4][2];
     uint8_t  body_quad_set;
 

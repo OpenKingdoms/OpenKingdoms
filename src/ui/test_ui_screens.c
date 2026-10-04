@@ -13329,19 +13329,13 @@ TEST(an_archer_against_a_swordsman_ends_as_the_originals_rules_give) {
 }
 
 /* ── The Harpy's mind control ───────────────────────────────────────
- * A shipped Harpy over open ground against a passive shipped swordsman.
- * Its shot leads by four fifths of the flight and strikes only inside
- * the swordsman's selection quad (legacy:234031-234060,
- * legacy:236974-237027). Leading, it also takes one walking steadily
- * across its line of fire. */
+ * docs/notes/2026-09-19-the-harpy-takes-units-over.md, The shot's flight. */
 
 #define MC_DUEL_TICKS 900
 #define MC_DUEL_SLOTS 512
 
-/* One Harpy gap px west of one ARASWORD, which stands still or walks
- * south across the line of fire. The tick the swordsman came over, -1
- * for never, -2 when the duel could not be set. *shots counts the
- * Harpy's shots. */
+/* A Harpy gap px west of an ARASWORD, still or walking across. The tick it
+ * came over, -1 for never, -2 when unset. *shots counts the Harpy's shots. */
 static int mc_duel(GameWorld *world, int32_t cx, int32_t cy, int gap, int walking,
                    uint32_t seed, int *shots) {
     *shots = 0;
@@ -13410,8 +13404,7 @@ TEST(a_harpy_takes_a_swordsman_standing_or_walking_across) {
     corpse_shutdown(&platform);
     ASSERT(ok);
     ASSERT(set);
-    /* Pinned. A recruit is taken on a draw under 80, and a shot takes
-     * longer to land than the Harpy takes to reload, so a second is
+    /* Pinned. A shot lands slower than the Harpy reloads, so a second is
      * often in the air when the first takes its target. */
     ASSERT_EQ_INT(4, still);
     ASSERT_EQ_INT(9, still_shots);
