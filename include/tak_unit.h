@@ -388,6 +388,9 @@ typedef struct UnitDef {
     int      build_cost;        /* mana spent to construct this unit  */
     float    worker_time;       /* builder work rate from FBI workertime */
     int32_t  build_distance;    /* builddistance — reach to the build site */
+    /* `builderlimited`: helps build only the types on its own build
+     * list (legacy:163099-163100, legacy:233569-233572). */
+    uint8_t  builder_limited;
     /* `healtime`: build work per second of free self repair, not hit
      * points per second. Health restored each second is
      * heal_time/buildtime of the maximum, so a unit left alone mends
@@ -1746,6 +1749,12 @@ int               Units_GetSelectedVeteranLevel(void);
 void              Units_CommandAttackGroundSelected(int32_t world_x,
                                                     int32_t world_y);
 int               Units_SelectionHasBuilder(void);
+/* Could this unit join the work on that frame (legacy HelpBuild,
+ * legacy:233556-233574): its own player's frame, a builder that walks,
+ * and for a limited builder a type on its own build list. */
+int               Units_CanHelpBuild(int helper, int frame);
+/* Any selected unit of the local player's that could help that frame. */
+int               Units_SelectionCanHelpBuild(int frame);
 
 /* HUD-side accessors for the first selected unit (NULL/zero when no
  * selection). Display strings are derived from the unit's anim_state
@@ -2209,6 +2218,8 @@ int               Units_DebugSetDefScript(int def_idx, const uint32_t *code,
 /* Test hook: give a registered def a yardmap from an FBI yardmap string,
  * which makes a def with bmcode 0 a structure. Returns 0 on success. */
 int               Units_DebugSetYardmap(int def_idx, const char *spec);
+/* Test hook: def_idx's build menu is the n defs in list. */
+void              Units_DebugSetBuildables(int def_idx, const int *list, int n);
 /* Test hook: the unit dies and lays down the body its death script
  * would ask for with corpse type 1. Returns the feature instance, or -1. */
 int               Units_DebugLeaveCorpse(int handle);

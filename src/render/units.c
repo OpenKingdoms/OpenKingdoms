@@ -2840,6 +2840,16 @@ int Units_SelectionHasBuilder(void) {
     return 0;
 }
 
+int Units_SelectionCanHelpBuild(int frame) {
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (h < 0 || h >= g_unit_count || g_units[h].player_id != g_local_player)
+            continue;
+        if (Units_CanHelpBuild(h, frame)) return 1;
+    }
+    return 0;
+}
+
 /* HUD-side helper. The Unit struct is opaque to ui/hud.c (no header
  * exposes it), so the HUD looks up the selected unit's def via this
  * thin accessor. Returns -1 if the handle isn't alive. */
@@ -3345,6 +3355,8 @@ static int leg_takeable(const Unit *u, const UnitMoveLeg *leg) {
             return mobile && t >= 0 && t != (int)(u - g_units) &&
                    !unit_players_are_enemies(u->player_id, g_units[t].player_id);
         case UNIT_LEG_REPAIR:
+            if (t >= 0 && g_units[t].under_construction)
+                return Units_CanHelpBuild((int)(u - g_units), t);
             return t >= 0 && unit_def_can_repair(d) &&
                    !unit_players_are_enemies(u->player_id, g_units[t].player_id);
         case UNIT_LEG_RECLAIM: return t >= 0 && (d->cap_flags & UNIT_CAP_RECLAIM);
@@ -3780,16 +3792,11 @@ int Units_OrderRepair(int handle, int target_handle) {
     Unit *u = order_unit(handle);
     Unit *t = order_target(target_handle);
     if (!u || !t || handle == target_handle) return 0;
-    /* A command arrives from any client, so a heal names its target
-     * by id and nothing stops that id being an enemy's but this. */
-    if (unit_players_are_enemies(u->player_id, t->player_id)) return 0;
-    const UnitDef *d = Units_GetDef(u->def_idx);
-    if (!unit_def_can_repair(d)) return 0;
-    if (t->under_construction && d->max_velocity <= 0.0f) return 0;
-    order_fresh(u);
     if (t->under_construction) {
-        /* Nanoframe: resume construction (legacy HelpBuild). */
-        if (d->max_velocity <= 0.0f) return 0;
+        /* Nanoframe: join the work (legacy HelpBuild), when the
+         * original's test lets this unit help (legacy:12392-12412). */
+        if (!Units_CanHelpBuild(handle, target_handle)) return 0;
+        order_fresh(u);
         u->cmd_kind = UNIT_CMD_BUILD;
         u->build_target = (int16_t)target_handle;
         u->build_near_best = 0;
@@ -3800,6 +3807,11 @@ int Units_OrderRepair(int handle, int target_handle) {
         unit_clear_path(u);
         return 1;
     }
+    /* A command arrives from any client, so a heal names its target
+     * by id and nothing stops that id being an enemy's but this. */
+    if (unit_players_are_enemies(u->player_id, t->player_id)) return 0;
+    if (!unit_def_can_repair(Units_GetDef(u->def_idx))) return 0;
+    order_fresh(u);
     u->cmd_kind = UNIT_CMD_REPAIR;
     u->target = (int16_t)target_handle;
     u->cmd_x = t->world_x;
@@ -5962,6 +5974,34 @@ int Units_GetBuildables(int builder_def_idx, int *out, int max_out) {
     for (int i = 0; i < n; i++) out[i] = tmp[i].def_idx;
     return n;
 }
+
+/* The type is on the builder's own build list (legacy:233192-233210). */
+static int unit_def_on_build_list(int builder_def, int def) {
+    int menu[CANBUILD_CACHE_MENU];
+    int n = Units_GetBuildables(builder_def, menu, CANBUILD_CACHE_MENU);
+    for (int i = 0; i < n; i++)
+        if (menu[i] == def) return 1;
+    return 0;
+}
+
+int Units_CanHelpBuild(int helper, int frame) {
+    if (helper < 0 || helper >= g_unit_count || frame < 0 ||
+        frame >= g_unit_count || helper == frame)
+        return 0;
+    const Unit *u = &g_units[helper];
+    const Unit *t = &g_units[frame];
+    if (u->alive != UNIT_ALIVE_ACTIVE || u->under_construction) return 0;
+    if (t->alive != UNIT_ALIVE_ACTIVE || !t->under_construction) return 0;
+    /* The owner's own: an ally's frame is no help (legacy:233564). */
+    if (u->player_id != t->player_id) return 0;
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d || !(d->cap_flags & UNIT_CAP_BUILDER) || !(d->max_velocity > 0.0f))
+        return 0;
+    if (d->builder_limited && !unit_def_on_build_list(u->def_idx, t->def_idx))
+        return 0;
+    return 1;
+}
+
 void Units_SetBackfaceCullInvert(int v) { g_backface_cull_invert = v ? 1 : 0; }
 
 /* R6 — team-color palette range. TA's convention is palette indices
@@ -6255,6 +6295,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     if (TDF_ReadInt(tdf, "cancloak",       0)) out->cap_flags |= UNIT_CAP_CLOAK;
     if (TDF_ReadInt(tdf, "cantransport",   0)) out->cap_flags |= UNIT_CAP_TRANSPORT;
     if (TDF_ReadInt(tdf, "builder",        0)) out->cap_flags |= UNIT_CAP_BUILDER;
+    out->builder_limited = (uint8_t)(TDF_ReadInt(tdf, "builderlimited", 0) & 1);
     if (TDF_ReadInt(tdf, "canreclaim",     0)) out->cap_flags |= UNIT_CAP_RECLAIM;
     if (TDF_ReadInt(tdf, "canresurrect",   0)) out->cap_flags |= UNIT_CAP_RESURRECT;
     if (TDF_ReadInt(tdf, "cananimate",     0)) out->cap_flags |= UNIT_CAP_ANIMATE;
@@ -13530,6 +13571,14 @@ int Units_DebugSetDefs(const UnitDef *defs, int count) {
     g_def_count = count;
     g_def_gen++;
     return count;
+}
+
+void Units_DebugSetBuildables(int def_idx, const int *list, int n) {
+    if (def_idx < 0 || def_idx >= CANBUILD_CACHE_DEFS || n < 0) return;
+    if (!g_canbuild_init) canbuild_cache_clear();
+    if (n > CANBUILD_CACHE_MENU) n = CANBUILD_CACHE_MENU;
+    for (int i = 0; i < n; i++) g_canbuild_menu[def_idx][i] = (int16_t)list[i];
+    g_canbuild_n[def_idx] = (int8_t)n;
 }
 
 int Units_DebugSetDefScript(int def_idx, const uint32_t *code, int words,
