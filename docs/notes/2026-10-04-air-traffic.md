@@ -62,7 +62,9 @@ legacy:220068-220178:
 - no unit but itself in the ground word,
 - no airborne flyer but itself in the air word,
 - no blocking feature and no building,
-- no water, and no slope past its maxslope.
+- no corner under its water floor, which is sea level for every
+  shipped flyer, and no slope past its maxslope
+  (2026-10-04-flyers-land-on-dry-ground.md has the whole test).
 
 When its own spot fails it tries 12 spots on the cell lattice, the k-th
 rand(129 + 32k) - (64 + 16k) px off on each axis, out to 240 px, and
@@ -112,8 +114,6 @@ it lands and lifted when it takes off.
   (legacy:30139-30370, keys parsed at legacy:163005-163017). The engine
   does not read the keys yet. Attacking flyers that share cells still
   step apart, so a flock at its target spreads out all the same.
-- The landing test passes every cell the flyer's side cannot see
-  (legacy:220094-220101). The engine tests every cell.
 - A saturated air cell, 0xffff, passes the landing test in the original.
   The engine has no air cells, so it never comes up.
 - The original snaps a move's point to its footprint's cell lattice

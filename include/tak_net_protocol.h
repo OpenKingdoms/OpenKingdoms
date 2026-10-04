@@ -110,8 +110,11 @@
  * ends with its caster. 34: under the remastered rules a burning
  * feature throws four sparks that reach six cells and lean with the
  * wind, at most four catching a frame, and the computer's footing leans
- * toward where a unit is bound. */
-#define TAK_ENGINE_BUILD_ID           34
+ * toward where a unit is bound.
+ * 35: the landing test takes the original's depth window, amphibious
+ * and unexplored ground, and a stopped flyer flies on before it looks
+ * for ground. */
+#define TAK_ENGINE_BUILD_ID           35
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
