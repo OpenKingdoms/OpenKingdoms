@@ -12606,7 +12606,7 @@ static void Units_TickCombat(void) {
                             Economy_EarnF(&rw->economy, u->player_id, paid);
                     }
                     if (u->reclaim_accum >= hp_max) {
-                        Features_RemoveInstance(rw, fi);
+                        Features_SweepInstance(rw, fi);
                         u->cmd_kind = UNIT_CMD_NONE;
                         u->reclaim_tile_x = -1;
                         u->reclaim_tile_y = -1;
