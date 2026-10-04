@@ -394,6 +394,7 @@ static const char *unit_field_at(size_t o) {
         { offsetof(Unit, build_tries), 1, "build_tries" },
         { offsetof(Unit, build_wait), 1, "build_wait" },
         { offsetof(Unit, build_def), 2, "build_def" },
+        { offsetof(Unit, build_held), 1, "build_held" },
         { offsetof(Unit, reclaim_accum), 4, "reclaim_accum" },
         { offsetof(Unit, carried_by), 2, "carried_by" },
         { offsetof(Unit, under_construction), 1, "under_construction" },

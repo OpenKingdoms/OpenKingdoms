@@ -906,6 +906,10 @@ typedef struct Unit {
     uint8_t    build_tries;
     uint8_t    build_wait;
     int16_t    build_def;
+    /* A summons taken while units stand on its spot: no frame yet, and
+     * build_def goes up at cmd_x, cmd_y once they leave, looked for as
+     * build_endless's next is (legacy:12088-12124). */
+    uint8_t    build_held;
     /* Ticks left in the attack handler's wait, after which a fight it
      * took on for itself looks again (legacy:11485-11509). 0 when not
      * waiting. */
@@ -1839,7 +1843,9 @@ int               Units_BeginBuildingForUnitFacing(int builder_handle,
 /* A build order as a command gives it: 1 when the builder took it. With
  * endless a walking builder summons a def Units_DefCanRepeat names there
  * without end, each one done stepping off the spot for the next
- * (legacy:12272-12315). */
+ * (legacy:12272-12315). A walking builder takes a summons whose spot
+ * only units hold and waits for them to leave (legacy:12088-12124),
+ * where Units_BeginBuildingForUnit refuses it. */
 int               Units_OrderBuild(int builder_handle, int def_idx,
                                    int32_t world_x, int32_t world_y,
                                    int facing, int endless);
@@ -1957,6 +1963,16 @@ int               Units_IsBuildSiteClear(int def_idx,
 int               Units_IsBuildSiteClearFacing(int def_idx,
                                                 int32_t world_x, int32_t world_y,
                                                 int facing);
+/* The cursor's test above looks for units only on a building's cells.
+ * A def that walks has an open yard and is placed over units
+ * (legacy:163272-163292, 218800-218811). The frame itself goes up only
+ * where no unit stands at all, which this tests (legacy:12088,
+ * 219094-219160). */
+int               Units_IsBuildSiteFree(int def_idx,
+                                        int32_t world_x, int32_t world_y);
+int               Units_IsBuildSiteFreeFacing(int def_idx,
+                                              int32_t world_x, int32_t world_y,
+                                              int facing);
 
 /* Snap a build centre onto the cell grid the way legacy turns a
  * cursor into a build cell and reads its centre back

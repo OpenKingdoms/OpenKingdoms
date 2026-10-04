@@ -751,6 +751,11 @@ static int setup(const char *map_name) {
     g_units[1].air_oy = 2111;
     g_units[1].air_band = 7;
     g_units[1].air_hold = 9;
+    /* The bowman holds a summons of TARNECRO for a unit on its spot. */
+    g_units[1].build_held = 1;
+    g_units[1].build_def = 3;
+    g_units[1].build_tries = 5;
+    g_units[1].build_wait = 13;
     /* A dead slot keeps a stale definition index nothing may follow. */
     g_units[2].alive = UNIT_ALIVE_DEAD;
     /* A caster part way through raising a corpse. */
@@ -1526,6 +1531,13 @@ TEST(a_build_queue_survives_a_reordered_registry) {
     ASSERT_EQ_STR("TARNECRO", Units_GetDef(g_units[0].build_def)->unitname);
     ASSERT_EQ_INT(7, (int)g_units[0].build_tries);
     ASSERT_EQ_INT(11, (int)g_units[0].build_wait);
+    ASSERT_EQ_INT(0, (int)g_units[0].build_held);
+    /* So does a summons held for units on its spot. */
+    ASSERT_EQ_INT(1, (int)g_units[1].build_held);
+    ASSERT_EQ_INT(0, (int)g_units[1].build_endless);
+    ASSERT_EQ_STR("TARNECRO", Units_GetDef(g_units[1].build_def)->unitname);
+    ASSERT_EQ_INT(5, (int)g_units[1].build_tries);
+    ASSERT_EQ_INT(13, (int)g_units[1].build_wait);
 }
 
 /* A refusal before anything has been written leaves the world exactly
@@ -1652,7 +1664,12 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     ASSERT_EQ_INT(r1[496 + 2 * 24 + 18], r0[996]);
     ASSERT_EQ_INT(r1[496 + 2 * 24 + 19], r0[997]);
     ASSERT_EQ_INT(4, r1[998] | r1[999] << 8);
-    ASSERT_EQ_INT(0, r1[993]);
+    /* The bowman's summons held for units on its spot is bit 2 there. */
+    ASSERT_EQ_INT(2, r1[993]);
+    ASSERT_EQ_INT(5, r1[994]);
+    ASSERT_EQ_INT(13, r1[995]);
+    ASSERT_EQ_INT(r0[996], r1[996]);
+    ASSERT_EQ_INT(r0[997], r1[997]);
     /* The flyer's crowd score, leg, circles and bearing at 1000, the
      * leg's point and the circle's centre at 1006, its ring at 1022 and
      * the frames it holds at 1023. */
