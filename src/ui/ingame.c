@@ -75,6 +75,8 @@ static struct {
     /* Load kept armed by an order given with Shift held, until Shift
      * is let go (legacy:243768-243771). */
     uint8_t shift_hold;
+    /* The button a look through the minimap is held on, 0 for none. */
+    uint8_t mm_look;
     /* A dialog is up and the clock has stopped. */
     uint8_t paused;
     uint8_t catching_up;   /* this frame ran extra ticks to catch the match up */
@@ -1360,6 +1362,70 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
     }
 }
 
+/* Centre the view on a map point, kept on the map (legacy:120800-120815,
+ * legacy:120384-120400). The 3D view follows the classic camera. */
+static void ig_center_camera(GameWorld *world, int32_t x, int32_t y) {
+    int32_t cx = x - world->viewport_w / 2;
+    int32_t cy = y - world->viewport_h / 2;
+    if (cx < 0) cx = 0;
+    if (cy < 0) cy = 0;
+    if (cx > world->map_pixels_w - world->viewport_w) cx = world->map_pixels_w - world->viewport_w;
+    if (cy > world->map_pixels_h - world->viewport_h) cy = world->map_pixels_h - world->viewport_h;
+    world->cam_x = cx;
+    world->cam_y = cy;
+}
+
+/* The minimap under the original's left click interface. The right
+ * button looks whatever is selected, or disarms an armed command
+ * (legacy:243703-243716). A look follows the pointer while its button
+ * is held and ends on any other press (legacy:243774-243783). The left
+ * button carries out the armed command at the point, or a Move
+ * (legacy:243645-243647, legacy:243819), and with nothing of yours
+ * selected it looks (D-037). Returns 1 when the minimap took the press. */
+static int ig_minimap(GameWorld *world, TAK_Platform *platform, int wx, int wy,
+                      int left, int right, int left_pressed, int right_pressed,
+                      int mods) {
+    int32_t px, py;
+    if (ig.mm_look) {
+        int right_look = ig.mm_look == SDL_BUTTON_RIGHT;
+        int other = right_look ? left_pressed : right_pressed;
+        if (!(right_look ? right : left) || other) {
+            ig.mm_look = 0;
+            return other;
+        }
+        if (Minimap_PointToWorld(platform, wx, wy, 1, &px, &py))
+            ig_center_camera(world, px, py);
+        return 1;
+    }
+    if (!(left_pressed || right_pressed) ||
+        !Minimap_PointToWorld(platform, wx, wy, 0, &px, &py))
+        return 0;
+    if (right_pressed) {
+        if (HUD_GetCommandMode() != HUD_CMD_NONE) {
+            HUD_ClearCommandMode();
+            return 1;
+        }
+        ig.mm_look = SDL_BUTTON_RIGHT;
+    } else if (Units_SelectionOwnedCount() == 0) {
+        ig.mm_look = SDL_BUTTON_LEFT;
+    } else if (HUD_GetCommandMode() != HUD_CMD_NONE) {
+        InGame_WorldClickOn(px, py, Units_PickAt(px, py, 0), mods);
+        return 1;
+    } else {
+        /* The point walks to the ground as a field point does
+         * (legacy:243979). */
+        int32_t gx = px, gy = py;
+        Units_GroundUnderPoint(px, py, &gx, &gy);
+        uint16_t q = (mods & IG_CLICK_SHIFT) ? (uint16_t)TAK_CMD_ARG_QUEUE
+                   : (mods & IG_CLICK_CTRL) ? (uint16_t)TAK_CMD_ARG_KEEP : 0;
+        TAK_Cmd_EmitSelection(TAK_CMD_MOVE, gx, gy, -1, 0, q);
+        ig_play_order_ack(world, "Move");
+        return 1;
+    }
+    ig_center_camera(world, px, py);
+    return 1;
+}
+
 static int ig_unarmed_walker(int handle, int target) {
     (void)target;
     return !Units_IsArmed(handle) && Units_CanWalk(handle);
@@ -1881,6 +1947,24 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         HUD_ClearCommandMode();
     }
 
+    /* The minimap first, as it sits in the sidebar. A press it takes
+     * goes no further, and a look wins over the keys and the edge. */
+    if (dp_active || !platform->has_focus) {
+        ig.mm_look = 0;
+    } else {
+        int ctrl_held = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL];
+        if (ig_minimap(world, platform, wx, wy, left, right, left_pressed,
+                       right_pressed, (shift_held ? IG_CLICK_SHIFT : 0) |
+                                      (ctrl_held ? IG_CLICK_CTRL : 0))) {
+            left_pressed = right_pressed = 0;
+            mm_active = 1;
+        }
+        int32_t mx, my;
+        if ((left || right) && Minimap_PointToWorld(platform, wx, wy, 0, &mx, &my))
+            mm_active = 1;
+        if (ig.mm_look) dx = dy = 0;
+    }
+
     /* HUD click dispatch first — sidebar action buttons set/clear
      * the command mode. If the click hit a button we consume it
      * and skip world-click handling. */
@@ -1948,36 +2032,6 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         ig.drag_active   = 0;
     }
 
-    /* Minimap click/drag: if the user is holding left-mouse over the
-     * minimap, jump the camera to the clicked point. This runs before
-     * edge-scroll so that clicking near the window edge (on the
-     * minimap itself, which sits in the top-right corner) doesn't
-     * also trigger edge-scroll. When minimap consumes the input we
-     * skip edge-scroll for the frame. */
-    if (!dp_active && platform->has_focus) {
-        int32_t cam_x = 0, cam_y = 0;
-        if (Minimap_HandleInput(platform, wx, wy, left, &cam_x, &cam_y)) {
-            /* Legacy: with units selected, minimap left-click is a MOVE
-             * order to that spot; camera-jump only with no selection. */
-            /* An inspected foreign unit takes no Move: the minimap
-             * jumps the camera as with nothing selected. */
-            if (Units_SelectionOwnedCount() > 0) {
-                if (left_pressed) {
-                    TAK_Cmd_EmitSelection(TAK_CMD_MOVE,
-                                          cam_x + world->viewport_w / 2,
-                                          cam_y + world->viewport_h / 2,
-                                          -1, 0, 0);
-                    ig_play_order_ack(world, "Move");
-                }
-            } else {
-                world->cam_x = cam_x;
-                world->cam_y = cam_y;
-            }
-            dx = dy = 0;     /* minimap wins over WASD this frame */
-            mm_active = 1;
-        }
-    }
-
     /* Mouse-edge scroll. Only fires when window has focus — otherwise
      * the camera drifts while the user is Alt-Tabbed to another app.
      * Mouse state is in WINDOW coords (not canvas), which is right:
@@ -1986,8 +2040,6 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * where the player wants cursor-over-edge without the camera
      * following). */
     if (!dp_active && !mm_active && platform->has_focus && cc->edge_scroll_margin_px > 0) {
-        int wx = 0, wy = 0;
-        SDL_GetMouseState(&wx, &wy);
         const int edge = cc->edge_scroll_margin_px;
         if (wx >= 0 && wx < edge)                        dx -= (int32_t)scroll_px;
         if (wx >= platform->window_w - edge)             dx += (int32_t)scroll_px;

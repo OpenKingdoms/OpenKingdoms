@@ -1951,6 +1951,23 @@ Format per entry:
   and `Units_ScorchAt` in `src/render/units.c`, the rows from
   `GUIDialog_AddOptionRow` in `src/ui/gui_loader.c`.
 
+## D-037: The minimap's left button looks when nothing of yours is selected
+
+- Change: under the left click interface, the only one the engine has, a
+  left press on the minimap with none of your own units selected centres
+  the view there and follows a drag while the button is held, the way the
+  right button does with any selection. With your units selected the left
+  button orders them as the original's does, and the right button looks
+  or disarms an armed command as the original's does.
+- Why: the engine has looked on that press from the start, and keeping
+  it takes nothing from the original's controls. There that press gives
+  an order to nobody and does nothing (legacy:243645-243647). Taking it
+  away would leave a minimap that seems dead to a player who has not yet
+  found the right button.
+- Citation: manual p.69 says the left click interface uses the right
+  button to find a location within the Mini-Map.
+- Where it is: `ig_minimap` in `src/ui/ingame.c`.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

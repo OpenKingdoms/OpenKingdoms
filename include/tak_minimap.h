@@ -35,20 +35,12 @@ void Minimap_Draw(TAK_Platform *plat);
  * which case `out_rgb` is untouched. */
 int Minimap_RenderThumbnail(uint8_t *out_rgb, int tw, int th);
 
-/* Click-and-drag camera jump. ingame.c calls this every tick with
- * the current window-space mouse state. If the left mouse button is
- * held AND the cursor is over the minimap, out_cam_x/out_cam_y are
- * filled with the desired camera top-left (already clamped to map
- * bounds) and the function returns 1. Otherwise returns 0 and leaves
- * out_* untouched.
- *
- * Call this BEFORE edge-scroll in ingame.c — a minimap drag should
- * take priority over mouse-on-edge scroll so a user can drag near
- * the screen edge without the edge-scroll fighting the jump. */
-int Minimap_HandleInput(TAK_Platform *plat,
-                         int win_mouse_x, int win_mouse_y,
-                         int left_button_down,
-                         int32_t *out_cam_x, int32_t *out_cam_y);
+/* The map point under a window point on the minimap, in world pixels.
+ * With clamp the pointer is first held to the map's rect, so a look
+ * dragged past the edge keeps tracking. Returns 0 when the minimap is
+ * not up, or when the point is off it and clamp is 0. */
+int Minimap_PointToWorld(TAK_Platform *plat, int win_x, int win_y, int clamp,
+                         int32_t *out_x, int32_t *out_y);
 
 /* Debug: the window-pixel rect a unit dot at this world position would
  * occupy, clipped to the drawn map. Returns 0 when the minimap is not
