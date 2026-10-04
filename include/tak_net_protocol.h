@@ -87,8 +87,12 @@
  * stopped after 200 instructions, so a burning building keeps its pace.
  * 23: a blast reaches half its areaofeffect, measured to each unit's
  * model, with the original's curved falloff, and a shot under 17 that
- * strikes a unit hits it alone. */
-#define TAK_ENGINE_BUILD_ID           23
+ * strikes a unit hits it alone. 24: blasts wound scenery and destroy
+ * it to its next stage after its death sequence, fire starters set
+ * flamable scenery burning to its burnt stage with one spread of
+ * sparks, and the wind blows in the map's range, turning the units
+ * that hear it. */
+#define TAK_ENGINE_BUILD_ID           24
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

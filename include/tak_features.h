@@ -61,6 +61,22 @@ typedef struct FeatureDef {
     char     sound_class[24];
     int      sound_delay_ticks;
     int      sound_variance_ticks;
+    /* Death and fire, for features drawn from a GAF (legacy:127184-127401).
+     * The death sequence plays once before featuredead takes the cell.
+     * A flamable feature a fire starter reaches burns instead, its burn
+     * sequence with a flame TAF drawn behind it and one in front, and
+     * featureburnt takes the cell when it is done. sparktime is kept in
+     * the original's 30 Hz frames, spreadchance in percent. */
+    char     feature_burnt[40];
+    char     seqname_die[40];
+    char     seqname_die_shad[40];
+    char     seqname_burn[40];
+    char     seqname_burn_shad[40];
+    char     seqname_front_flame[40];
+    char     seqname_back_flame[40];
+    int      flamable;
+    int      spread_chance;
+    int      spark_time;
 } FeatureDef;
 
 /* Build the registry by scanning data/features/<sub>/*.tdf in legacy
@@ -156,6 +172,48 @@ void Features_MarkChanged(struct GameWorld *world);
  * feature, else 1 plus the tallest height of the features covering it,
  * cut to the byte the original keeps (legacy:127053, :245444-245461). */
 int  Features_TopAt(struct GameWorld *world, int cell_x, int cell_z);
+
+/* ── Destruction, fire and wind ──────────────────────────────────────
+ *
+ * A placed feature counts the damage blasts do to it and dies at its
+ * def's damage, plays its death sequence, and gives its cell to its
+ * featuredead (legacy:127838-127955, 128725-128822). A fire starter's
+ * blast sets a flamable one burning instead. A burn throws sparks once
+ * at the neighbours and downwind, and leaves featureburnt
+ * (legacy:127772-127835, 128021-128116). */
+#define FEATURE_FX_NONE     0
+#define FEATURE_FX_DYING    1
+#define FEATURE_FX_BURNING  2
+
+/* A blast at (x, y) px, `height` up: every feature on a cell within
+ * `radius` of it, or on the blast's own cell, takes `damage` once, or
+ * catches fire when `fire_starter` and it can burn (legacy:245240-245302). */
+void Features_Blast(struct GameWorld *world, int32_t x, int32_t y, float height,
+                    int radius, int damage, int fire_starter);
+
+/* One of the original's 30 Hz frames: death and burn sequences play on,
+ * finished ones give their cell to the next stage, sparks spread, then
+ * the wind takes its turn (legacy:128380-128610, 241674-241718). The
+ * engine calls it every second tick. */
+void Features_TickFrame(struct GameWorld *world);
+
+/* Damage, set fire to or destroy instance `idx`, as a blast would. */
+void Features_DebugHit(struct GameWorld *world, int idx, int damage, int fire_starter);
+
+/* The wind a map blows: its minwindspeed and maxwindspeed (legacy:168998-
+ * 169001), the first wind on the battle's first frame. */
+void Features_WindBegin(struct GameWorld *world, int min_speed, int max_speed);
+/* Set the wind now, as the original's +wind does. */
+void Features_DebugSetWind(struct GameWorld *world, int speed, uint16_t heading);
+
+/* Give def `def_idx` a sequence of `frames` pictures, `frame_frames` of
+ * the original's frames each, in place of what its files hold. `which`
+ * is 0 death, 1 burn, 2 front flame, 3 back flame. For tests. */
+int  Features_DebugSetSequence(int def_idx, int which, int frames, int frame_frames);
+
+/* How long def `def_idx`'s death (`which` 0) or burn (1) runs in the
+ * original's frames, or -1 when it has none. */
+int  Features_SequenceFrames(int def_idx, int which);
 
 /* Restart instance `idx`'s decompose countdown. A corpse cannot rot
  * out from under a sweep or a raise: both refresh it every tick they

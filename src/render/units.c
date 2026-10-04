@@ -1193,6 +1193,9 @@ static int spawn_projectile(int32_t x, int32_t y,
     p->target = (int16_t)target_handle;
     p->hidden = 0;
     p->path_flags = weapon_path_flags(source_weapon);
+    p->blast_flags = 0;
+    if (source_weapon && source_weapon->units_only) p->blast_flags |= UNIT_BLAST_UNITS_ONLY;
+    if (source_weapon && source_weapon->fire_starter) p->blast_flags |= UNIT_BLAST_FIRE_STARTER;
     int meets = (p->path_flags & UNIT_PROJ_PATH_TESTED) != 0;
 
     /* ── Art, arc and orientation ──────────────────────────────────
@@ -1720,6 +1723,18 @@ static void apply_projectile_area_damage(const Projectile *p) {
     }
 }
 
+/* The scenery in a blast, after the units: every feature within half
+ * the areaofeffect takes the weapon's damage, unless the weapon is
+ * unitsonly or the shot struck a unit with an areaofeffect under 17
+ * (legacy:245029-245036, 245240-245302). */
+static void blast_scenery(const Projectile *p, int struck) {
+    if (p->blast_flags & UNIT_BLAST_UNITS_ONLY) return;
+    if (struck >= 0 && p->area_of_effect < BLAST_DIRECT_BELOW) return;
+    Features_Blast(World_Get(), p->world_x, p->world_y, p->height,
+                   p->area_of_effect >> 1, p->damage,
+                   (p->blast_flags & UNIT_BLAST_FIRE_STARTER) != 0);
+}
+
 static int64_t point_segment_dist2_i32(int32_t px, int32_t py,
                                        int32_t ax, int32_t ay,
                                        int32_t bx, int32_t by) {
@@ -1870,6 +1885,7 @@ static void projectile_detonate_at(Projectile *p, int idx) {
             unit_on_damaged(v, p->shooter);
         }
     }
+    blast_scenery(p, struck);
 }
 
 static void projectile_detonate(Projectile *p, int idx) {
@@ -2039,6 +2055,7 @@ static void shot_strike_unit(Projectile *p, int idx, int vi) {
     projectile_impact_fx(p, v, (uint32_t)idx);
     if (p->area_of_effect >= BLAST_DIRECT_BELOW) {
         apply_projectile_area_damage(p);
+        blast_scenery(p, vi);
         return;
     }
     int enemy = unit_players_are_enemies(v->player_id, p->player_id);
@@ -2071,6 +2088,7 @@ static void shot_burst(Projectile *p, int idx) {
     }
     projectile_impact_fx(p, NULL, (uint32_t)idx);
     if (p->area_of_effect > 0) apply_projectile_area_damage(p);
+    blast_scenery(p, -1);
 }
 
 /* A flat shot at the ground goes off at its aim point, a fuse met
@@ -2450,6 +2468,7 @@ static void tick_projectiles(void) {
                     projectile_impact_fx(p, t, (uint32_t)i);
                     if (p->area_of_effect >= BLAST_DIRECT_BELOW) {
                         apply_projectile_area_damage(p);
+                        blast_scenery(p, p->target);
                         p->alive = 0;
                         continue;
                     }
@@ -6077,6 +6096,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->transport_capacity = TDF_ReadInt(tdf, "transportcapacity", 0);
     out->transport_size_capacity = TDF_ReadInt(tdf, "transportsizecapacity", 0);
     out->cant_be_transported = TDF_ReadInt(tdf, "cantbetransported", 0);
+    out->wind = (TDF_ReadInt(tdf, "windgenerator", 0) != 0 ||
+                 TDF_ReadInt(tdf, "wind", 0) != 0) ? 1 : 0;
     out->transported_size = TDF_ReadInt(tdf, "transportedsize", 0);
     out->transport_distance = TDF_ReadInt(tdf, "transportdistance", 0);
     copy_bounded(out->movement_class, sizeof(out->movement_class),
@@ -6341,6 +6362,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         }
         w->water_weapon   = TDF_ReadInt(tdf, "waterweapon", 0);
         w->units_only     = (uint8_t)(TDF_ReadInt(tdf, "unitsonly", 0) & 1);
+        w->fire_starter   = (uint8_t)(TDF_ReadInt(tdf, "firestarter", 0) & 1);
         w->ground_bounce  = (uint8_t)(TDF_ReadInt(tdf, "groundbounce", 0) & 1);
         w->path_free      = (ascii_contains_ci(w->type, "remote") ||
                              ascii_contains_ci(w->type, "wandering")) ? 1 : 0;
@@ -8457,9 +8479,15 @@ static int32_t cob_host_call_function(void *user, int fn_id,
         case 20: /* ARMORED — unit+0x114 bit 1 (223288) */
         case 21: /* WEAPON_AIM_ABORTED */
             return 0;
-        case 24: /* wind direction relative to heading (223290) */
-        case 25: /* wind speed (223292) */
-            return 0;
+        case 24: { /* the wind's heading less the unit's (legacy:223290) */
+            const GameWorld *ww = World_Get();
+            uint16_t h = (uint16_t)(int32_t)(u->heading * 65536.0f / 6.2831853f);
+            return ww ? (int32_t)ww->wind_heading - (int32_t)h : 0;
+        }
+        case 25: { /* the wind's speed, times 16 (legacy:223292) */
+            const GameWorld *ww = World_Get();
+            return ww ? ww->wind_speed << 4 : 0;
+        }
         case 22: /* WEAPON_READY */
             if (def && def->num_weapons > 0) {
                 int slot = u->weapon_slot;
@@ -11072,6 +11100,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
         projectile_impact_fx(b, t, (uint32_t)bslot);
         if (b->area_of_effect >= BLAST_DIRECT_BELOW) {
             apply_projectile_area_damage(b);
+            blast_scenery(b, target_handle);
         } else {
             unit_take_hit(t, shooter_idx, (int)g_units[shooter_idx].player_id,
                           projectile_base_damage_for_unit(b, t));
@@ -11280,6 +11309,7 @@ static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
     projectile_impact_fx(b, struck >= 0 ? &g_units[struck] : NULL,
                          (uint32_t)slot_idx);
     if (b->area_of_effect > 0) apply_projectile_area_damage(b);
+    blast_scenery(b, -1);
 }
 
 static void tick_weapon_burst(Unit *u, int shooter_idx, int slot,
@@ -13130,6 +13160,8 @@ void Units_TickEngines(void) {
      * (legacy:128400-128414). */
     Features_TickDecompose(World_Get());
     double e3 = eng_now_ms();
+    GameWorld *wind_world = World_Get();
+    int wind_heard = wind_world && wind_world->wind_changed;
 
     for (int i = 0; i < g_unit_count; i++) {
         Unit *u = &g_units[i];
@@ -13153,6 +13185,17 @@ void Units_TickEngines(void) {
             magic_death_tick(u, i);
             continue;
         }
+        /* A unit that hears the wind runs WindChange with its speed
+         * and heading the frame after it changes (legacy:178908-178916). */
+        if (wind_heard && u->alive == UNIT_ALIVE_ACTIVE) {
+            const UnitDef *wd = Units_GetDef(u->def_idx);
+            if (wd && wd->wind) {
+                uint16_t h = (uint16_t)(int32_t)(u->heading * 65536.0f / 6.2831853f);
+                int32_t args[2] = { wind_world->wind_speed,
+                                    (int32_t)wind_world->wind_heading - (int32_t)h };
+                unit_start_script(u, "WindChange", args, 2);
+            }
+        }
         Cob_AnimatePieces(u->cob);
         Cob_RunAllThreads(u->cob);
         if (u->alive == UNIT_ALIVE_DYING && u->magic_death) {
@@ -13174,6 +13217,12 @@ void Units_TickEngines(void) {
         }
     }
     tick_attached_flames();
+    /* The original's frames run at half the tick: deaths and burns play
+     * on and the wind changes (legacy:242465-242467). */
+    if (wind_world) {
+        if (wind_heard) wind_world->wind_changed = 0;
+        if ((g_sim_tick & 1u) == 0) Features_TickFrame(wind_world);
+    }
     double e4 = eng_now_ms();
     g_eng_prof_ms[2] += e4 - e3;
     g_eng_prof_ms[3] += e3 - e2;
@@ -15843,6 +15892,55 @@ static FeatureSprite *load_feature_sprite(const char *filename,
     return fs;
 }
 
+/* A flame, its own truecolor TAF named after it, or a GAF in mod data. */
+static FeatureSprite *load_flame_sprite(const char *name) {
+    if (!name || !*name) return NULL;
+    char key[40];
+    snprintf(key, sizeof(key), "*%s", name);
+    for (int i = 0; i < g_feat_sprite_count; i++) {
+        if (tak_stricmp(g_feat_sprites[i].filename, key) == 0)
+            return g_feat_sprites[i].loaded_ok ? &g_feat_sprites[i] : NULL;
+    }
+    if (g_feat_sprite_count >= (int)(sizeof(g_feat_sprites)/sizeof(g_feat_sprites[0])))
+        return NULL;
+    FeatureSprite *fs = &g_feat_sprites[g_feat_sprite_count++];
+    memset(fs, 0, sizeof(*fs));
+    snprintf(fs->filename, sizeof(fs->filename), "%s", key);
+    snprintf(fs->seqname, sizeof(fs->seqname), "%s", name);
+    ProjSpriteArt art;
+    memset(&art, 0, sizeof(art));
+    snprintf(art.file, sizeof(art.file), "%s", name);
+    snprintf(art.seq, sizeof(art.seq), "%s", name);
+    GAFFile *gaf = NULL;
+    int is_taf = 0;
+    int seq_off = proj_sprite_open(&art, &gaf, &is_taf);
+    if (seq_off < 0) return NULL;
+    int n = *(const uint16_t *)(gaf->data + seq_off);
+    if (n <= 0) { GAF_Close(gaf); return NULL; }
+    fs->gaf = gaf;
+    fs->num_frames = n;
+    fs->frame_pixels = (uint32_t **)tak_calloc((size_t)n, sizeof(uint32_t *));
+    fs->frame_w = (int *)tak_calloc((size_t)n, sizeof(int));
+    fs->frame_h = (int *)tak_calloc((size_t)n, sizeof(int));
+    fs->frame_off_x = (int *)tak_calloc((size_t)n, sizeof(int));
+    fs->frame_off_y = (int *)tak_calloc((size_t)n, sizeof(int));
+    if (!fs->frame_pixels || !fs->frame_w || !fs->frame_h ||
+        !fs->frame_off_x || !fs->frame_off_y) return NULL;
+    const GameWorld *w = World_Get();
+    for (int f = 0; f < n; f++) {
+        FrameHeader *fh = NULL;
+        if (GAF_GetFrameInfo(gaf, (uint32_t)seq_off, f, &fh) != 0 || !fh) continue;
+        fs->frame_pixels[f] = is_taf ? TAF_DecodeFrameRGBA(gaf, fh)
+                                     : GAF_DecodeFrameRGBA(gaf, fh, w ? w->features_rgba : NULL);
+        fs->frame_w[f] = fh->width;
+        fs->frame_h[f] = fh->height;
+        fs->frame_off_x[f] = fh->offset_x;
+        fs->frame_off_y[f] = fh->offset_y;
+    }
+    fs->loaded_ok = 1;
+    return fs;
+}
+
 /* `translucent` draws the frame as a shadow: black, and letting the
  * ground through the way the original's translucent shadow does. */
 static void blit_feature_frame(SDL_Renderer *r,
@@ -15867,6 +15965,40 @@ static void blit_feature_frame(SDL_Renderer *r,
     SDL_Rect dst = { dx, dy, w, h };
     SDL_RenderCopy(r, tex, NULL, &dst);
     SDL_DestroyTexture(tex);
+}
+
+/* A feature dying or burning shows the frame the simulation has reached
+ * of its death or burn sequence, its shadow under it, and while it burns
+ * the back flame behind and the front flame before it
+ * (legacy:211228-211240). */
+static void render_feature_at_work(const struct GameWorld *world, SDL_Renderer *r,
+                                   const FeatureDef *fd, const struct MapFeature *mf,
+                                   int sx, int sy) {
+    int burning = mf->fx == FEATURE_FX_BURNING;
+    const char *seq = burning ? fd->seqname_burn : fd->seqname_die;
+    const char *shad = burning ? fd->seqname_burn_shad : fd->seqname_die_shad;
+    if (g_shadows_on && shad[0] && !fd->no_shadow) {
+        FeatureSprite *sh = load_feature_sprite(fd->filename, shad, world->features_rgba);
+        if (sh && sh->num_frames > 0) {
+            int f = mf->anim_frame < sh->num_frames ? mf->anim_frame : sh->num_frames - 1;
+            blit_feature_frame(r, sh, f, sx, sy, fd->shadtrans ? 1 : 0);
+        }
+    }
+    if (burning && mf->back_on) {
+        FeatureSprite *bf = load_flame_sprite(fd->seqname_back_flame);
+        if (bf && mf->back_frame < bf->num_frames)
+            blit_feature_frame(r, bf, mf->back_frame, sx, sy, 0);
+    }
+    FeatureSprite *fs = load_feature_sprite(fd->filename, seq, world->features_rgba);
+    if (fs && fs->num_frames > 0) {
+        int f = mf->anim_frame < fs->num_frames ? mf->anim_frame : fs->num_frames - 1;
+        blit_feature_frame(r, fs, f, sx, sy, 0);
+    }
+    if (burning && mf->front_on) {
+        FeatureSprite *ff = load_flame_sprite(fd->seqname_front_flame);
+        if (ff && mf->front_frame < ff->num_frames)
+            blit_feature_frame(r, ff, mf->front_frame, sx, sy, 0);
+    }
 }
 
 static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
@@ -15922,6 +16054,11 @@ static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
             SDL_SetRenderDrawColor(r, cr, cg, cb, 255);
             SDL_Rect dot = { sx - 4, sy - 4, 8, 8 };
             SDL_RenderFillRect(r, &dot);
+            continue;
+        }
+        const struct MapFeature *mf = &world->features[i];
+        if (mf->fx == FEATURE_FX_DYING || mf->fx == FEATURE_FX_BURNING) {
+            render_feature_at_work(world, r, fd, mf, sx, sy);
             continue;
         }
         int frame_idx = fs->num_frames > 1

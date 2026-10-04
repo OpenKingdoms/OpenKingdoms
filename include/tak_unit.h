@@ -180,6 +180,9 @@ typedef struct UnitWeapon {
      * off the ground (legacy:250034-250036). */
     uint8_t units_only;
     uint8_t ground_bounce;
+    /* firestarter: its blast sets scenery that can burn alight rather
+     * than wounding it (legacy:250028, 128781-128795). */
+    uint8_t fire_starter;
     /* Remote Effect and Wandering shots are never stopped on the way
      * (legacy:249842-249950, :249099-249160). */
     uint8_t path_free;
@@ -299,7 +302,14 @@ typedef struct Projectile {
     /* TAK_SHOT_* weapon flags (tak_shot_path.h) plus
      * UNIT_PROJ_PATH_TESTED on a shot that meets what it flies into. */
     uint8_t  path_flags;
+    /* UNIT_BLAST_*: what the shot's blast does to scenery. */
+    uint8_t  blast_flags;
 } Projectile;
+
+/* The weapon is unitsonly, so its blast leaves scenery alone
+ * (legacy:245240), and the weapon is a fire starter (legacy:250028). */
+#define UNIT_BLAST_UNITS_ONLY   0x01u
+#define UNIT_BLAST_FIRE_STARTER 0x02u
 
 /* A shot that runs the per cell test on its way (legacy:245377-245476).
  * Remote effect and wandering shots never do. */
@@ -415,6 +425,9 @@ typedef struct UnitDef {
     int32_t  transport_capacity; /* transportcapacity; carried unit count */
     int32_t  transport_size_capacity; /* transportsizecapacity; size budget */
     int32_t  cant_be_transported; /* cantbetransported flag */
+    /* wind or windgenerator: the unit's script hears WindChange when
+     * the wind changes (legacy:162879-162890, 178908-178916). */
+    uint8_t  wind;
     /* cantbecaptured (legacy:163021): mind control neither aims at
      * this unit nor takes it. */
     int32_t  cant_be_captured;
