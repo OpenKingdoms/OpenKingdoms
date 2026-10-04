@@ -173,6 +173,13 @@ void Cob_EngineSetHostRand(CobEngine *e, Cob_RandFn rand_fn);
  * index goes to the call-function hook as it always has. */
 void Cob_EngineSetHostMissionCommand(CobEngine *e, Cob_MissionCommandFn fn);
 
+/* EXPLODE as every script calls it, told to a host that draws the piece
+ * thrown: the engine's host user (a unit's script has its unit), the
+ * piece's node and the script's explode type. It only reads. NULL, the
+ * default, tells no one. */
+typedef void (*Cob_ExplodeHookFn)(void *user, int node, int32_t how);
+void Cob_SetExplodeHook(Cob_ExplodeHookFn hook);
+
 /* Test seam: pin every RAND to its lower or upper bound so a script
  * branch behind a roll (a death cry plays one time in four) can be
  * exercised on purpose. Process-wide, off by default. */
