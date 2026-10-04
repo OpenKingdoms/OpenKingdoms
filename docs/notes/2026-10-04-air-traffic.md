@@ -50,9 +50,11 @@ sidesteps and carries on.
 
 ## Landing
 
-A move ends once the flyer is within (rand(5) + 5) * 16 px of its point
-(legacy:25066-25110). The flyer then stands by, and the standby runs
-VTOL_LANDIFCAN a frame or two later (legacy:24427-24633). That steps out
+A move ends once the flyer is within (rand(5) + 5) * 16 px of its point,
+and no sooner than rand(10) + 5 frames after the move set out, the delay
+the mission waits before it checks (legacy:25066-25110). The flyer then
+stands by, and the standby runs VTOL_LANDIFCAN a frame or two later
+(legacy:24427-24633). That steps out
 first when the flyer is crowded. Otherwise it lands where it hovers only
 when every cell of its footprint passes the test at
 legacy:220068-220178:
@@ -92,9 +94,11 @@ the flyer is within its reach, and a new order ends it. The leg, the
 score and the circle are in the state hash and the unit record (version
 11).
 
-A flyer's move now ends at a ring (rand(5) + 5) * 16 px from its point.
-The flyer makes for the nearest point of the ring and brakes onto it.
-A formation move keeps its exact points.
+A flyer's move now ends at a ring (rand(5) + 5) * 16 px from its point,
+once rand(10) + 5 frames have gone by since it set out. The flyer makes
+for the nearest point of the ring, brakes onto it and hovers there until
+the frames are up. It then stands by two frames before it looks for
+ground. A formation move keeps its exact points.
 
 A landed flyer with the flight pair is a mobile occupant, stamped when
 it lands and lifted when it takes off.

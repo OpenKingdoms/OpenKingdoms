@@ -361,9 +361,10 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 #define U_BUILD_WAIT    (U_BUILD_ENDLESS + 2u)
 #define U_BUILD_DEF     (U_BUILD_ENDLESS + 3u)
 #define U_LEG_ENDLESS   (U_BUILD_ENDLESS + 5u)
-/* Version 11 on: a flyer's crowd score, the air leg it flies and how
- * near its point its move ends. An older record reads back uncrowded,
- * on no leg and with the ring still to draw. */
+/* Version 11 on: a flyer's crowd score, the air leg it flies, how near
+ * its point its move ends and the frames it holds. An older record
+ * reads back uncrowded, on no leg, with the ring still to draw and
+ * nothing held. */
 #define U_AIR_CROWD     (U_LEG_ENDLESS + 2u)
 #define U_AIR_MODE      (U_AIR_CROWD + 1u)
 #define U_AIR_REACH     (U_AIR_CROWD + 2u)
@@ -374,7 +375,8 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 #define U_AIR_OX        (U_AIR_CROWD + 14u)
 #define U_AIR_OY        (U_AIR_CROWD + 18u)
 #define U_AIR_BAND      (U_AIR_CROWD + 22u)
-#define U_END           (U_AIR_CROWD + 23u)
+#define U_AIR_HOLD      (U_AIR_CROWD + 23u)
+#define U_END           (U_AIR_CROWD + 24u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -1168,6 +1170,7 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_i32(r + U_AIR_OX, u->air_ox);
     tak_put_i32(r + U_AIR_OY, u->air_oy);
     tak_put_u8(r + U_AIR_BAND, u->air_band);
+    tak_put_u8(r + U_AIR_HOLD, u->air_hold);
     tak_put_u8(r + U_BUILD_ENDLESS, u->build_endless);
     tak_put_u8(r + U_BUILD_TRIES, u->build_tries);
     tak_put_u8(r + U_BUILD_WAIT, u->build_wait);
@@ -1417,6 +1420,7 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->air_ox = tak_get_i32(r + U_AIR_OX);
     u->air_oy = tak_get_i32(r + U_AIR_OY);
     u->air_band = tak_get_u8(r + U_AIR_BAND);
+    u->air_hold = tak_get_u8(r + U_AIR_HOLD);
     u->build_endless = tak_get_u8(r + U_BUILD_ENDLESS) ? 1 : 0;
     u->build_tries = tak_get_u8(r + U_BUILD_TRIES);
     u->build_wait = tak_get_u8(r + U_BUILD_WAIT);

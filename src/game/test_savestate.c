@@ -402,6 +402,7 @@ static const char *unit_field_at(size_t o) {
         { offsetof(Unit, air_crowd), 1, "air_crowd" },
         { offsetof(Unit, air_mode), 1, "air_mode" },
         { offsetof(Unit, air_band), 1, "air_band" },
+        { offsetof(Unit, air_hold), 1, "air_hold" },
         { offsetof(Unit, air_x), 4, "air_x" },
         { offsetof(Unit, air_ox), 4, "air_ox" },
         { offsetof(Unit, mana), 4, "mana" },

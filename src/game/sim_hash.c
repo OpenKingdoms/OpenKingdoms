@@ -180,10 +180,12 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     h = TAK_HashI32(h, u->flying);
     h = TAK_HashI32(h, u->sfx_occupy);
     /* Only a flyer the air traffic has touched adds to the hash. */
-    if (u->air_crowd || u->air_mode || u->air_circles || u->air_band) {
+    if (u->air_crowd || u->air_mode || u->air_circles || u->air_band ||
+        u->air_hold) {
         h = TAK_HashI32(h, 0x400 | u->air_mode);
         h = TAK_HashI32(h, u->air_crowd);
         h = TAK_HashI32(h, u->air_band);
+        h = TAK_HashI32(h, u->air_hold);
         h = TAK_HashI32(h, u->air_reach);
         h = TAK_HashI32(h, u->air_circles);
         h = TAK_HashI32(h, u->air_bearing);

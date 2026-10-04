@@ -870,10 +870,13 @@ typedef struct Unit {
      * UNIT_AIR_* leg flown to (air_x, air_y) until within air_reach px,
      * and air_circles counts the circles flown round (air_ox, air_oy) at
      * bearing air_bearing while no landing spot is clear. air_band is
-     * how near its point a move ends, in 16 px, 0 before it is drawn. */
+     * how near its point a move ends, in 16 px, 0 before it is drawn,
+     * and air_hold the frames before the move may end or, once it has,
+     * before the flyer may land. */
     int8_t     air_crowd;
     uint8_t    air_mode;
     uint8_t    air_band;
+    uint8_t    air_hold;
     uint8_t    air_reach;
     uint8_t    air_circles;
     uint16_t   air_bearing;

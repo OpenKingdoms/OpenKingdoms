@@ -3301,6 +3301,7 @@ static void order_fresh(Unit *u) {
     u->air_mode = UNIT_AIR_NONE;
     u->air_circles = 0;
     u->air_band = 0;
+    u->air_hold = 0;
     u->build_endless = 0;
     u->move_group = 0;
     u->move_paced = 0;
@@ -11958,12 +11959,16 @@ static int flyer_crowd_limit(const Unit *u) {
 }
 
 /* VTOL_Move ends once the flyer is within (rand(5) + 5) * 16 px of its
- * point (legacy:25066-25110). It makes for the nearest point of that
- * ring and brakes onto it, and the walk's arrival there ends the move. */
+ * point, and no sooner than rand(10) + 5 frames after it set out
+ * (legacy:25066-25110). It makes for the nearest point of that ring and
+ * brakes onto it, and the walk's arrival there ends the move. */
 static void flyer_move_band(Unit *u, const UnitDef *def,
                             int32_t *goal_x, int32_t *goal_y) {
     if (!unit_def_has_flight(def) || u->move_group) return;
-    if (u->air_band == 0) u->air_band = (uint8_t)(World_Rand(5) + 5);
+    if (u->air_band == 0) {
+        u->air_band = (uint8_t)(World_Rand(5) + 5);
+        u->air_hold = (uint8_t)(World_Rand(10) + 5);
+    }
     int64_t dx = (int64_t)u->world_x - u->cmd_x;
     int64_t dy = (int64_t)u->world_y - u->cmd_y;
     int64_t band = (int64_t)u->air_band * 16;
@@ -11985,6 +11990,7 @@ static int flyer_air_tick(Unit *u, int h, const UnitDef *def,
                           UnitAnimState *desired,
                           int32_t *goal_x, int32_t *goal_y) {
     if (!unit_def_has_flight(def)) return 0;
+    if (u->air_hold && (g_sim_tick & 1u) == 0) u->air_hold--;
     if (!u->flying) {
         u->air_mode = UNIT_AIR_NONE;
         return 0;
@@ -12000,7 +12006,7 @@ static int flyer_air_tick(Unit *u, int h, const UnitDef *def,
                    u->cmd_kind == UNIT_CMD_NONE && u->target < 0;
         int limit = flyer_crowd_limit(u);
         if (limit >= 0 && u->air_crowd > limit) flyer_step_out(u, h);
-        else if (idle) flyer_land_if_can(u, h, def);
+        else if (idle && !u->air_hold) flyer_land_if_can(u, h, def);
     }
     if (u->air_mode == UNIT_AIR_NONE) return 0;
     *desired = UNIT_ANIM_MOVING;
@@ -13089,8 +13095,14 @@ static void Units_TickCombat(void) {
                     u->velocity = 0; u->cur_speed_ppt = 0.0f;
                     if (air_leg_on) {
                         /* An air leg is no part of the order. */
+                    } else if (u->cmd_kind == UNIT_CMD_MOVE && u->air_hold &&
+                               u->air_band) {
+                        /* A flyer's move waits out its frames there. */
                     } else if (u->cmd_kind == UNIT_CMD_MOVE) {
                         u->cmd_kind = UNIT_CMD_NONE;
+                        /* A flyer stands by two frames before it looks
+                         * for ground (legacy:24561-24583). */
+                        u->air_hold = u->air_band ? 2 : 0;
                         u->air_band = 0;
                         unit_clear_path(u);
                         u->move_group = 0;

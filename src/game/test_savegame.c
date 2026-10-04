@@ -750,6 +750,7 @@ static int setup(const char *map_name) {
     g_units[1].air_ox = 1999;
     g_units[1].air_oy = 2111;
     g_units[1].air_band = 7;
+    g_units[1].air_hold = 9;
     /* A dead slot keeps a stale definition index nothing may follow. */
     g_units[2].alive = UNIT_ALIVE_DEAD;
     /* A caster part way through raising a corpse. */
@@ -1616,7 +1617,7 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
     ASSERT_EQ_INT(11, (int)version);
-    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 23,
+    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24,
                   (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;
     /* The bowman's formation group at 487 and its second leg at 520. */
@@ -1653,7 +1654,8 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     ASSERT_EQ_INT(4, r1[998] | r1[999] << 8);
     ASSERT_EQ_INT(0, r1[993]);
     /* The flyer's crowd score, leg, circles and bearing at 1000, the
-     * leg's point and the circle's centre at 1006, its ring at 1022. */
+     * leg's point and the circle's centre at 1006, its ring at 1022 and
+     * the frames it holds at 1023. */
     ASSERT_EQ_INT(6, r1[1000]);
     ASSERT_EQ_INT(UNIT_AIR_STEP, r1[1001]);
     ASSERT_EQ_INT(96, r1[1002]);
@@ -1664,6 +1666,7 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     ASSERT_EQ_INT(1999, (int)rec_u32(r1, 1014));
     ASSERT_EQ_INT(2111, (int)rec_u32(r1, 1018));
     ASSERT_EQ_INT(7, r1[1022]);
+    ASSERT_EQ_INT(9, r1[1023]);
     ASSERT_EQ_INT(0, r0[1000]);
     Save_Close(r);
 }

@@ -423,6 +423,7 @@ static int test_every_subsystem_contributes(void) {
     POKE("air leg", g_units[0].air_mode = UNIT_AIR_STEP,
          g_units[0].air_mode = 0);
     POKE("move ring", g_units[0].air_band = 6, g_units[0].air_band = 0);
+    POKE("frames held", g_units[0].air_hold = 3, g_units[0].air_hold = 0);
     g_units[0].air_mode = UNIT_AIR_SPOT;
     POKE("air leg reach", g_units[0].air_reach = 8, g_units[0].air_reach = 0);
     POKE("air leg point", g_units[0].air_x = 77, g_units[0].air_x = 0);
