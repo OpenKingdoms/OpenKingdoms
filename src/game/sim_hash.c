@@ -400,8 +400,8 @@ static uint32_t hash_projectiles(uint32_t h) {
  * catch those counters mid flight and the hash has to see them. */
 static uint32_t hash_features(uint32_t h, const GameWorld *w) {
     h = TAK_HashI32(h, w->feature_count);
-    if (!w->features) return h;
-    for (int i = 0; i < w->feature_count; i++) {
+    int count = w->features ? w->feature_count : 0;
+    for (int i = 0; i < count; i++) {
         const struct MapFeature *f = &w->features[i];
         h = TAK_HashI32(h, f->feat_id);
         h = TAK_HashI32(h, f->tile_x);
