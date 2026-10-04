@@ -259,6 +259,33 @@ void Units_StopUnit(int handle) {
     g_stop_calls++;
 }
 
+/* The sweep order and a feature's centre, as units.c and features.c
+ * give them for a one-cell feature. */
+static int g_sweep_calls;
+static int g_last_sweep_handle = -1;
+static int32_t g_last_sweep_x, g_last_sweep_y;
+int Units_OrderReclaimFeature(int handle, int32_t world_x, int32_t world_y,
+                              int target_handle) {
+    (void)target_handle;
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    g_units[handle].cmd_kind = UNIT_CMD_RECLAIM;
+    g_units[handle].target = -1;
+    g_units[handle].reclaim_tile_x = (int16_t)(world_x / 16);
+    g_units[handle].reclaim_tile_y = (int16_t)(world_y / 16);
+    g_sweep_calls++;
+    g_last_sweep_handle = handle;
+    g_last_sweep_x = world_x;
+    g_last_sweep_y = world_y;
+    return 1;
+}
+int Features_InstanceCentre(const struct GameWorld *world, int idx,
+                            int32_t *out_x, int32_t *out_y) {
+    if (!world || !world->features || idx < 0 || idx >= world->feature_count) return -1;
+    if (out_x) *out_x = (int32_t)world->features[idx].tile_x * 16 + 8;
+    if (out_y) *out_y = (int32_t)world->features[idx].tile_z * 16 + 8;
+    return 0;
+}
+
 int Units_GetBuildables(int builder_def_idx, int *out_def_idxs, int max_out) {
     if (builder_def_idx < 0 || builder_def_idx >= MOCK_DEFS || !out_def_idxs || max_out <= 0)
         return 0;
@@ -3264,6 +3291,124 @@ static int test_ai_ranged_members_go_straight_at_the_target(void) {
     return 0;
 }
 
+/* ── Rubble and fire under the remastered rules (A-011) ────────────── */
+
+/* Rubble a unit is stuck at comes ahead of everything but a threat at
+ * home and a stalled economy, and only a builder allowed to sweep does. */
+static int test_plan_sweeps_the_rubble_it_is_stuck_at(void) {
+    AiPlanState s;
+    AiPlanCosts c;
+    plan_state_basic(&s, &c);
+    s.builders_idle = 1;
+    AiGoal goal = AI_GOAL_NONE;
+    ASSERT_EQ_INT(AI_ACT_BUILD_FACTORY, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
+    s.rubble = 1;
+    ASSERT_EQ_INT(AI_ACT_SWEEP, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
+    ASSERT_EQ_INT(AI_GOAL_CLEAR, goal);
+    c.allowed[AI_ACT_SWEEP] = 0;
+    ASSERT_EQ_INT(AI_ACT_BUILD_FACTORY, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
+    c.allowed[AI_ACT_SWEEP] = 1;
+    s.mana_pct = 10;
+    s.stalling = 1;
+    ASSERT_EQ_INT(AI_ACT_BUILD_LODESTONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
+    return 0;
+}
+
+/* A unit in a fire that hurts steps out first, if it can walk. */
+static int test_htn_footing_steps_out_of_a_fire(void) {
+    AiFootingState f;
+    f.in_fire = 1;
+    f.can_move = 1;
+    ASSERT_EQ_INT(AI_TASK_EVADE, AI_Htn_FootingTask(&f));
+    f.can_move = 0;
+    ASSERT_EQ_INT(AI_TASK_NONE, AI_Htn_FootingTask(&f));
+    f.in_fire = 0;
+    f.can_move = 1;
+    ASSERT_EQ_INT(AI_TASK_NONE, AI_Htn_FootingTask(&f));
+    return 0;
+}
+
+static struct MapFeature g_mock_feats[2];
+
+/* A builder of seat 2 that can sweep, idle beside its troop. */
+static int hf_add_sweeper(void) {
+    g_defs[7].cap_flags = UNIT_CAP_BUILDER | UNIT_CAP_RECLAIM;
+    g_defs[7].max_velocity = 1.0f;
+    g_defs[7].worker_time = 10.0f;
+    strcpy(g_defs[7].unitname, "TARBUILD");
+    strcpy(g_defs[7].category, "TAR BUILDER");
+    return hf_add_unit(2, 7, hf_start_x[2] * 16, hf_start_z[2] * 16 + 120);
+}
+
+/* Under the remastered rules an idle builder sweeps the rubble a unit
+ * of its seat is stuck at. With the rules off, or with nobody stuck,
+ * the rubble is left (A-011). */
+static int test_ai_sweeps_the_rubble_a_unit_is_stuck_at(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    for (int variant = 0; variant < 3; variant++) {
+        setup_hostility_fixture(&w, ffa);
+        w.cfg.remastered = variant != 1;
+        int t = hf_troop(2);
+        memset(g_mock_feats, 0, sizeof(g_mock_feats));
+        g_mock_feats[0].tile_x = (int16_t)(g_units[t].world_x / 16 + 4);
+        g_mock_feats[0].tile_z = (int16_t)(g_units[t].world_y / 16);
+        g_mock_feats[0].rubble = 1;
+        w.features = g_mock_feats;
+        w.feature_count = 1;
+        g_units[t].cmd_kind = UNIT_CMD_MOVE;
+        g_units[t].cmd_x = g_units[t].world_x + 400;
+        g_units[t].cmd_y = g_units[t].world_y;
+        g_units[t].path_failed = (uint8_t)(variant != 2);
+        int b = hf_add_sweeper();
+        g_sweep_calls = 0;
+        hf_run_ticks(&w, 60, 1);
+        if (variant == 0) {
+            ASSERT_EQ_INT(1, g_sweep_calls);
+            ASSERT_EQ_INT(b, g_last_sweep_handle);
+            ASSERT_EQ_INT(UNIT_CMD_RECLAIM, g_units[b].cmd_kind);
+            ASSERT_EQ_INT(g_mock_feats[0].tile_x * 16 + 8, g_last_sweep_x);
+            ASSERT_EQ_INT(1, TAK_AI_DebugCount(2, TAK_AI_COUNT_SWEEPS));
+        } else {
+            ASSERT_EQ_INT(0, g_sweep_calls);
+        }
+        w.features = NULL;
+        w.feature_count = 0;
+    }
+    return 0;
+}
+
+/* Under the remastered rules a unit of the seat within a burning
+ * feature's reach walks out of it, away from the fire. With the rules
+ * off it does nothing of the kind (A-011). */
+static int test_ai_steps_out_of_a_fire_that_hurts(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    for (int variant = 0; variant < 2; variant++) {
+        setup_hostility_fixture(&w, ffa);
+        w.cfg.remastered = variant == 0;
+        int t = hf_troop(2);
+        int32_t x = g_units[t].world_x, y = g_units[t].world_y;
+        memset(g_mock_feats, 0, sizeof(g_mock_feats));
+        g_mock_feats[0].tile_x = (int16_t)(x / 16 + 1);
+        g_mock_feats[0].tile_z = (int16_t)(y / 16);
+        g_mock_feats[0].fx = FEATURE_FX_BURNING;
+        w.features = g_mock_feats;
+        w.feature_count = 1;
+        hf_run_ticks(&w, 60, 1);
+        if (variant == 0) {
+            ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[t].cmd_kind);
+            ASSERT_TRUE(g_units[t].cmd_x <= x - 48);
+            ASSERT_EQ_INT(1, TAK_AI_DebugCount(2, TAK_AI_COUNT_FIRE_STEPS));
+        } else {
+            ASSERT_EQ_INT(0, TAK_AI_DebugCount(2, TAK_AI_COUNT_FIRE_STEPS));
+        }
+        w.features = NULL;
+        w.feature_count = 0;
+    }
+    return 0;
+}
+
 int main(void) {
     /* These cases step the AI at whole seconds and expect every seat. */
     TAK_AI_DebugSetStagger(0);
@@ -3341,6 +3486,10 @@ int main(void) {
     if (test_ai_a_member_ahead_of_its_group_waits() != 0) return 1;
     if (test_ai_ranged_members_go_straight_at_the_target() != 0) return 1;
     if (test_ai_does_not_expand_under_the_enemys_feet() != 0) return 1;
+    if (test_plan_sweeps_the_rubble_it_is_stuck_at() != 0) return 1;
+    if (test_htn_footing_steps_out_of_a_fire() != 0) return 1;
+    if (test_ai_sweeps_the_rubble_a_unit_is_stuck_at() != 0) return 1;
+    if (test_ai_steps_out_of_a_fire_that_hurts() != 0) return 1;
 
     puts("test_ai: ok");
     return 0;

@@ -23,6 +23,7 @@ typedef enum {
     AI_TASK_STRIKE,     /* go at the target */
     AI_TASK_FALL_BACK,  /* members in the field come home */
     AI_TASK_RAID,       /* a few fast members go at the enemy's economy */
+    AI_TASK_EVADE,      /* a unit steps off ground that hurts it */
     AI_TASK_COUNT
 } AiTask;
 
@@ -75,5 +76,16 @@ AiTask AI_Htn_MemberTaskIn(const AiWavePlan *plan, AiRole role, int at_stage);
 AiTask AI_Htn_MemberTask(const AiWaveState *s, int is_scout, int at_stage);
 
 const char *AI_Htn_TaskName(AiTask task);
+
+/* A unit's footing, asked before anything else it would do: whether the
+ * ground it stands on hurts it, under the remastered rules a burning
+ * feature's reach (D-036). */
+typedef struct AiFootingState {
+    int in_fire;     /* a fire that hurts reaches where it stands */
+    int can_move;
+} AiFootingState;
+
+/* AI_TASK_EVADE when the unit should step away first, else AI_TASK_NONE. */
+AiTask AI_Htn_FootingTask(const AiFootingState *s);
 
 #endif /* TAK_AI_HTN_H */
