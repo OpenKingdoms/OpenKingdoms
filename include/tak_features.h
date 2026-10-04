@@ -215,6 +215,23 @@ int  Features_TopAt(struct GameWorld *world, int cell_x, int cell_z);
 #define FEATURE_BURN_DAMAGE  25
 #define FEATURE_BURN_EVERY   15
 
+/* Under the remastered rules a burning feature throws FEATURE_SPARKS
+ * sparks, each FEATURE_SPARK_DELAY percent of its spark time after the
+ * last, and burns until the last. Five downwind steps of 2*wind/2^
+ * FEATURE_SPARK_WIND_SHIFT of a cell carry a spark at most
+ * FEATURE_SPARK_CARRY cells along each axis, and its reach counts from
+ * the nearest cell of that carry: every cell within three, or out to the
+ * nearest ring with a feature that can catch, at most FEATURE_SPARK_REACH.
+ * Each catches at FEATURE_SPARK_CHANCE percent of its spreadchance, and at
+ * most FEATURE_SPARK_CATCH_CAP catch from sparks in a frame (D-036). */
+#define FEATURE_SPARK_REACH       6
+#define FEATURE_SPARKS            4
+#define FEATURE_SPARK_DELAY       125
+#define FEATURE_SPARK_WIND_SHIFT  12
+#define FEATURE_SPARK_CARRY       2
+#define FEATURE_SPARK_CHANCE      200
+#define FEATURE_SPARK_CATCH_CAP   4
+
 /* A blast at (x, y) px, `height` up: every feature on a cell within
  * `radius` of it, or on the blast's own cell, takes `damage` once, or
  * catches fire when `fire_starter` and it can burn (legacy:245240-245302). */

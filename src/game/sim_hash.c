@@ -456,6 +456,7 @@ static uint32_t hash_features(uint32_t h, const GameWorld *w) {
             h = TAK_HashU32(h, f->fx_serial);
         }
         if (f->rubble) h = TAK_HashI32(h, 0x400);
+        if (f->sparks) h = TAK_HashI32(h, 0x800 | f->sparks);
     }
     /* The wind and the frames the scenery keeps, where a map blows or
      * a feature has been set to work. */

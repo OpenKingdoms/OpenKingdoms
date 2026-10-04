@@ -1135,7 +1135,7 @@ TEST(a_shipped_tree_burns_out_before_its_spark) {
 }
 
 /* Under the remastered rules the shipped tree's fire burns on past its
- * 62 frames until its spark, 75 to 149 frames in, and the spark lights
+ * 62 frames until its spark, 93 to 186 frames in, and the spark lights
  * the tree beside it, which the original's never reaches (D-036). */
 TEST(a_remastered_fire_burns_until_its_spark_and_spreads) {
     GameWorld *w = lf_world(0, 0);
@@ -1149,7 +1149,7 @@ TEST(a_remastered_fire_burns_until_its_spark_and_spreads) {
     ASSERT(Units_DebugBlastAt(s, 0, 100 * 16 + 8, 100 * 16 + 8));
     ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[t].fx);
     int spark = w->features[t].spark;
-    ASSERT(spark >= 75 && spark <= 149);
+    ASSERT(spark >= 93 && spark <= 186);
     lf_ticks(126);
     ASSERT_EQ_INT(FD_TREE, w->features[t].global_idx);
     ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[t].fx);
@@ -1201,6 +1201,246 @@ TEST(a_remastered_forest_fire_saved_and_loaded_runs_on_the_same) {
     lf_ticks(600);
     ASSERT_EQ_INT((int)want, (int)TAK_SimHash());
     remove(path);
+    lf_end();
+}
+
+/* ── remastered fire spread (D-036) ───────────────────────────────── */
+
+static void lf_frames(GameWorld *w, int n) {
+    for (int i = 0; i < n; i++) Features_TickFrame(w);
+}
+
+static int lf_alight(const GameWorld *w, int i) {
+    return w->features[i].fx == FEATURE_FX_BURNING || w->features[i].global_idx == FD_TREEBURNT;
+}
+
+/* With nothing within three cells a remastered spark reaches a tree six
+ * cells off on its first spark, and never one seven off. */
+TEST(a_remastered_spark_reaches_a_tree_six_cells_off) {
+    for (int rules = 0; rules < 2; rules++) {
+        GameWorld *w = lf_world(0, 0);
+        ASSERT_NOT_NULL(w);
+        w->cfg.remastered = rules;
+        int a = lf_place(w, FD_TREE, 100, 100);
+        int six = lf_place(w, FD_TREE, 106, 103);
+        int seven = lf_place(w, FD_TREE, 93, 100);
+        ASSERT(a >= 0 && six >= 0 && seven >= 0);
+        Features_DebugHit(w, a, 50, 1);
+        int spark = w->features[a].spark;
+        ASSERT(rules ? spark >= 93 && spark <= 186 : spark >= 75 && spark <= 149);
+        lf_frames(w, spark - 1);
+        ASSERT_EQ_INT(FEATURE_FX_NONE, w->features[six].fx);
+        lf_frames(w, 1);
+        ASSERT_EQ_INT(rules ? FEATURE_FX_BURNING : FEATURE_FX_NONE, w->features[six].fx);
+        lf_frames(w, 1500);
+        ASSERT_EQ_INT(rules ? FD_TREEBURNT : FD_TREE, w->features[six].global_idx);
+        ASSERT_EQ_INT(FD_TREE, w->features[seven].global_idx);
+        ASSERT_EQ_INT(FEATURE_FX_NONE, w->features[seven].fx);
+        lf_end();
+    }
+}
+
+/* A remastered fire throws four sparks, each 93 to 186 frames after the
+ * last, and burns until the last. The first lights the tree two cells
+ * off, and the second, with nothing left within three, the one five off. */
+TEST(a_remastered_fire_throws_four_sparks_and_burns_until_the_last) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->cfg.remastered = 1;
+    int a = lf_place(w, FD_TREE, 100, 100);
+    int near = lf_place(w, FD_TREE, 102, 100);
+    int far = lf_place(w, FD_TREE, 95, 100);
+    ASSERT(a >= 0 && near >= 0 && far >= 0);
+    Features_DebugHit(w, a, 50, 1);
+    int first = w->features[a].spark;
+    ASSERT(first >= 93 && first <= 186);
+    lf_frames(w, first);
+    ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[near].fx);
+    ASSERT_EQ_INT(FEATURE_FX_NONE, w->features[far].fx);
+    int second = w->features[a].spark;
+    ASSERT(second >= 93 && second <= 186);
+    lf_frames(w, second - 1);
+    ASSERT_EQ_INT(FEATURE_FX_NONE, w->features[far].fx);
+    lf_frames(w, 1);
+    ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[far].fx);
+    for (int k = 0; k < 2; k++) {
+        int next = w->features[a].spark;
+        ASSERT(next >= 93 && next <= 186);
+        lf_frames(w, next);
+        ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[a].fx);
+    }
+    ASSERT_EQ_INT(0, w->features[a].spark);
+    lf_frames(w, 80);
+    ASSERT_EQ_INT(FD_TREEBURNT, w->features[a].global_idx);
+    lf_end();
+}
+
+/* Under the remastered rules a wind of 2000 carries a spark two cells,
+ * so the fire reaches trees seven and eight cells downwind. Upwind or
+ * calm it reaches neither. */
+TEST(a_remastered_wind_carries_the_spark_downwind) {
+    static const uint16_t heading[3] = { 0, 0x4000, 0xC000 };
+    for (int k = 0; k < 3; k++) {
+        GameWorld *w = lf_world(0, 0);
+        ASSERT_NOT_NULL(w);
+        w->cfg.remastered = 1;
+        int a = lf_place(w, FD_TREE, 100, 100);
+        int east8 = lf_place(w, FD_TREE, 108, 100);
+        int west7 = lf_place(w, FD_TREE, 93, 100);
+        int east7 = lf_place(w, FD_TREE, 107, 110);
+        int west8 = lf_place(w, FD_TREE, 92, 110);
+        int b = lf_place(w, FD_TREE, 100, 110);
+        ASSERT(a >= 0 && east8 >= 0 && west7 >= 0 && east7 >= 0 && west8 >= 0 && b >= 0);
+        if (k) {
+            Features_DebugSetWind(w, 2000, heading[k]);
+            w->wind_next_frame = 0xFFFFFF00u;
+            ASSERT_EQ_INT(k == 1 ? 2000 : -2000, w->wind_x);
+            ASSERT_EQ_INT(0, w->wind_z);
+        }
+        Features_DebugHit(w, a, 50, 1);
+        Features_DebugHit(w, b, 50, 1);
+        lf_frames(w, 2000);
+        ASSERT_EQ_INT(k == 1, lf_alight(w, east7));
+        ASSERT_EQ_INT(k == 1, lf_alight(w, east8));
+        ASSERT_EQ_INT(k == 2, lf_alight(w, west7));
+        ASSERT_EQ_INT(k == 2, lf_alight(w, west8));
+        lf_end();
+    }
+}
+
+/* A remastered spark takes the nearest ring first, counted from where
+ * the wind may carry it: with a wind east a tree six cells east catches
+ * before one five west, and calm the one five west goes first. */
+TEST(a_remastered_spark_takes_the_downwind_tree_first) {
+    for (int windy = 0; windy < 2; windy++) {
+        GameWorld *w = lf_world(0, 0);
+        ASSERT_NOT_NULL(w);
+        w->cfg.remastered = 1;
+        int a = lf_place(w, FD_TREE, 100, 100);
+        int east6 = lf_place(w, FD_TREE, 106, 100);
+        int west5 = lf_place(w, FD_TREE, 95, 100);
+        ASSERT(a >= 0 && east6 >= 0 && west5 >= 0);
+        if (windy) {
+            Features_DebugSetWind(w, 2000, 0x4000);
+            w->wind_next_frame = 0xFFFFFF00u;
+        }
+        Features_DebugHit(w, a, 50, 1);
+        lf_frames(w, w->features[a].spark);
+        ASSERT_EQ_INT(windy ? FEATURE_FX_BURNING : FEATURE_FX_NONE, w->features[east6].fx);
+        ASSERT_EQ_INT(windy ? FEATURE_FX_NONE : FEATURE_FX_BURNING, w->features[west5].fx);
+        lf_frames(w, w->features[a].spark);
+        ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[east6].fx);
+        ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[west5].fx);
+        lf_end();
+    }
+}
+
+/* No more than four features catch from remastered sparks in one frame.
+ * Ten sparks due together light four, four the next frame and two the
+ * frame after, the ones held waiting their turn. */
+TEST(remastered_sparks_light_no_more_than_four_a_frame) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->cfg.remastered = 1;
+    int src[10], dst[10];
+    for (int k = 0; k < 10; k++) {
+        src[k] = lf_place(w, FD_TREE, 40 + 10 * k, 100);
+        dst[k] = lf_place(w, FD_TREE, 40 + 10 * k, 102);
+        ASSERT(src[k] >= 0 && dst[k] >= 0);
+    }
+    for (int k = 0; k < 10; k++) {
+        Features_DebugHit(w, src[k], 50, 1);
+        w->features[src[k]].spark = 1;
+    }
+    int want[3] = { 4, 8, 10 };
+    for (int f = 0; f < 3; f++) {
+        lf_frames(w, 1);
+        int lit = 0;
+        for (int k = 0; k < 10; k++) lit += w->features[dst[k]].fx == FEATURE_FX_BURNING;
+        ASSERT_EQ_INT(want[f], lit);
+    }
+    lf_end();
+}
+
+/* A remastered fire crosses a wood with a tree every five cells under a
+ * changing wind, which the original's never can. Two runs hash the
+ * same, and one saved and loaded part way runs on to the same. */
+static GameWorld *lf_sparse_wood(void) {
+    GameWorld *w = lf_world(0, 0);
+    if (!w) return NULL;
+    w->cfg.remastered = 1;
+    Features_WindBegin(w, 100, 2000);
+    int first = -1;
+    for (int z = 0; z < 8; z++)
+        for (int x = 0; x < 12; x++) {
+            int f = lf_place(w, FD_TREE, 60 + 5 * x, 60 + 5 * z);
+            if (first < 0) first = f;
+        }
+    lf_ticks(4);
+    if (first >= 0) Features_DebugHit(w, first, 50, 1);
+    return w;
+}
+
+static int lf_sparse_wood_lit(const GameWorld *w) {
+    int lit = 0;
+    for (int i = 0; i < w->feature_count; i++) lit += lf_alight(w, i);
+    return lit;
+}
+
+TEST(a_remastered_sparse_wood_fire_saved_and_loaded_runs_on_the_same) {
+    GameWorld *w = lf_sparse_wood();
+    ASSERT_NOT_NULL(w);
+    lf_ticks(1200);
+    uint32_t first = TAK_SimHash();
+    int lit_first = lf_sparse_wood_lit(w);
+    lf_end();
+    w = lf_sparse_wood();
+    ASSERT_NOT_NULL(w);
+    lf_ticks(1200);
+    ASSERT_EQ_INT((int)first, (int)TAK_SimHash());
+    ASSERT(lit_first >= 4);
+    char err[256] = { 0 };
+    const char *path = "lf_remaster_sparse.oksave";
+    remove(path);
+    ASSERT_EQ_INT(0, Save_Write(path, err, sizeof err));
+    uint32_t at_save = TAK_SimHash();
+    lf_ticks(2400);
+    uint32_t want = TAK_SimHash();
+    int lit = lf_sparse_wood_lit(w);
+    TAK_SaveGame *sg = Save_Read(path, err, sizeof err);
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(0, Save_Apply(sg, err, sizeof err));
+    Save_ReadClose(sg);
+    ASSERT_EQ_INT((int)at_save, (int)TAK_SimHash());
+    lf_ticks(2400);
+    ASSERT_EQ_INT((int)want, (int)TAK_SimHash());
+    ASSERT_EQ_INT(lit, lf_sparse_wood_lit(w));
+    ASSERT(lit >= 40);
+    remove(path);
+    lf_end();
+}
+
+/* With the rules off a spark still reaches three cells and no further,
+ * and a wind of 2000 carries it nowhere. */
+TEST(the_classic_spark_still_reaches_three_cells) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int a = lf_place(w, FD_LONGTREE, 100, 100);
+    int three = lf_place(w, FD_LONGTREE, 103, 100);
+    int four = lf_place(w, FD_LONGTREE, 96, 100);
+    int east5 = lf_place(w, FD_LONGTREE, 108, 100);
+    ASSERT(a >= 0 && three >= 0 && four >= 0 && east5 >= 0);
+    Features_DebugSetWind(w, 2000, 0x4000);
+    w->wind_next_frame = 0xFFFFFF00u;
+    Features_DebugHit(w, a, 50, 1);
+    lf_frames(w, w->features[a].spark);
+    ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[three].fx);
+    lf_frames(w, 2000);
+    ASSERT_EQ_INT(FD_TREEBURNT, w->features[three].global_idx);
+    ASSERT_EQ_INT(FD_LONGTREE, w->features[four].global_idx);
+    ASSERT_EQ_INT(FEATURE_FX_NONE, w->features[four].fx);
+    ASSERT_EQ_INT(FD_LONGTREE, w->features[east5].global_idx);
+    ASSERT_EQ_INT(FEATURE_FX_NONE, w->features[east5].fx);
     lf_end();
 }
 
@@ -2720,6 +2960,13 @@ int main(int argc, char **argv) {
     RUN(fire_hurts_under_the_remastered_rules);
     RUN(a_remastered_fire_burns_until_its_spark_and_spreads);
     RUN(a_remastered_forest_fire_saved_and_loaded_runs_on_the_same);
+    RUN(a_remastered_spark_reaches_a_tree_six_cells_off);
+    RUN(a_remastered_fire_throws_four_sparks_and_burns_until_the_last);
+    RUN(a_remastered_wind_carries_the_spark_downwind);
+    RUN(a_remastered_spark_takes_the_downwind_tree_first);
+    RUN(remastered_sparks_light_no_more_than_four_a_frame);
+    RUN(a_remastered_sparse_wood_fire_saved_and_loaded_runs_on_the_same);
+    RUN(the_classic_spark_still_reaches_three_cells);
     RUN(rubble_blocks_until_swept_under_the_remastered_rules);
     RUN(the_remastered_rules_come_back_with_a_save);
     TEST_SUITE("State hash");
