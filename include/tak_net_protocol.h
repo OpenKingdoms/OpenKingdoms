@@ -103,8 +103,10 @@
  * air step out of each other's cells, end a move on a ring round its
  * point, and land only on clear ground, where they hold their cells.
  * 32: a summons is placed over units and waits for them to leave its
- * spot, and it snaps to its move class's footprint. */
-#define TAK_ENGINE_BUILD_ID           32
+ * spot, and it snaps to its move class's footprint. 33: a flyer in the
+ * air holds no building site, so a summoned harpy that takes off leaves
+ * its spot to the next. */
+#define TAK_ENGINE_BUILD_ID           33
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

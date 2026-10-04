@@ -58,6 +58,12 @@ the button takes every build order of that def (legacy:150087-150093,
 The button reads `+++` while the builder holds such an order
 (legacy:149922-149929).
 
+A flyer is sent off the same way, and its move order lifts it at once.
+A flyer stamps its cells only once it has landed (legacy:218217-218250),
+and the site test reads those cells (legacy:219094-219160), so the next
+frame goes up under a harpy still hovering over the spot. The harpy then
+finds the frame in its way when it comes to land and settles elsewhere.
+
 ## The engine
 
 A build command carries an endless bit, `TAK_CMD_ARG_ENDLESS`, which the
@@ -71,6 +77,12 @@ ticks until 30 looks have gone by. Ground, a building or a feature on
 it, or no room for one more unit, ends the order. The original's
 chatter has no counterpart here yet, so the waiting and the giving up
 are silent.
+
+The site tests pass over a flyer in the air, and over one without the
+flight pair, which never lands, as the step test and the drop test
+already did. So a harpy that took off from the spot no longer holds it
+from above, and a building can go up under a flyer in the air too, as
+in the original.
 
 The classic sidebar reads Ctrl at the build button. The remaster's
 front end arms the same placement through the embedding API, and its

@@ -2170,6 +2170,74 @@ TEST(the_computers_summons_site_is_one_no_unit_stands_on) {
     oq_end();
 }
 
+/* A flyer with the flight pair, after the Harpy of units/zonharp.fbi,
+ * added behind the fixture's defs. Returns its def index or -1. */
+static int oq_add_harpy(void) {
+    UnitDef defs[OQ_DEF_COUNT + 1];
+    for (int i = 0; i < OQ_DEF_COUNT; i++) defs[i] = *Units_GetDef(i);
+    UnitDef *d = &defs[OQ_DEF_COUNT];
+    oq_fill(d, "TESTHARPY", 3.5f, 2, 2);
+    d->acceleration = 0.25f;
+    d->brake_rate = 0.25f;
+    d->turn_rate = 300.0f;
+    d->can_fly = 1;
+    d->cruise_alt = 200;
+    if (Units_DebugSetDefs(defs, OQ_DEF_COUNT + 1) != OQ_DEF_COUNT + 1) return -1;
+    if (Units_DebugSetYardmap(OQ_BARRACKS, "oooooooooooooooo") != 0) return -1;
+    if (Units_DebugSetYardmap(OQ_GATE, "ooooccccccoooo ooooccccccoooo "
+                                       "ooooccccccoooo ooooccccccoooo") != 0)
+        return -1;
+    if (Units_DebugSetYardmap(OQ_HALL, "ooo") != 0) return -1;
+    static const uint32_t ret[] = { 0x10065000u };
+    static const char *const names[] = { "BeginFlight", "BeginLanding" };
+    static const uint32_t offsets[] = { 0, 0 };
+    if (Units_DebugSetDefScript(OQ_DEF_COUNT, ret, 1, names, offsets, 2) != 0)
+        return -1;
+    return OQ_DEF_COUNT;
+}
+
+/* A flyer summoned without end takes off from the spot, and a flyer in
+ * the air holds no cells, so the next frame goes up under it
+ * (legacy:12272-12315, 218217-218250, 219094-219160). */
+TEST(a_flyer_summoned_without_end_leaves_room_for_the_next) {
+    ASSERT_NOT_NULL(oq_world());
+    int harpy = oq_add_harpy();
+    ASSERT(harpy >= 0);
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    int32_t sx = OQ_CX, sy = OQ_CY;
+    Units_SnapBuildSiteFacing(harpy, 0, &sx, &sy);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, harpy,
+                                TAK_CMD_ARG_ENDLESS));
+    for (int t = 0; t < 3000 && oq_count(harpy) < 3 &&
+                    oq_unit(bd)->cmd_kind == UNIT_CMD_BUILD; t++)
+        oq_ticks(1);
+    fprintf(stderr, "  harpies=%d builder cmd=%d\n", oq_count(harpy),
+            (int)oq_unit(bd)->cmd_kind);
+    ASSERT(oq_count(harpy) >= 3);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    oq_end();
+}
+
+/* A building goes up under a flyer in the air, which holds no cells,
+ * and not under one that has landed (legacy:218217-218250). */
+TEST(a_flyer_in_the_air_does_not_hold_a_building_site) {
+    ASSERT_NOT_NULL(oq_world());
+    int harpy = oq_add_harpy();
+    ASSERT(harpy >= 0);
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int h = Units_Spawn(harpy, 1, 0, sx, sy);
+    ASSERT(h >= 0);
+    oq_ticks(2);
+    ASSERT_EQ_INT(0, (int)oq_unit(h)->flying);
+    ASSERT_EQ_INT(0, Units_IsBuildSiteFree(OQ_HALL, sx, sy));
+    ASSERT_EQ_INT(1, Units_OrderMove(h, sx + 4, sy));
+    for (int t = 0; t < 20 && !oq_unit(h)->flying; t++) oq_ticks(1);
+    ASSERT_EQ_INT(1, (int)oq_unit(h)->flying);
+    ASSERT_EQ_INT(1, Units_IsBuildSiteFree(OQ_HALL, oq_unit(h)->world_x,
+                                           oq_unit(h)->world_y));
+    oq_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     SDL_Init(0);
@@ -2235,6 +2303,8 @@ int main(int argc, char **argv) {
     RUN(a_summons_waits_for_a_unit_on_its_spot_and_ends_on_a_building);
     RUN(a_summons_gives_up_on_a_spot_a_unit_keeps);
     RUN(ctrl_on_a_buildings_button_places_it_once);
+    RUN(a_flyer_summoned_without_end_leaves_room_for_the_next);
+    RUN(a_flyer_in_the_air_does_not_hold_a_building_site);
     RUN(a_summon_is_placed_where_a_soldier_stands);
     RUN(a_summon_waits_for_the_soldier_on_its_spot);
     RUN(a_shift_summons_on_the_frame_in_hand_waits_for_it);
