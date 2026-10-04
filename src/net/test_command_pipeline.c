@@ -201,7 +201,8 @@ static GameWorld *cp_world(void) {
     cp_fill_def(&defs[CP_DEF_BUILDER], "TESTBUILD", "TESTSMALL", 1.0f, 300);
     defs[CP_DEF_BUILDER].cap_flags |= UNIT_CAP_BUILDER | UNIT_CAP_RECLAIM;
     defs[CP_DEF_BUILDER].worker_time = 20.0f;
-    cp_fill_def(&defs[CP_DEF_CARRIER], "TESTBOAT", "TESTSMALL", 1.0f, 400);
+    cp_fill_def(&defs[CP_DEF_CARRIER], "TESTBOAT", "TESTTWO", 1.0f, 400);
+    defs[CP_DEF_CARRIER].footprint_x = defs[CP_DEF_CARRIER].footprint_z = 2;
     defs[CP_DEF_CARRIER].cap_flags |= UNIT_CAP_TRANSPORT;
     defs[CP_DEF_CARRIER].transport_capacity = 4;
     cp_fill_def(&defs[CP_DEF_HARPY], "TESTHARPY", "TESTSMALL", 3.5f, 900);
@@ -2027,7 +2028,7 @@ static int cp_harpy(int seat, int32_t x, int32_t y) {
 TEST(a_harpys_mind_control_turns_an_enemy_to_its_side) {
     ASSERT_NOT_NULL(cp_world());
     int harpy = cp_harpy(1, 800, 800);
-    int prey = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
+    int prey = Units_Spawn(CP_DEF_SQUAD2, 2, 1, 900, 800);
     ASSERT(harpy >= 0 && prey >= 0);
     uint32_t prey_id = Units_GetStableId(prey);
 
@@ -2039,12 +2040,12 @@ TEST(a_harpys_mind_control_turns_an_enemy_to_its_side) {
     int mine = -1;
     for (int t = 0; t < 900 && mine < 0; t++) {
         cp_tick();
-        mine = cp_find_owned(CP_DEF_WALKER, 1);
+        mine = cp_find_owned(CP_DEF_SQUAD2, 1);
     }
     ASSERT(mine >= 0);
     /* The unit that came over stands where the enemy stood, unhurt,
      * and the enemy's own unit is gone. */
-    ASSERT_EQ_INT(-1, cp_find_owned(CP_DEF_WALKER, 2));
+    ASSERT_EQ_INT(-1, cp_find_owned(CP_DEF_SQUAD2, 2));
     ASSERT_EQ_INT(-1, Units_FindByStableId(prey_id));
     ASSERT_EQ_INT(900, cp_unit(mine)->world_x);
     ASSERT_EQ_INT(800, cp_unit(mine)->world_y);
@@ -2098,7 +2099,7 @@ static int cp_order_attack(int attacker, int prey) {
 TEST(a_captured_unit_starts_over_as_a_recruit) {
     ASSERT_NOT_NULL(cp_world());
     int harpy = cp_harpy(1, 800, 800);
-    int prey = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
+    int prey = Units_Spawn(CP_DEF_SQUAD2, 2, 1, 900, 800);
     ASSERT(harpy >= 0 && prey >= 0);
     Unit *pu = (Unit *)cp_unit(prey);   /* test-only mutation */
     pu->health = 120;
@@ -2110,7 +2111,7 @@ TEST(a_captured_unit_starts_over_as_a_recruit) {
     int mine = -1;
     for (int t = 0; t < 900 && mine < 0; t++) {
         cp_tick();
-        mine = cp_find_owned(CP_DEF_WALKER, 1);
+        mine = cp_find_owned(CP_DEF_SQUAD2, 1);
     }
     ASSERT(mine >= 0);
     const Unit *nu = cp_unit(mine);
@@ -2170,13 +2171,13 @@ TEST(a_seat_at_its_unit_limit_captures_nothing) {
     ASSERT_NOT_NULL(w);
     w->cfg.units_per_side = 1;
     int harpy = cp_harpy(1, 800, 800);
-    int prey = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
+    int prey = Units_Spawn(CP_DEF_SQUAD2, 2, 1, 900, 800);
     ASSERT(harpy >= 0 && prey >= 0);
     ASSERT_EQ_INT(1, cp_order_attack(harpy, prey));
     for (int t = 0; t < 400; t++) cp_tick();
     ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(prey)->alive);
     ASSERT_EQ_INT(2, (int)cp_unit(prey)->player_id);
-    ASSERT_EQ_INT(-1, cp_find_owned(CP_DEF_WALKER, 1));
+    ASSERT_EQ_INT(-1, cp_find_owned(CP_DEF_SQUAD2, 1));
     ASSERT(cp_unit(harpy)->mana < 800.0f);
     cp_end();
 }
@@ -2218,9 +2219,9 @@ TEST(a_captured_transport_sets_its_riders_down) {
 TEST(a_mind_control_splash_rolls_for_each_unit_in_reach) {
     ASSERT_NOT_NULL(cp_world());
     int mage = Units_Spawn(CP_DEF_MINDMAGE, 1, 0, 800, 800);
-    int near_a = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
-    int near_b = Units_Spawn(CP_DEF_WALKER, 2, 1, 960, 800);
-    int far_c = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 1060);
+    int near_a = Units_Spawn(CP_DEF_SQUAD2, 2, 1, 900, 800);
+    int near_b = Units_Spawn(CP_DEF_SQUAD2, 2, 1, 960, 800);
+    int far_c = Units_Spawn(CP_DEF_SQUAD2, 2, 1, 900, 1060);
     ASSERT(mage >= 0 && near_a >= 0 && near_b >= 0 && far_c >= 0);
     /* Passive, so the one ordered shot is the only shot, and a full
      * reserve to pay for it. */
@@ -2241,7 +2242,7 @@ TEST(a_mind_control_splash_rolls_for_each_unit_in_reach) {
     const Unit *units = Units_GetActive(&count);
     for (int i = 0; i < count; i++) {
         if (units[i].alive != UNIT_ALIVE_ACTIVE) continue;
-        if ((int)units[i].def_idx != CP_DEF_WALKER) continue;
+        if ((int)units[i].def_idx != CP_DEF_SQUAD2) continue;
         ASSERT_EQ_INT(200, units[i].health);
         if (units[i].player_id == 1) came_over++;
     }
@@ -2262,6 +2263,167 @@ TEST(the_capture_roll_rises_with_the_victims_rank) {
     ASSERT_EQ_INT(99, Units_CaptureThreshold(10));
 }
 
+/* ── a mind control shot's own flight ──────────────────────────────── */
+
+/* The caster's shot in the air, or NULL. */
+static const Projectile *cp_mind_shot(int caster) {
+    int n = 0;
+    const Projectile *p = Units_GetProjectiles(&n);
+    for (int i = 0; p && i < n; i++)
+        if (p[i].alive && p[i].mind_control && p[i].shooter == caster) return &p[i];
+    return NULL;
+}
+
+/* A Harpy and its prey on two cells a side, like every shipped unit,
+ * both passive so the one shot fired by hand is the only one. */
+static int cp_mind_pair(int32_t prey_x, int32_t prey_y, int *out_prey) {
+    int harpy = cp_harpy(1, 800, 800);
+    int prey = Units_Spawn(CP_DEF_SQUAD2, 2, 1, prey_x, prey_y);
+    if (harpy < 0 || prey < 0) return -1;
+    Units_DebugSetAggro(harpy, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetAggro(prey, UNIT_AGGRO_PASSIVE);
+    *out_prey = prey;
+    return harpy;
+}
+
+/* The shot strikes only a body in its own cell, inside that unit's
+ * selection quad (legacy:236955-237027). A unit that steps 20 px off
+ * the line still holds the cell the shot crosses and is passed, and
+ * nothing is rolled. */
+TEST(a_mind_control_shot_passes_a_unit_that_stepped_aside) {
+    ASSERT_NOT_NULL(cp_world());
+    int prey = -1;
+    int harpy = cp_mind_pair(900, 800, &prey);
+    ASSERT(harpy >= 0);
+    ASSERT_EQ_INT(1, Units_DebugFireAt(harpy, 0, prey));
+    ASSERT_NOT_NULL(cp_mind_shot(harpy));
+    ASSERT_EQ_INT(0, Units_DebugPlace(prey, 900, 820));
+    uint32_t draws = World_RandState();
+    for (int t = 0; t < 300 && cp_mind_shot(harpy); t++) cp_tick();
+    ASSERT_NULL(cp_mind_shot(harpy));
+    ASSERT_EQ_INT((int)draws, (int)World_RandState());
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(prey)->alive);
+    ASSERT_EQ_INT(2, (int)cp_unit(prey)->player_id);
+    cp_end();
+}
+
+/* The shot leaves for where a walker will be: its sweet spot plus four
+ * fifths of its velocity over the flight from the caster
+ * (legacy:234031-234060). */
+TEST(a_mind_control_shot_leads_a_walker_by_four_fifths) {
+    ASSERT_NOT_NULL(cp_world());
+    int prey = -1;
+    int harpy = cp_mind_pair(1000, 800, &prey);
+    ASSERT(harpy >= 0);
+    Unit *pu = (Unit *)cp_unit(prey);   /* test-only mutation */
+    pu->heading = 3.14159265f;          /* walking south */
+    pu->cur_speed_ppt = 0.7f;
+    ASSERT_EQ_INT(1, Units_DebugFireAt(harpy, 0, prey));
+    const Projectile *s = cp_mind_shot(harpy);
+    ASSERT_NOT_NULL(s);
+    /* 200 px across and 16 up to the sweet spot at 169 px/s is 71.2
+     * ticks, and 0.8 of that at 0.7 px a tick is 40 px. */
+    ASSERT_EQ_INT(1000, s->dest_x);
+    ASSERT_EQ_INT(840, s->dest_y);
+    cp_end();
+}
+
+/* A miss flies its range at its speed across the ground, then the
+ * frame it is in, and is gone (legacy:246919-246922). */
+TEST(a_mind_control_shot_ends_at_its_range) {
+    ASSERT_NOT_NULL(cp_world());
+    int prey = -1;
+    int harpy = cp_mind_pair(900, 800, &prey);
+    ASSERT(harpy >= 0);
+    ASSERT_EQ_INT(1, Units_DebugFireAt(harpy, 0, prey));
+    ASSERT_EQ_INT(0, Units_DebugPlace(prey, 900, 1000));
+    int lived = 0;
+    while (cp_mind_shot(harpy) && lived < 400) {
+        cp_tick();
+        lived++;
+    }
+    /* 300 px at 169 px/s is 106.5 ticks. */
+    ASSERT(lived >= 106 && lived <= 110);
+    cp_end();
+}
+
+/* A shot is freed once its caster is dead or dying
+ * (legacy:247710-247713), so a Harpy struck down mid cast takes
+ * nothing, not even a veteran it would surely have taken. */
+TEST(a_mind_control_shot_dies_with_its_caster) {
+    ASSERT_NOT_NULL(cp_world());
+    int prey = -1;
+    int harpy = cp_mind_pair(1000, 800, &prey);
+    ASSERT(harpy >= 0);
+    Units_DebugSetVeteranLevel(prey, 4);
+    ASSERT_EQ_INT(1, Units_DebugFireAt(harpy, 0, prey));
+    for (int t = 0; t < 20; t++) cp_tick();
+    ASSERT_NOT_NULL(cp_mind_shot(harpy));
+    ASSERT_EQ_INT(1, Units_KillAllOf(1));
+    cp_tick();
+    ASSERT_NULL(cp_mind_shot(harpy));
+    for (int t = 0; t < 200; t++) cp_tick();
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(prey)->alive);
+    ASSERT_EQ_INT(2, (int)cp_unit(prey)->player_id);
+    cp_end();
+}
+
+/* A still recruit is struck by every shot and taken on a draw under 80
+ * (legacy:247788-247793). Each seed's first draw says which, and these
+ * ten draw under 80 eight times. Seeding forces the low bit, so the
+ * seeds are odd. */
+TEST(a_still_recruit_is_struck_and_taken_four_times_in_five) {
+    int taken = 0;
+    for (uint32_t seed = 1; seed < 20; seed += 2) {
+        ASSERT_NOT_NULL(cp_world());
+        int prey = -1;
+        int harpy = cp_mind_pair(900, 800, &prey);
+        ASSERT(harpy >= 0);
+        World_SeedRand(seed);
+        int roll = (int)World_Rand(100);
+        uint32_t after = World_RandState();
+        World_SeedRand(seed);
+        ASSERT_EQ_INT(1, Units_DebugFireAt(harpy, 0, prey));
+        for (int t = 0; t < 200 && cp_mind_shot(harpy); t++) cp_tick();
+        ASSERT_EQ_INT((int)after, (int)World_RandState());
+        int came = cp_find_owned(CP_DEF_SQUAD2, 1) >= 0;
+        ASSERT_EQ_INT(roll < 80, came);
+        taken += came;
+        cp_end();
+    }
+    ASSERT_EQ_INT(8, taken);
+}
+
+/* The quad turns with its unit: facing north a long body runs north
+ * and south, facing east it runs east and west (legacy:237007-237020). */
+TEST(a_units_selection_quad_turns_with_it) {
+    ASSERT_NOT_NULL(cp_world());
+    UnitDef *d = (UnitDef *)Units_GetDef(CP_DEF_SQUAD3);   /* test-only mutation */
+    d->body_span_set = 1;
+    d->body_bottom_px = 0;
+    d->body_top_px = 32;
+    /* 8 px across and 40 along, the fourth corner first. */
+    const int32_t q[4][2] = { { -4 * 65536, 20 * 65536 }, { 4 * 65536, 20 * 65536 },
+                              { 4 * 65536, -20 * 65536 }, { -4 * 65536, -20 * 65536 } };
+    memcpy(d->body_quad, q, sizeof(q));
+    d->body_quad_set = 1;
+    int u = Units_Spawn(CP_DEF_SQUAD3, 2, 1, 1000, 1000);
+    ASSERT(u >= 0);
+    Unit *uu = (Unit *)cp_unit(u);   /* test-only mutation */
+    uu->heading = 0.0f;
+    ASSERT_EQ_INT(1, Units_DebugQuadHolds(u, 1000, 1000));
+    ASSERT_EQ_INT(1, Units_DebugQuadHolds(u, 1001, 1016));
+    ASSERT_EQ_INT(0, Units_DebugQuadHolds(u, 1016, 1001));
+    uu->heading = 1.5707963f;
+    ASSERT_EQ_INT(1, Units_DebugQuadHolds(u, 1016, 1001));
+    ASSERT_EQ_INT(0, Units_DebugQuadHolds(u, 1001, 1016));
+    /* Its edges are outside. */
+    uu->heading = 0.0f;
+    ASSERT_EQ_INT(0, Units_DebugQuadHolds(u, 1004, 1000));
+    ASSERT_EQ_INT(1, Units_DebugQuadHolds(u, 1003, 1000));
+    cp_end();
+}
+
 #define CP_CAPTURE_TICKS 240
 
 /* One capture battle from a fixed seed: the hash after every tick, and
@@ -2271,13 +2433,13 @@ static int cp_capture_run(uint32_t *out) {
     int took = -2;
     if (cp_world()) {
         int harpy = cp_harpy(1, 800, 800);
-        int prey = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
+        int prey = Units_Spawn(CP_DEF_SQUAD2, 2, 1, 900, 800);
         if (harpy >= 0 && prey >= 0 && cp_order_attack(harpy, prey) == 1) {
             took = -1;
             for (int t = 0; t < CP_CAPTURE_TICKS; t++) {
                 cp_tick();
                 out[t] = TAK_SimHash();
-                if (took < 0 && cp_find_owned(CP_DEF_WALKER, 1) >= 0) took = t;
+                if (took < 0 && cp_find_owned(CP_DEF_SQUAD2, 1) >= 0) took = t;
             }
         }
         cp_end();
@@ -3366,6 +3528,12 @@ int main(int argc, char **argv) {
     RUN(a_captured_transport_sets_its_riders_down);
     RUN(a_mind_control_splash_rolls_for_each_unit_in_reach);
     RUN(the_capture_roll_rises_with_the_victims_rank);
+    RUN(a_mind_control_shot_passes_a_unit_that_stepped_aside);
+    RUN(a_mind_control_shot_leads_a_walker_by_four_fifths);
+    RUN(a_mind_control_shot_ends_at_its_range);
+    RUN(a_mind_control_shot_dies_with_its_caster);
+    RUN(a_still_recruit_is_struck_and_taken_four_times_in_five);
+    RUN(a_units_selection_quad_turns_with_it);
     RUN(a_capture_lands_on_the_same_tick_on_every_machine);
     RUN(a_caster_on_the_seats_pool_drops_to_a_spell_it_can_pay_for);
     TEST_SUITE("Formation moves");

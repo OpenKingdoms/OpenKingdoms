@@ -103,8 +103,12 @@
  * air step out of each other's cells, end a move on a ring round its
  * point, and land only on clear ground, where they hold their cells.
  * 32: a summons is placed over units and waits for them to leave its
- * spot, and it snaps to its move class's footprint. */
-#define TAK_ENGINE_BUILD_ID           32
+ * spot, and it snaps to its move class's footprint.
+ * 33: a mind control shot leads its target by four fifths of its
+ * flight, strikes only a unit holding its cell and inside that unit's
+ * selection quad, flies its speed along its line, lives its range and
+ * ends with its caster. */
+#define TAK_ENGINE_BUILD_ID           33
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

@@ -1968,6 +1968,43 @@ Format per entry:
   button to find a location within the Mini-Map.
 - Where it is: `ig_minimap` in `src/ui/ingame.c`.
 
+## D-038: Every shot but mind control reaches its target and aims where it stands
+
+- Change: a shot fired at a unit strikes that unit when it passes
+  within 24 px of the unit's body, and it leaves for where the unit
+  stands when it is fired. A mind control shot now flies by the
+  original's rules instead. It leaves for where its target will be,
+  four fifths of the way through its flight, and strikes only a unit in
+  its own 16 px cell whose selection quad, turned with the unit, holds
+  it and whose model span holds its height. It flies at its
+  weaponvelocity along its line rather than across the ground, it is
+  gone after its range at its speed across the ground, and it ends the
+  frame its caster is seen dead or dying.
+- Why: every other weapon's hit rate rests on the reach and the
+  missing lead, so moving them all is a balance change of its own that
+  needs checking against the original weapon by weapon. Mind control
+  went first because the owner found the Harpy too sure, and its shot
+  flies slowly enough that the reach turned near misses into captures.
+  The capture roll itself was always the original's.
+- Citation: the lead by 0.8 of the flight time (legacy:234031-234060,
+  the multiply at legacy:234049), the cell test (legacy:245376-245476),
+  the span and selection quad test (legacy:236974-237027), the line's
+  speed (legacy:246885-246892), the life (legacy:246919-246922) and the
+  caster check (legacy:247710-247713). The manual is silent.
+  docs/notes/2026-09-19-the-harpy-takes-units-over.md has the detail.
+
+## D-039: A hovering attacker does not hold off at its hoverattackdistance
+
+- Change: `hoverattack` and `hoverattackdistance` are not read. A Harpy
+  closes to its weapon's reach, 300 px, and fires from wherever it is
+  inside that, as close as it happens to be.
+- Why: not built yet. The standoff belongs with the work on how flyers
+  keep apart, which is where the Harpies piling into one stack is
+  handled.
+- Citation: the unit keys are read at legacy:163005-163007. The Harpy
+  sets `hoverattack = 1` and `hoverattackdistance = 200`. The manual is
+  silent.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played
