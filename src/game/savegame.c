@@ -353,9 +353,10 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 /* Version 9 on: the death weapon a dying unit still owes. An older
  * record reads back owing none. */
 #define U_DEATH_BLAST   (U_RESEARCH_WAIT + 1u)
-/* Version 10 on: a builder's summons without end, its def as a
- * definition ordinal, and a bit for each queued leg that is one. An
- * older record reads back none. */
+/* Version 10 on: a builder's summons, 1 without end and 2 held for
+ * units on its spot, its def as a definition ordinal, and a bit for
+ * each queued leg that is one without end. An older record reads back
+ * none. */
 #define U_BUILD_ENDLESS (U_DEATH_BLAST + 1u)
 #define U_BUILD_TRIES   (U_BUILD_ENDLESS + 1u)
 #define U_BUILD_WAIT    (U_BUILD_ENDLESS + 2u)
@@ -892,7 +893,7 @@ static int defset_collect(DefSet *s, const GameWorld *w) {
                     defset_add(s, TAK_DEF_KIND_UNIT,
                                (int32_t)u->legs[q].def) != 0) return -1;
             }
-            if (u->build_endless &&
+            if ((u->build_endless || u->build_held) &&
                 defset_add(s, TAK_DEF_KIND_UNIT, (int32_t)u->build_def) != 0)
                 return -1;
         }
@@ -1171,10 +1172,11 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_i32(r + U_AIR_OY, u->air_oy);
     tak_put_u8(r + U_AIR_BAND, u->air_band);
     tak_put_u8(r + U_AIR_HOLD, u->air_hold);
-    tak_put_u8(r + U_BUILD_ENDLESS, u->build_endless);
+    tak_put_u8(r + U_BUILD_ENDLESS, (uint8_t)((u->build_endless ? 1u : 0u) |
+                                              (u->build_held ? 2u : 0u)));
     tak_put_u8(r + U_BUILD_TRIES, u->build_tries);
     tak_put_u8(r + U_BUILD_WAIT, u->build_wait);
-    tak_put_i16(r + U_BUILD_DEF, (int16_t)(u->build_endless
+    tak_put_i16(r + U_BUILD_DEF, (int16_t)(u->build_endless || u->build_held
         ? defords_get(o, TAK_DEF_KIND_UNIT, u->build_def) : 0));
     tak_put_i16(r + U_WP_STALL, u->wp_stall);
     tak_put_i16(r + U_PATH_REPLAN, u->path_replan_cd);
@@ -1421,11 +1423,13 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->air_oy = tak_get_i32(r + U_AIR_OY);
     u->air_band = tak_get_u8(r + U_AIR_BAND);
     u->air_hold = tak_get_u8(r + U_AIR_HOLD);
-    u->build_endless = tak_get_u8(r + U_BUILD_ENDLESS) ? 1 : 0;
+    uint8_t summons = tak_get_u8(r + U_BUILD_ENDLESS);
+    u->build_endless = (summons & 1u) ? 1 : 0;
+    u->build_held = (summons & 2u) ? 1 : 0;
     u->build_tries = tak_get_u8(r + U_BUILD_TRIES);
     u->build_wait = tak_get_u8(r + U_BUILD_WAIT);
     u->build_def = 0;
-    if (u->build_endless) {
+    if (u->build_endless || u->build_held) {
         int32_t idx = save_def_index(sg, tak_get_i16(r + U_BUILD_DEF),
                                      TAK_DEF_KIND_UNIT);
         if (idx < 0) {

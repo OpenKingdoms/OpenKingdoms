@@ -309,6 +309,12 @@ int Units_IsBuildSiteClear(int def_idx, int32_t world_x, int32_t world_y) {
     return g_site_clear && def_idx != g_site_blocked_def;
 }
 
+/* The site search's test that counts every unit. The stub above has no
+ * units to count. */
+int Units_IsBuildSiteFree(int def_idx, int32_t world_x, int32_t world_y) {
+    return Units_IsBuildSiteClear(def_idx, world_x, world_y);
+}
+
 int Units_BeginBuildingForUnit(int builder_handle,
                                int building_def_idx,
                                int32_t world_x,

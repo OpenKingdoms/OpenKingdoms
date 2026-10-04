@@ -433,6 +433,13 @@ static int test_every_subsystem_contributes(void) {
          g_units[0].air_bearing = 0);
     POKE("circle centre", g_units[0].air_oy = 99, g_units[0].air_oy = 0);
     g_units[0].air_mode = 0;
+    POKE("summons held for units on its spot",
+         g_units[0].build_held = 1, g_units[0].build_held = 0);
+    g_units[0].build_held = 1;
+    POKE("held summons def", g_units[0].build_def = 6, g_units[0].build_def = 0);
+    POKE("held summons looks", g_units[0].build_tries = 3,
+         g_units[0].build_tries = 0);
+    g_units[0].build_held = 0;
     POKE("unit production retry wait",
          g_units[0].prod_wait = 5,
          g_units[0].prod_wait = 0);

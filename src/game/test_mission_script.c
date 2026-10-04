@@ -149,10 +149,11 @@ int Units_FactoryEnqueue(int factory, int def) {
     return 0;
 }
 
-int Units_BeginBuildingForUnit(int builder, int def, int32_t x, int32_t y) {
-    (void)def; (void)x; (void)y;
+int Units_OrderBuild(int builder, int def, int32_t x, int32_t y, int facing,
+                     int endless) {
+    (void)def; (void)x; (void)y; (void)facing; (void)endless;
     g_units[builder].cmd_kind = UNIT_CMD_BUILD;
-    return 0;
+    return 1;
 }
 
 int Units_DebugKillHandle(int handle) {

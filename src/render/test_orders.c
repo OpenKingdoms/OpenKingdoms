@@ -9,6 +9,7 @@
  */
 
 #include "test_framework.h"
+#include "tak_ai.h"
 #include "tak_battle_config.h"
 #include "tak_command_exec.h"
 #include "tak_command_queue.h"
@@ -1913,6 +1914,262 @@ TEST(ctrl_on_a_buildings_button_places_it_once) {
     oq_end();
 }
 
+/* ── summoned units, as Zhon makes its army ───────────────────────── */
+
+/* A def that walks has an open yard (legacy:163272-163292), and the
+ * placing test looks for units only under a yard's blocking cells
+ * (legacy:218790-218811). A summon goes where a soldier stands and a
+ * hall does not. */
+TEST(a_summon_is_placed_where_a_soldier_stands) {
+    ASSERT_NOT_NULL(oq_world());
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    ASSERT(Units_Spawn(OQ_SOLDIER, 1, 0, sx, sy) >= 0);
+    ASSERT_EQ_INT(0, Units_IsBuildSiteClearFacing(OQ_HALL, sx, sy, 0));
+    ASSERT_EQ_INT(1, Units_IsBuildSiteClearFacing(OQ_SOLDIER, sx, sy, 0));
+    oq_end();
+}
+
+/* The order is taken on the soldier's spot and waits for it to clear
+ * (legacy:12088-12115): the frame goes up once the soldier walks off. */
+TEST(a_summon_waits_for_the_soldier_on_its_spot) {
+    ASSERT_NOT_NULL(oq_world());
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int s = Units_Spawn(OQ_SOLDIER, 1, 0, sx, sy);
+    int b = Units_Spawn(OQ_BUILDER, 1, 0, sx - 120, sy);
+    ASSERT(s >= 0 && b >= 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, b, sx, sy, -1, OQ_SOLDIER, 0));
+    oq_ticks(60);
+    ASSERT_EQ_INT(0, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    ASSERT_EQ_INT(1, Units_OrderMove(s, sx + 200, sy));
+    int framed = 0;
+    for (int t = 0; t < 300 && !framed; t++) {
+        oq_ticks(1);
+        framed = oq_frames_of_at(OQ_SOLDIER, sx, sy);
+    }
+    ASSERT_EQ_INT(1, framed);
+    oq_end();
+}
+
+/* A Shift summons on the frame in hand is taken, waits for the unit
+ * that frame becomes, and goes up once it walks off
+ * (legacy:12088-12124). */
+TEST(a_shift_summons_on_the_frame_in_hand_waits_for_it) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int32_t py = oq_drawn_y(w, sx, sy, 0.0f);
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx - 64, sy);
+    ASSERT(bd >= 0);
+    SDL_SetModState(KMOD_NONE);
+    Units_SelectSingle(bd);
+    HUD_BeginBuildPlacement(OQ_SOLDIER);
+    InGame_WorldClickOn(sx, py, -1, 0);
+    oq_ticks(1);
+    int first = oq_unit(bd)->build_target;
+    ASSERT(first >= 0);
+    ASSERT_EQ_INT(1, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    HUD_BeginBuildPlacement(OQ_SOLDIER);
+    InGame_WorldClickOn(sx, py, -1, IG_CLICK_SHIFT);
+    HUD_ClearCommandMode();
+    oq_ticks(1);
+    ASSERT_EQ_INT(1, oq_legs_of(bd, UNIT_LEG_BUILD, OQ_SOLDIER));
+    oq_until_done(first, 300);
+    oq_ticks(2);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(0, oq_legs_of(bd, UNIT_LEG_BUILD, OQ_SOLDIER));
+    oq_ticks(100);
+    ASSERT_EQ_INT(0, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(1, Units_OrderMove(first, sx + 200, sy));
+    int framed = 0;
+    for (int t = 0; t < 200 && !framed; t++) {
+        oq_ticks(1);
+        framed = oq_frames_of_at(OQ_SOLDIER, sx, sy);
+    }
+    ASSERT_EQ_INT(1, framed);
+    oq_end();
+}
+
+/* A plain summons is not moved off when done (legacy:12555-12559), so a
+ * second one on its spot gives up once 30 looks, ten frames apart, have
+ * gone by (legacy:12097-12116). */
+TEST(a_summons_on_a_spot_its_last_one_keeps_gives_up) {
+    ASSERT_NOT_NULL(oq_world());
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx - 64, sy);
+    ASSERT(bd >= 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_SOLDIER, 0));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_SOLDIER,
+                                TAK_CMD_ARG_QUEUE));
+    int first = oq_unit(bd)->build_target;
+    ASSERT(first >= 0);
+    oq_until_done(first, 300);
+    oq_ticks(2);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    oq_ticks(30 * 20);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    oq_ticks(3 * 20);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(0, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    ASSERT_EQ_INT(1, oq_count(OQ_SOLDIER));
+    oq_end();
+}
+
+/* A building's cells refuse a summons at the cursor, and the order ends
+ * at once rather than wait (legacy:12088-12098, 218797). */
+TEST(a_summons_on_a_building_is_refused_at_once) {
+    ASSERT_NOT_NULL(oq_world());
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    ASSERT(Units_Spawn(OQ_HALL, 1, 0, sx, sy) >= 0);
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx - 120, sy);
+    ASSERT(bd >= 0);
+    ASSERT_EQ_INT(0, Units_IsBuildSiteClearFacing(OQ_SOLDIER, sx, sy, 0));
+    ASSERT_EQ_INT(0, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_SOLDIER, 0));
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)oq_unit(bd)->cmd_kind);
+    oq_end();
+}
+
+/* Where a summons waits on units, no frame goes up while any unit stands
+ * on its cells. */
+TEST(a_summons_frame_never_goes_up_on_a_unit) {
+    ASSERT_NOT_NULL(oq_world());
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int s = Units_Spawn(OQ_ARCHER, 1, 0, sx, sy);
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx - 120, sy);
+    ASSERT(s >= 0 && bd >= 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_SOLDIER, 0));
+    for (int t = 0; t < 400; t++) {
+        oq_ticks(1);
+        ASSERT_EQ_INT(0, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    }
+    /* It walked to the site while it waited. */
+    int32_t dx = oq_unit(bd)->world_x - sx, dy = oq_unit(bd)->world_y - sy;
+    ASSERT(dx * dx + dy * dy < 100 * 100);
+    oq_end();
+}
+
+/* The looks are counted once the builder is in reach, so one sent from
+ * far off still holds the order when it gets there (legacy:12063-12124). */
+TEST(a_summons_from_far_off_counts_its_looks_from_reach) {
+    ASSERT_NOT_NULL(oq_world());
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int s = Units_Spawn(OQ_ARCHER, 1, 0, sx, sy);
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx + 1000, sy + 900);
+    ASSERT(s >= 0 && bd >= 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_SOLDIER, 0));
+    oq_ticks(32 * 20 + 40);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(0, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    ASSERT_EQ_INT(1, Units_OrderMove(s, sx + 200, sy));
+    int framed = 0;
+    for (int t = 0; t < 200 && !framed; t++) {
+        oq_ticks(1);
+        framed = oq_frames_of_at(OQ_SOLDIER, sx, sy);
+    }
+    ASSERT_EQ_INT(1, framed);
+    oq_end();
+}
+
+/* A builder walled off from its held summons does not hold it for ever:
+ * the walk gives up as any order's does. */
+TEST(a_summons_its_builder_cannot_reach_gives_up) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    for (int y = 56; y <= 64; y++)
+        for (int x = 36; x <= 44; x++)
+            if (x == 36 || x == 44 || y == 56 || y == 64)
+                w->tnt.heightmap[y * w->tnt.height_w + x] = 250;
+    TAK_PathCacheReset();
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int s = Units_Spawn(OQ_ARCHER, 1, 0, sx, sy);
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, 40 * 16 + 8, 60 * 16 + 8);
+    ASSERT(s >= 0 && bd >= 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_SOLDIER, 0));
+    oq_ticks(60);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    int ended = 0;
+    for (int t = 0; t < 1500 && !ended; t++) {
+        oq_ticks(1);
+        ended = oq_unit(bd)->cmd_kind == UNIT_CMD_NONE;
+    }
+    ASSERT_EQ_INT(1, ended);
+    ASSERT_EQ_INT(0, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    oq_end();
+}
+
+static int     g_oq_ghost_valid = -1;
+static void oq_ghost(int def, int color, int32_t x, int32_t y, int valid,
+                     int facing) {
+    (void)def; (void)color; (void)x; (void)y; (void)facing;
+    g_oq_ghost_valid = valid;
+}
+
+/* The ghost is green for a summons over a soldier and red for a hall
+ * there (legacy:218797-218811). */
+TEST(the_ghost_of_a_summons_is_green_over_a_soldier) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int32_t py = oq_drawn_y(w, sx, sy, 0.0f);
+    ASSERT(Units_Spawn(OQ_ARCHER, 1, 0, sx, sy) >= 0);
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx - 120, sy);
+    ASSERT(bd >= 0);
+    Units_SelectSingle(bd);
+    TAK_Platform plat;
+    memset(&plat, 0, sizeof plat);
+    plat.renderer = (SDL_Renderer *)&plat;   /* only the hook draws */
+    HUD_BuildGhostFn was = HUD_GetBuildGhostHook();
+    HUD_SetBuildGhostHook(oq_ghost);
+    HUD_BeginBuildPlacement(OQ_SOLDIER);
+    HUD_DrawCommandCursor(&plat, 0, 0, sx, py);
+    int summons = g_oq_ghost_valid;
+    HUD_BeginBuildPlacement(OQ_HALL);
+    HUD_DrawCommandCursor(&plat, 0, 0, sx, py);
+    int hall = g_oq_ghost_valid;
+    HUD_SetBuildGhostHook(was);
+    ASSERT_EQ_INT(1, summons);
+    ASSERT_EQ_INT(0, hall);
+    oq_end();
+}
+
+/* A def with a move class takes that class's cells, so a 3x3 walker
+ * snaps as 3x3 although its own footprint is unset
+ * (legacy:163193-163195). */
+TEST(a_summons_snaps_to_its_move_class_footprint) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    w->moveinfo.count = 2;
+    strncpy(w->moveinfo.classes[1].name, "TESTBIG", TAK_MOVEINFO_NAME_MAX - 1);
+    w->moveinfo.classes[1].footprint_x = 3;
+    w->moveinfo.classes[1].footprint_z = 3;
+    w->moveinfo.classes[1].max_slope = 30;
+    UnitDef *d = (UnitDef *)Units_GetDef(OQ_ARCHER);
+    ASSERT_NOT_NULL(d);
+    strncpy(d->movement_class, "TESTBIG", sizeof(d->movement_class) - 1);
+    d->footprint_x = 0;
+    d->footprint_z = 0;
+    int32_t x = OQ_CX + 5, y = OQ_CY + 5;
+    Units_SnapBuildSite(OQ_ARCHER, &x, &y);
+    /* The 3x3 cell block from 59 to 61, centred at 59 * 16 + 24. */
+    ASSERT_EQ_INT(59 * 16 + 24, x);
+    ASSERT_EQ_INT(59 * 16 + 24, y);
+    oq_end();
+}
+
+/* The computer's site search still keeps off its own army, so it never
+ * sets a summons to wait on it. */
+TEST(the_computers_summons_site_is_one_no_unit_stands_on) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX, OQ_CY);
+    ASSERT(bd >= 0);
+    int32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    ASSERT_EQ_INT(1, TAK_AI_DebugFindSite(bd, OQ_SOLDIER, &x0, &y0));
+    ASSERT(Units_Spawn(OQ_ARCHER, 1, 0, x0, y0) >= 0);
+    ASSERT_EQ_INT(1, TAK_AI_DebugFindSite(bd, OQ_SOLDIER, &x1, &y1));
+    ASSERT(x1 != x0 || y1 != y0);
+    oq_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     SDL_Init(0);
@@ -1978,5 +2235,16 @@ int main(int argc, char **argv) {
     RUN(a_summons_waits_for_a_unit_on_its_spot_and_ends_on_a_building);
     RUN(a_summons_gives_up_on_a_spot_a_unit_keeps);
     RUN(ctrl_on_a_buildings_button_places_it_once);
+    RUN(a_summon_is_placed_where_a_soldier_stands);
+    RUN(a_summon_waits_for_the_soldier_on_its_spot);
+    RUN(a_shift_summons_on_the_frame_in_hand_waits_for_it);
+    RUN(a_summons_on_a_spot_its_last_one_keeps_gives_up);
+    RUN(a_summons_on_a_building_is_refused_at_once);
+    RUN(a_summons_frame_never_goes_up_on_a_unit);
+    RUN(a_summons_from_far_off_counts_its_looks_from_reach);
+    RUN(a_summons_its_builder_cannot_reach_gives_up);
+    RUN(the_ghost_of_a_summons_is_green_over_a_soldier);
+    RUN(a_summons_snaps_to_its_move_class_footprint);
+    RUN(the_computers_summons_site_is_one_no_unit_stands_on);
     TEST_REPORT();
 }

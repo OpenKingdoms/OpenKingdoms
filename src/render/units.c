@@ -3303,6 +3303,7 @@ static void order_fresh(Unit *u) {
     u->air_band = 0;
     u->air_hold = 0;
     u->build_endless = 0;
+    u->build_held = 0;
     u->move_group = 0;
     u->move_paced = 0;
     u->face_mode = UNIT_FACE_NONE;
@@ -3435,7 +3436,8 @@ static int unit_take_leg(int h, const UnitMoveLeg *leg) {
 }
 
 /* The next queued leg once the unit has no order. One it can no longer
- * carry out, a target gone or a site taken, is passed over. */
+ * carry out, a target gone or a site taken, is passed over. A summons
+ * whose spot only units hold is taken and waits (legacy:12088-12124). */
 static void unit_next_leg(Unit *u, int h) {
     while (u->leg_count > 0 && u->cmd_kind == UNIT_CMD_NONE) {
         UnitMoveLeg leg = u->legs[0];
@@ -3612,7 +3614,7 @@ int Units_OrdersOf(int handle, UnitOrderView *out, int cap) {
             if (out && cap > 0 && b >= 0 && b < g_unit_count) {
                 out[0].def = g_units[b].def_idx;
                 out[0].facing = g_units[b].facing & 3;
-            } else if (out && cap > 0 && u->build_endless) {
+            } else if (out && cap > 0 && (u->build_endless || u->build_held)) {
                 out[0].def = u->build_def;
             }
             break;
@@ -3770,26 +3772,31 @@ static uint32_t unit_isqrt64(uint64_t v);
  * just clear of the footprint, stepped out over ground it cannot stand
  * on. Fixed when the order is given, so the route has one goal and a
  * site set in a row is reached from the builder's side of the row. */
-static void unit_set_build_goal(Unit *u, const Unit *site) {
+static void unit_set_build_goal_at(Unit *u, int site_def, int32_t sx,
+                                   int32_t sy) {
     const UnitDef *ud = Units_GetDef(u->def_idx);
-    const UnitDef *sd = Units_GetDef(site->def_idx);
+    const UnitDef *sd = Units_GetDef(site_def);
     int fx = sd && sd->footprint_x > 0 ? sd->footprint_x : 1;
     int fz = sd && sd->footprint_z > 0 ? sd->footprint_z : 1;
     int32_t stand_back = (int32_t)unit_isqrt64((uint64_t)(64 * (fx * fx + fz * fz))) + 12;
-    int64_t vx = (int64_t)u->world_x - site->world_x;
-    int64_t vy = (int64_t)u->world_y - site->world_y;
+    int64_t vx = (int64_t)u->world_x - sx;
+    int64_t vy = (int64_t)u->world_y - sy;
     int64_t len = (int64_t)unit_isqrt64((uint64_t)(vx * vx + vy * vy));
     if (len == 0) { vx = 0; vy = 1; len = 1; }
     const GameWorld *w = World_Get();
     for (int k = 0; k <= 8; k++) {
         int64_t r = stand_back + 16 * k;
-        u->build_gx = site->world_x + (int32_t)(vx * r / len);
-        u->build_gy = site->world_y + (int32_t)(vy * r / len);
+        u->build_gx = sx + (int32_t)(vx * r / len);
+        u->build_gy = sy + (int32_t)(vy * r / len);
         if (!w || !ud || unit_terrain_walkable(w, ud, u->build_gx, u->build_gy))
             return;
     }
-    u->build_gx = site->world_x + (int32_t)(vx * stand_back / len);
-    u->build_gy = site->world_y + (int32_t)(vy * stand_back / len);
+    u->build_gx = sx + (int32_t)(vx * stand_back / len);
+    u->build_gy = sy + (int32_t)(vy * stand_back / len);
+}
+
+static void unit_set_build_goal(Unit *u, const Unit *site) {
+    unit_set_build_goal_at(u, site->def_idx, site->world_x, site->world_y);
 }
 
 int Units_OrderRepair(int handle, int target_handle) {
@@ -4912,13 +4919,31 @@ void Units_SnapBuildSite(int def_idx, int32_t *world_x, int32_t *world_y) {
     Units_SnapBuildSiteFacing(def_idx, 0, world_x, world_y);
 }
 
+/* A def with a bmcode walks, and its yard is open on every cell
+ * (legacy:163272-163292). */
+static int build_def_walks(const UnitDef *d) {
+    return d && d->bmcode != 0;
+}
+
+/* The cells a build of d covers. A def that walks takes its move
+ * class's footprint (legacy:163193-163195), a building its own, and 2x2
+ * when it names none. */
+static void build_site_cells(const UnitDef *d, int facing, int *fx, int *fz) {
+    if (build_def_walks(d)) {
+        unit_mobile_footprint(World_Get(), d, fx, fz);
+        return;
+    }
+    *fx = d->footprint_x > 0 ? d->footprint_x : 2;
+    *fz = d->footprint_z > 0 ? d->footprint_z : 2;
+    if (facing & 1) { int t = *fx; *fx = *fz; *fz = t; }
+}
+
 void Units_SnapBuildSiteFacing(int def_idx, int facing,
                                int32_t *world_x, int32_t *world_y) {
     const UnitDef *d = Units_GetDef(def_idx);
     if (!d || !world_x || !world_y) return;
-    int fx = d->footprint_x > 0 ? d->footprint_x : 2;
-    int fz = d->footprint_z > 0 ? d->footprint_z : 2;
-    if (Units_DefFacing(def_idx, facing) & 1) { int t = fx; fx = fz; fz = t; }
+    int fx, fz;
+    build_site_cells(d, Units_DefFacing(def_idx, facing), &fx, &fz);
     /* A building lives on a cell, never between cells: legacy turns
      * the cursor into the footprint's top-left cell (legacy:184168)
      * and reads the centre back as cell*16 + footprint*8
@@ -5078,19 +5103,17 @@ static int g_site_near[TAK_MAX_UNITS];
 static int  unit_def_is_structure(const UnitDef *d);
 static void unit_occ_fp(const Unit *u, int *fx, int *fz);
 
-int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
-    return Units_IsBuildSiteClearFacing(def_idx, wx, wy, 0);
-}
-
-int Units_IsBuildSiteClearFacing(int def_idx, int32_t wx, int32_t wy, int facing) {
+/* The placement test at the cell the build would take. With walkers 0
+ * a unit that walks, or its frame, does not refuse it. */
+static int build_site_test(int def_idx, int32_t wx, int32_t wy, int facing,
+                           int walkers) {
     const UnitDef *d = Units_GetDef(def_idx);
     if (!d) return 0;
     facing = Units_DefFacing(def_idx, facing);
     /* Judge the cell the build would actually occupy (legacy:184168). */
     Units_SnapBuildSiteFacing(def_idx, facing, &wx, &wy);
-    int fx = d->footprint_x > 0 ? d->footprint_x : 2;
-    int fz = d->footprint_z > 0 ? d->footprint_z : 2;
-    if (facing & 1) { int t = fx; fx = fz; fz = t; }
+    int fx, fz;
+    build_site_cells(d, facing, &fx, &fz);
     /* Footprint half-extents in world pixels (16 px / TA tile). */
     int hw = fx * 8;
     int hh = fz * 8;
@@ -5102,8 +5125,10 @@ int Units_IsBuildSiteClearFacing(int def_idx, int32_t wx, int32_t wy, int facing
     if (world && (x0 < 16 || y0 < 16 || x1 > world->map_pixels_w - 16 ||
                   y1 > world->map_pixels_h - 16))
         return 0;
+    /* A def that walks reads no yardmap (legacy:163206-163208). */
     uint8_t yard[TAK_YARD_MAX_CELLS];
-    int ycells = Units_ExpandYardmapFacing(d, facing, yard, TAK_YARD_MAX_CELLS);
+    int ycells = build_def_walks(d) ? 0
+               : Units_ExpandYardmapFacing(d, facing, yard, TAK_YARD_MAX_CELLS);
     if (!site_ground_clear(world, d, yard, ycells, fx, fz, d->max_slope,
                            x0, y0))
         return 0;
@@ -5120,6 +5145,7 @@ int Units_IsBuildSiteClearFacing(int def_idx, int32_t wx, int32_t wy, int facing
         const Unit *u = &g_units[nn < 0 ? k : g_site_near[k]];
         if (u->alive != 1) continue;
         const UnitDef *ud = Units_GetDef(u->def_idx);
+        if (!walkers && build_def_walks(ud)) continue;
         int ufx, ufz;
         if (unit_def_is_structure(ud)) {
             ufx = ud->footprint_x > 0 ? ud->footprint_x : 2;
@@ -5139,6 +5165,29 @@ int Units_IsBuildSiteClearFacing(int def_idx, int32_t wx, int32_t wy, int facing
         return 0;
     }
     return 1;
+}
+
+int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
+    return Units_IsBuildSiteClearFacing(def_idx, wx, wy, 0);
+}
+
+/* The cursor looks for a unit only under a yard cell with bit 0x2 or
+ * 0x4, and the open yard of a def that walks has neither. Its bit 0x1
+ * still meets the cells a building's yard stamps (legacy:163272-163292,
+ * 218185-218191, 218797-218811). */
+int Units_IsBuildSiteClearFacing(int def_idx, int32_t wx, int32_t wy, int facing) {
+    return build_site_test(def_idx, wx, wy, facing,
+                           !build_def_walks(Units_GetDef(def_idx)));
+}
+
+int Units_IsBuildSiteFree(int def_idx, int32_t wx, int32_t wy) {
+    return Units_IsBuildSiteFreeFacing(def_idx, wx, wy, 0);
+}
+
+/* The frame goes up only where no unit stands (legacy:12088,
+ * 219094-219160). */
+int Units_IsBuildSiteFreeFacing(int def_idx, int32_t wx, int32_t wy, int facing) {
+    return build_site_test(def_idx, wx, wy, facing, 1);
 }
 
 static int  unit_def_is_structure(const UnitDef *d);
@@ -5201,7 +5250,7 @@ int Units_BeginBuilding(int building_def_idx,
     if (!bd) return -1;
 
     /* Block the build if another unit/building occupies the footprint. */
-    if (!Units_IsBuildSiteClear(building_def_idx, world_x, world_y)) {
+    if (!Units_IsBuildSiteFree(building_def_idx, world_x, world_y)) {
         fprintf(stderr, "Build: site blocked at (%d, %d)\n", world_x, world_y);
         return -1;
     }
@@ -5243,6 +5292,7 @@ int Units_BeginBuilding(int building_def_idx,
     u->build_target = (int16_t)new_handle;
     u->build_near_best = 0;
     u->build_endless = 0;
+    u->build_held = 0;
     u->target       = -1;
     unit_clear_path(u);
     return new_handle;
@@ -5316,8 +5366,8 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
                                     build_heading_for_def(bd), world_x,
                                     world_y, 0, 0.0f, 0, 0))
             return -1;
-    } else if (!Units_IsBuildSiteClearFacing(building_def_idx, world_x, world_y,
-                                             facing)) {
+    } else if (!Units_IsBuildSiteFreeFacing(building_def_idx, world_x, world_y,
+                                            facing)) {
         return -1;
     }
     /* A product leaves the yard as a unit and never stands turned. */
@@ -5346,6 +5396,7 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
     u->build_target = (int16_t)new_handle;
     u->build_near_best = 0;
     u->build_endless = 0;
+    u->build_held = 0;
     u->target = -1;
     unit_set_build_goal(u, bu);
     unit_clear_path(u);
@@ -5366,17 +5417,60 @@ static int builder_may_summon(const Unit *u, int def_idx) {
     return ud && ud->max_velocity > 0.0f && Units_DefCanRepeat(def_idx);
 }
 
+/* The next of a summons starts a frame after the last is done
+ * (legacy:12308-12315), and a unit still on the spot is looked at again
+ * every 10 frames until 30 looks have gone by (legacy:12097-12124). */
+#define SUMMON_NEXT_TICKS  2
+#define SUMMON_LOOK_TICKS 20
+#define SUMMON_LOOKS      30
+
+/* A summons whose spot only units hold is taken, and the builder
+ * looks again every 10 frames (legacy:12088-12124). Anything else in the
+ * way refuses it. 1 when the builder holds it. */
+static int builder_hold_summons(int h, int def_idx, int32_t x, int32_t y) {
+    Unit *u = order_unit(h);
+    const UnitDef *d = Units_GetDef(def_idx);
+    const UnitDef *ud = u ? Units_GetDef(u->def_idx) : NULL;
+    if (!u || !ud || !(ud->cap_flags & UNIT_CAP_BUILDER) ||
+        !(ud->max_velocity > 0.0f) || !build_def_walks(d))
+        return 0;
+    if (Units_IsBuildSiteFree(def_idx, x, y) ||
+        !Units_IsBuildSiteClear(def_idx, x, y) || !unit_spot_clear(d, x, y, 1))
+        return 0;
+    order_fresh(u);
+    u->cmd_kind = UNIT_CMD_BUILD;
+    u->cmd_x = x;
+    u->cmd_y = y;
+    u->build_target = -1;
+    u->build_near_best = 0;
+    u->build_held = 1;
+    u->build_def = (int16_t)def_idx;
+    u->build_tries = 0;
+    u->build_wait = SUMMON_LOOK_TICKS;
+    u->target = -1;
+    unit_set_build_goal_at(u, def_idx, x, y);
+    unit_clear_path(u);
+    return 1;
+}
+
 int Units_OrderBuild(int builder_handle, int def_idx, int32_t world_x,
                      int32_t world_y, int facing, int endless) {
+    int held = 0;
     if (Units_BeginBuildingForUnitFacing(builder_handle, def_idx, world_x,
-                                         world_y, facing) < 0)
-        return 0;
+                                         world_y, facing) < 0) {
+        if (!builder_hold_summons(builder_handle, def_idx, world_x, world_y))
+            return 0;
+        held = 1;
+    }
     Unit *u = &g_units[builder_handle];
     if (endless && builder_may_summon(u, def_idx)) {
         u->build_endless = 1;
+        u->build_held = 0;
         u->build_def = (int16_t)def_idx;
-        u->build_tries = 0;
-        u->build_wait = 0;
+        if (!held) {
+            u->build_tries = 0;
+            u->build_wait = 0;
+        }
     }
     return 1;
 }
@@ -5662,10 +5756,11 @@ int Units_FactoryCancelCurrent(int factory_handle) {
 }
 
 /* The build order a walking builder holds is for def: its frame is up,
- * or it summons def without end and waits to start the next. */
+ * or it summons def and waits to start one. */
 static int builder_hand_is(const Unit *u, int def_idx) {
     int bt = u->build_target;
-    if (u->cmd_kind == UNIT_CMD_BUILD && u->build_endless && bt < 0)
+    if (u->cmd_kind == UNIT_CMD_BUILD && (u->build_endless || u->build_held) &&
+        bt < 0)
         return u->build_def == def_idx;
     return u->cmd_kind == UNIT_CMD_BUILD && bt >= 0 && bt < g_unit_count &&
            g_units[bt].alive != UNIT_ALIVE_DEAD &&
@@ -5693,6 +5788,7 @@ static int builder_remove_builds(Unit *u, int def_idx, int count) {
     if (builder_hand_is(u, def_idx)) {
         u->cmd_kind = UNIT_CMD_NONE;
         u->build_endless = 0;
+        u->build_held = 0;
         u->target = -1;
         u->build_target = -1;
         u->cmd_x = u->world_x;
@@ -12283,13 +12379,6 @@ static void unit_set_down(Unit *u, int idx, int c) {
     fprintf(stderr, "Transport: unloaded unit %d from %d\n", c, idx);
 }
 
-/* The next of a summons starts a frame after the last is done
- * (legacy:12308-12315), and a unit still on the spot is looked at again
- * every 10 frames until 30 looks have gone by (legacy:12097-12124). */
-#define SUMMON_NEXT_TICKS  2
-#define SUMMON_LOOK_TICKS 20
-#define SUMMON_LOOKS      30
-
 /* One of a summons without end is done. It steps off the spot by a
  * radius of 16 px times one plus three rolls of 0 to 2, four more for a
  * builder that flies, and the builder waits to start the next there
@@ -12312,27 +12401,48 @@ static void builder_summon_done(Unit *u, const UnitDef *ud, Unit *bt) {
     unit_clear_path(u);
 }
 
-/* The builder of a summons without end starts the next on its spot. A
- * spot only units hold is waited for, and anything else in the way, or
- * no room for one more unit, ends the order (legacy:12088-12124). */
-static void builder_summon_next(Unit *u, int h) {
+/* A builder waiting to summon starts the frame once no unit stands on
+ * its spot. A spot only units hold is waited for, the looks counted once
+ * the builder is in reach, and anything else in the way, or no room for
+ * one more unit, ends the order (legacy:12063-12124). */
+static void builder_summon_next(Unit *u, int h, int in_reach) {
     if (u->build_wait > 0 && --u->build_wait > 0) return;
-    int def = u->build_def;
+    int def = u->build_def, endless = u->build_endless;
     int32_t x = u->cmd_x, y = u->cmd_y;
-    if (Units_IsBuildSiteClearFacing(def, x, y, 0)) {
+    if (Units_IsBuildSiteFree(def, x, y)) {
         g_leg_taking = 1;
-        int took = Units_OrderBuild(h, def, x, y, 0, 1);
+        int took = Units_BeginBuildingForUnitFacing(h, def, x, y, 0) >= 0;
         g_leg_taking = 0;
-        if (took) return;
+        if (took) {
+            u->build_endless = (uint8_t)endless;
+            u->build_def = (int16_t)def;
+            u->build_tries = 0;
+            u->build_wait = 0;
+            return;
+        }
     } else if (u->build_tries <= SUMMON_LOOKS &&
                unit_spot_clear(Units_GetDef(def), x, y, 1)) {
-        u->build_tries++;
+        if (in_reach) u->build_tries++;
         u->build_wait = SUMMON_LOOK_TICKS;
         return;
     }
     u->cmd_kind = UNIT_CMD_NONE;
     u->build_endless = 0;
+    u->build_held = 0;
     unit_clear_path(u);
+}
+
+/* Is the builder within reach of a frame of def at (x, y)? The same
+ * stand back the build walk stops at. */
+static int builder_in_reach(const Unit *u, const UnitDef *def, int site_def,
+                            int32_t x, int32_t y) {
+    const UnitDef *sd = Units_GetDef(site_def);
+    int fx = sd && sd->footprint_x > 0 ? sd->footprint_x : 1;
+    int fz = sd && sd->footprint_z > 0 ? sd->footprint_z : 1;
+    int r = (int)(8.0f * sqrtf((float)(fx * fx + fz * fz))) + 12 +
+            (def->build_distance > 0 ? def->build_distance : 32);
+    int64_t dx = (int64_t)x - u->world_x, dy = (int64_t)y - u->world_y;
+    return dx * dx + dy * dy <= (int64_t)r * r;
 }
 
 /* Aim transportdistance less 34 short of the point so the approach
@@ -12791,9 +12901,12 @@ static void Units_TickCombat(void) {
         int      target_in_range = 0;
         int64_t  target_d2 = 0;
         float    heading_at_entry = u->heading;
-        /* A summons without end belongs to the build order in hand. */
-        if (u->build_endless && u->cmd_kind != UNIT_CMD_BUILD)
+        /* A summons without end or one held belongs to the build order
+         * in hand. */
+        if (u->cmd_kind != UNIT_CMD_BUILD) {
             u->build_endless = 0;
+            u->build_held = 0;
+        }
 
         if (u->cmd_kind == UNIT_CMD_GUARD && u->target >= 0) {
             Unit *t = &g_units[u->target];
@@ -12989,9 +13102,23 @@ static void Units_TickCombat(void) {
             goal_y = u->cmd_y;
         } else if (u->cmd_kind == UNIT_CMD_UNLOAD) {
             desired = unit_unload_tick(u, i, def, &goal_x, &goal_y);
-        } else if (u->cmd_kind == UNIT_CMD_BUILD && u->build_endless &&
-                   u->build_target < 0) {
-            builder_summon_next(u, i);
+        } else if (u->cmd_kind == UNIT_CMD_BUILD && u->build_target < 0 &&
+                   (u->build_endless || u->build_held)) {
+            int reach = !(def->max_velocity > 0.0f) ||
+                        builder_in_reach(u, def, u->build_def, u->cmd_x,
+                                         u->cmd_y);
+            builder_summon_next(u, i, reach);
+            /* While it waits it walks to the site (legacy:12063-12070). */
+            if (u->cmd_kind == UNIT_CMD_BUILD && u->build_target < 0 &&
+                !reach) {
+                desired = UNIT_ANIM_MOVING;
+                goal_x = u->build_gx;
+                goal_y = u->build_gy;
+                if (goal_x == 0 && goal_y == 0) {
+                    goal_x = u->cmd_x;
+                    goal_y = u->cmd_y;
+                }
+            }
         } else if (u->cmd_kind == UNIT_CMD_BUILD &&
                    (u->build_target < 0 || u->build_target >= g_unit_count ||
                     g_units[u->build_target].alive != 1 ||
