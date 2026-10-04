@@ -67,6 +67,13 @@ Both the snap and the tests take a walking def's footprint from its
 move class, so the ghost, the order and the cells the unit then holds
 agree.
 
+A flyer in the air puts no stamp on the ground cells, and both of the
+original's tests read only those stamps (legacy:218217-218250, 218800,
+219134). So neither test counts a flyer in the air or one that never
+lands, and a summons or a building goes up under a Harpy overhead
+without waiting for it. Once landed a flyer holds its cells like any
+walker.
+
 ## Left as it was
 
 A frame here goes up before the builder gets there (M-009), so a spot

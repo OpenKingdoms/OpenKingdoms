@@ -5222,6 +5222,7 @@ static int ugrid_slack(void) {
 static int g_site_near[TAK_MAX_UNITS];
 static int  unit_def_is_structure(const UnitDef *d);
 static void unit_occ_fp(const Unit *u, int *fx, int *fz);
+static int  unit_is_mobile_occupant(const Unit *u, const UnitDef *d);
 
 /* The placement test at the cell the build would take. With walkers 0
  * a unit that walks, or its frame, does not refuse it. */
@@ -5265,6 +5266,9 @@ static int build_site_test(int def_idx, int32_t wx, int32_t wy, int facing,
         const Unit *u = &g_units[nn < 0 ? k : g_site_near[k]];
         if (u->alive != 1) continue;
         const UnitDef *ud = Units_GetDef(u->def_idx);
+        /* A flyer stamps the ground cells only once landed, and both
+         * tests read those stamps (legacy:218217-218250, 218800, 219134). */
+        if (ud && ud->can_fly && !unit_is_mobile_occupant(u, ud)) continue;
         if (!walkers && build_def_walks(ud)) continue;
         int ufx, ufz;
         if (unit_def_is_structure(ud)) {

@@ -2170,6 +2170,44 @@ TEST(the_computers_summons_site_is_one_no_unit_stands_on) {
     oq_end();
 }
 
+/* A flyer in the air holds no ground cells, so a summons and a hall
+ * both go under it. Landed, it holds them as a walker does
+ * (legacy:218217-218250, 218800-218811, 219130-219137). */
+TEST(a_flyer_in_the_air_stands_on_no_site) {
+    ASSERT_NOT_NULL(oq_world());
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    UnitDef *fd = (UnitDef *)Units_GetDef(OQ_FLYER);
+    ASSERT_NOT_NULL(fd);
+    fd->script_flies = 1;
+    int f = Units_Spawn(OQ_FLYER, 1, 0, sx, sy);
+    ASSERT(f >= 0);
+    oq_lift(f, 1);
+    ASSERT_EQ_INT(1, Units_IsBuildSiteFree(OQ_SOLDIER, sx, sy));
+    ASSERT_EQ_INT(1, Units_IsBuildSiteClearFacing(OQ_HALL, sx, sy, 0));
+    oq_lift(f, 0);
+    ASSERT_EQ_INT(0, Units_IsBuildSiteFree(OQ_SOLDIER, sx, sy));
+    ASSERT_EQ_INT(0, Units_IsBuildSiteClearFacing(OQ_HALL, sx, sy, 0));
+    oq_end();
+}
+
+/* A summons under a Harpy in the air goes up at once and does not wait
+ * for the flyer to leave. */
+TEST(a_summons_under_a_flyer_in_the_air_goes_up_at_once) {
+    ASSERT_NOT_NULL(oq_world());
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    UnitDef *fd = (UnitDef *)Units_GetDef(OQ_FLYER);
+    ASSERT_NOT_NULL(fd);
+    fd->script_flies = 1;
+    int f = Units_Spawn(OQ_FLYER, 1, 0, sx, sy);
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx - 64, sy);
+    ASSERT(f >= 0 && bd >= 0);
+    oq_lift(f, 1);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_SOLDIER, 0));
+    ASSERT_EQ_INT(1, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    ASSERT_EQ_INT(0, (int)oq_unit(bd)->build_held);
+    oq_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     SDL_Init(0);
@@ -2246,5 +2284,7 @@ int main(int argc, char **argv) {
     RUN(the_ghost_of_a_summons_is_green_over_a_soldier);
     RUN(a_summons_snaps_to_its_move_class_footprint);
     RUN(the_computers_summons_site_is_one_no_unit_stands_on);
+    RUN(a_flyer_in_the_air_stands_on_no_site);
+    RUN(a_summons_under_a_flyer_in_the_air_goes_up_at_once);
     TEST_REPORT();
 }
