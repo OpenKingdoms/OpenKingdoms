@@ -17919,6 +17919,90 @@ done:
     VFS_Shutdown();
 }
 
+/* Real Harpies with their own scripts, ordered onto one point of open
+ * ground. The original keeps airborne flyers off each other's cells and
+ * lands one only on clear ground (legacy:236040-236113,
+ * legacy:24297-24399), so none ends on another. */
+TEST(harpies_sent_to_one_place_do_not_stack) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+    int harpy = Units_FindDefByName("ZONHARP");
+    if (harpy < 0) { SKIP_MARK("no ZONHARP"); goto done; }
+    {
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(sword_def >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t rx = 0, ry = 0;
+    if (gates_find_site(world, sword_def, units[0].world_x, units[0].world_y,
+                        320, 1, 0, &rx, &ry) != 0) {
+        SKIP_MARK("no open ground");
+        goto done;
+    }
+    #define FLOCK_N 12
+    int h[FLOCK_N];
+    for (int i = 0; i < FLOCK_N; i++) {
+        h[i] = Units_Spawn(harpy, 1, 0, rx - 480 + (i % 4) * 64, ry - 96 + (i / 4) * 64);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    for (int i = 0; i < FLOCK_N; i++) Units_OrderMove(h[i], rx, ry);
+    int worst_air = 0;
+    for (int t = 0; t < 4200; t++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+        int up = 0, air = 0;
+        for (int i = 0; i < FLOCK_N; i++) up += units[h[i]].flying ? 1 : 0;
+        for (int i = 0; i < FLOCK_N && up == FLOCK_N; i++)
+            for (int j = i + 1; j < FLOCK_N; j++)
+                if (abs(Occ_TileOf(units[h[i]].world_x - 16) - Occ_TileOf(units[h[j]].world_x - 16)) < 2 &&
+                    abs(Occ_TileOf(units[h[i]].world_y - 16) - Occ_TileOf(units[h[j]].world_y - 16)) < 2)
+                    air++;
+        if (air > worst_air) worst_air = air;
+    }
+    units = Units_GetActive(&unit_count);
+    int shared = 0;
+    int64_t far2 = 0, near2 = INT64_MAX;
+    for (int i = 0; i < FLOCK_N; i++) {
+        ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)units[h[i]].alive);
+        int64_t dx = (int64_t)units[h[i]].world_x - rx;
+        int64_t dy = (int64_t)units[h[i]].world_y - ry;
+        if (dx * dx + dy * dy > far2) far2 = dx * dx + dy * dy;
+        for (int j = i + 1; j < FLOCK_N; j++) {
+            int64_t ex = (int64_t)units[h[i]].world_x - units[h[j]].world_x;
+            int64_t ey = (int64_t)units[h[i]].world_y - units[h[j]].world_y;
+            if (ex * ex + ey * ey < near2) near2 = ex * ex + ey * ey;
+            if (abs(Occ_TileOf(units[h[i]].world_x - 16) - Occ_TileOf(units[h[j]].world_x - 16)) < 2 &&
+                abs(Occ_TileOf(units[h[i]].world_y - 16) - Occ_TileOf(units[h[j]].world_y - 16)) < 2)
+                shared++;
+        }
+    }
+    printf("(%d of 66 pairs overlap in the air, %d at rest, closest %d px, "
+           "spread %d px) ", worst_air, shared, (int)sqrt((double)near2),
+           (int)sqrt((double)far2));
+    ASSERT_EQ_INT(0, shared);
+    ASSERT(far2 <= (int64_t)512 * 512);
+    InGame_Shutdown();
+    #undef FLOCK_N
+    }
+done:
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* User report: "when i build a ship in the water, it can come up on to
  * land". The move class water window (legacy:219155-219157) is the
  * rule; the Taros ghost ship crosses land only because tarship.fbi sets
@@ -29742,6 +29826,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(own_unit_walks_through_its_gate_and_gate_opens);
     RUN_UI_TEST(completed_wall_blocks_units);
     RUN_UI_TEST(units_do_not_stack_on_one_another);
+    RUN_UI_TEST(harpies_sent_to_one_place_do_not_stack);
     RUN_UI_TEST(boats_stay_in_water_ghost_ships_do_not);
     RUN_UI_TEST(ship_hulls_come_from_their_models);
     RUN_UI_TEST(a_ship_that_dies_leaves_its_wreck);

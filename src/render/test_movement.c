@@ -28,6 +28,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
+#include <stdlib.h>
 
 /* ── the harness ───────────────────────────────────────────────────── */
 
@@ -1380,6 +1381,99 @@ TEST(a_fleet_sails_a_narrow_strait) {
 
 /* A ground crowd lands where it did before ships had hulls. The layout
  * hash is pinned from that build. */
+/* ── Flyers ──────────────────────────────────────────────────────────────── */
+
+/* The Harpy from units/zonharp.fbi, with a script that has the flight
+ * pair so it takes off and lands. Returns its def index or -1. */
+static int mv_add_harpy(void) {
+    UnitDef defs[MV_DEF_COUNT + 1];
+    for (int i = 0; i < MV_DEF_COUNT; i++) defs[i] = *Units_GetDef(i);
+    UnitDef *d = &defs[MV_DEF_COUNT];
+    mv_fill_def(d, "TESTHARPY", "", 3.5f, 913);
+    strncpy(d->category, "TEST FLY", sizeof(d->category) - 1);
+    d->acceleration = 0.25f;
+    d->brake_rate = 0.25f;
+    d->turn_rate = 300.0f;
+    d->footprint_x = 2;
+    d->footprint_z = 2;
+    d->can_fly = 1;
+    d->cruise_alt = 200;
+    if (Units_DebugSetDefs(defs, MV_DEF_COUNT + 1) != MV_DEF_COUNT + 1) return -1;
+    static const uint32_t ret[] = { 0x10065000u };
+    static const char *const names[] = { "BeginFlight", "BeginLanding" };
+    static const uint32_t offsets[] = { 0, 0 };
+    if (Units_DebugSetDefScript(MV_DEF_COUNT, ret, 1, names, offsets, 2) != 0) return -1;
+    return MV_DEF_COUNT;
+}
+
+/* Pairs whose two tile footprints, stamped as the step test stamps
+ * them, share a cell. */
+static int mv_flyer_overlaps(const int *h, int n, int32_t *out_min_px) {
+    int pairs = 0;
+    int64_t best = INT64_MAX;
+    for (int i = 0; i < n; i++) {
+        const Unit *a = mv_unit(h[i]);
+        int ax = Occ_TileOf(a->world_x - 16), ay = Occ_TileOf(a->world_y - 16);
+        for (int j = i + 1; j < n; j++) {
+            const Unit *b = mv_unit(h[j]);
+            int bx = Occ_TileOf(b->world_x - 16), by = Occ_TileOf(b->world_y - 16);
+            if (abs(ax - bx) < 2 && abs(ay - by) < 2) pairs++;
+            int64_t d2 = mv_dist2(a, b->world_x, b->world_y);
+            if (d2 < best) best = d2;
+        }
+    }
+    if (out_min_px) *out_min_px = (int32_t)sqrtf((float)best);
+    return pairs;
+}
+
+/* Ten Harpies sent to one point. A flyer whose footprint shares cells
+ * with others in the air moves off (legacy:236040-236113,
+ * legacy:32801-32880) and one lands only where its footprint is clear
+ * (legacy:24297-24399, legacy:220068-220178), so the flock does not
+ * end as one stack. */
+TEST(flyers_sent_to_one_place_do_not_stack) {
+    ASSERT_NOT_NULL(mv_world());
+    int harpy = mv_add_harpy();
+    ASSERT(harpy >= 0);
+    #define MV_FLOCK_N 10
+    int h[MV_FLOCK_N];
+    for (int i = 0; i < MV_FLOCK_N; i++) {
+        h[i] = Units_Spawn(harpy, 1, 0, 1000 + (i % 5) * 48, 1500 + (i / 5) * 48);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    ASSERT_EQ_INT(0, mv_flyer_overlaps(h, MV_FLOCK_N, NULL));
+    int32_t gx = 2000, gy = 1600;
+    for (int i = 0; i < MV_FLOCK_N; i++) Units_OrderMove(h[i], gx, gy);
+    int worst_air = 0, airborne_ticks = 0, landed_at = -1;
+    for (int t = 0; t < 3600; t++) {
+        Units_TickEngines();
+        int up = 0;
+        for (int i = 0; i < MV_FLOCK_N; i++) up += mv_unit(h[i])->flying ? 1 : 0;
+        if (up) airborne_ticks++;
+        else if (landed_at < 0 && t > 60) landed_at = t;
+        if (up == MV_FLOCK_N && mv_dist2(mv_unit(h[0]), gx, gy) <= 160 * 160) {
+            int o = mv_flyer_overlaps(h, MV_FLOCK_N, NULL);
+            if (o > worst_air) worst_air = o;
+        }
+    }
+    int32_t min_px = 0;
+    int rest = mv_flyer_overlaps(h, MV_FLOCK_N, &min_px);
+    int64_t far2 = 0;
+    for (int i = 0; i < MV_FLOCK_N; i++) {
+        int64_t d2 = mv_dist2(mv_unit(h[i]), gx, gy);
+        if (d2 > far2) far2 = d2;
+    }
+    printf("(%d of 45 pairs overlap in the air at the point, %d at rest, "
+           "closest pair %d px apart, farthest %.0f px from the point, "
+           "airborne %d ticks, all down at tick %d) ", worst_air, rest,
+           (int)min_px, (double)sqrtf((float)far2), airborne_ticks, landed_at);
+    ASSERT_EQ_INT(0, rest);
+    ASSERT(far2 <= (int64_t)480 * 480);
+    #undef MV_FLOCK_N
+    mv_end();
+}
+
 TEST(a_ground_crowd_packs_as_it_did) {
     ASSERT_NOT_NULL(mv_world());
     #define MV_GROUND_N 24
@@ -1434,6 +1528,8 @@ int main(int argc, char **argv) {
     RUN(a_shipyard_launches_ship_after_ship);
     RUN(a_fleet_sails_a_narrow_strait);
     RUN(a_ground_crowd_packs_as_it_did);
+    TEST_SUITE("Flyers");
+    RUN(flyers_sent_to_one_place_do_not_stack);
     TEST_SUITE("State hash");
     RUN(a_repeated_run_hashes_the_same);
     RUN(a_cold_planner_hashes_the_same);
