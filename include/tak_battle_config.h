@@ -111,7 +111,19 @@ typedef struct BattleConfig {
     /* 1 for a battle saved before seats could claim starts: every seat
      * stands on the start numbered for it, as it did when it was saved. */
     int numbered_starts;
+
+    /* The remastered battlefield rules (D-036): rocks, ruins, spires and
+     * grass break, the sweeping spells reach scenery, burning scenery
+     * hurts, and a wall's or a building's rubble blocks until swept.
+     * A room option, off by default. */
+    int remastered;
 } BattleConfig;
+
+/* The lobby row that turns them on, and its help line. */
+#define TAK_REMASTERED_CAPTION "Remastered Battlefield"
+#define TAK_REMASTERED_TOOLTIP \
+    "More scenery breaks, sweeping spells reach it, fire hurts and rubble blocks until swept"
+
 
 /* Fill `cfg` with sensible skirmish defaults: 1 human (Aramon) + 1 AI
  * (Taros), line-of-sight on, 1500 units/side, no map selected yet. */

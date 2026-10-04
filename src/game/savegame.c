@@ -57,6 +57,7 @@ _Static_assert(CFGB_END == TAK_CFGB_BYTES, "CFGB layout and width disagree");
 #define CFGB_FLAGS          (CFGB_STARTS + TAK_MAX_PLAYERS)
 #define CFGB_WRITE_BYTES    (CFGB_FLAGS + 1u)
 #define CFGB_F_NUMBERED     0x01u
+#define CFGB_F_REMASTERED   0x02u
 _Static_assert(CFGB_WRITE_BYTES == TAK_CFGB_WRITE_BYTES, "CFGB tail and width disagree");
 
 /* WRLD, the world scalars and the per player tallies. */
@@ -430,6 +431,7 @@ _Static_assert(P_END == TAK_PROJ_RECORD_BYTES, "PROJ layout and width disagree")
 #define F_BACK_FRAME 46u
 #define F_BACK_WAIT  48u
 #define F_FX_SERIAL  50u
+#define F_RUBBLE     54u
 #define F_END        56u
 _Static_assert(F_END == TAK_FEAT_RECORD_BYTES, "FEAT layout and width disagree");
 
@@ -1943,6 +1945,7 @@ static void encode_feature(uint8_t *r, const struct MapFeature *f,
     tak_put_u16(r + F_BACK_FRAME, f->back_frame);
     tak_put_u16(r + F_BACK_WAIT, f->back_wait);
     tak_put_u32(r + F_FX_SERIAL, f->fx_serial);
+    tak_put_u8(r + F_RUBBLE, f->rubble);
 }
 
 static void decode_feature(struct MapFeature *f, const uint8_t *r,
@@ -1976,6 +1979,7 @@ static void decode_feature(struct MapFeature *f, const uint8_t *r,
     f->back_frame = tak_get_u16(r + F_BACK_FRAME);
     f->back_wait = tak_get_u16(r + F_BACK_WAIT);
     f->fx_serial = tak_get_u32(r + F_FX_SERIAL);
+    f->rubble = tak_get_u8(r + F_RUBBLE) & 1u;
 }
 
 /* ── fog ──────────────────────────────────────────────────────────── */
@@ -2429,7 +2433,8 @@ static void encode_cfgb(uint8_t *p, const BattleConfig *cfg) {
         int sp = cfg->players[i].start_pos;
         p[CFGB_STARTS + i] = (uint8_t)(sp > 0 && sp <= 255 ? sp : 0);
     }
-    p[CFGB_FLAGS] = (uint8_t)(cfg->numbered_starts ? CFGB_F_NUMBERED : 0);
+    p[CFGB_FLAGS] = (uint8_t)((cfg->numbered_starts ? CFGB_F_NUMBERED : 0) |
+                              (cfg->remastered ? CFGB_F_REMASTERED : 0));
 }
 
 static void decode_cfgb(const uint8_t *p, size_t len, BattleConfig *cfg) {
@@ -2460,6 +2465,7 @@ static void decode_cfgb(const uint8_t *p, size_t len, BattleConfig *cfg) {
         for (int i = 0; i < TAK_MAX_PLAYERS; i++)
             cfg->players[i].start_pos = p[CFGB_STARTS + i];
         cfg->numbered_starts = (p[CFGB_FLAGS] & CFGB_F_NUMBERED) ? 1 : 0;
+        cfg->remastered = (p[CFGB_FLAGS] & CFGB_F_REMASTERED) ? 1 : 0;
     } else {
         /* Saved before claims: the seats stand where they were dealt then. */
         cfg->numbered_starts = 1;

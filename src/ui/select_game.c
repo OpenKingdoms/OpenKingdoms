@@ -475,7 +475,8 @@ static void host_game(void) {
         (defaults.random_start_locations ? TAK_ROOMOPT_RANDOM_STARTS    : 0u) |
         (defaults.power_codes            ? TAK_ROOMOPT_POWER_CODES      : 0u) |
         (defaults.slow_game              ? TAK_ROOMOPT_SLOW_GAME        : 0u) |
-        (defaults.crusades_balance       ? TAK_ROOMOPT_CRUSADES_BALANCE : 0u);
+        (defaults.crusades_balance       ? TAK_ROOMOPT_CRUSADES_BALANCE : 0u) |
+        (defaults.remastered             ? TAK_ROOMOPT_REMASTERED       : 0u);
     if (first_map(cr.map_name, sizeof cr.map_name, cr.map_fingerprint) != 0) {
         /* Without a map the server would take the room and then refuse
          * every attempt to start it, which is a worse answer than this. */
@@ -745,6 +746,8 @@ static void fill_info(void) {
         snprintf(line, sizeof line, "That game plays %s, the same as you.",
                  want[0] ? want : TAK_ModSet_ActiveName());
         set_status(line);
+    } else if (r && r->compat == 0 && (r->options & TAK_ROOMOPT_REMASTERED)) {
+        set_status("That game plays the remastered battlefield rules.");
     }
 }
 
@@ -783,7 +786,11 @@ int SelectGame_RowText(int index, char *out, size_t cap) {
     char mod[TAK_NET_MOD_NAME_MAX + TAK_NET_MOD_VERSION_MAX + 2];
     TAK_ModSet_Label(s->mod_name, s->mod_version, mod, sizeof mod);
     const char *name = s->name[0] ? s->name : "(no name)";
-    if (mod[0]) snprintf(out, cap, "%s (%s)", name, mod);
+    /* A room on the remastered battlefield rules says so (D-036). */
+    const char *rules = (s->options & TAK_ROOMOPT_REMASTERED) ? "Remastered" : "";
+    if (mod[0] && rules[0]) snprintf(out, cap, "%s (%s, %s)", name, mod, rules);
+    else if (mod[0]) snprintf(out, cap, "%s (%s)", name, mod);
+    else if (rules[0]) snprintf(out, cap, "%s (%s)", name, rules);
     else
         snprintf(out, cap, "%s", name);
     return 1;

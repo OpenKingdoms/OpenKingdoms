@@ -4045,6 +4045,72 @@ TEST(mp_room_host_cycles_a_slot_by_its_name) {
     VFS_Shutdown();
 }
 
+/* The skirmish screen and the battle room carry a Remastered Battlefield
+ * row of our own one row under the original's last rule, and the row
+ * sets the rule: the skirmish's config, and the room's option bit
+ * (D-036). A room on those rules says so in the game list. */
+TEST(the_lobbies_offer_the_remastered_battlefield) {
+    if (mount_iron_plague() != 0) SKIP("no game dir");
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        SKIP("install has no Iron Plague");
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    GUIRuntime *rt = BattleSetup_Runtime();
+    int box = widget_index_named(rt, "Remastered");
+    int crus = widget_index_named(rt, "CrusadesBalance");
+    int cap = widget_index_named(rt, "RemasteredText");
+    SDL_Rect rb = { 0 }, rc = { 0 };
+    if (box >= 0) rb = GUIRuntime_WidgetAt(rt, box)->rect;
+    if (crus >= 0) rc = GUIRuntime_WidgetAt(rt, crus)->rect;
+    int before = BattleSetup_Config()->remastered;
+    BattleSetup_Press("Remastered");
+    int after = BattleSetup_Config()->remastered;
+    (void)BattleSetup_Tick(&platform, 1.0f / 60.0f);
+    (void)save_and_check_canvas("test_render_remastered_skirmish.bmp");
+    BattleSetup_Shutdown();
+
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 704);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1000);
+    n = mp_encode_room_hosted(msg, sizeof msg, 1, 704, TAK_ROOMOPT_LINE_OF_SIGHT, 500, 0);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1100);
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    mp_drain(c);
+    (void)save_and_check_canvas("test_render_remastered_room.bmp");
+    GUIRuntime *mrt = Multiplayer_Runtime();
+    int mbox = widget_index_named(mrt, "Remastered");
+    TAK_MsgRoomEdit e;
+    memset(&e, 0, sizeof e);
+    int took = -1;
+    if (mbox >= 0) {
+        (void)Multiplayer_HandleClick("Remastered", mbox);
+        took = mp_take_edit(c, &e);
+    }
+    Multiplayer_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+
+    ASSERT(box >= 0 && crus >= 0 && cap >= 0);
+    ASSERT_EQ_INT(rc.x, rb.x);
+    /* The panel has the Units row under Crusades, so the rows close up. */
+    ASSERT(rb.y > rc.y + 13 && rb.y + 13 < 193);
+    ASSERT_EQ_INT(0, before);
+    ASSERT_EQ_INT(1, after);
+    ASSERT(mbox >= 0);
+    ASSERT_EQ_INT(0, took);
+    ASSERT_EQ_INT(TAK_EDIT_OPTIONS, (int)e.field);
+    ASSERT_EQ_INT((int)(TAK_ROOMOPT_LINE_OF_SIGHT | TAK_ROOMOPT_REMASTERED), (int)e.value);
+}
+
 TEST(mp_room_host_sets_the_rules_the_cap_and_the_map) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -28902,6 +28968,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(mp_room_draws_a_seat_that_is_ready);
     RUN_UI_TEST(mp_room_shows_why_the_server_said_no);
     RUN_UI_TEST(mp_room_host_sets_the_rules_the_cap_and_the_map);
+    RUN_UI_TEST(the_lobbies_offer_the_remastered_battlefield);
     RUN_UI_TEST(mp_room_host_cycles_a_slot_by_its_name);
     RUN_UI_TEST(a_click_on_a_scroll_arrow_reaches_the_arrow);
     RUN_UI_TEST(select_game_scrolls_by_its_arrows);

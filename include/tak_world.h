@@ -230,6 +230,9 @@ typedef struct GameWorld {
         uint16_t front_frame, front_wait;
         uint16_t back_frame, back_wait;
         uint32_t fx_serial;
+        /* A wall's or a building's rubble that blocks until swept, under
+         * the remastered rules (D-036). */
+        uint8_t  rubble;
     } *features;
     int        feature_count;
     int        feature_cap;   /* allocated entries; >= feature_count */
