@@ -115,6 +115,9 @@ static struct {
 /* The map the battle was started on, by the name the map list gives. */
 static char s_map_key[96];
 
+static void rings_restart(void);
+static void note_blast(const UnitsBlast *b);
+
 static void fail(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -192,6 +195,7 @@ int32_t okx_init(const char *game_dir, const char *data_dir) {
         VFS_Shutdown();
         return -1;
     }
+    Units_SetBlastHook(note_blast);
     g.ready = 1;
     return 0;
 }
@@ -220,6 +224,7 @@ void okx_end_game(void) {
     Loading_Shutdown();
     World_End(&g.plat);
     g.in_game = 0;
+    rings_restart();
 }
 
 int32_t okx_audio(int32_t enable, int32_t volume, int32_t music) {
@@ -273,6 +278,7 @@ void okx_shutdown(void) {
     platform_down(&g.plat);
     VFS_Shutdown();
     GPU_SetKeepPixels(0);
+    Units_SetBlastHook(NULL);
     g.ready = 0;
 }
 
@@ -588,6 +594,7 @@ int32_t okx_load_step(int32_t max_ms, float *progress, char *status, int32_t cap
     /* The classic 2D view places buildings unturned, but the host draws
      * in 3D with a camera that turns, so its buildings turn (D-022). */
     HUD_SetBuildTurning(1);
+    rings_restart();
     g.in_game = 1;
     if (progress) *progress = 1.0f;
     return 1;
@@ -1198,6 +1205,106 @@ int32_t okx_battle_events(OkxBattleEvent *out, int32_t cap) {
         out[i].other_def = e->other_def;
     }
     return r->event_count;
+}
+
+/* ── What a battle does to the field ───────────────────────────────── */
+
+/* The id the next entry takes, and the oldest this battle kept. */
+typedef struct Ring { int32_t next, first; } Ring;
+
+static OkxBlast s_blast[OKX_RING];
+static Ring s_blasts = { 1, 1 };
+
+static void rings_restart(void) { s_blasts.first = s_blasts.next; }
+
+/* How many entries come after since, and the id of the first of them. */
+static int32_t ring_after(const Ring *r, int32_t since, int32_t *from) {
+    int32_t lo = r->next - OKX_RING;
+    if (lo < r->first) lo = r->first;
+    if (since >= lo) lo = since + 1;
+    *from = lo;
+    return r->next > lo ? r->next - lo : 0;
+}
+
+/* The feature whose footprint holds a point, as okx_features indexes it. */
+static int32_t feature_under(const GameWorld *w, int32_t x, int32_t y) {
+    int32_t cx = x / 16, cy = y / 16;
+    for (int i = 0; w->features && i < w->feature_count; i++) {
+        const struct MapFeature *mf = &w->features[i];
+        const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+        if (!fd) continue;
+        int fx = fd->footprint_x > 0 ? fd->footprint_x : 1;
+        int fz = fd->footprint_z > 0 ? fd->footprint_z : 1;
+        if (cx >= mf->tile_x && cx < mf->tile_x + fx && cy >= mf->tile_z && cy < mf->tile_z + fz)
+            return i;
+    }
+    return -1;
+}
+
+/* Units_SetBlastHook's listener: called inside the tick, so it reads only. */
+static void note_blast(const UnitsBlast *b) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w || !b) return;
+    OkxBlast *o = &s_blast[s_blasts.next % OKX_RING];
+    memset(o, 0, sizeof(*o));
+    o->id = s_blasts.next++;
+    o->tick = okx_tick_count();
+    o->cause = b->slot == OKX_SLOT_DEATH ? OKX_BLAST_DEATH : OKX_BLAST_WEAPON;
+    o->def = b->def;
+    o->slot = b->slot;
+    o->player = b->player;
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    o->shooter = (b->shooter >= 0 && b->shooter < count && units[b->shooter].alive != UNIT_ALIVE_DEAD &&
+                  units[b->shooter].def_idx == b->def) ? b->shooter : -1;
+    o->x = (float)b->x;
+    o->y = b->height;
+    o->z = (float)b->y;
+    o->dx = b->dir_x;
+    o->dy = b->dir_up;
+    o->dz = b->dir_y;
+    o->radius = (float)b->area_of_effect * 0.5f;
+    o->damage = b->damage;
+    o->unit = b->struck;
+    o->feature = b->struck >= 0 ? -1 : feature_under(w, b->x, b->y);
+    const UnitDef *d = b->def >= 0 ? Units_GetDef(b->def) : NULL;
+    if (d && b->slot >= 0 && b->slot < 3 && d->weapons[b->slot].units_only) o->flags |= OKX_BLAST_UNITS_ONLY;
+    if (b->in_water && b->struck < 0) o->flags |= OKX_BLAST_WATER;
+    /* The original spares scenery from a shot of under 17 px of area that
+     * comes down on a unit (legacy:245029-245033). */
+    if (b->struck >= 0 && b->area_of_effect < 17) o->flags |= OKX_BLAST_DIRECT_HIT;
+    if (!Fog_ShowsAt(w, b->x, b->y)) o->flags |= OKX_BLAST_UNSEEN;
+}
+
+int32_t okx_blasts(int32_t since, OkxBlast *out, int32_t cap) {
+    int32_t from = 0;
+    int32_t n = ring_after(&s_blasts, since, &from);
+    for (int32_t i = 0; out && i < n && i < cap; i++) out[i] = s_blast[(from + i) % OKX_RING];
+    return n;
+}
+
+static void copy_key(char *dst, size_t cap, const char *src) {
+    snprintf(dst, cap, "%s", src ? src : "");
+}
+
+int32_t okx_weapon_info(int32_t def, int32_t slot, OkxWeaponInfo *out) {
+    const UnitDef *d = def >= 0 ? Units_GetDef(def) : NULL;
+    if (!d || !out || slot < 0 || slot >= 3 || slot >= d->num_weapons) return -1;
+    const UnitWeapon *wp = &d->weapons[slot];
+    if (!wp->name[0] && !wp->type[0]) return -1;
+    memset(out, 0, sizeof(*out));
+    copy_key(out->name, sizeof(out->name), wp->name);
+    copy_key(out->type, sizeof(out->type), wp->type);
+    copy_key(out->subtype, sizeof(out->subtype), wp->subtype);
+    copy_key(out->damage_type, sizeof(out->damage_type), wp->damage_type);
+    copy_key(out->explosion_class, sizeof(out->explosion_class), wp->explosion_class);
+    out->area_of_effect = wp->area_of_effect;
+    out->damage = wp->damage;
+    out->flags = (wp->units_only ? OKX_WEAPON_UNITS_ONLY : 0) | (wp->mana_per_shot > 0 ? OKX_WEAPON_SPELL : 0);
+    out->lightmap = wp->lightmap;
+    out->shake_magnitude = (float)wp->shake_magnitude;
+    out->shake_duration = wp->shake_duration;
+    return 0;
 }
 
 int32_t okx_unit_record(int32_t handle, int32_t *kills, int32_t *xp, int32_t *rank) {

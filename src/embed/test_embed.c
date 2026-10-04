@@ -1258,6 +1258,14 @@ static int read_everything(int step) {
         int32_t k, xp, rank;
         okx_unit_record(units[step % n].handle, &k, &xp, &rank);
     }
+    /* What a host drawing the field reads. */
+    static OkxBlast blasts[OKX_RING];
+    int nb = okx_blasts(0, blasts, OKX_RING);
+    for (int i = 0; i < nb && i < OKX_RING; i++) {
+        OkxWeaponInfo wi;
+        okx_weapon_info(blasts[i].def, blasts[i].slot, &wi);
+        reads++;
+    }
     /* The pointer wanders, and the sidebar is read for a selection. */
     if (n > 0) {
         const OkxUnit *u = &units[step % n];
@@ -2529,6 +2537,86 @@ TEST(the_game_ends_cleanly_and_can_start_again) {
     g_booted = 0;
 }
 
+/* The last blast id so far, 0 for none. */
+static int32_t last_blast(void) {
+    static OkxBlast bl[OKX_RING];
+    int n = okx_blasts(0, bl, OKX_RING);
+    if (n > OKX_RING) n = OKX_RING;
+    return n > 0 ? bl[n - 1].id : 0;
+}
+
+/* A catapult's rock thrown at the ground comes back as a blast with its
+ * weapon, its place and its way, and the ring reads from an id and
+ * starts again with the next battle. */
+TEST(a_blast_names_its_weapon_and_where_it_burst) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int def = -1;
+    for (int i = 0; i < okx_def_count() && def < 0; i++) {
+        OkxDefInfo di;
+        if (okx_def_info(i, &di) == 0 && same_name(di.name, "ARAPULT")) def = i;
+    }
+    ASSERT(def >= 0);
+    OkxWeaponInfo wi;
+    ASSERT_EQ_INT(0, okx_weapon_info(def, 0, &wi));
+    printf("(%s: %s, %s, area %d, damage %d) ", wi.name, wi.type, wi.explosion_class,
+           wi.area_of_effect, wi.damage);
+    ASSERT(wi.area_of_effect > 0 && wi.damage > 0 && wi.type[0] && wi.explosion_class[0]);
+    ASSERT_EQ_INT(-1, okx_weapon_info(def, 3, &wi));
+    ASSERT_EQ_INT(-1, okx_weapon_info(-1, 0, &wi));
+    ASSERT_EQ_INT(0, okx_weapon_info(def, 0, &wi));
+    int h = okx_place_unit(def, okx_local_player());
+    ASSERT(h >= 0);
+    OkxUnit u;
+    ASSERT_EQ_INT(0, okx_unit(h, &u));
+    int32_t since = last_blast();
+    ASSERT_EQ_INT(0, okx_blasts(since, NULL, 0));
+    int32_t ax = (int32_t)u.x + 320, az = (int32_t)u.z;
+    ASSERT_EQ_INT(0, okx_command(20, h, ax, az, -1, -1, 0));
+    static OkxBlast bl[OKX_RING];
+    OkxBlast rock;
+    memset(&rock, 0, sizeof rock);
+    for (int t = 0; t < 1200 && !rock.id; t += 2) {
+        okx_tick(2);
+        int n = okx_blasts(since, bl, OKX_RING);
+        for (int i = 0; i < n && i < OKX_RING && !rock.id; i++)
+            if (bl[i].def == def && bl[i].shooter == h) rock = bl[i];
+    }
+    ASSERT(rock.id > since);
+    printf("(at %.0f %.0f, way %.2f %.2f %.2f, radius %.0f) ", rock.x, rock.z, rock.dx, rock.dy, rock.dz, rock.radius);
+    ASSERT_EQ_INT(OKX_BLAST_WEAPON, rock.cause);
+    ASSERT_EQ_INT(0, rock.slot);
+    ASSERT_EQ_INT(okx_local_player(), rock.player);
+    ASSERT_EQ_INT(wi.damage, rock.damage);
+    ASSERT(fabsf(rock.radius - wi.area_of_effect * 0.5f) < 0.01f);
+    ASSERT(fabsf(rock.x - (float)ax) < 96.0f && fabsf(rock.z - (float)az) < 96.0f);
+    ASSERT(rock.dx > 0.05f && rock.dy < 0.0f);
+    ASSERT_EQ_INT(-1, rock.unit);
+    ASSERT_EQ_INT(0, rock.flags & (OKX_BLAST_DIRECT_HIT | OKX_BLAST_UNSEEN));
+    ASSERT(rock.tick > 0 && rock.tick <= okx_tick_count());
+    /* From an id: what came after it, oldest first. */
+    int n = okx_blasts(since, bl, OKX_RING);
+    ASSERT(n >= 1);
+    ASSERT_EQ_INT(since + 1, bl[0].id);
+    for (int i = 1; i < n && i < OKX_RING; i++) ASSERT_EQ_INT(bl[i - 1].id + 1, bl[i].id);
+    int32_t last = bl[(n < OKX_RING ? n : OKX_RING) - 1].id;
+    ASSERT_EQ_INT(0, okx_blasts(last, bl, OKX_RING));
+    /* A new battle starts the ring empty, and its ids carry on. */
+    okx_end_game();
+    g_booted = 0;
+    ASSERT_EQ_INT(0, okx_blasts(0, NULL, 0));
+    ASSERT_EQ_INT(0, start_battle(1));
+    ASSERT_EQ_INT(0, okx_blasts(0, NULL, 0));
+    h = okx_place_unit(def, okx_local_player());
+    ASSERT(h >= 0);
+    ASSERT_EQ_INT(0, okx_unit(h, &u));
+    ASSERT_EQ_INT(0, okx_command(20, h, (int)u.x + 320, (int)u.z, -1, -1, 0));
+    for (int t = 0; t < 1200 && okx_blasts(0, NULL, 0) == 0; t += 2) okx_tick(2);
+    ASSERT(okx_blasts(0, bl, OKX_RING) > 0);
+    ASSERT(bl[0].id > last);
+}
+
 int main(void) {
     TEST_SUITE("ok_embed");
     /* A user folder of the test's own, where the edited map is saved. */
@@ -2567,6 +2655,7 @@ int main(void) {
     RUN(the_interface_art_comes_by_sheet_and_entry);
     RUN(a_picture_comes_by_name_for_painting_a_model);
     RUN(a_shot_and_its_blast_carry_the_weapons_lightmap);
+    RUN(a_blast_names_its_weapon_and_where_it_burst);
     RUN(a_nimbus_rides_its_caster);
     RUN(a_beam_leaves_from_its_firing_piece);
     RUN(a_defs_effect_strips_are_its_weapons_and_blasts);

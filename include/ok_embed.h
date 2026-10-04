@@ -41,7 +41,8 @@ extern "C" {
  * 23: OKX_EFFECT_NIMBUS and an effect's follow, a beam's source at its
  * firing piece with from_piece on OkxProjectile, okx_def_effect_strips.
  * Added since, without a bump: okx_battle_stats, okx_battle_series,
- * okx_battle_built, okx_battle_events and okx_unit_record.
+ * okx_battle_built, okx_battle_events, okx_unit_record, okx_blasts and
+ * okx_weapon_info.
  * 22: okx_gui_art, okx_map_starts, map sizes in cells, a seat's claimed
  * start on OkxSeat and OkxNetSeat (TAK_EDIT_START and
  * TAK_EDIT_MOVE_START in a room), okx_sprite_by_name and
@@ -459,6 +460,67 @@ OKX_API int32_t okx_battle_events(OkxBattleEvent *out, int32_t cap);
  * experience over its kind's experiencepoints). 0 on success. */
 OKX_API int32_t okx_unit_record(int32_t handle, int32_t *kills, int32_t *xp,
                                 int32_t *rank);
+
+/* ── What a battle does to the field ───────────────────────────────── */
+
+/* For a host that draws more than the original: report only, kept in a
+ * ring outside the simulation, its save and its hash. Ids start at 1 and
+ * rise by one, never reused while the library is loaded, and each battle
+ * starts its ring empty. A call returns how many there are after since
+ * and fills up to cap of them, oldest first. A ring keeps OKX_RING. */
+#define OKX_RING 1024
+
+enum { OKX_BLAST_WEAPON = 0, OKX_BLAST_DEATH = 1, OKX_BLAST_FEATURE = 2 };
+#define OKX_BLAST_FIRE_STARTER 1   /* sets flammable scenery burning */
+#define OKX_BLAST_UNITS_ONLY   2   /* never touches scenery */
+#define OKX_BLAST_WATER        4   /* burst on the sea */
+#define OKX_BLAST_DIRECT_HIT   8   /* under 17 px of area on a unit, scenery spared */
+#define OKX_BLAST_UNSEEN       16  /* where the local player could not see */
+/* A weapon slot meaning the unit's own death blast. */
+#define OKX_SLOT_DEATH (-2)
+
+/* A shot, a spell or a death bursting. radius is half the weapon's
+ * areaofeffect, the reach the original gives a blast over scenery. */
+typedef struct OkxBlast {
+    int32_t  id;
+    uint32_t tick;            /* okx_tick_count when it burst */
+    int32_t  cause;           /* OKX_BLAST_* */
+    int32_t  def, slot;       /* the weapon's unit def and slot, -1 unknown */
+    int32_t  player;
+    int32_t  shooter;         /* the handle that fired, while it lives, or -1 */
+    float    x, y, z;         /* world pixels */
+    float    dx, dy, dz;      /* the way it travelled, unit length, or 0 */
+    float    radius;          /* pixels */
+    int32_t  damage, flags;   /* flags OKX_BLAST_* bits */
+    int32_t  unit;            /* the handle it came down on, or -1 */
+    int32_t  feature;         /* the feature in its cell, okx_features' index, or -1 */
+} OkxBlast;
+
+OKX_API int32_t okx_blasts(int32_t since, OkxBlast *out, int32_t cap);
+
+#define OKX_WEAPON_FIRE_STARTER 1
+#define OKX_WEAPON_UNITS_ONLY   2
+#define OKX_WEAPON_SPELL        4   /* costs mana */
+
+/* A weapon as its data describes it, the keys spelled as the data has
+ * them and "" where it leaves one out. */
+typedef struct OkxWeaponInfo {
+    char    name[32];
+    char    type[32];
+    char    subtype[32];
+    char    damage_type[32];
+    char    explosion_class[32];
+    char    water_explosion_class[32];
+    int32_t area_of_effect;   /* pixels, as the data gives it */
+    int32_t damage;
+    int32_t flags;            /* OKX_WEAPON_* */
+    int32_t lightmap;         /* OKX_LIGHTMAP_* */
+    float   shake_magnitude;  /* pixels */
+    float   shake_duration;   /* seconds */
+} OkxWeaponInfo;
+
+/* slot 0 to 2, or OKX_SLOT_DEATH. 0 on success, -1 for no such weapon. */
+OKX_API int32_t okx_weapon_info(int32_t def, int32_t slot, OkxWeaponInfo *out);
 
 /* ── The game's own controls ───────────────────────────────────────── */
 
