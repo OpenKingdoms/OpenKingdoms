@@ -117,6 +117,7 @@ static char s_map_key[96];
 
 static void rings_restart(void);
 static void note_blast(const UnitsBlast *b);
+static void note_feature(const struct GameWorld *w, const FeatureEvent *e);
 static void note_explode(void *user, int node, int32_t how);
 
 static void fail(const char *fmt, ...) {
@@ -198,6 +199,7 @@ int32_t okx_init(const char *game_dir, const char *data_dir) {
     }
     Units_SetBlastHook(note_blast);
     Cob_SetExplodeHook(note_explode);
+    Features_SetEventHook(note_feature);
     g.ready = 1;
     return 0;
 }
@@ -282,6 +284,7 @@ void okx_shutdown(void) {
     GPU_SetKeepPixels(0);
     Units_SetBlastHook(NULL);
     Cob_SetExplodeHook(NULL);
+    Features_SetEventHook(NULL);
     g.ready = 0;
 }
 
@@ -1227,10 +1230,20 @@ static OkxBlast s_blast[OKX_RING];
 static Ring s_blasts = { 1, 1 };
 static OkxPieceEvent s_piece[OKX_RING];
 static Ring s_pieces = { 1, 1 };
+static OkxFeatureEvent s_fevent[OKX_RING];
+static Ring s_fevents = { 1, 1 };
+
+/* The blast behind each feature now dying or burning, by its index, so
+ * the stage that ends it names the blast too. */
+#define OKX_HELD_FATES 256
+static struct { int32_t idx, blast; float x, y, z; } s_held[OKX_HELD_FATES];
+static int s_held_n;
 
 static void rings_restart(void) {
     s_blasts.first = s_blasts.next;
     s_pieces.first = s_pieces.next;
+    s_fevents.first = s_fevents.next;
+    s_held_n = 0;
 }
 
 /* How many entries come after since, and the id of the first of them. */
@@ -1315,6 +1328,7 @@ int32_t okx_weapon_info(int32_t def, int32_t slot, OkxWeaponInfo *out) {
     copy_key(out->subtype, sizeof(out->subtype), wp->subtype);
     copy_key(out->damage_type, sizeof(out->damage_type), wp->damage_type);
     copy_key(out->explosion_class, sizeof(out->explosion_class), wp->explosion_class);
+    copy_key(out->water_explosion_class, sizeof(out->water_explosion_class), wp->water_explosion_class);
     out->area_of_effect = wp->area_of_effect;
     out->damage = wp->damage;
     out->flags = (wp->units_only ? OKX_WEAPON_UNITS_ONLY : 0) | (wp->mana_per_shot > 0 ? OKX_WEAPON_SPELL : 0) |
@@ -1353,6 +1367,90 @@ static void note_explode(void *user, int node, int32_t how) {
     o->how = how;
     o->unseen = !unit_drawn(u);
     memcpy(o->m, &pose[node * 12], sizeof(o->m));
+}
+
+/* The newest blast recorded at a point, or 0. */
+static int32_t blast_at(int32_t x, int32_t z, float *bx, float *by, float *bz) {
+    int32_t lo = s_blasts.next - OKX_RING;
+    if (lo < s_blasts.first) lo = s_blasts.first;
+    for (int32_t id = s_blasts.next - 1; id >= lo; id--) {
+        const OkxBlast *b = &s_blast[id % OKX_RING];
+        if ((int32_t)b->x != x || (int32_t)b->z != z) continue;
+        *bx = b->x;
+        *by = b->y;
+        *bz = b->z;
+        return b->id;
+    }
+    return 0;
+}
+
+/* A feature's index went: the held ones above it move down with it. */
+static void held_removed(int32_t idx) {
+    int k = 0;
+    for (int i = 0; i < s_held_n; i++) {
+        if (s_held[i].idx == idx) continue;
+        s_held[k] = s_held[i];
+        if (s_held[k].idx > idx) s_held[k].idx--;
+        k++;
+    }
+    s_held_n = k;
+}
+
+/* Features_SetEventHook's listener, called inside the tick. */
+static void note_feature(const struct GameWorld *w, const FeatureEvent *e) {
+    if (!g.in_game || !w || !e) return;
+    OkxFeatureEvent *o = &s_fevent[s_fevents.next % OKX_RING];
+    memset(o, 0, sizeof(*o));
+    o->id = s_fevents.next++;
+    o->tick = okx_tick_count();
+    o->kind = e->kind;
+    o->feature = e->idx;
+    o->def = e->def;
+    o->new_def = e->new_def;
+    o->x = (float)e->x;
+    o->z = (float)e->y;
+    o->y = (float)Terrain_SampleHeight(w, e->x, e->y);
+    o->damage = e->damage;
+    o->health = e->left;
+    /* The original's frames run every second tick. */
+    o->ticks = e->frames > 0 ? e->frames * 2 : 0;
+    o->from_x = o->x;
+    o->from_y = o->y;
+    o->from_z = o->z;
+    if (e->blast) o->blast = blast_at(e->bx, e->by, &o->from_x, &o->from_y, &o->from_z);
+    int ends = e->kind == OKX_FEATURE_DEAD || e->kind == OKX_FEATURE_BURNT;
+    if (ends) {
+        for (int i = 0; i < s_held_n; i++)
+            if (s_held[i].idx == e->idx) {
+                o->blast = s_held[i].blast;
+                o->from_x = s_held[i].x;
+                o->from_y = s_held[i].y;
+                o->from_z = s_held[i].z;
+            }
+    }
+    if ((e->kind == OKX_FEATURE_DYING || e->kind == OKX_FEATURE_BURNING) && o->blast &&
+        s_held_n < OKX_HELD_FATES) {
+        s_held[s_held_n].idx = e->idx;
+        s_held[s_held_n].blast = o->blast;
+        s_held[s_held_n].x = o->from_x;
+        s_held[s_held_n].y = o->from_y;
+        s_held[s_held_n].z = o->from_z;
+        s_held_n++;
+    }
+    if (e->kind == OKX_FEATURE_REMOVED || e->kind == OKX_FEATURE_SWEPT || (ends && e->new_def < 0)) {
+        held_removed(e->idx);
+    } else if (ends) {
+        int k = 0;
+        for (int i = 0; i < s_held_n; i++) if (s_held[i].idx != e->idx) s_held[k++] = s_held[i];
+        s_held_n = k;
+    }
+}
+
+int32_t okx_feature_events(int32_t since, OkxFeatureEvent *out, int32_t cap) {
+    int32_t from = 0;
+    int32_t n = ring_after(&s_fevents, since, &from);
+    for (int32_t i = 0; out && i < n && i < cap; i++) out[i] = s_fevent[(from + i) % OKX_RING];
+    return n;
 }
 
 int32_t okx_piece_events(int32_t since, OkxPieceEvent *out, int32_t cap) {

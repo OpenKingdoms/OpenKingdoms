@@ -1285,6 +1285,8 @@ static int read_everything(int step) {
     /* What a host drawing the field reads. */
     static OkxPieceEvent pieces[OKX_RING];
     okx_piece_events(0, pieces, OKX_RING);
+    static OkxFeatureEvent fevents[OKX_RING];
+    okx_feature_events(0, fevents, OKX_RING);
     float ws, wm, wx, wz;
     okx_wind(&ws, &wm, &wx, &wz);
     static OkxBlast blasts[OKX_RING];
@@ -2672,6 +2674,7 @@ TEST(the_field_tells_its_wind_fire_and_stages) {
     ASSERT(wi.flags & OKX_WEAPON_FIRE_STARTER);
     ASSERT_EQ_INT(0, okx_weapon_info(pult, 0, &wi));
     ASSERT_EQ_INT(0, wi.flags & OKX_WEAPON_FIRE_STARTER);
+    ASSERT(same_name(wi.water_explosion_class, "medium water explosion"));
     int n = okx_feature_def_count(), dies = 0, burns = 0, stands = 0;
     for (int i = 0; i < n; i++) {
         OkxFeatureFate f;
@@ -2735,6 +2738,71 @@ TEST(a_dying_archer_throws_its_pieces) {
     ASSERT(first.tick > 0 && first.tick <= okx_tick_count());
 }
 
+/* A catapult's rock on the nearest scenery one rock destroys: the hit,
+ * its death and the stage that takes its cell come out in order, each
+ * naming the rock's blast. */
+TEST(scenery_a_rock_destroys_tells_each_step) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int pult_def = def_by_name("ARAPULT");
+    ASSERT(pult_def >= 0);
+    OkxWeaponInfo wi;
+    ASSERT_EQ_INT(0, okx_weapon_info(pult_def, 0, &wi));
+    int pult = okx_place_unit(pult_def, okx_local_player());
+    ASSERT(pult >= 0);
+    OkxUnit p;
+    ASSERT_EQ_INT(0, okx_unit(pult, &p));
+    static OkxFeature fs[8192];
+    int nf = okx_features(fs, 8192);
+    int pick = -1;
+    float best = 1e9f;
+    for (int i = 0; i < nf && i < 8192; i++) {
+        OkxFeatureFate f;
+        if (okx_feature_def_fate(fs[i].def, &f) != 0) continue;
+        if (f.indestructible || f.damage <= 0 || f.damage > wi.damage || f.dead_def < 0) continue;
+        float d = sqrtf((fs[i].x - p.x) * (fs[i].x - p.x) + (fs[i].z - p.z) * (fs[i].z - p.z));
+        if (d > 160.0f && d < best) { best = d; pick = i; }
+    }
+    ASSERT(pick >= 0);
+    OkxFeature target = fs[pick];
+    OkxFeatureFate fate;
+    ASSERT_EQ_INT(0, okx_feature_def_fate(target.def, &fate));
+    static OkxFeatureEvent fe[OKX_RING];
+    int32_t since = 0;
+    int k = okx_feature_events(0, fe, OKX_RING);
+    if (k > 0) since = fe[(k < OKX_RING ? k : OKX_RING) - 1].id;
+    ASSERT_EQ_INT(0, okx_command(20, pult, (int)target.x, (int)target.z, -1, -1, 0));
+    OkxFeatureEvent hit, end;
+    memset(&hit, 0, sizeof hit);
+    memset(&end, 0, sizeof end);
+    for (int t = 0; t < 60 * 30 && !end.id; t += 2) {
+        okx_tick(2);
+        int m = okx_feature_events(since, fe, OKX_RING);
+        for (int i = 0; i < m && i < OKX_RING; i++) {
+            since = fe[i].id;
+            if (fe[i].feature != target.index) continue;
+            if (fe[i].kind == OKX_FEATURE_HIT && !hit.id) hit = fe[i];
+            if (fe[i].kind == OKX_FEATURE_DEAD) end = fe[i];
+        }
+    }
+    printf("(%.0f px away, hit %d left %d, blast %d, dead into %d after %u ticks) ", best, hit.damage,
+           hit.health, hit.blast, end.new_def, end.tick - hit.tick);
+    ASSERT(hit.id > 0);
+    ASSERT_EQ_INT(wi.damage, hit.damage);
+    ASSERT_EQ_INT(0, hit.health);
+    ASSERT(hit.blast > 0);
+    static OkxBlast bl[OKX_RING];
+    int nb = okx_blasts(hit.blast - 1, bl, 1);
+    ASSERT(nb >= 1);
+    ASSERT_EQ_INT(pult_def, bl[0].def);
+    ASSERT(fabsf(hit.from_x - bl[0].x) < 0.5f && fabsf(hit.from_z - bl[0].z) < 0.5f);
+    ASSERT(end.id > hit.id);
+    ASSERT_EQ_INT(target.def, end.def);
+    ASSERT_EQ_INT(fate.dead_def, end.new_def);
+    ASSERT_EQ_INT(hit.blast, end.blast);
+}
+
 int main(void) {
     TEST_SUITE("ok_embed");
     /* A user folder of the test's own, where the edited map is saved. */
@@ -2777,6 +2845,7 @@ int main(void) {
     RUN(a_blast_names_its_weapon_and_where_it_burst);
     RUN(the_field_tells_its_wind_fire_and_stages);
     RUN(a_dying_archer_throws_its_pieces);
+    RUN(scenery_a_rock_destroys_tells_each_step);
     RUN(a_nimbus_rides_its_caster);
     RUN(a_beam_leaves_from_its_firing_piece);
     RUN(a_defs_effect_strips_are_its_weapons_and_blasts);

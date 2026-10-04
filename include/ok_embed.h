@@ -43,7 +43,7 @@ extern "C" {
  * Added since, without a bump: okx_battle_stats, okx_battle_series,
  * okx_battle_built, okx_battle_events, okx_unit_record, okx_blasts,
  * okx_weapon_info, okx_set_remastered, okx_remastered, okx_piece_events,
- * okx_wind and okx_feature_def_fate.
+ * okx_feature_events, okx_wind and okx_feature_def_fate.
  * 22: okx_gui_art, okx_map_starts, map sizes in cells, a seat's claimed
  * start on OkxSeat and OkxNetSeat (TAK_EDIT_START and
  * TAK_EDIT_MOVE_START in a room), okx_sprite_by_name and
@@ -544,6 +544,27 @@ typedef struct OkxPieceEvent {
 } OkxPieceEvent;
 
 OKX_API int32_t okx_piece_events(int32_t since, OkxPieceEvent *out, int32_t cap);
+
+/* What happened to a feature: its okx_features index when it happened,
+ * what it was and what took its cell (-1 when nothing did and it is
+ * gone), where it stands, the blast behind it (an okx_blasts id, 0 for
+ * none) and where that burst, a hit's damage and the hit points left,
+ * and a death's or a burn's length in ticks. The map's own scenery as a
+ * battle loads is no news. */
+enum { OKX_FEATURE_HIT = 0, OKX_FEATURE_DYING = 1, OKX_FEATURE_DEAD = 2, OKX_FEATURE_BURNING = 3,
+       OKX_FEATURE_BURNT = 4, OKX_FEATURE_SWEPT = 5, OKX_FEATURE_PLACED = 6, OKX_FEATURE_REMOVED = 7 };
+
+typedef struct OkxFeatureEvent {
+    int32_t  id;
+    uint32_t tick;
+    int32_t  kind, feature, def, new_def;
+    float    x, y, z;
+    int32_t  blast;
+    float    from_x, from_y, from_z;
+    int32_t  damage, health, ticks;
+} OkxFeatureEvent;
+
+OKX_API int32_t okx_feature_events(int32_t since, OkxFeatureEvent *out, int32_t cap);
 
 /* The simulation's wind: its speed, the map's highest, and the way it
  * blows as a unit vector in world x and z. -1 outside a battle. */
