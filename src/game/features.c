@@ -1400,8 +1400,9 @@ static int spark_carry(int32_t v) {
 /* A spark under the remastered rules (D-036). Its reach counts from the
  * nearest cell the wind carries it over: every cell within three, or out
  * to the nearest ring holding a feature that can catch. Cells go row by
- * row as the original's do, and it stops once the frame has lit its cap. */
-static void feat_spark_remastered(struct GameWorld *w, int sx, int sz) {
+ * row as the original's do, from the corner `turn` names (bit 0 east
+ * first, bit 1 south first), and it stops once the frame has lit its cap. */
+static void feat_spark_remastered(struct GameWorld *w, int sx, int sz, int turn) {
     enum { WIN = FEATURE_SPARK_REACH + FEATURE_SPARK_CARRY, SPAN = 2 * WIN + 1 };
     int cells[SPAN * SPAN];
     for (int k = 0; k < SPAN * SPAN; k++) cells[k] = -1;
@@ -1425,8 +1426,11 @@ static void feat_spark_remastered(struct GameWorld *w, int sx, int sz) {
     if (ring < 0) return;
     if (ring < 3) ring = 3;
     int mw = w->map_pixels_w / 16, mh = w->map_pixels_h / 16;
-    for (int dz = bz0 - ring; dz <= bz1 + ring; dz++)
-        for (int dx = bx0 - ring; dx <= bx1 + ring; dx++) {
+    int x0 = bx0 - ring, x1 = bx1 + ring, z0 = bz0 - ring, z1 = bz1 + ring;
+    for (int a = 0; a <= z1 - z0; a++)
+        for (int b = 0; b <= x1 - x0; b++) {
+            int dz = (turn & 2) ? z1 - a : z0 + a;
+            int dx = (turn & 1) ? x1 - b : x0 + b;
             int x = sx + dx, z = sz + dz;
             if (x < 0 || z < 0 || x >= mw || z >= mh) continue;
             int j = cells[(dz + WIN) * SPAN + dx + WIN];
@@ -1594,8 +1598,9 @@ void Features_TickFrame(struct GameWorld *w) {
         /* A spark due once the frame has lit its cap waits for the next. */
         if (mf->spark == 0 || (mf->spark == 1 && g_spark_catches >= FEATURE_SPARK_CATCH_CAP))
             continue;
+        /* Each of the four sparks starts its cells from another corner. */
         if (--mf->spark == 0) {
-            feat_spark_remastered(w, mf->tile_x, mf->tile_z);
+            feat_spark_remastered(w, mf->tile_x, mf->tile_z, mf->sparks & 3);
             mf = &w->features[i];
             if (mf->sparks != 0) {
                 mf->sparks--;

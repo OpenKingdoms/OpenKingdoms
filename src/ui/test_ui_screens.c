@@ -12519,10 +12519,10 @@ static int fire_run_map(const char *path, int remastered, int wind, uint32_t see
 }
 
 /* A square of `tree` every `gap` cells 80 cells across, its middle lit
- * under a steady east wind of `speed`. How far east, west and north or
+ * under a steady east wind of `speed`. How far east, west, north and
  * south the fire gets in a minute, and the frames each took. */
-static void fire_run_square(int tree, int gap, int speed, uint32_t seed, double out[6]) {
-    memset(out, 0, 6 * sizeof(double));
+static void fire_run_square(int tree, int gap, int speed, uint32_t seed, double out[8]) {
+    memset(out, 0, 8 * sizeof(double));
     BattleConfig cfg;
     BattleConfig_SetDefaults(&cfg);
     cfg.remastered = 1;
@@ -12551,7 +12551,8 @@ static void fire_run_square(int tree, int gap, int speed, uint32_t seed, double 
         double t = (double)(g_fire_lit[q].frame - f0);
         if (dx > out[0]) { out[0] = dx; out[1] = t; }
         if (-dx > out[2]) { out[2] = -dx; out[3] = t; }
-        if (abs(dz) > out[4]) { out[4] = abs(dz); out[5] = t; }
+        if (-dz > out[4]) { out[4] = -dz; out[5] = t; }
+        if (dz > out[6]) { out[6] = dz; out[7] = t; }
     }
     World_End(NULL);
 }
@@ -12576,17 +12577,18 @@ TEST(fire_on_the_shipped_maps) {
     static const int speeds[] = { 0, 1000, 2000, 5000 };
     for (int gi = 0; gi < 3 && tree >= 0; gi++)
         for (int si = 0; si < 4; si++) {
-            double sum[6] = { 0 };
+            double sum[8] = { 0 };
             for (int k = 0; k < 4; k++) {
-                double o[6];
+                double o[8];
                 fire_run_square(tree, gaps[gi], speeds[si], 31u + 17u * (uint32_t)k, o);
-                for (int q = 0; q < 6; q++) sum[q] += o[q] / 4.0;
+                for (int q = 0; q < 8; q++) sum[q] += o[q] / 4.0;
             }
             printf("\n    square gap %d wind %4d: in a minute east %4.1f cells (%4.1f px/s), "
-                   "west %4.1f (%4.1f px/s), north or south %4.1f (%4.1f px/s)",
+                   "west %4.1f (%4.1f px/s), north %4.1f (%4.1f px/s), south %4.1f (%4.1f px/s)",
                    gaps[gi], speeds[si], sum[0], sum[1] > 0 ? sum[0] * 480.0 / sum[1] : 0.0,
                    sum[2], sum[3] > 0 ? sum[2] * 480.0 / sum[3] : 0.0, sum[4],
-                   sum[5] > 0 ? sum[4] * 480.0 / sum[5] : 0.0);
+                   sum[5] > 0 ? sum[4] * 480.0 / sum[5] : 0.0, sum[6],
+                   sum[7] > 0 ? sum[6] * 480.0 / sum[7] : 0.0);
         }
     for (size_t m = 0; m < sizeof(want) / sizeof(want[0]); m++) {
         int p = -1;
