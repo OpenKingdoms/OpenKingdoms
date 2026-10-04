@@ -7802,6 +7802,11 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
 
 /* ── The computer on the remastered battlefield (A-011) ────────────── */
 
+static int corpse_find_clear_ground(const GameWorld *world,
+                                    int32_t near_x, int32_t near_y,
+                                    int half_px, int32_t *out_x,
+                                    int32_t *out_y);
+
 /* Two Castles with the Taros computer in seat 2 and the remastered
  * rules on, the seat's behaviours as `tactics`, its monarch's handle
  * out. 0 when it is up. */
