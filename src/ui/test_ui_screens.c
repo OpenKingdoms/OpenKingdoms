@@ -11690,6 +11690,53 @@ TEST(the_shipped_scenery_dies_and_burns_as_its_files_say) {
     ASSERT_EQ_INT(FEATURE_FX_NONE, neighbour_fx);
 }
 
+/* A burning tree draws its burn picture with both flames in the classic
+ * view, where an idle one drew only itself (legacy:211228-211240). */
+TEST(the_classic_view_draws_a_burning_tree) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    Features_LoadAll();
+    int ara = Features_FindByName("AraTree01");
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    int ok = ara >= 0 && World_BeginLoad(&platform, &cfg, "synthetic", "aramon") == 0;
+    GameWorld *w = World_Get();
+    uint32_t *idle = NULL, *burning = NULL;
+    int changed = 0, flames_on = 0;
+    if (ok && w) {
+        w->map_pixels_w = w->map_pixels_h = 64 * 16;
+        w->viewport_w = platform.window_w;
+        w->viewport_h = platform.window_h;
+        w->cam_x = w->cam_y = 0;
+        for (int i = 0; i < 256; i++) w->features_rgba[i] = 0xff808080u;
+        int t = Features_AddInstance(w, ara, 10, 10, 168, 168, 0, -1);
+        SDL_SetRenderDrawColor(platform.renderer, 0, 0, 0, 255);
+        SDL_RenderClear(platform.renderer);
+        Units_RenderFeatures(w, &platform);
+        idle = probe_read_pixels(&platform);
+        Features_DebugHit(w, t, 50, 1);
+        for (int f = 0; f < 10; f++) Features_TickFrame(w);
+        flames_on = w->features[t].front_on && w->features[t].back_on;
+        SDL_RenderClear(platform.renderer);
+        Units_RenderFeatures(w, &platform);
+        burning = probe_read_pixels(&platform);
+        if (idle && burning)
+            for (int i = 0; i < platform.window_w * platform.window_h; i++)
+                changed += idle[i] != burning[i];
+    }
+    printf("[%d pixels changed] ", changed);
+    free(idle);
+    free(burning);
+    World_End(&platform);
+    Features_FreeAll();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    ASSERT(ok);
+    ASSERT(flames_on);
+    ASSERT(changed > 200);
+}
+
 /* Every feature a map's name table lists resolves to a definition, on
  * the skirmish maps and the campaign's alike. The Temple of Blood map
  * pack names a zonhand_dead that no shipped file defines. */
@@ -28818,6 +28865,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(story_chapter_heading_uses_the_book_font);
     RUN_UI_TEST(zhon_plants_and_ruins_resolve);
     RUN_UI_TEST(the_shipped_scenery_dies_and_burns_as_its_files_say);
+    RUN_UI_TEST(the_classic_view_draws_a_burning_tree);
     RUN_UI_TEST(every_feature_a_map_names_resolves);
     RUN_UI_TEST(a_creon_save_needs_the_expansion_installed);
     RUN_UI_TEST(battle_setup_play_refuses_everyone_on_one_team);
