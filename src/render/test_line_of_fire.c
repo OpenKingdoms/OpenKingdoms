@@ -1351,10 +1351,12 @@ static void lf_dying_script(int def, int on) {
 /* The defs own what they point at, so a case that failed with the
  * script still lent must not leave it for the next one to free. */
 static void lf_release_script(void) {
-    UnitDef *d = (UnitDef *)Units_GetDef(LF_BOMBER);
-    if (!d || d->cob_script != &g_lf_die_script) return;
-    d->cob_script = NULL;
-    for (int c = 0; c < 12; c++) d->mesh_per_color[c] = NULL;
+    for (int k = 0; k < LF_DEF_COUNT; k++) {
+        UnitDef *d = (UnitDef *)Units_GetDef(k);
+        if (!d || d->cob_script != &g_lf_die_script) continue;
+        d->cob_script = NULL;
+        for (int c = 0; c < 12; c++) d->mesh_per_color[c] = NULL;
+    }
 }
 
 /* A unit dying under its script bursts as its death ends, and one saved
@@ -1394,6 +1396,34 @@ TEST(a_death_blast_owed_comes_back_with_a_save) {
     ASSERT_EQ_INT((int)want, (int)TAK_SimHash());
     remove(path);
     lf_dying_script(LF_BOMBER, 0);
+    lf_end();
+}
+
+/* A unit still dying when its monarch falls and its side is taken off
+ * the map bursts then, as the original's removal of a dying unit does
+ * (legacy:227574). */
+TEST(a_unit_dying_as_its_side_is_taken_off_still_bursts) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    lf_dying_script(LF_BOMBER, 1);
+    lf_dying_script(LF_KING, 1);
+    int bomber = lf_spawn(LF_BOMBER, 1, LF_TX, LF_ROW);
+    int foe = lf_spawn(LF_STURDY, 2, LF_TX + 32, LF_ROW);
+    int king = lf_spawn(LF_KING, 1, LF_SX, LF_ROW + 300);
+    int rest = lf_spawn(LF_STURDY, 1, LF_SX, LF_ROW - 300);
+    ASSERT(bomber >= 0 && foe >= 0 && king >= 0 && rest >= 0);
+    lf_ticks(4);
+    ASSERT_EQ_INT(bomber, Units_DebugKillHandle(bomber));
+    ASSERT_EQ_INT(UNIT_ALIVE_DYING, lf_unit(bomber)->alive);
+    ASSERT_EQ_INT(100000, lf_unit(foe)->health);
+    ASSERT_EQ_INT(king, Units_DebugKillHandle(king));
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, lf_unit(rest)->alive);
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, lf_unit(bomber)->alive);
+    ASSERT_EQ_INT(98000, lf_unit(foe)->health);
+    lf_ticks(60);
+    ASSERT_EQ_INT(98000, lf_unit(foe)->health);
+    lf_dying_script(LF_BOMBER, 0);
+    lf_dying_script(LF_KING, 0);
     lf_end();
 }
 
@@ -2464,6 +2494,7 @@ int main(int argc, char **argv) {
     RUN(a_death_weapon_bursts_on_friend_and_foe_where_its_unit_falls);
     RUN(a_frame_or_a_side_taken_off_never_bursts);
     RUN(a_death_blast_owed_comes_back_with_a_save);
+    RUN(a_unit_dying_as_its_side_is_taken_off_still_bursts);
     TEST_SUITE("Remastered battlefield");
     RUN(a_remastered_battle_breaks_a_rock_the_original_cannot);
     RUN(a_sweeping_spell_reaches_scenery_under_the_remastered_rules);

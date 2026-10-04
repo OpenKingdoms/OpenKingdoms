@@ -13206,6 +13206,8 @@ static void magic_death_tick(Unit *u, int i) {
     if (u->magic_death_fade > 0) u->magic_death_fade--;
     if (u->magic_death_fade > 0) return;
     unit_death_blast(u, i);
+    /* A blast that ended its own side has already taken it off. */
+    if (u->alive != UNIT_ALIVE_DYING) return;
     unit_leave_corpse(u);
     Cob_EngineFree(u->cob);
     tak_free(u->cob);
@@ -13292,6 +13294,7 @@ void Units_TickEngines(void) {
              * step where the original does both (legacy:227346-227353).
              * Its type was read off the script the instant it died. */
             unit_death_blast(u, i);
+            if (u->alive != UNIT_ALIVE_DYING) continue;
             unit_leave_corpse(u);
             Cob_EngineFree(u->cob);
             tak_free(u->cob);
