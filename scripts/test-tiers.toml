@@ -142,6 +142,7 @@ ui = [
   ["own_unit_walks_through_its_gate_and_gate_opens", 1],
   ["completed_wall_blocks_units", 1],
   ["units_do_not_stack_on_one_another", 1],
+  ["harpies_sent_to_one_place_do_not_stack", 1],
   ["boats_stay_in_water_ghost_ships_do_not", 1],
   ["skirmish_ai_duel_reaches_game_over", 1],
   ["group_selection_and_control_groups", 1],
