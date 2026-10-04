@@ -88,6 +88,11 @@ static Projectile g_projectiles[TAK_MAX_PROJECTILES];
  * not in it: see projectile_impact_shake(). */
 static int16_t g_proj_shake_mag[TAK_MAX_PROJECTILES];
 static float   g_proj_shake_sec[TAK_MAX_PROJECTILES];
+/* The unit def and weapon slot each shot left, for the blast hook. Beside
+ * the store like the shake, so neither saved nor hashed. */
+static int16_t g_proj_def[TAK_MAX_PROJECTILES];
+static int8_t  g_proj_wslot[TAK_MAX_PROJECTILES];
+static UnitsBlastHook g_blast_hook = NULL;
 
 static int slot_of_projectile(const Projectile *p) {
     return (int)(p - g_projectiles);
@@ -1110,6 +1115,15 @@ static uint8_t weapon_path_flags(const UnitWeapon *w) {
     return f;
 }
 
+/* Which of its def's weapons a shot left, for the blast hook. */
+static void proj_note_source(int slot, const Unit *shooter, const UnitWeapon *wp) {
+    const UnitDef *d = shooter ? Units_GetDef(shooter->def_idx) : NULL;
+    g_proj_def[slot] = (int16_t)(d ? shooter->def_idx : -1);
+    g_proj_wslot[slot] = -1;
+    for (int k = 0; d && wp && k < 3; k++)
+        if (wp == &d->weapons[k]) g_proj_wslot[slot] = (int8_t)k;
+}
+
 /* Spawn a new projectile aimed at `target_handle`. Returns -1 if the
  * pool is full. */
 static int spawn_projectile(int32_t x, int32_t y,
@@ -1244,6 +1258,7 @@ static int spawn_projectile(int32_t x, int32_t y,
     /* A flyer fires from where it is drawn. */
     if (shooter) p->height += shooter->flight_alt;
     p->muzzle_height = p->height;
+    proj_note_source(slot, shooter, source_weapon);
     if (source_weapon) {
         p->art_kind = source_weapon->art_kind;
         if (source_weapon->art_kind == UNIT_WEAPON_ART_MODEL) {
@@ -1723,11 +1738,50 @@ static void projectile_impact_shake(const Projectile *p) {
     ViewShake_Start(mag, (int)(sec * 60.0f));
 }
 
+/* Every burst comes through projectile_impact_fx, so the hook hears it
+ * there: where, which way, whose weapon and what it came down on. */
+static void projectile_note_blast(const Projectile *p, const Unit *victim) {
+    if (!g_blast_hook) return;
+    int slot = slot_of_projectile(p);
+    UnitsBlast b;
+    memset(&b, 0, sizeof b);
+    b.x = p->world_x;
+    b.y = p->world_y;
+    b.height = p->height;
+    float dx = p->dir_x * p->speed_ppt, dy = p->dir_y * p->speed_ppt;
+    float up = p->vel_up_ppt;
+    if (p->is_beam || p->speed_ppt <= 0.0f) {
+        /* A beam goes from the muzzle to where its ray stopped. */
+        dx = (float)(p->world_x - p->src_x);
+        dy = (float)(p->world_y - p->src_y);
+        up = p->height - p->muzzle_height;
+    }
+    float len = sqrtf(dx * dx + dy * dy + up * up);
+    if (len > 0.0001f) {
+        b.dir_x = dx / len;
+        b.dir_y = dy / len;
+        b.dir_up = up / len;
+    }
+    b.area_of_effect = p->area_of_effect;
+    b.damage = p->damage;
+    b.def = g_proj_def[slot];
+    b.slot = g_proj_wslot[slot];
+    b.shooter = p->shooter;
+    b.struck = victim ? (int32_t)(victim - g_units) : -1;
+    b.player = p->player_id;
+    const GameWorld *w = World_Get();
+    b.in_water = (uint8_t)(w && impact_in_water(w, p->world_x, p->world_y));
+    g_blast_hook(&b);
+}
+
+void Units_SetBlastHook(UnitsBlastHook hook) { g_blast_hook = hook; }
+
 /* Impact: play the hit sound for the unit struck (NULL for ground)
  * and the weapon's explosionclass sprite where legacy spawns it
  * (legacy:245025). */
 static void projectile_impact_fx(const Projectile *p, const Unit *victim,
                                  uint32_t seed) {
+    projectile_note_blast(p, victim);
     play_projectile_hit_sound(p, victim);
     projectile_impact_shake(p);
     spawn_impact_effect(p->explosion_idx, p->world_x, p->world_y,
@@ -7604,6 +7658,9 @@ void Units_LoadSyncThreadCount(int slot) {
 Projectile *Units_LoadProjectiles(int count) {
     if (count < 0 || count > TAK_MAX_PROJECTILES) return NULL;
     memset(g_projectiles, 0, sizeof(g_projectiles));
+    /* A shot from a save has no record of whose it was. */
+    memset(g_proj_def, 0xff, sizeof(g_proj_def));
+    memset(g_proj_wslot, 0xff, sizeof(g_proj_wslot));
     g_projectile_count = count;
     return g_projectiles;
 }
