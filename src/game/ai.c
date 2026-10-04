@@ -2583,12 +2583,13 @@ static int ai_try_sweep(const GameWorld *world, const Unit *units,
 
 /* The fires that hurt, gathered once a think. A unit is in one when a
  * fire's centre is within its reach of the unit's model box, as the
- * burn measures it, and it walks to the nearest point a spark's reach
- * clear of every fire, trying eight ways at growing distances and taking
- * the way that passes the fewest fires. */
+ * burn measures it, and it walks to a point clear of every fire, trying
+ * eight ways at growing distances. Each way weighs four for every fire
+ * it passes, one for every step and one for every 24 px it gives up
+ * toward where the unit is bound, and the lightest is taken. */
 #define AI_FIRE_MAX    256
-#define AI_FIRE_CLEAR  (8 + FEATURE_SPARK_REACH * 16)  /* px kept from a fire's reach */
-#define AI_FIRE_STEPS  12     /* steps of 24 px tried each way */
+#define AI_FIRE_CLEAR  8      /* px kept from a fire's reach when clear */
+#define AI_FIRE_STEPS  6      /* steps of 24 px tried each way */
 static int32_t g_ai_fire_x[AI_FIRE_MAX], g_ai_fire_y[AI_FIRE_MAX];
 static int     g_ai_fire_n;
 
@@ -2626,6 +2627,15 @@ static int ai_fires_at(int32_t x, int32_t y, int32_t body) {
     return n;
 }
 
+/* How far apart two points are, near enough and in whole px: the longer
+ * side and 106/256 of the shorter. */
+static int32_t ai_octile(int32_t dx, int32_t dy) {
+    if (dx < 0) dx = -dx;
+    if (dy < 0) dy = -dy;
+    int32_t hi = dx > dy ? dx : dy, lo = dx > dy ? dy : dx;
+    return hi + (lo * 106 >> 8);
+}
+
 /* 1 when the unit's footing took its think: it is stepping out of a
  * fire, or already walking somewhere clear of every one. */
 static int ai_step_out_of_fire(const GameWorld *world, const Unit *units,
@@ -2639,12 +2649,26 @@ static int ai_step_out_of_fire(const GameWorld *world, const Unit *units,
     if (AI_Htn_FootingTask(&fs) != AI_TASK_EVADE) return 0;
     int32_t keep = body + AI_FIRE_CLEAR;
     if (u->cmd_kind == UNIT_CMD_MOVE && ai_fires_at(u->cmd_x, u->cmd_y, keep) == 0) return 1;
+    /* Where the unit is bound: its order's point, or else home. */
+    int bound = 0;
+    int32_t gx = 0, gy = 0;
+    if (u->cmd_kind == UNIT_CMD_MOVE || u->cmd_kind == UNIT_CMD_ATTACK ||
+        u->cmd_kind == UNIT_CMD_PATROL) {
+        bound = 1;
+        gx = u->cmd_x;
+        gy = u->cmd_y;
+    } else if (g_ai_players[p].base_known) {
+        bound = 1;
+        gx = g_ai_players[p].base_x;
+        gy = g_ai_players[p].base_y;
+    }
+    int32_t g0 = bound ? ai_octile(gx - u->world_x, gy - u->world_y) : 0;
     static const int8_t dirs[8][2] = {
         { 2, 0 }, { -2, 0 }, { 0, 2 }, { 0, -2 }, { 1, 1 }, { -1, 1 }, { 1, -1 }, { -1, -1 }
     };
     int best = -1, best_cost = 0;
     int32_t bx = u->world_x, by = u->world_y;
-    for (int step = 1; step <= AI_FIRE_STEPS && best < 0; step++) {
+    for (int step = 1; step <= AI_FIRE_STEPS; step++) {
         int32_t d = 24 * step;
         for (int k = 0; k < 8; k++) {
             int32_t tx = u->world_x + dirs[k][0] * d, ty = u->world_y + dirs[k][1] * d;
@@ -2656,6 +2680,11 @@ static int ai_step_out_of_fire(const GameWorld *world, const Unit *units,
             for (int q = 1; q <= 3; q++)
                 cost += ai_fires_at(u->world_x + (tx - u->world_x) * q / 4,
                                     u->world_y + (ty - u->world_y) * q / 4, body);
+            cost = cost * 4 + step;
+            if (bound) {
+                int32_t g1 = ai_octile(gx - tx, gy - ty);
+                if (g1 > g0) cost += (int)((g1 - g0) / 24);
+            }
             if (best < 0 || cost < best_cost) {
                 best = k;
                 best_cost = cost;

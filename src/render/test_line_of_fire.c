@@ -1310,10 +1310,10 @@ TEST(a_remastered_wind_carries_the_spark_downwind) {
 }
 
 /* A remastered spark lights a tree upwind at a quarter of the chance,
- * a half for the test tree, which catches at twice 100. Sixteen fires,
- * each with a tree five cells east and five west: under a wind east
- * every first spark lights the east tree and about half light the west
- * one, and calm every one lights both. */
+ * a half for the test tree, which catches at twice 100. Thirty-two
+ * fires, each with a tree five cells east and five west: under a wind
+ * east every first spark lights the east tree and about half light the
+ * west one, and calm every one lights both. */
 TEST(a_remastered_wind_favours_the_trees_downwind) {
     for (int windy = 0; windy < 2; windy++) {
         GameWorld *w = lf_world(0, 0);
@@ -1323,20 +1323,20 @@ TEST(a_remastered_wind_favours_the_trees_downwind) {
             Features_DebugSetWind(w, 2000, 0x4000);
             w->wind_next_frame = 0xFFFFFF00u;
         }
-        int src[16], east[16], west[16], done[16] = { 0 };
-        for (int k = 0; k < 16; k++) {
-            int cx = 30 + 20 * (k % 4), cz = 30 + 20 * (k / 4);
+        int src[32], east[32], west[32], done[32] = { 0 };
+        for (int k = 0; k < 32; k++) {
+            int cx = 20 + 20 * (k % 8), cz = 30 + 20 * (k / 8);
             src[k] = lf_place(w, FD_TREE, cx, cz);
             east[k] = lf_place(w, FD_TREE, cx + 5, cz);
             west[k] = lf_place(w, FD_TREE, cx - 5, cz);
             ASSERT(src[k] >= 0 && east[k] >= 0 && west[k] >= 0);
         }
         int lit_east = 0, lit_west = 0, seen = 0;
-        for (int f = 0; f < 600 && seen < 16; f++) {
-            /* Lit eight frames apart, so few first sparks share a frame. */
-            if (f % 8 == 0 && f / 8 < 16) Features_DebugHit(w, src[f / 8], 50, 1);
+        for (int f = 0; f < 600 && seen < 32; f++) {
+            /* Lit four frames apart, so few first sparks share a frame. */
+            if (f % 4 == 0 && f / 4 < 32) Features_DebugHit(w, src[f / 4], 50, 1);
             lf_frames(w, 1);
-            for (int k = 0; k < 16; k++) {
+            for (int k = 0; k < 32; k++) {
                 const struct MapFeature *mf = &w->features[src[k]];
                 if (done[k] || mf->fx != FEATURE_FX_BURNING || mf->sparks == FEATURE_SPARKS - 1)
                     continue;
@@ -1347,12 +1347,12 @@ TEST(a_remastered_wind_favours_the_trees_downwind) {
             }
         }
         lf_end();
-        printf("[%s: %d east and %d west of 16] ", windy ? "wind east" : "calm", lit_east,
+        printf("[%s: %d east and %d west of 32] ", windy ? "wind east" : "calm", lit_east,
                lit_west);
-        ASSERT_EQ_INT(16, seen);
-        ASSERT_EQ_INT(16, lit_east);
-        if (windy) ASSERT(lit_west >= 3 && lit_west <= 12);
-        else ASSERT_EQ_INT(16, lit_west);
+        ASSERT_EQ_INT(32, seen);
+        ASSERT_EQ_INT(32, lit_east);
+        if (windy) ASSERT(lit_west >= 6 && lit_west <= 26);
+        else ASSERT_EQ_INT(32, lit_west);
     }
 }
 

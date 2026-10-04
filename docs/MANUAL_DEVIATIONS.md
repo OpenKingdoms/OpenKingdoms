@@ -700,10 +700,12 @@ Format per entry:
   above building an army, attacking and expanding. And every unit of the
   seat that can walk asks its footing before anything else, a task
   network of its own: when a burning feature's centre is within 32 px of
-  the unit's model, the reach its burn hurts by, the unit walks to the
-  nearest point clear of every fire, trying eight ways at steps of 24 px
-  out to six steps and taking the way that passes the fewest fires,
-  unless it is already walking somewhere clear. With the rules off
+  the unit's model, the reach its burn hurts by, the unit walks to a
+  point clear of every fire, trying eight ways at steps of 24 px out to
+  six steps. Each way weighs four for every fire it passes, one for
+  every step and one for every 24 px it gives up toward where the unit
+  is bound, its order's point or else home, and the lightest is taken,
+  unless the unit is already walking somewhere clear. With the rules off
   neither happens and the classic computer plays as before. The tactic
   bits `TAK_AI_TACTIC_SWEEP` and `TAK_AI_TACTIC_FIRE` let the duel
   measure each, and the code is `ai_find_rubble`, `ai_try_sweep` and
@@ -716,15 +718,20 @@ Format per entry:
 - Measured: on Two Castles a Taros troop of the computer's walled in by
   the rubble of eight AraWall01 near its monarch walks out after 70
   seconds, its seat having ordered two sweeps, and without the sweep it
-  is still inside after two minutes. Six of its troops caught beside
-  burning trees lose 218 hit points to the fire with the footing and 511
-  without. In the duel on Two Castles, Taros against Taros under the
-  rules, four seeds each played twice with the seats swapped, the seat
-  with both behaviours killed 409 and lost 390 and the one without
-  killed 357 and lost 426, with three wins each and two draws. No rubble
-  arose in those games, so the sweep never ran there, and the footing
-  stepped units out of fire 80 times. Four classic duels with the rules
-  off play out as before, kill for kill.
+  is still inside after two minutes. Six of its troops caught in a
+  burning grove lose 236 hit points to the fire with the footing and 511
+  without. While a tree burned only until its first spark the footing
+  took the nearest way out and they lost 218. Once trees burned through
+  four sparks (D-036) that way lost 1,193, because a troop stepped out
+  on the far side and the seat's next order walked it back through the
+  fire, so the footing now leans toward where the unit is bound. In the
+  duel on Two Castles, measured before that change, Taros against Taros
+  under the rules, four seeds each played twice with the seats swapped,
+  the seat with both behaviours killed 409 and lost 390 and the one
+  without killed 357 and lost 426, with three wins each and two draws.
+  No rubble arose in those games, so the sweep never ran there, and the
+  footing stepped units out of fire 80 times. Four classic duels with
+  the rules off play out as before, kill for kill.
 - Citation: the manual describes no rule for either. D-036 makes the
   conditions they answer.
 
@@ -1921,16 +1928,40 @@ Format per entry:
   so its fire hurts nobody (legacy:127389-127401). These numbers are
   ours. A fire spreads. In the shipped data a feature's spark comes 75
   to 149 frames after it catches and its flames end 44 to 72 frames in,
-  so the original's fires never spread. Under the rules a burning
-  feature's flames start over until its spark is thrown, and the spark
-  spreads the fire the original's way: every flamable feature within
-  three cells catches at its spreadchance, 40 percent for most trees,
-  and one more at each of five steps downwind (legacy:128021-128088). A
-  tree then burns 2.5 to 7 seconds. Lit along one edge, a grove of the
-  shipped AraTree01 burns 28 cells (448 px) across in 28 seconds with a
-  tree on every cell, about 16 px a second, and in 46 to 51 seconds with
-  one on every other cell, about 9 px a second. The dense grove burns
-  whole and the sparse one 92 to 98 percent. Infantry walks 33 to 45 px
+  so the original's fires never spread. Its spark would reach three
+  cells, and the scenery that burns stands farther apart than that. Of
+  the 50,524 flamable features on the 310 shipped maps, skirmish and
+  campaign, 28 percent have another within three cells, 58 percent
+  within five, 69 percent within six and 82 percent within eight. Under
+  the rules a burning feature throws four sparks, each 125 percent of
+  the original's spark time after the last, 93 to 186 frames for a tree,
+  and its flames start over until the last, so a tree burns 12 to 27
+  seconds. A spark reaches every flamable feature within three cells, or
+  out to the nearest ring that holds one, at most six, which puts a
+  quarter of the shipped scenery that burns in a group of ten or more a
+  fire can cross, against 5 percent at three. The wind stretches the
+  reach downwind by five steps of twice its parts in 1/4096 of a cell,
+  at most two cells along each axis, and a spark with nothing within six
+  cells can still light a feature up to eight cells downwind. A feature
+  catches at twice its spreadchance, 80 percent for most trees, and
+  upwind at a quarter of that. No more than four features catch from
+  sparks in one frame, and a spark due past that waits for the next.
+  Each spark starts its cells from another corner, so the cap favours no
+  side. Measured with no units on the field, one tree lit near the
+  middle of each map's largest group, five seeds: calm, Lake Ferrix_JM
+  burns all of its 78 in 48 seconds, New Hindigal all 63 in 67,
+  Riverfork Wood all 88 in 117, Two Castles 13 of 14 in 57, Thorn
+  Boscage 48 of 58 in 119 and Black Heart Jungle 9 of 10 in 50. Under
+  each map's own wind the fire runs downwind at 5 to 11 px a second on
+  average and creeps upwind at 1 to 6, so less of a forest burns: 77,
+  60, 57, 5, 42 and 6 of them. In a square of AraTree01 under a steady
+  wind it crosses 20 to 24 px a second downwind and 8 to 13 upwind, and
+  11 to 21 calm. Its front, from the first tree to one 10 cells off,
+  never averaged more than 22 px a second but in one windy Thorn Boscage
+  run at 33, and no frame lit more than four. Lit along one edge, a
+  grove of AraTree01 28 cells (448 px) across burns through in 18 to 33
+  seconds with a tree on every cell or on every other. With the rules
+  off each map burns the one tree and stops. Infantry walks 33 to 45 px
   a second, so it outruns a fire. And the rubble a wall, a model wall or
   a building leaves blocks until it is swept, which pays its mana as
   clearing anything does (D-021). The original's wall rubble and the
@@ -1946,8 +1977,9 @@ Format per entry:
   keeps a build without the rules out of it. The game list marks a room
   that plays them.
 - Where it is: `remaster_breakable_hp`, `remaster_leaves_rubble`,
-  `Features_InstanceBlocks` and the burn in `Features_TickFrame` in
-  `src/game/features.c`, `blast_scenery`
+  `Features_InstanceBlocks`, the burn in `Features_TickFrame` and the
+  spark in `feat_spark_remastered` in `src/game/features.c`,
+  `blast_scenery`
   and `Units_ScorchAt` in `src/render/units.c`, the rows from
   `GUIDialog_AddOptionRow` in `src/ui/gui_loader.c`.
 
