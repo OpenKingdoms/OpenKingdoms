@@ -117,6 +117,7 @@ static char s_map_key[96];
 
 static void rings_restart(void);
 static void note_blast(const UnitsBlast *b);
+static void note_explode(void *user, int node, int32_t how);
 
 static void fail(const char *fmt, ...) {
     va_list ap;
@@ -196,6 +197,7 @@ int32_t okx_init(const char *game_dir, const char *data_dir) {
         return -1;
     }
     Units_SetBlastHook(note_blast);
+    Cob_SetExplodeHook(note_explode);
     g.ready = 1;
     return 0;
 }
@@ -279,6 +281,7 @@ void okx_shutdown(void) {
     VFS_Shutdown();
     GPU_SetKeepPixels(0);
     Units_SetBlastHook(NULL);
+    Cob_SetExplodeHook(NULL);
     g.ready = 0;
 }
 
@@ -1222,8 +1225,13 @@ typedef struct Ring { int32_t next, first; } Ring;
 
 static OkxBlast s_blast[OKX_RING];
 static Ring s_blasts = { 1, 1 };
+static OkxPieceEvent s_piece[OKX_RING];
+static Ring s_pieces = { 1, 1 };
 
-static void rings_restart(void) { s_blasts.first = s_blasts.next; }
+static void rings_restart(void) {
+    s_blasts.first = s_blasts.next;
+    s_pieces.first = s_pieces.next;
+}
 
 /* How many entries come after since, and the id of the first of them. */
 static int32_t ring_after(const Ring *r, int32_t since, int32_t *from) {
@@ -1277,6 +1285,7 @@ static void note_blast(const UnitsBlast *b) {
     o->feature = b->struck >= 0 ? -1 : feature_under(w, b->x, b->y);
     const UnitDef *d = b->def >= 0 ? Units_GetDef(b->def) : NULL;
     if (d && b->slot >= 0 && b->slot < 3 && d->weapons[b->slot].units_only) o->flags |= OKX_BLAST_UNITS_ONLY;
+    if (d && b->slot >= 0 && b->slot < 3 && d->weapons[b->slot].fire_starter) o->flags |= OKX_BLAST_FIRE_STARTER;
     if (b->in_water && b->struck < 0) o->flags |= OKX_BLAST_WATER;
     /* The original spares scenery from a shot of under 17 px of area that
      * comes down on a unit (legacy:245029-245033). */
@@ -1308,10 +1317,73 @@ int32_t okx_weapon_info(int32_t def, int32_t slot, OkxWeaponInfo *out) {
     copy_key(out->explosion_class, sizeof(out->explosion_class), wp->explosion_class);
     out->area_of_effect = wp->area_of_effect;
     out->damage = wp->damage;
-    out->flags = (wp->units_only ? OKX_WEAPON_UNITS_ONLY : 0) | (wp->mana_per_shot > 0 ? OKX_WEAPON_SPELL : 0);
+    out->flags = (wp->units_only ? OKX_WEAPON_UNITS_ONLY : 0) | (wp->mana_per_shot > 0 ? OKX_WEAPON_SPELL : 0) |
+                 (wp->fire_starter ? OKX_WEAPON_FIRE_STARTER : 0);
     out->lightmap = wp->lightmap;
     out->shake_magnitude = (float)wp->shake_magnitude;
     out->shake_duration = wp->shake_duration;
+    return 0;
+}
+
+static int unit_drawn(const Unit *u);
+
+/* Cob_SetExplodeHook's listener: a unit's script, called inside the tick. */
+static void note_explode(void *user, int node, int32_t how) {
+    if (!g.in_game || !user || node < 0) return;
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int idx = -1;
+    for (int i = 0; i < count && idx < 0; i++) if ((const void *)&units[i] == user) idx = i;
+    if (idx < 0) return;
+    const Unit *u = &units[idx];
+    const UnitDef *def = Units_GetDef(u->def_idx);
+    static float pose[128 * 12];
+    static uint8_t hidden[128];
+    int nodes = okx_unit_pose(idx, pose, hidden, 128);
+    if (!def || node >= nodes || node >= 128) return;
+    OkxPieceEvent *o = &s_piece[s_pieces.next % OKX_RING];
+    memset(o, 0, sizeof(*o));
+    o->id = s_pieces.next++;
+    o->tick = okx_tick_count();
+    o->unit = idx;
+    o->def = u->def_idx;
+    o->player = u->player_id;
+    o->model = okx_model_load(def->objectname, u->team_color_idx);
+    o->piece = node;
+    o->how = how;
+    o->unseen = !unit_drawn(u);
+    memcpy(o->m, &pose[node * 12], sizeof(o->m));
+}
+
+int32_t okx_piece_events(int32_t since, OkxPieceEvent *out, int32_t cap) {
+    int32_t from = 0;
+    int32_t n = ring_after(&s_pieces, since, &from);
+    for (int32_t i = 0; out && i < n && i < cap; i++) out[i] = s_piece[(from + i) % OKX_RING];
+    return n;
+}
+
+int32_t okx_wind(float *speed, float *max_speed, float *dx, float *dz) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w || w->wind_max <= 0) return -1;
+    /* The fire steps downwind along the heading's sine and cosine. */
+    float a = (float)w->wind_heading * (6.2831853f / 65536.0f);
+    if (speed) *speed = (float)w->wind_speed;
+    if (max_speed) *max_speed = (float)w->wind_max;
+    if (dx) *dx = sinf(a);
+    if (dz) *dz = cosf(a);
+    return 0;
+}
+
+int32_t okx_feature_def_fate(int32_t def, OkxFeatureFate *out) {
+    const FeatureDef *fd = Features_GetByIndex(def);
+    if (!fd || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    out->damage = fd->damage;
+    out->indestructible = fd->indestructible ? 1 : 0;
+    out->flammable = fd->flamable ? 1 : 0;
+    /* Resolved the way the destruction itself resolves them. */
+    out->dead_def = fd->feature_dead[0] ? Features_FindByName(fd->feature_dead) : -1;
+    out->burnt_def = fd->feature_burnt[0] ? Features_FindByName(fd->feature_burnt) : -1;
     return 0;
 }
 

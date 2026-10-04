@@ -1283,6 +1283,10 @@ static int read_everything(int step) {
         okx_unit_record(units[step % n].handle, &k, &xp, &rank);
     }
     /* What a host drawing the field reads. */
+    static OkxPieceEvent pieces[OKX_RING];
+    okx_piece_events(0, pieces, OKX_RING);
+    float ws, wm, wx, wz;
+    okx_wind(&ws, &wm, &wx, &wz);
     static OkxBlast blasts[OKX_RING];
     int nb = okx_blasts(0, blasts, OKX_RING);
     for (int i = 0; i < nb && i < OKX_RING; i++) {
@@ -2641,6 +2645,96 @@ TEST(a_blast_names_its_weapon_and_where_it_burst) {
     ASSERT(bl[0].id > last);
 }
 
+static int def_by_name(const char *name) {
+    for (int i = 0; i < okx_def_count(); i++) {
+        OkxDefInfo di;
+        if (okx_def_info(i, &di) == 0 && same_name(di.name, name)) return i;
+    }
+    return -1;
+}
+
+/* The wind blows within the map's range, a fire starter says so, and a
+ * feature def names the stages it leaves. */
+TEST(the_field_tells_its_wind_fire_and_stages) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    okx_tick(4);
+    float speed = -1.0f, top = -1.0f, dx = 0.0f, dz = 0.0f;
+    ASSERT_EQ_INT(0, okx_wind(&speed, &top, &dx, &dz));
+    printf("(wind %.0f of %.0f toward %.2f %.2f) ", speed, top, dx, dz);
+    ASSERT(top > 0.0f && speed >= 0.0f && speed <= top);
+    ASSERT(fabsf(dx * dx + dz * dz - 1.0f) < 0.001f);
+    OkxWeaponInfo wi;
+    int necro = def_by_name("TARNECRO"), pult = def_by_name("ARAPULT");
+    ASSERT(necro >= 0 && pult >= 0);
+    ASSERT_EQ_INT(0, okx_weapon_info(necro, 0, &wi));
+    ASSERT(wi.flags & OKX_WEAPON_FIRE_STARTER);
+    ASSERT_EQ_INT(0, okx_weapon_info(pult, 0, &wi));
+    ASSERT_EQ_INT(0, wi.flags & OKX_WEAPON_FIRE_STARTER);
+    int n = okx_feature_def_count(), dies = 0, burns = 0, stands = 0;
+    for (int i = 0; i < n; i++) {
+        OkxFeatureFate f;
+        ASSERT_EQ_INT(0, okx_feature_def_fate(i, &f));
+        ASSERT(f.dead_def >= -1 && f.dead_def < n && f.burnt_def >= -1 && f.burnt_def < n);
+        if (f.indestructible) stands++;
+        else if (f.damage > 0 && f.dead_def >= 0) dies++;
+        if (f.flammable && f.burnt_def >= 0) burns++;
+    }
+    printf("(%d die into a stage, %d burn into one, %d stand) ", dies, burns, stands);
+    ASSERT(dies > 50 && burns > 50 && stands > 50);
+    OkxFeatureFate none;
+    ASSERT_EQ_INT(-1, okx_feature_def_fate(-1, &none));
+    ASSERT_EQ_INT(-1, okx_feature_def_fate(n, &none));
+}
+
+/* An archer of our own under a catapult's ground shot dies, and its
+ * script's EXPLODE throws pieces, each with its pose as it went. */
+TEST(a_dying_archer_throws_its_pieces) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int pult_def = def_by_name("ARAPULT"), arch_def = def_by_name("ARAARCH");
+    ASSERT(pult_def >= 0 && arch_def >= 0);
+    int me = okx_local_player();
+    int pult = okx_place_unit(pult_def, me), arch = okx_place_unit(arch_def, me);
+    ASSERT(pult >= 0 && arch >= 0);
+    OkxUnit p, a;
+    ASSERT_EQ_INT(0, okx_unit(pult, &p));
+    /* Out of the catapult's way, and of its least reach. */
+    ASSERT_EQ_INT(0, okx_command(1, arch, (int)p.x + 320, (int)p.z, -1, -1, 0));
+    okx_tick(60 * 8);
+    ASSERT_EQ_INT(0, okx_unit(arch, &a));
+    static OkxPieceEvent pe[OKX_RING];
+    int32_t since = 0;
+    int k = okx_piece_events(0, pe, OKX_RING);
+    if (k > 0) since = pe[(k < OKX_RING ? k : OKX_RING) - 1].id;
+    int thrown = 0;
+    OkxPieceEvent first;
+    memset(&first, 0, sizeof first);
+    for (int shot = 0; shot < 6 && !thrown; shot++) {
+        if (okx_unit(arch, &a) != 0) break;
+        ASSERT_EQ_INT(0, okx_command(20, pult, (int)a.x, (int)a.z, -1, -1, 0));
+        for (int t = 0; t < 60 * 10 && !thrown; t += 2) {
+            okx_tick(2);
+            int m = okx_piece_events(since, pe, OKX_RING);
+            for (int i = 0; i < m && i < OKX_RING; i++)
+                if (pe[i].unit == arch) { if (!thrown) first = pe[i]; thrown++; }
+        }
+    }
+    /* Rows of four, x, y and z, the place last in each. */
+    printf("(%d pieces, first node %d type %d at %.0f %.0f %.0f) ", thrown, first.piece, first.how,
+           first.m[3], first.m[7], first.m[11]);
+    ASSERT(thrown > 0);
+    ASSERT_EQ_INT(arch_def, first.def);
+    ASSERT_EQ_INT(me, first.player);
+    ASSERT(first.model >= 0 && first.how != 0 && first.piece >= 0);
+    ASSERT_EQ_INT(0, first.unseen);
+    /* The piece stands where the archer fell. */
+    ASSERT(fabsf(first.m[3] - a.x) < 64.0f && fabsf(first.m[11] - a.z) < 64.0f);
+    ASSERT(first.tick > 0 && first.tick <= okx_tick_count());
+}
+
 int main(void) {
     TEST_SUITE("ok_embed");
     /* A user folder of the test's own, where the edited map is saved. */
@@ -2681,6 +2775,8 @@ int main(void) {
     RUN(a_picture_comes_by_name_for_painting_a_model);
     RUN(a_shot_and_its_blast_carry_the_weapons_lightmap);
     RUN(a_blast_names_its_weapon_and_where_it_burst);
+    RUN(the_field_tells_its_wind_fire_and_stages);
+    RUN(a_dying_archer_throws_its_pieces);
     RUN(a_nimbus_rides_its_caster);
     RUN(a_beam_leaves_from_its_firing_piece);
     RUN(a_defs_effect_strips_are_its_weapons_and_blasts);

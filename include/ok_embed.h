@@ -42,7 +42,8 @@ extern "C" {
  * firing piece with from_piece on OkxProjectile, okx_def_effect_strips.
  * Added since, without a bump: okx_battle_stats, okx_battle_series,
  * okx_battle_built, okx_battle_events, okx_unit_record, okx_blasts,
- * okx_weapon_info, okx_set_remastered and okx_remastered.
+ * okx_weapon_info, okx_set_remastered, okx_remastered, okx_piece_events,
+ * okx_wind and okx_feature_def_fate.
  * 22: okx_gui_art, okx_map_starts, map sizes in cells, a seat's claimed
  * start on OkxSeat and OkxNetSeat (TAK_EDIT_START and
  * TAK_EDIT_MOVE_START in a room), okx_sprite_by_name and
@@ -529,6 +530,33 @@ typedef struct OkxWeaponInfo {
 
 /* slot 0 to 2, or OKX_SLOT_DEATH. 0 on success, -1 for no such weapon. */
 OKX_API int32_t okx_weapon_info(int32_t def, int32_t slot, OkxWeaponInfo *out);
+
+/* A piece a unit's script threw with EXPLODE: the unit's handle, def,
+ * player and model (as okx_units gives it), the piece's node, the
+ * script's explode type (FALL 4, SHATTER 1, SMOKE 8 and the rest) and
+ * the piece's pose as okx_unit_pose gives a node, when it went. */
+typedef struct OkxPieceEvent {
+    int32_t  id;
+    uint32_t tick;
+    int32_t  unit, def, player, model, piece, how;
+    int32_t  unseen;          /* the local player could not see the unit */
+    float    m[12];
+} OkxPieceEvent;
+
+OKX_API int32_t okx_piece_events(int32_t since, OkxPieceEvent *out, int32_t cap);
+
+/* The simulation's wind: its speed, the map's highest, and the way it
+ * blows as a unit vector in world x and z. -1 outside a battle. */
+OKX_API int32_t okx_wind(float *speed, float *max_speed, float *dx, float *dz);
+
+/* What destroying a feature def does: its hit points (damage), whether it
+ * ignores hits or can burn, and the defs it leaves when destroyed and when
+ * burnt out, -1 for nothing. 0 on success, -1 for no such def. */
+typedef struct OkxFeatureFate {
+    int32_t damage, indestructible, flammable, dead_def, burnt_def;
+} OkxFeatureFate;
+
+OKX_API int32_t okx_feature_def_fate(int32_t def, OkxFeatureFate *out);
 
 /* ── The game's own controls ───────────────────────────────────────── */
 
