@@ -289,6 +289,12 @@ int Units_IsBuildSiteClear(int def_idx, int32_t world_x, int32_t world_y) {
     return ((world_x >> 6) + (world_y >> 6)) % 3 != 0;
 }
 
+/* The site search's test that counts every unit. The stub above has no
+ * units to count. */
+int Units_IsBuildSiteFree(int def_idx, int32_t world_x, int32_t world_y) {
+    return Units_IsBuildSiteClear(def_idx, world_x, world_y);
+}
+
 /* As units.c: the lowest dead slot, else a new one, under construction
  * and owned by the builder's seat. */
 int Units_BeginBuildingForUnit(int builder_handle, int building_def_idx,

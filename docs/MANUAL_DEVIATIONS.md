@@ -1231,6 +1231,22 @@ Format per entry:
 - Citation: the manual describes no rule for it. The original's rules
   are in docs/notes/2026-10-04-air-traffic.md.
 
+## M-015: A summons waits for units on its spot in silence
+
+- Change: a summons ordered onto a spot that only units hold is taken
+  and held with no frame. The builder walks to the site and looks again
+  every 20 ticks. The frame goes up as soon as no unit stands on the
+  spot, wherever the builder is, and the order ends after 30 looks made
+  within reach. The waiting and the giving up are silent.
+- Why: the original looks only once the builder is in reach, and it
+  says it is waiting at the sixth look and that the target is blocked
+  when it gives up (legacy:12088-12116). Here a frame goes up before
+  its builder gets there (M-009), so a spot that clears while the
+  builder walks gets its frame at once. The chatter has no counterpart
+  in the engine yet.
+- Citation: the manual describes no rule for this. The original's rule
+  is in docs/notes/2026-10-04-summons-placement.md.
+
 ## D-006: Chat messages expire on the wall clock
 
 - Change: A chat message leaves the message list when it has been on

@@ -490,7 +490,8 @@ typedef struct AiSiteSearch {
 static int ai_site_try(AiSiteSearch *s, int32_t x, int32_t y,
                        int32_t *out_x, int32_t *out_y) {
     if (s->checks <= 0) return -1;
-    if (!Units_IsBuildSiteClear(s->build_def, x, y)) return 0;
+    /* A site no unit stands on, so a summons never waits on the army. */
+    if (!Units_IsBuildSiteFree(s->build_def, x, y)) return 0;
     if (ai_site_failed(s->units[s->actor_idx].player_id, x, y, s->now))
         return 0;
     if (g_ai_site_for_tower && ai_near_own_tower(s->units, x, y))
