@@ -1583,6 +1583,11 @@ void okx_arm(int32_t mode, int32_t def) {
     HUD_SetCommandMode(mode);
 }
 
+void okx_arm_build(int32_t def, int32_t repeat) {
+    if (!g.in_game) return;
+    HUD_BeginBuildPlacementRepeat(def, repeat != 0);
+}
+
 int32_t okx_armed(int32_t *def) {
     if (!g.in_game) return OKX_ARM_NONE;
     int mode = HUD_GetCommandMode();

@@ -23,6 +23,7 @@
 /* TAK_CMD_* values, as a host passes them. */
 #define TAK_CMD_MOVE_ORDER      1
 #define TAK_CMD_ATTACK_ORDER    2
+#define TAK_CMD_BUILD_ORDER     3
 #define TAK_CMD_STOP_ORDER      4
 #define TAK_CMD_PATROL_ORDER    5
 #define TAK_CMD_SET_AGGRO_ORDER 13
@@ -1676,6 +1677,59 @@ static int find_factory(int *product) {
     return -1;
 }
 
+/* Open ground for def near the unit, away from (ax, ay). */
+static int open_spot(int handle, int def, int32_t ax, int32_t ay,
+                     int32_t *cx, int32_t *cy) {
+    OkxUnit u;
+    if (okx_unit(handle, &u) != 0) return 0;
+    for (int r = 96; r <= 800; r += 32)
+        for (int a = 0; a < 8; a++) {
+            int32_t x = (int32_t)u.x + (a % 3 - 1) * r, y = (int32_t)u.z + (a / 3 - 1) * r;
+            if (!okx_build_site_facing(def, 0, x, y, cx, cy)) continue;
+            int32_t dx = *cx - ax, dy = *cy - ay;
+            if (dx > 64 || dx < -64 || dy > 64 || dy < -64) return 1;
+        }
+    return 0;
+}
+
+/* Ctrl on a Zhon builder's card through the host: the click places the
+ * goblin once, Shift or not, and the builder summons it there without
+ * end until the right click's set_repeat 0. OKX_ENDLESS on a build order
+ * does the same (legacy:150077-150084). */
+TEST(a_walking_builder_summons_without_end) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int hand = def_named("ZONHAND"), gob = def_named("ZONGOB");
+    ASSERT(hand >= 0 && gob >= 0);
+    int me = okx_local_player();
+    int b = okx_place_unit(hand, me);
+    ASSERT(b >= 0);
+    int32_t cx = 0, cy = 0;
+    ASSERT(open_spot(b, gob, -100000, -100000, &cx, &cy));
+    okx_select(&b, 1, 0);
+    okx_arm_build(gob, 1);
+    int32_t def = -1;
+    ASSERT_EQ_INT(OKX_ARM_BUILD, okx_armed(&def));
+    ASSERT_EQ_INT(gob, def);
+    okx_click((float)cx, (float)cy, -1, 1);
+    ASSERT_EQ_INT(OKX_ARM_NONE, okx_armed(NULL));
+    okx_tick(2);
+    ASSERT_EQ_INT(gob, okx_factory_repeat_of(b));
+    ASSERT_EQ_INT(0, okx_factory_set_repeat(b, gob, 0));
+    okx_tick(1);
+    ASSERT_EQ_INT(-1, okx_factory_repeat_of(b));
+    /* The frame stays on the first spot, so the order takes another. */
+    int32_t dx = 0, dy = 0;
+    ASSERT(open_spot(b, gob, cx, cy, &dx, &dy));
+    ASSERT_EQ_INT(0, okx_command(TAK_CMD_BUILD_ORDER, b, dx, dy, -1, gob, OKX_ENDLESS));
+    okx_tick(2);
+    ASSERT_EQ_INT(gob, okx_factory_repeat_of(b));
+    ASSERT_EQ_INT(0, okx_factory_set_repeat(b, gob, 0));
+    okx_tick(1);
+    okx_select(NULL, 0, 0);
+}
+
 /* The build buttons as the host sends them: five with Shift, some taken
  * back, Ctrl's run without end and its cancel, and a rally with a
  * standing patrol behind it read back as the factory's orders. */
@@ -3082,6 +3136,7 @@ int main(void) {
     RUN(a_saved_battle_comes_back_as_it_was);
     RUN(an_edited_map_saves_and_plays);
     RUN(a_factory_queue_takes_counts_repeats_and_a_rally);
+    RUN(a_walking_builder_summons_without_end);
     RUN(an_unfinished_factory_takes_a_queue_while_the_host_allows_it);
     RUN(shift_queues_orders_and_the_host_reads_them_back);
     RUN(the_interface_art_comes_by_sheet_and_entry);

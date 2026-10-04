@@ -43,7 +43,8 @@ extern "C" {
  * Added since, without a bump: okx_battle_stats, okx_battle_series,
  * okx_battle_built, okx_battle_events, okx_unit_record, okx_blasts,
  * okx_weapon_info, okx_set_remastered, okx_remastered, okx_piece_events,
- * okx_feature_events, okx_wind and okx_feature_def_fate.
+ * okx_feature_events, okx_wind, okx_feature_def_fate, okx_arm_build and
+ * OKX_ENDLESS.
  * 22: okx_gui_art, okx_map_starts, map sizes in cells, a seat's claimed
  * start on OkxSeat and OkxNetSeat (TAK_EDIT_START and
  * TAK_EDIT_MOVE_START in a room), okx_sprite_by_name and
@@ -265,9 +266,13 @@ OKX_API int32_t okx_economy(int32_t player, OkxEconomy *out);
  * rest. Up to sixteen orders wait, each taken when the one before it is
  * done, and one that can no longer be carried out is passed over.
  * OKX_KEEP instead replaces the order in hand and keeps the queued ones
- * behind it, the manual's Ctrl-click. */
-#define OKX_QUEUE 0x8000
-#define OKX_KEEP  0x4000
+ * behind it, the manual's Ctrl-click. OKX_ENDLESS on a TAK_CMD_BUILD has
+ * a walking builder summon the unit there without end, each one stepping
+ * off the spot for the next, as Ctrl on its button does in the original.
+ * It is ignored for a building. */
+#define OKX_QUEUE   0x8000
+#define OKX_KEEP    0x4000
+#define OKX_ENDLESS 0x2000
 OKX_API int32_t okx_command(int32_t type, int32_t handle, int32_t x, int32_t y,
                             int32_t target, int32_t build_def, int32_t arg);
 
@@ -619,6 +624,11 @@ enum {
 OKX_API void    okx_arm(int32_t mode, int32_t def);
 /* What is armed, OKX_ARM_*, and for a building the def into def. */
 OKX_API int32_t okx_armed(int32_t *def);
+/* Arm placing def as okx_arm does, and with repeat 1 as Ctrl on a
+ * walking builder's button: a unit is then summoned at the spot the
+ * click picks without end, and the click places it once, Shift or not.
+ * repeat is ignored for a building. */
+OKX_API void    okx_arm_build(int32_t def, int32_t repeat);
 
 /* An order for everything selected that needs no point: TAK_CMD_STOP,
  * TAK_CMD_SET_AGGRO with arg, TAK_CMD_SET_WEAPON with arg, TAK_CMD_GATE. */
