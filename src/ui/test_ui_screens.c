@@ -82,6 +82,7 @@
 #include "tak_fog.h"
 #include "tak_terrain.h"
 #include "tak_perf_probe.h"
+#include "tak_sim_rand.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11754,6 +11755,78 @@ TEST(the_shipped_scenery_dies_and_burns_as_its_files_say) {
     ASSERT_EQ_INT(62, burnt_after);
     ASSERT_EQ_INT(ara_a, stages[4]);
     ASSERT_EQ_INT(FEATURE_FX_NONE, neighbour_fx);
+}
+
+/* A grove of the shipped AraTree01 29 cells across and 15 deep, a tree
+ * on every cell or every other, lit along its west edge under the map
+ * range's wind. Frames for the fire to reach the east edge, or -1, and
+ * how many of the trees burn. */
+static void forest_fire_run(int tree, int remastered, int gap, uint32_t seed,
+                            int *cross_frames, int *burnt, int *total) {
+    *cross_frames = -1;
+    *burnt = *total = 0;
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    cfg.remastered = remastered;
+    if (World_BeginLoad(NULL, &cfg, "synthetic", "aramon") != 0) return;
+    GameWorld *w = World_Get();
+    if (!w) { World_End(NULL); return; }
+    w->map_pixels_w = w->map_pixels_h = 64 * 16;
+    World_SeedRand(seed);
+    Features_WindBegin(w, 25, 5000);
+    int first = w->feature_count;
+    for (int z = 0; z <= 14 / gap; z++)
+        for (int x = 0; x <= 28 / gap; x++) {
+            int cx = 10 + gap * x, cz = 10 + gap * z;
+            Features_AddInstance(w, tree, cx, cz, cx * 16 + 8, cz * 16 + 8, 0, -1);
+        }
+    *total = w->feature_count - first;
+    for (int i = first; i < w->feature_count; i++)
+        if (w->features[i].tile_x == 10) Features_DebugHit(w, i, 50, 1);
+    for (int f = 0; f < 30 * 300; f++) {
+        Features_TickFrame(w);
+        int east = 0, burning = 0;
+        for (int i = first; i < w->feature_count; i++) {
+            if (w->features[i].fx == FEATURE_FX_BURNING) burning++;
+            if (w->features[i].tile_x == 38 && w->features[i].global_idx != tree) east = 1;
+            if (w->features[i].tile_x == 38 && w->features[i].fx == FEATURE_FX_BURNING) east = 1;
+        }
+        if (east && *cross_frames < 0) *cross_frames = f + 1;
+        if (!burning) break;
+    }
+    for (int i = first; i < w->feature_count; i++)
+        if (w->features[i].global_idx != tree) (*burnt)++;
+    World_End(NULL);
+}
+
+/* Under the remastered rules a fire spreads through the shipped trees,
+ * and takes tens of seconds to cross a grove, slower than a walking
+ * unit. With the rules off it stops at the trees the flame lit (D-036). */
+TEST(a_remastered_forest_fire_crosses_a_grove_in_tens_of_seconds) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    Features_LoadAll();
+    int tree = Features_FindByName("AraTree01");
+    int cross[6], burnt[6], total[2] = { 0, 0 }, plain_cross = 0, plain_burnt = 0, n = 0;
+    for (int k = 0; k < 6; k++)
+        if (tree >= 0) forest_fire_run(tree, 1, k < 3 ? 2 : 1, 1000u + 77u * (uint32_t)k,
+                                       &cross[k], &burnt[k], &total[k < 3 ? 0 : 1]);
+    if (tree >= 0) forest_fire_run(tree, 0, 2, 1000u, &plain_cross, &plain_burnt, &n);
+    Features_FreeAll();
+    VFS_Shutdown();
+    ASSERT(tree >= 0);
+    printf("[28 cells: %d trees crossed in %d, %d and %d frames, burning %d, %d "
+           "and %d, %d trees in %d, %d and %d, burning %d, %d and %d, %d with "
+           "the rules off] ", total[0], cross[0], cross[1], cross[2], burnt[0],
+           burnt[1], burnt[2], total[1], cross[3], cross[4], cross[5], burnt[3],
+           burnt[4], burnt[5], plain_burnt);
+    for (int k = 0; k < 6; k++) {
+        /* Tens of seconds, and 448 px in that is under 30 px a second. */
+        ASSERT(cross[k] >= 30 * 15);
+        ASSERT(cross[k] <= 30 * 120);
+        ASSERT(burnt[k] * 10 >= total[k < 3 ? 0 : 1] * 8);
+    }
+    ASSERT_EQ_INT(-1, plain_cross);
+    ASSERT_EQ_INT(8, plain_burnt);
 }
 
 /* A burning tree draws its burn picture with both flames in the classic
@@ -29018,6 +29091,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(zhon_plants_and_ruins_resolve);
     RUN_UI_TEST(the_shipped_scenery_dies_and_burns_as_its_files_say);
     RUN_UI_TEST(the_classic_view_draws_a_burning_tree);
+    RUN_UI_TEST(a_remastered_forest_fire_crosses_a_grove_in_tens_of_seconds);
     RUN_UI_TEST(every_feature_a_map_names_resolves);
     RUN_UI_TEST(a_creon_save_needs_the_expansion_installed);
     RUN_UI_TEST(battle_setup_play_refuses_everyone_on_one_team);

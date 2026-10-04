@@ -1826,10 +1826,22 @@ Format per entry:
   The files name `burnweapon = TreeBurn` and no file defines it, and the
   original's loader reads only a `[BurnWeapon]` section no feature has,
   so its fire hurts nobody (legacy:127389-127401). These numbers are
-  ours. And the rubble a wall, a model wall or a building leaves blocks
-  until it is swept, which pays its mana as clearing anything does
-  (D-021). The original's wall rubble and the wrecks of model walls let
-  units through.
+  ours. A fire spreads. In the shipped data a feature's spark comes 75
+  to 149 frames after it catches and its flames end 44 to 72 frames in,
+  so the original's fires never spread. Under the rules a burning
+  feature's flames start over until its spark is thrown, and the spark
+  spreads the fire the original's way: every flamable feature within
+  three cells catches at its spreadchance, 40 percent for most trees,
+  and one more at each of five steps downwind (legacy:128021-128088). A
+  tree then burns 2.5 to 7 seconds. Lit along one edge, a grove of the
+  shipped AraTree01 burns 28 cells (448 px) across in 28 seconds with a
+  tree on every cell, about 16 px a second, and in 46 to 51 seconds with
+  one on every other cell, about 9 px a second. The dense grove burns
+  whole and the sparse one 92 to 98 percent. Infantry walks 33 to 45 px
+  a second, so it outruns a fire. And the rubble a wall, a model wall or
+  a building leaves blocks until it is swept, which pays its mana as
+  clearing anything does (D-021). The original's wall rubble and the
+  wrecks of model walls let units through.
 - Why: the owner's call, decisions three and four of the destruction
   plan. The rules make the field matter more, and they stay a choice so
   the original's game is the default everywhere but Stars of Darien.
@@ -1840,8 +1852,9 @@ Format per entry:
   so no protocol change is needed, and the engine build a room requires
   keeps a build without the rules out of it. The game list marks a room
   that plays them.
-- Where it is: `remaster_breakable_hp`, `remaster_leaves_rubble` and
-  `Features_InstanceBlocks` in `src/game/features.c`, `blast_scenery`
+- Where it is: `remaster_breakable_hp`, `remaster_leaves_rubble`,
+  `Features_InstanceBlocks` and the burn in `Features_TickFrame` in
+  `src/game/features.c`, `blast_scenery`
   and `Units_ScorchAt` in `src/render/units.c`, the rows from
   `GUIDialog_AddOptionRow` in `src/ui/gui_loader.c`.
 
