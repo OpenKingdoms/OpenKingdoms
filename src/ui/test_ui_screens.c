@@ -20005,6 +20005,49 @@ TEST(flyer_stopped_by_the_shore_lands_on_dry_ground) {
     fw_teardown(&platform);
 }
 
+/* Over the sea on Two Castles a dragon cruises 150 over the water, not
+ * over the sea floor, and the ghost ship hovers 50 over it
+ * (legacy:190499-190507). */
+TEST(flyers_cruise_over_the_sea_not_the_sea_floor) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    FwSea s;
+    ASSERT_EQ_INT(0, fw_setup(&platform, &s));
+    GameWorld *w = s.world;
+    const UnitDef *dd = Units_GetDef(s.drag_def);
+    Units_SelectSingle(s.drag);
+    Units_CommandMoveSelected(s.open_x, s.open_y);
+    Units_SelectSingle(-1);
+    int n = 0, cruising = 0;
+    const Unit *u = NULL;
+    for (int i = 0; i < 6000 && !cruising; i++) {
+        fw_tick(&platform, &s, 1);
+        u = Units_GetActive(&n);
+        int g = Terrain_SampleHeight(w, u[s.drag].world_x, u[s.drag].world_y);
+        cruising = u[s.drag].flying && u[s.drag].cmd_kind == UNIT_CMD_NONE &&
+                   g < w->water_height;
+    }
+    ASSERT(cruising);
+    float stands = Units_DebugStandHeight(s.drag);
+    float drawn = (float)Terrain_SampleHeight(w, u[s.drag].world_x, u[s.drag].world_y) +
+                  Units_DrawnAlt(w, &u[s.drag]);
+    int ghost_def = Units_FindDefByName("TARSHIP");
+    ASSERT(ghost_def >= 0);
+    int ghost = Units_Spawn(ghost_def, 1, 0, s.open_x, s.open_y + 200);
+    ASSERT(ghost >= 0);
+    fw_tick(&platform, &s, 120);
+    u = Units_GetActive(&n);
+    float ghost_at = Units_DebugStandHeight(ghost);
+    printf("(sea %d, dragon stands at %.0f and is drawn at %.0f, ghost ship at "
+           "%.0f) ", w->water_height, (double)stands, (double)drawn, (double)ghost_at);
+    ASSERT(stands >= (float)(w->water_height + dd->cruise_alt));
+    ASSERT(drawn >= (float)(w->water_height + dd->cruise_alt));
+    ASSERT(ghost_at >= (float)(w->water_height + 50));
+    fw_teardown(&platform);
+}
+
 /* Damage bars follow the Visual Options setting (#23): off by default,
  * the Show Damage checkbox flips DisplayDamageBars and keeps it, the
  * bar draws only for the local player unless cheat codes are allowed,
@@ -30807,6 +30850,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
     RUN_UI_TEST(flyer_left_over_open_sea_stays_up);
     RUN_UI_TEST(flyer_stopped_by_the_shore_lands_on_dry_ground);
+    RUN_UI_TEST(flyers_cruise_over_the_sea_not_the_sea_floor);
     RUN_UI_TEST(tower_aim_faces_target);
     RUN_UI_TEST(war_galley_attacks_shore_target);
     RUN_UI_TEST(monarch_attacks_large_structure);

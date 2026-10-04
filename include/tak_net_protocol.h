@@ -112,8 +112,9 @@
  * wind, at most four catching a frame, and the computer's footing leans
  * toward where a unit is bound.
  * 35: the landing test takes the original's depth window, amphibious
- * and unexplored ground, and a stopped flyer flies on before it looks
- * for ground. */
+ * and unexplored ground, a stopped flyer flies on before it looks for
+ * ground, and a flyer over water flies, hovers, shoots and is shot at
+ * over the sea, not over the sea floor. */
 #define TAK_ENGINE_BUILD_ID           35
 
 #define TAK_NET_FRAME_HEADER          3u

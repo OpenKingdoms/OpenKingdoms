@@ -1348,6 +1348,14 @@ void              Units_EliminatePlayer(int player_id, int keep_handle);
 /* Test hook: set posture on any unit (PASSIVE also clears its target). */
 void              Units_DebugSetAggro(int handle, int aggro_mode);
 
+/* How high over the ground under it a unit is drawn: its altitude, on
+ * top of the sea for a flyer over water (legacy:190499-190507). */
+float             Units_DrawnAlt(const struct GameWorld *w, const Unit *u);
+
+/* Test hook: the height a unit stands at for the simulation, its shots
+ * and the shots aimed at it. -1 for a bad handle. */
+float             Units_DebugStandHeight(int handle);
+
 /* Test hook: 1 when the original's landing test would let this flyer
  * land with its footprint at (x, y), 0 when not, -1 for a bad handle. */
 int               Units_DebugCanLandAt(int handle, int32_t x, int32_t y);
