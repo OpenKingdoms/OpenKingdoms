@@ -21,11 +21,13 @@
 #include "tak_ingame.h"
 #include "tak_command_queue.h"
 #include "tak_terrain.h"
+#include "tak_economy.h"
 
 #include <SDL.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 
 /* ── the harness ───────────────────────────────────────────────────── */
 
@@ -34,6 +36,11 @@
 
 enum { MV_DEF_WALKER = 0, MV_DEF_KNIGHT, MV_DEF_BUILDER, MV_DEF_HUT,
        MV_DEF_HORSE, MV_DEF_HORSE3, MV_DEF_COUNT };
+/* A sea world has ships and a shipyard as well. */
+enum { MV_DEF_GALLEY = MV_DEF_COUNT, MV_DEF_IRONCLAD, MV_DEF_TREB,
+       MV_DEF_SKIFF, MV_DEF_MANOWAR, MV_DEF_YARD, MV_DEF_SEA_COUNT };
+#define MV_SEABED  20       /* a sea world's floor, deep under its water */
+#define MV_WATER   80
 
 static void mv_fill_def(UnitDef *d, const char *name, const char *mclass,
                         float velocity, int health) {
@@ -55,9 +62,45 @@ static void mv_fill_def(UnitDef *d, const char *name, const char *mclass,
     d->footprint_z = 1;
 }
 
+/* A ship from the game's own numbers: speed, turn and the hull of its
+ * 3DO in px (bow ahead of the centre, stern behind, half the beam). */
+static void mv_fill_ship(UnitDef *d, const char *name, const char *mclass,
+                         float velocity, float accel, float brake, float turn,
+                         int fore, int aft, int half_beam) {
+    mv_fill_def(d, name, mclass, velocity, 900);
+    strncpy(d->category, "TEST BOAT", sizeof(d->category) - 1);
+    d->acceleration = accel;
+    d->brake_rate = brake;
+    d->turn_rate = turn;
+    d->footprint_x = 0;
+    d->footprint_z = 0;
+    d->hull_fore_px = (int16_t)fore;
+    d->hull_aft_px = (int16_t)aft;
+    d->hull_half_beam_px = (int16_t)half_beam;
+    d->hull_set = 1;
+}
+
+static void mv_water_class(MoveClassDef *c, const char *name, int fp, int min_depth) {
+    memset(c, 0, sizeof(*c));
+    strncpy(c->name, name, TAK_MOVEINFO_NAME_MAX - 1);
+    c->footprint_x = fp;
+    c->footprint_z = fp;
+    c->min_water_depth = min_depth;
+    c->bad_min_water_depth = min_depth + 30;
+    /* What the loader takes for a key the class leaves out. */
+    c->max_water_depth = 10000;
+    c->bad_max_water_depth = 10000;
+    c->max_slope = 255;
+    c->bad_slope = 127;
+    c->max_water_slope = 255;
+    c->bad_water_slope = 127;
+}
+
 /* A flat world with an occupancy layer, two move classes and two
- * synthetic defs. Returns NULL if anything could not be built. */
-static GameWorld *mv_world(void) {
+ * synthetic defs. A sea world is the same under water deep enough to
+ * sail, with the game's water classes and ships besides. Returns NULL
+ * if anything could not be built. */
+static GameWorld *mv_world_with(int sea) {
     BattleConfig cfg;
     BattleConfig_SetDefaults(&cfg);
     cfg.line_of_sight = 0;
@@ -70,7 +113,7 @@ static GameWorld *mv_world(void) {
     w->map_pixels_h = MV_TILES * 16;
     w->viewport_w = 640;
     w->viewport_h = 480;
-    w->water_height = 0;
+    w->water_height = sea ? MV_WATER : 0;
     w->tnt.width_tiles = MV_TILES;
     w->tnt.height_tiles = MV_TILES;
     w->tnt.height_w = MV_TILES + 1;
@@ -78,7 +121,7 @@ static GameWorld *mv_world(void) {
     size_t hn = (size_t)w->tnt.height_w * (size_t)w->tnt.height_h;
     w->tnt.heightmap = (uint8_t *)tak_malloc(hn);
     if (!w->tnt.heightmap) return NULL;
-    memset(w->tnt.heightmap, MV_GROUND, hn);
+    memset(w->tnt.heightmap, sea ? MV_SEABED : MV_GROUND, hn);
 
     /* The footprints of the game's GROUND2 and GROUND3, the classes
      * of the swordsman and the knight the needs-data tests use. The
@@ -94,6 +137,13 @@ static GameWorld *mv_world(void) {
     w->moveinfo.classes[1].footprint_x = 3;
     w->moveinfo.classes[1].footprint_z = 3;
     w->moveinfo.classes[1].max_slope = 30;
+    if (sea) {
+        /* WATER3 to WATER5 from data/gamedata/moveinfo.tdf. */
+        w->moveinfo.count = 5;
+        mv_water_class(&w->moveinfo.classes[2], "TESTWATER3", 3, 14);
+        mv_water_class(&w->moveinfo.classes[3], "TESTWATER4", 4, 15);
+        mv_water_class(&w->moveinfo.classes[4], "TESTWATER5", 5, 15);
+    }
 
     if (!Occ_Ensure(w)) return NULL;
     TAK_PathCacheReset();
@@ -128,9 +178,50 @@ static GameWorld *mv_world(void) {
     defs[MV_DEF_HUT].footprint_z = 2;
     defs[MV_DEF_HUT].build_cost = 100;
     defs[MV_DEF_HUT].buildtime = 100.0f;
-    if (Units_DebugSetDefs(defs, MV_DEF_COUNT) != MV_DEF_COUNT) return NULL;
+    if (!sea) {
+        if (Units_DebugSetDefs(defs, MV_DEF_COUNT) != MV_DEF_COUNT) return NULL;
+        return w;
+    }
+    /* The ships' FBI numbers and the hulls their 3DOs measure: the War
+     * Galley, the Iron Clad, the Trebuchet Ship, the Skiff and the Man
+     * of War (docs/notes/2026-10-02-ship-hulls.md). */
+    UnitDef sea_defs[MV_DEF_SEA_COUNT];
+    memcpy(sea_defs, defs, sizeof(defs));
+    mv_fill_ship(&sea_defs[MV_DEF_GALLEY], "TESTGALLEY", "TESTWATER4",
+                 2.9f, 0.31f, 0.062f, 186.0f, 75, 75, 25);
+    mv_fill_ship(&sea_defs[MV_DEF_IRONCLAD], "TESTIRON", "TESTWATER3",
+                 2.9f, 0.33f, 0.05f, 216.0f, 73, 73, 15);
+    mv_fill_ship(&sea_defs[MV_DEF_TREB], "TESTTREB", "TESTWATER5",
+                 1.8f, 0.18f, 0.036f, 108.0f, 70, 75, 79);
+    mv_fill_ship(&sea_defs[MV_DEF_SKIFF], "TESTSKIFF", "TESTWATER3",
+                 4.0f, 0.4f, 0.08f, 240.0f, 51, 62, 41);
+    mv_fill_ship(&sea_defs[MV_DEF_MANOWAR], "TESTMOW", "TESTWATER4",
+                 3.1f, 0.31f, 0.062f, 186.0f, 100, 76, 34);
+    /* A shipyard that builds in the middle of its own footprint, as one
+     * with no script does, and blocks all of it. */
+    mv_fill_def(&sea_defs[MV_DEF_YARD], "TESTYARD", "", 0.0f, 2000);
+    sea_defs[MV_DEF_YARD].bmcode = 0;
+    sea_defs[MV_DEF_YARD].cap_flags = UNIT_CAP_BUILDER;
+    sea_defs[MV_DEF_YARD].worker_time = 400.0f;
+    sea_defs[MV_DEF_YARD].footprint_x = 6;
+    sea_defs[MV_DEF_YARD].footprint_z = 6;
+    sea_defs[MV_DEF_YARD].min_water_depth = 0;
+    sea_defs[MV_DEF_YARD].max_water_depth = 255;
+    for (int i = MV_DEF_GALLEY; i <= MV_DEF_MANOWAR; i++) {
+        sea_defs[i].build_cost = 100;
+        sea_defs[i].buildtime = 100.0f;
+    }
+    if (Units_DebugSetDefs(sea_defs, MV_DEF_SEA_COUNT) != MV_DEF_SEA_COUNT)
+        return NULL;
+    if (Units_DebugSetYardmap(MV_DEF_YARD, "oooooooooooooooooooooooooooooooooooo") != 0)
+        return NULL;
+    Economy_AdjustCaps(&w->economy, 1, 1000000, 0.0f);
+    Economy_Earn(&w->economy, 1, 1000000);
     return w;
 }
+
+static GameWorld *mv_world(void) { return mv_world_with(0); }
+static GameWorld *mv_sea(void) { return mv_world_with(1); }
 
 static void mv_end(void) {
     Units_ClearInstances();
@@ -724,6 +815,53 @@ static int mv_hash_run(uint32_t *out, int reset_every, int *out_plans) {
  * off one flow field, so the whole group sets out on the tick it is
  * ordered instead of sixteen searches a tick, and every one of them
  * gets there. Seven sent together are not a group and each searches. */
+/* A search that cannot reach its goal opens its whole budget of cells.
+ * One tick starts searches only until it has opened three budgets, and
+ * the units left over search on the ticks after. */
+static int mv_waiting(const int *h, int n) {
+    int waiting = 0;
+    for (int i = 0; i < n; i++) waiting += mv_unit(h[i])->path_pending != 0;
+    return waiting;
+}
+
+TEST(a_tick_opens_a_bounded_number_of_cells_on_route_searches) {
+    GameWorld *w = mv_world();
+    ASSERT_NOT_NULL(w);
+    /* A closed box of cliff round the goals. */
+    for (int t = 138; t <= 162; t++) {
+        w->tnt.heightmap[(size_t)138 * w->tnt.height_w + t] = 255;
+        w->tnt.heightmap[(size_t)162 * w->tnt.height_w + t] = 255;
+        w->tnt.heightmap[(size_t)t * w->tnt.height_w + 138] = 255;
+        w->tnt.heightmap[(size_t)t * w->tnt.height_w + 162] = 255;
+    }
+    TAK_PathCacheReset();
+    int h[12];
+    for (int i = 0; i < 12; i++) {
+        h[i] = Units_Spawn(MV_DEF_WALKER, 1, 0, 300 + (i % 4) * 48,
+                           300 + (i / 4) * 48);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    /* A point each, so no two make a group that shares one field. */
+    for (int i = 0; i < 12; i++)
+        Units_CommandMoveUnit(h[i], 150 * 16 + (i % 4) * 32, 150 * 16 + (i / 4) * 32);
+    TAK_PathDebugCounters c0, c1;
+    TAK_PathDebugGetCounters(&c0);
+    Units_TickEngines();
+    TAK_PathDebugGetCounters(&c1);
+    int waiting = mv_waiting(h, 12);
+    printf("(first tick opened %llu cells, %d waiting) ",
+           (unsigned long long)(c1.work - c0.work), waiting);
+    ASSERT(c1.work - c0.work <= 4 * 8192 + 1);
+    ASSERT(waiting > 0);
+    for (int t = 0; t < 8 && waiting > 0; t++) {
+        Units_TickEngines();
+        waiting = mv_waiting(h, 12);
+    }
+    ASSERT_EQ_INT(0, waiting);
+    mv_end();
+}
+
 TEST(a_group_sent_to_one_place_sets_out_together) {
     ASSERT_NOT_NULL(mv_world());
     int h[32];
@@ -1041,6 +1179,235 @@ TEST(ground_the_map_marks_impassable_is_walked_round) {
     mv_end();
 }
 
+/* ── Ships keep apart by their hulls (M-012) ───────────────────────── */
+
+/* A hull read off the def: its line along the heading and half the beam
+ * round it. Worked out here, so the measure does not take the rule's
+ * word for itself. */
+static void mv_hull_line(const Unit *u, float *ax, float *ay, float *bx,
+                         float *by, float *r) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    float fore = d ? (float)d->hull_fore_px : 0.0f;
+    float aft = d ? (float)d->hull_aft_px : 0.0f;
+    *r = d ? (float)d->hull_half_beam_px : 0.0f;
+    float mid = (fore - aft) * 0.5f;
+    float half = (fore + aft) * 0.5f - *r;
+    if (half < 0.0f) half = 0.0f;
+    float fx = sinf(u->heading), fy = -cosf(u->heading);
+    *ax = (float)u->world_x + fx * (mid - half);
+    *ay = (float)u->world_y + fy * (mid - half);
+    *bx = (float)u->world_x + fx * (mid + half);
+    *by = (float)u->world_y + fy * (mid + half);
+}
+
+static float mv_clamp01(float t) { return t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t; }
+
+/* Closest distance between segments p1q1 and p2q2. */
+static float mv_seg_dist(float p1x, float p1y, float q1x, float q1y,
+                         float p2x, float p2y, float q2x, float q2y) {
+    float d1x = q1x - p1x, d1y = q1y - p1y, d2x = q2x - p2x, d2y = q2y - p2y;
+    float rx = p1x - p2x, ry = p1y - p2y;
+    float a = d1x * d1x + d1y * d1y, e = d2x * d2x + d2y * d2y;
+    float f = d2x * rx + d2y * ry;
+    float s = 0.0f, t = 0.0f;
+    if (a <= 1e-6f && e <= 1e-6f) {
+        s = t = 0.0f;
+    } else if (a <= 1e-6f) {
+        t = mv_clamp01(f / e);
+    } else {
+        float c = d1x * rx + d1y * ry;
+        if (e <= 1e-6f) {
+            s = mv_clamp01(-c / a);
+        } else {
+            float b = d1x * d2x + d1y * d2y, den = a * e - b * b;
+            s = den > 1e-6f ? mv_clamp01((b * f - c * e) / den) : 0.0f;
+            t = (b * s + f) / e;
+            if (t < 0.0f) { t = 0.0f; s = mv_clamp01(-c / a); }
+            else if (t > 1.0f) { t = 1.0f; s = mv_clamp01((b - c) / a); }
+        }
+    }
+    float cx = (p1x + d1x * s) - (p2x + d2x * t);
+    float cy = (p1y + d1y * s) - (p2y + d2y * t);
+    return sqrtf(cx * cx + cy * cy);
+}
+
+/* How far two hulls run into each other, 0 when they are clear. */
+static float mv_hull_overlap(const Unit *a, const Unit *b) {
+    float a0x, a0y, a1x, a1y, ar, b0x, b0y, b1x, b1y, br;
+    mv_hull_line(a, &a0x, &a0y, &a1x, &a1y, &ar);
+    mv_hull_line(b, &b0x, &b0y, &b1x, &b1y, &br);
+    float d = mv_seg_dist(a0x, a0y, a1x, a1y, b0x, b0y, b1x, b1y);
+    float o = ar + br - d;
+    return o > 0.0f ? o : 0.0f;
+}
+
+static float mv_worst_overlap(const int *h, int n) {
+    float worst = 0.0f;
+    for (int i = 0; i < n; i++)
+        for (int j = i + 1; j < n; j++) {
+            float o = mv_hull_overlap(mv_unit(h[i]), mv_unit(h[j]));
+            if (o > worst) worst = o;
+        }
+    return worst;
+}
+
+/* Ten ships of five kinds with the game's hulls, sent from all round
+ * onto one point as a click sends a selection. */
+TEST(ships_sent_to_one_place_keep_their_hulls_apart) {
+    ASSERT_NOT_NULL(mv_sea());
+    static const int kinds[5] = { MV_DEF_GALLEY, MV_DEF_IRONCLAD, MV_DEF_TREB,
+                                  MV_DEF_SKIFF, MV_DEF_MANOWAR };
+    #define MV_FLEET_N 10
+    int h[MV_FLEET_N];
+    int32_t gx = 1536, gy = 1536;
+    for (int i = 0; i < MV_FLEET_N; i++) {
+        int32_t x = 816 + (i % 5) * 360, y = (i < 5) ? 816 : 2256;
+        h[i] = Units_Spawn(kinds[i % 5], 1, 0, x, y);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    ASSERT(mv_worst_overlap(h, MV_FLEET_N) == 0.0f);
+    for (int i = 0; i < MV_FLEET_N; i++) Units_OrderMove(h[i], gx, gy);
+    float worst_moving = 0.0f;
+    for (int t = 0; t < 4800; t++) {
+        Units_TickEngines();
+        if (t % 4 == 0) {
+            float o = mv_worst_overlap(h, MV_FLEET_N);
+            if (o > worst_moving) worst_moving = o;
+        }
+    }
+    float worst_end = mv_worst_overlap(h, MV_FLEET_N);
+    int64_t far2 = 0;
+    for (int i = 0; i < MV_FLEET_N; i++) {
+        int64_t d2 = mv_dist2(mv_unit(h[i]), gx, gy);
+        if (d2 > far2) far2 = d2;
+    }
+    printf("(worst overlap %.1f px under way, %.1f px at rest, farthest "
+           "%.0f px from the point) ", (double)worst_moving, (double)worst_end,
+           (double)sqrtf((float)far2));
+    /* A pixel or two is rounding on a hull 150 px long. */
+    ASSERT(worst_end <= 2.0f);
+    ASSERT(worst_moving <= 4.0f);
+    /* And they gathered rather than holding off. */
+    ASSERT(far2 <= (int64_t)480 * 480);
+    #undef MV_FLEET_N
+    mv_end();
+}
+
+/* A yard builds each ship in the middle of its footprint. All three
+ * sail clear of the yard and of one another. */
+TEST(a_shipyard_launches_ship_after_ship) {
+    ASSERT_NOT_NULL(mv_sea());
+    int32_t yx = 1536, yy = 1536;
+    int yard = Units_Spawn(MV_DEF_YARD, 1, 0, yx, yy);
+    ASSERT(yard >= 0);
+    for (int k = 0; k < 3; k++)
+        ASSERT_EQ_INT(0, Units_FactoryEnqueue(yard, k == 1 ? MV_DEF_MANOWAR
+                                                           : MV_DEF_GALLEY));
+    int h[3], n = 0;
+    for (int t = 0; t < 9000 && n < 3; t++) {
+        Units_TickEngines();
+        int count = 0;
+        const Unit *units = Units_GetActive(&count);
+        n = 0;
+        for (int i = 0; i < count && n < 3; i++)
+            if (units[i].alive == UNIT_ALIVE_ACTIVE && i != yard &&
+                !units[i].under_construction) h[n++] = i;
+    }
+    ASSERT_EQ_INT(3, n);
+    mv_run(1800);
+    float worst = mv_worst_overlap(h, 3);
+    int on_yard = 0;
+    for (int i = 0; i < 3; i++) {
+        const Unit *u = mv_unit(h[i]);
+        ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)u->alive);
+        /* Clear of the yard's 96 px square. */
+        int32_t dx = u->world_x - yx, dy = u->world_y - yy;
+        if (dx < 0) dx = -dx;
+        if (dy < 0) dy = -dy;
+        if (dx < 48 && dy < 48) on_yard++;
+    }
+    printf("(worst overlap %.1f px, %d left on the yard) ", (double)worst, on_yard);
+    ASSERT_EQ_INT(0, on_yard);
+    ASSERT(worst <= 2.0f);
+    mv_end();
+}
+
+/* A fleet sent through a strait about two hulls wide gets through with
+ * no hull through another. Past it there is room for the fleet in line. */
+TEST(a_fleet_sails_a_narrow_strait) {
+    GameWorld *w = mv_sea();
+    ASSERT_NOT_NULL(w);
+    /* Land either side of a channel 12 tiles (192 px) wide, 40 long. */
+    const int c0 = 90, c1 = 102, x0 = 40, x1 = 80;
+    for (int ty = 0; ty <= MV_TILES; ty++)
+        for (int tx = x0; tx <= x1; tx++)
+            if (ty < c0 || ty > c1)
+                w->tnt.heightmap[(size_t)ty * w->tnt.height_w + tx] = 120;
+    TAK_PathCacheReset();
+    static const int kinds[4] = { MV_DEF_GALLEY, MV_DEF_MANOWAR, MV_DEF_IRONCLAD,
+                                  MV_DEF_SKIFF };
+    #define MV_STRAIT_N 8
+    int h[MV_STRAIT_N];
+    int32_t gx = 176 * 16, gy = 96 * 16;
+    for (int i = 0; i < MV_STRAIT_N; i++) {
+        h[i] = Units_Spawn(kinds[i % 4], 1, 0, 12 * 16 + (i / 4) * 220,
+                           76 * 16 + (i % 4) * 200);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    ASSERT(mv_worst_overlap(h, MV_STRAIT_N) == 0.0f);
+    for (int i = 0; i < MV_STRAIT_N; i++) Units_OrderMove(h[i], gx, gy);
+    int through = 0, t = 0;
+    float worst = 0.0f;
+    for (; t < 9000 && through < MV_STRAIT_N; t++) {
+        Units_TickEngines();
+        through = 0;
+        for (int i = 0; i < MV_STRAIT_N; i++)
+            if (mv_unit(h[i])->world_x > (x1 + 2) * 16) through++;
+        if (t % 4 == 0) {
+            float o = mv_worst_overlap(h, MV_STRAIT_N);
+            if (o > worst) worst = o;
+        }
+    }
+    printf("(%d of %d through in %d ticks, worst overlap %.1f px) ", through,
+           MV_STRAIT_N, t, (double)worst);
+    ASSERT_EQ_INT(MV_STRAIT_N, through);
+    ASSERT(worst <= 4.0f);
+    #undef MV_STRAIT_N
+    mv_end();
+}
+
+/* A ground crowd lands where it did before ships had hulls. The layout
+ * hash is pinned from that build. */
+TEST(a_ground_crowd_packs_as_it_did) {
+    ASSERT_NOT_NULL(mv_world());
+    #define MV_GROUND_N 24
+    int h[MV_GROUND_N];
+    for (int i = 0; i < MV_GROUND_N; i++) {
+        int def = (i % 4 == 3) ? MV_DEF_HORSE3 : MV_DEF_WALKER;
+        h[i] = Units_Spawn(def, 1, 0, 1100 + (i % 6) * 80, 1200 + (i / 6) * 80);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    for (int i = 0; i < MV_GROUND_N; i++) Units_OrderMove(h[i], 1800, 1700);
+    mv_run(3000);
+    uint32_t hash = 2166136261u;
+    for (int i = 0; i < MV_GROUND_N; i++) {
+        const Unit *u = mv_unit(h[i]);
+        uint32_t v[2] = { (uint32_t)u->world_x, (uint32_t)u->world_y };
+        for (int k = 0; k < 2; k++)
+            for (int b = 0; b < 4; b++) {
+                hash ^= (v[k] >> (8 * b)) & 0xFFu;
+                hash *= 16777619u;
+            }
+    }
+    printf("(layout 0x%08x) ", (unsigned)hash);
+    ASSERT_EQ_INT((int)0x7792f478u, (int)hash);
+    #undef MV_GROUND_N
+    mv_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("Movement without game data");
@@ -1058,9 +1425,15 @@ int main(int argc, char **argv) {
     RUN(a_near_blocked_unit_holds_its_line);
     RUN(a_wide_unit_walks_a_corridor_its_own_width);
     RUN(ground_the_map_marks_impassable_is_walked_round);
+    RUN(a_tick_opens_a_bounded_number_of_cells_on_route_searches);
     RUN(a_group_sent_to_one_place_sets_out_together);
     RUN(a_frame_whose_builder_is_not_closing_frees_the_site);
     RUN(a_builder_walking_a_long_way_keeps_its_frame);
+    TEST_SUITE("Ships");
+    RUN(ships_sent_to_one_place_keep_their_hulls_apart);
+    RUN(a_shipyard_launches_ship_after_ship);
+    RUN(a_fleet_sails_a_narrow_strait);
+    RUN(a_ground_crowd_packs_as_it_did);
     TEST_SUITE("State hash");
     RUN(a_repeated_run_hashes_the_same);
     RUN(a_cold_planner_hashes_the_same);

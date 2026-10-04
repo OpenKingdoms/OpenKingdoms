@@ -2268,6 +2268,65 @@ TEST(a_unit_under_half_built_is_an_intangible_mass_in_3d) {
     shutdown_all(&platform);
 }
 
+/* The window pixel a world point draws at in the 3D view. */
+static void v3_screen_of(const SDL_Rect *play, const float p[3], int *sx, int *sy) {
+    float vp[16], c[4];
+    Camera3D_ViewProj(View3D_Camera(), vp);
+    Mat4_TransformPoint(vp, p, c);
+    *sx = play->x + (int)((c[0] / c[3] + 1.0f) * 0.5f * (float)play->w);
+    *sy = play->y + (int)((1.0f - c[1] / c[3]) * 0.5f * (float)play->h);
+}
+
+/* A dragon at its cruise height is picked where the 3D view draws it,
+ * and the pointer on the ground under it is not on it. The original
+ * lifts the pick box by the unit's own height (legacy:237815-237922). */
+TEST(the_3d_pointer_picks_a_flyer_where_it_is_drawn) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    Timer timer;
+    Timer_Init(&timer);
+    ASSERT(frame(&platform, &timer));
+    ASSERT_EQ_INT(1, InGame_SetView3D(1));
+    int def = Units_FindDefByName("ARADRAG");
+    ASSERT(def >= 0);
+    int h = Units_DebugSpawnFacing(def, 1, 30 * 16 + 8, 40 * 16 + 8, 0);
+    ASSERT(h >= 0);
+    int n = 0;
+    Unit *u = (Unit *)&Units_GetActive(&n)[h];   /* test-only mutation */
+    u->flying = 1;
+    u->flight_alt = (float)Units_GetDef(def)->cruise_alt;
+    ASSERT(u->flight_alt > 100.0f);
+    world->cam_x = u->world_x - world->viewport_w / 2;
+    world->cam_y = u->world_y - world->viewport_h / 2;
+    ASSERT(frame(&platform, &timer));
+    Camera3D *cam = View3D_Camera();
+    cam->target_x = (float)u->world_x;
+    cam->target_z = (float)u->world_y;
+    /* Turned and lower than the classic tilt, as a player sets it. */
+    cam->yaw = 0.8f;
+    cam->pitch = 0.45f;
+    cam->dist = 600.0f;
+    ASSERT(frame(&platform, &timer));
+
+    SDL_Rect play = { 0, 0, WIN_W, WIN_H };
+    (void)HUD_GetViewportRect(&platform, &play);
+    float g = (float)Terrain_SampleHeight(world, u->world_x, u->world_y);
+    const float body[3] = { (float)u->world_x, g + u->flight_alt + 8.0f, (float)u->world_y };
+    const float under[3] = { (float)u->world_x, g, (float)u->world_y };
+    int bx, by, gx, gy;
+    v3_screen_of(&play, body, &bx, &by);
+    v3_screen_of(&play, under, &gx, &gy);
+    printf("(body at %d,%d, ground under it at %d,%d) ", bx, by, gx, gy);
+    ASSERT(by < gy - 20);
+    ASSERT_EQ_INT(h, View_3D()->pointer_to_unit(world, &platform, bx, by));
+    ASSERT(View_3D()->pointer_to_unit(world, &platform, gx, gy) != h);
+    ASSERT_EQ_INT(1, InGame_SetView3D(0));
+    shutdown_all(&platform);
+}
+
 /* An argument runs only the cases whose name contains it. */
 #define RUN_NAMED(name) do { \
         if (argc < 2 || strstr(#name, argv[1])) RUN(name); \
@@ -2279,6 +2338,7 @@ int main(int argc, char **argv) {
     TEST_ALLOW_SKIPS("no game data or no opengl renderer on this machine");
     RUN_NAMED(toggling_3d_on_and_off_leaves_the_classic_frame_byte_identical);
     RUN_NAMED(the_3d_pointer_lands_where_the_camera_looks);
+    RUN_NAMED(the_3d_pointer_picks_a_flyer_where_it_is_drawn);
     RUN_NAMED(the_first_switch_to_3d_stays_over_the_same_ground);
     RUN_NAMED(a_scroll_in_3d_moves_the_classic_camera_with_it);
     RUN_NAMED(the_accessors_hand_out_the_baked_model_and_its_pose);

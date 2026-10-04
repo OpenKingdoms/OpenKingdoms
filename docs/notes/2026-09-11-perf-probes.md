@@ -125,6 +125,20 @@ than 96 px from its goal, is not within weapon range of its target and
 is not waiting on a plan. That is the "never stuck for good" line of
 issue #60 turned into a number, and it must read zero at every sample.
 
+## Spikes
+
+A window's `worst` says a tick was slow, not what made it slow.
+`TAK_PERF_SPIKE=<ms>` prints a `spike` line for every tick at least that
+long, with the tick's own share of each figure above, the combat and
+mover split, and the computer player's parts. `whole` counts from before
+the tick's orders, `sim` from where the window figures start.
+
+`TAK_SPIKE_PROBE=<minutes> test_ui_screens sim_spike_probe` plays big8
+flat out with the map revealed, the way the remaster's soak runs a
+battle, and prints the same lines. `TAK_PERF_MAP` and `TAK_PERF_SEATS`
+play it on another map with fewer seats. Like the AI duel, the case is
+registered only when the variable is set.
+
 ## The limits web-perf.js checks
 
 These come from the issue #60 acceptance checks. The browser figures are

@@ -89,6 +89,8 @@ static struct {
     Font *banner_font;
     char  banner_victory[32];
     char  banner_defeat[32];
+    /* A skirmish the local seat lost, played on for it to watch. */
+    uint8_t play_on;
     /* The view that draws the world and maps the pointer: the classic
      * renderer, or the 3D view while it is toggled on. */
     const TAK_View *view;
@@ -300,6 +302,39 @@ static int g_debug_play_without_humans;
 
 void InGame_DebugPlayWithoutHumans(int on) { g_debug_play_without_humans = on ? 1 : 0; }
 
+static int InGame_StandingAtWar(const int *standing, int n_standing) {
+    for (int i = 0; i < n_standing; i++)
+        for (int j = i + 1; j < n_standing; j++)
+            if (Units_PlayersAreEnemies(standing[i], standing[j])) return 1;
+    return 0;
+}
+
+/* A lost skirmish goes on while two seats still standing are at war, for
+ * the player to watch (D-034). The first end keeps its verdict and cue. */
+int InGame_PlayOn(void) {
+    GameWorld *world = World_Get();
+    if (ig.play_on) return 1;
+    if (!world || !world->loaded || !world->skirmish_game_over) return 0;
+    if (world->skirmish_local_result >= 0) return 0;
+    if (world->mission.objective_count > 0 || world->mission.placement_count > 0) return 0;
+    if (TAK_Match_IsLive() || Replay_IsPlaying()) return 0;
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int standing[TAK_MAX_PLAYERS];
+    int n_standing = 0;
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        if (world->resigned[p]) continue;
+        if (player_units_present(world, p, units, unit_count) > 0) standing[n_standing++] = p;
+    }
+    if (!InGame_StandingAtWar(standing, n_standing)) return 0;
+    world->skirmish_game_over = 0;
+    world->skirmish_stats_open = 0;
+    ig.play_on = 1;
+    return 1;
+}
+
+int InGame_PlayingOn(void) { return ig.play_on; }
+
 /* Every player still standing is stamped with the tick, in any battle,
  * and the end screen prints the stamp as Time (legacy:206617-206620). */
 static void InGame_StampStanding(GameWorld *world, int tick) {
@@ -341,17 +376,14 @@ static void InGame_EvaluateSkirmishRules(GameWorld *world) {
             human_standing = 1;
         }
     }
-    int split = 0;
-    for (int i = 0; i < n_standing && !split; i++) {
-        for (int j = i + 1; j < n_standing; j++) {
-            if (Units_PlayersAreEnemies(standing[i], standing[j])) {
-                split = 1;
-                break;
-            }
-        }
-    }
-    if (split && (human_standing || g_debug_play_without_humans)) {
+    int split = InGame_StandingAtWar(standing, n_standing);
+    if (split && (human_standing || g_debug_play_without_humans || ig.play_on)) {
         InGame_ReadVerdict(world, present);
+        return;
+    }
+    if (ig.play_on) {
+        ig.play_on = 0;
+        world->skirmish_game_over = 1;
         return;
     }
 
@@ -614,6 +646,9 @@ static void InGame_SimulationStep(GameWorld *world) {
         InGame_ReadCalledMission(world, world->skirmish_elapsed_ticks);
         InGame_OpenStatsAfterBanner(world, world->skirmish_elapsed_ticks);
     }
+    /* What an end screen tells beyond the tallies. It reads the tick
+     * as it ends and changes nothing. */
+    BattleRecord_Tick(world);
     PerfProbe_AfterTick(world, prof_now_ms() - t0);
 }
 
@@ -868,11 +903,25 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
 
 /* The cursor the world shows under a point with no command armed
  * (legacy manual §IV.2): resume-build over your own frame with a
- * builder selected, attack over an enemy with your units selected, the
- * select hand over any other unit, revive over a body the selection can
- * raise, and the pointer otherwise. */
+ * builder selected, attack over an enemy one of your selected units can
+ * hit, the select hand over any other unit, revive over a body the
+ * selection can raise, and the pointer otherwise. */
 int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
-    int hover = Units_PickAt(world_x, world_y, 0);
+    return InGame_HoverCursorOn(Units_PickAt(world_x, world_y, 0),
+                                world_x, world_y);
+}
+
+/* An enemy under the pointer, for the selection: the best any one unit
+ * answers (legacy:238791-238838). Attack when a weapon in hand can take
+ * it, too far when the armed ones all cannot, and with nobody armed the
+ * click is on the ground there (legacy:186135-186330). */
+static int ig_enemy_cursor(int hover) {
+    int armed = 0;
+    if (Units_SelectionCanAttack(hover, &armed) > 0) return HUD_CMD_ATTACK;
+    return armed > 0 ? HUD_CUR_TOOFAR : -1;
+}
+
+int InGame_HoverCursorOn(int hover, int32_t world_x, int32_t world_y) {
     if (hover >= 0) {
         if (g_units_get_player(hover) == Units_LocalPlayer() &&
             Units_IsUnderConstruction(hover) &&
@@ -880,11 +929,11 @@ int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
             return HUD_CMD_HEAL;   /* resume-build cursor */
         /* Only an enemy is something to attack. An ally's unit takes
          * no order from us, and the sword over it said otherwise. */
-        if (Units_PlayersAreEnemies(Units_LocalPlayer(),
-                                    g_units_get_player(hover)) &&
-            Units_SelectionOwnedCount() > 0)
-            return HUD_CMD_ATTACK;
-        return HUD_CUR_SELECT;
+        int enemy = Units_PlayersAreEnemies(Units_LocalPlayer(),
+                                            g_units_get_player(hover));
+        if (!enemy || Units_SelectionOwnedCount() == 0) return HUD_CUR_SELECT;
+        int cur = ig_enemy_cursor(hover);
+        if (cur >= 0) return cur;
     }
     /* Bodies are looked up on the ground under the pointer, which the
      * terrain lift puts further down the map than the flat reading. */
@@ -898,10 +947,20 @@ int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
 /* The cursor an armed command shows: the sweep cursor turns to revive
  * over a body the selection would raise instead of sweep. */
 int InGame_CommandCursorAt(int mode, int32_t world_x, int32_t world_y) {
+    return InGame_CommandCursorOn(mode, Units_PickAt(world_x, world_y, 0),
+                                  world_x, world_y);
+}
+
+int InGame_CommandCursorOn(int mode, int hit, int32_t world_x, int32_t world_y) {
     int32_t gx = world_x, gy = world_y;
     Units_GroundUnderPoint(world_x, world_y, &gx, &gy);
     if (mode == HUD_CMD_CLEAR && Units_SelectionRaiseModeAt(gx, gy) >= 0)
         return HUD_CUR_REVIVE;
+    /* An armed attack on an enemy no weapon in hand can take. */
+    if (mode == HUD_CMD_ATTACK && hit >= 0 &&
+        Units_PlayersAreEnemies(Units_LocalPlayer(), g_units_get_player(hit)) &&
+        ig_enemy_cursor(hit) == HUD_CUR_TOOFAR)
+        return HUD_CUR_TOOFAR;
     return mode;
 }
 
@@ -910,15 +969,19 @@ int InGame_CommandCursorAt(int mode, int32_t world_x, int32_t world_y) {
  * command, the pick and the order ack all resolve in one place
  * (manual section IV.2: a pending order executes, else a friendly is
  * selected, an enemy attacked, and bare ground is a Move). */
-/* Ctrl+digit files the selection as a squad, a bare digit recalls it,
- * each with its own cue (legacy:122211, legacy:122226). */
-static void ig_control_group(int d, int assign) {
-    if (assign) {
+/* Ctrl+digit files the selection as a squad, a bare digit recalls it
+ * and Ctrl+Shift+digit adds it, each with its cue (legacy:122211,
+ * legacy:122226, legacy:122240; Keys.TDF CTRLSHIFT_0 to 9). */
+enum { IG_GROUP_RECALL, IG_GROUP_ASSIGN, IG_GROUP_ADD };
+
+static void ig_control_group(int d, int how) {
+    if (how == IG_GROUP_ASSIGN) {
         Units_AssignControlGroup(d);
         GameSound_PlayUI("CreateSquad");
         fprintf(stderr, "Control group %d assigned\n", d);
     } else {
-        int n = Units_RecallControlGroup(d);
+        int n = how == IG_GROUP_ADD ? Units_AddControlGroup(d)
+                                    : Units_RecallControlGroup(d);
         GameSound_PlayUI("SelectSquad");
         fprintf(stderr, "Control group %d recalled (%d units)\n", d, n);
     }
@@ -926,7 +989,36 @@ static void ig_control_group(int d, int assign) {
 
 void InGame_DebugControlGroup(int digit, int assign) {
     if (digit < 0 || digit > 9) return;
-    ig_control_group(digit, assign);
+    ig_control_group(digit, assign ? IG_GROUP_ASSIGN : IG_GROUP_RECALL);
+}
+
+/* SelectUnitsOnScreen: your units the view shows, in place of the
+ * selection (legacy:237503-237545). */
+static int ig_select_on_screen(const GameWorld *world) {
+    int32_t x0 = world->cam_x, y0 = world->cam_y;
+    int32_t x1 = x0 + world->viewport_w, y1 = y0 + world->viewport_h;
+    int32_t ax, ay, bx, by;
+    if (ig.platform &&
+        ig_view()->pointer_to_world(world, ig.platform, 0, 0, &ax, &ay) &&
+        ig_view()->pointer_to_world(world, ig.platform, world->viewport_w - 1,
+                                    world->viewport_h - 1, &bx, &by)) {
+        x0 = ax; y0 = ay; x1 = bx; y1 = by;
+    }
+    return Units_SelectInRect(x0, y0, x1, y1, 0);
+}
+
+/* The select keys play no cue, as their commands play none. */
+static void ig_select_key(const GameWorld *world, InGameSelectKey k) {
+    int n;
+    switch (k.kind) {
+    case IG_SELECT_SAME_TYPE: n = Units_SelectSameType(); break;
+    case IG_SELECT_ALL:       n = Units_SelectAllOwn(); break;
+    case IG_SELECT_ON_SCREEN: n = ig_select_on_screen(world); break;
+    case IG_SELECT_CATEGORY:  n = Units_SelectCategory(k.category, k.add); break;
+    case IG_SELECT_NONE:
+    default: return;
+    }
+    fprintf(stderr, "Select key: %d units\n", n);
 }
 
 /* Cancel: an armed command goes first and the selection survives
@@ -948,10 +1040,12 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
  * The tick scales it by the frame's scroll distance. */
 static void ig_scroll_dir(const Uint8 *keys, int *out_dx, int *out_dy) {
     int dx = 0, dy = 0;
-    if (keys[SDL_SCANCODE_LEFT]  || keys[SDL_SCANCODE_A]) dx -= 1;
-    if (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D]) dx += 1;
-    if (keys[SDL_SCANCODE_UP]    || keys[SDL_SCANCODE_W]) dy -= 1;
-    if (keys[SDL_SCANCODE_DOWN]  || keys[SDL_SCANCODE_S]) dy += 1;
+    /* With Ctrl down W, A, S and D are select keys, not the camera. */
+    int wasd = !keys[SDL_SCANCODE_LCTRL] && !keys[SDL_SCANCODE_RCTRL];
+    if (keys[SDL_SCANCODE_LEFT]  || (wasd && keys[SDL_SCANCODE_A])) dx -= 1;
+    if (keys[SDL_SCANCODE_RIGHT] || (wasd && keys[SDL_SCANCODE_D])) dx += 1;
+    if (keys[SDL_SCANCODE_UP]    || (wasd && keys[SDL_SCANCODE_W])) dy -= 1;
+    if (keys[SDL_SCANCODE_DOWN]  || (wasd && keys[SDL_SCANCODE_S])) dy += 1;
     *out_dx = dx;
     *out_dy = dy;
 }
@@ -1035,12 +1129,27 @@ static int ig_briefing_keys(int has_focus, const uint8_t *keys) {
     return 0;
 }
 
+static void ig_debug_keys(const uint8_t *frame_keys, const char *text_in);
+
 void InGame_DebugKeyFrame(int scancode, const char *text_in) {
     static uint8_t frame_keys[SDL_NUM_SCANCODES];
     memset(frame_keys, 0, sizeof(frame_keys));
     if (scancode > 0 && scancode < SDL_NUM_SCANCODES) {
         frame_keys[scancode] = 1;
     }
+    ig_debug_keys(frame_keys, text_in);
+}
+
+void InGame_DebugKeyChord(int mods, int scancode) {
+    static uint8_t frame_keys[SDL_NUM_SCANCODES];
+    memset(frame_keys, 0, sizeof(frame_keys));
+    if (mods & IG_CLICK_CTRL) frame_keys[SDL_SCANCODE_LCTRL] = 1;
+    if (mods & IG_CLICK_SHIFT) frame_keys[SDL_SCANCODE_LSHIFT] = 1;
+    if (scancode > 0 && scancode < SDL_NUM_SCANCODES) frame_keys[scancode] = 1;
+    ig_debug_keys(frame_keys, NULL);
+}
+
+static void ig_debug_keys(const uint8_t *frame_keys, const char *text_in) {
     /* The briefing owns the keys while it is up, as it owns the frame. */
     if (Briefing_IsOpen()) {
         if (ig_briefing_keys(1, frame_keys)) {
@@ -1104,12 +1213,14 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
                 break;
             case HUD_CMD_ATTACK:
                 /* Armed attack on an ally's unit is refused the same
-                 * way, and falls to the ground under it. */
+                 * way, and falls to the ground under it. On an enemy
+                 * only a weapon that can take it is sent
+                 * (legacy:186914-186960). */
                 if (hit >= 0 &&
                     Units_PlayersAreEnemies(Units_LocalPlayer(),
                                             g_units_get_player(hit)))
-                    TAK_Cmd_EmitSelection(TAK_CMD_ATTACK, world_x, world_y,
-                                          hit, 0, q);
+                    TAK_Cmd_EmitSelectionWhere(TAK_CMD_ATTACK, world_x, world_y,
+                                               hit, 0, q, Units_WeaponCanTake);
                 else
                     TAK_Cmd_EmitSelection(TAK_CMD_ATTACK_GROUND,
                                           gx, gy, -1, 0, q);
@@ -1210,6 +1321,11 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
     }
 }
 
+static int ig_unarmed_walker(int handle, int target) {
+    (void)target;
+    return !Units_IsArmed(handle) && Units_CanWalk(handle);
+}
+
 /* A click with nothing armed that resumes no frame. A frame not an
  * enemy's is no unit to select, so a click on it is a click on the
  * ground there (legacy:237815-237922 picks, and the original never
@@ -1242,10 +1358,22 @@ static void ig_world_click_rest(GameWorld *world, int32_t world_x, int32_t world
          * whatever is selected, since an ally is not a target. */
         Units_SelectForInspect(hit);
     } else if (Units_SelectionOwnedCount() > 0) {
-        if (hit >= 0) {
-            TAK_Cmd_EmitSelection(TAK_CMD_ATTACK, world_x, world_y, hit, 0, q);
-            ig_play_order_ack(world, "attack");
-            fprintf(stderr, "Attack -> unit %d\n", hit);
+        int armed = 0;
+        int able = hit >= 0 ? Units_SelectionCanAttack(hit, &armed) : 0;
+        if (hit >= 0 && armed > 0) {
+            /* Each unit answers for itself (legacy:186660-186700,
+             * legacy:186914-186960): a weapon that can take the enemy
+             * attacks it, one that cannot is given nothing, and a
+             * walker with no weapon goes to the ground there. */
+            if (able > 0) {
+                TAK_Cmd_EmitSelectionWhere(TAK_CMD_ATTACK, world_x, world_y,
+                                           hit, 0, q, Units_WeaponCanTake);
+                ig_play_order_ack(world, "attack");
+                fprintf(stderr, "Attack -> unit %d\n", hit);
+            }
+            if (TAK_Cmd_EmitSelectionWhere(TAK_CMD_MOVE, gx, gy, -1, 0, q,
+                                           ig_unarmed_walker) == 0 && able == 0)
+                ig_play_order_ack(world, "Move");
         } else if (Units_SelectionRaiseModeAt(gx, gy) >= 0) {
             /* A click on a body the selection can raise raises it.
              * The revive cursor is drawn from the same local test,
@@ -1380,7 +1508,8 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
 #endif
 
     /* Control groups: Ctrl+digit assigns the current selection to a
-     * group, plain digit recalls it (legacy squad hotkeys). */
+     * group, Ctrl+Shift+digit adds the group to it, a plain digit
+     * recalls it (legacy squad hotkeys). */
     {
         static const SDL_Scancode ig_digits[10] = {
             SDL_SCANCODE_0, SDL_SCANCODE_1, SDL_SCANCODE_2, SDL_SCANCODE_3,
@@ -1388,12 +1517,20 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
             SDL_SCANCODE_8, SDL_SCANCODE_9
         };
         int ctrl = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL];
+        int shift = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
+        int how = !ctrl ? IG_GROUP_RECALL : shift ? IG_GROUP_ADD : IG_GROUP_ASSIGN;
         if (!ig_alt) {
             for (int d = 0; d < 10; d++) {
                 if (!IG_PRESSED(ig_digits[d])) continue;
-                ig_control_group(d, ctrl);
+                ig_control_group(d, how);
             }
         }
+    }
+
+    /* Ctrl+Z and the other select keys (ingame_keys.c). */
+    if (has_focus) {
+        InGameSelectKey sk = InGame_SelectKey(keys, ig.prev_keys);
+        if (sk.kind != IG_SELECT_NONE) ig_select_key(world, sk);
     }
 #undef IG_PRESSED
 }
@@ -1617,9 +1754,13 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
                          ig_view()->pointer_to_world(world, platform, mx, my,
                                                      &hover_x, &hover_y);
         int drew_cursor = 0;
+        /* The unit under the pointer is the one drawn there, which the
+         * view knows: a flyer up at its height in either view. */
+        int hover_unit = over_world
+                       ? ig_view()->pointer_to_unit(world, platform, mx, my) : -1;
         if (over_world && HUD_GetCommandMode() != 0) {
             int mode = HUD_GetCommandMode();
-            int cid = InGame_CommandCursorAt(mode, hover_x, hover_y);
+            int cid = InGame_CommandCursorOn(mode, hover_unit, hover_x, hover_y);
             if (cid != mode)
                 drew_cursor = HUD_DrawCursorById(platform, cid, mx, my);
             if (!drew_cursor) {
@@ -1627,7 +1768,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
                 drew_cursor = 1;
             }
         } else if (over_world) {
-            int cur_id = InGame_HoverCursorAt(hover_x, hover_y);
+            int cur_id = InGame_HoverCursorOn(hover_unit, hover_x, hover_y);
             drew_cursor = HUD_DrawCursorById(platform, cur_id, mx, my);
         }
         SDL_ShowCursor(drew_cursor ? SDL_DISABLE : SDL_ENABLE);
@@ -1753,7 +1894,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             ig.drag_tracking = 0;
             int ctrl_held = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL];
             InGame_WorldClickOn(world_click_x, world_click_y,
-                                Units_PickAt(world_click_x, world_click_y, 0),
+                                ig_view()->pointer_to_unit(world, platform, wx, wy),
                                 (shift_held ? IG_CLICK_SHIFT : 0) |
                                 (ctrl_held ? IG_CLICK_CTRL : 0));
         }

@@ -381,7 +381,10 @@ machine applies, and to 17 when the relay's seat entries began to
 change who plays a seat: a player leaving hands the army to the
 computer or loses it, and a reclaim or a drop in hands a computer seat
 to a person. A build of 16 ignores those entries and would play on a
-different game after the first one. Two
+different game after the first one. It went to 18 when the Zhon plants
+and ruins began to load, to 19 when a tick's route searches began to
+stop after 24576 cells, and to 20 when a ship began to keep its hull
+off other ships' hulls (M-012). Two
 changes made apart that both raise the number take
 one each, and the build that carries both takes the next.
 Rooms you cannot join are listed and greyed with the reason rather than

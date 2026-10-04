@@ -16,6 +16,7 @@
 
 #include "test_framework.h"
 
+#include "tak_battle_record.h"
 #include "tak_battle_config.h"
 #include "tak_cob_vm.h"
 #include "tak_command_queue.h"
@@ -996,6 +997,102 @@ TEST(every_world_scalar_survives) {
     Save_ReadClose(sg);
 }
 
+/* What an end screen reads rides in a section of its own: the counts,
+ * the kinds and the units in the key moments by name, the samples and
+ * the mana totals. */
+TEST(the_battle_record_comes_back) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    ASSERT_EQ_INT(0, setup(NULL));
+    BattleRecord *r = &g_world->record;
+    r->every = 600;
+    r->samples = 3;
+    r->standing = 0x2u;
+    PlayerBattleRecord *p = &r->players[2];
+    p->units_trained = 7;
+    p->buildings_raised = 3;
+    p->damage_dealt = 12345;
+    p->damage_taken = 678;
+    p->spells_cast = 9;
+    p->fell_tick = 4100;
+    p->best_id = 42;
+    p->best_def = 2;
+    p->best_kills = 5;
+    p->best_xp = 3330;
+    p->kind_count = 2;
+    p->kinds[0].def = 3;
+    p->kinds[0].count = 4;
+    p->kinds[1].def = 1;
+    p->kinds[1].count = 2;
+    r->event_count = 2;
+    r->events[0].tick = 900;
+    r->events[0].kind = BATTLE_EVENT_FIRST_BLOOD;
+    r->events[0].player = 2;
+    r->events[0].other = 1;
+    r->events[0].def = 1;
+    r->events[0].other_def = 0;
+    r->events[1].tick = 4100;
+    r->events[1].kind = BATTLE_EVENT_FELL;
+    r->events[1].player = 2;
+    r->events[1].other = 0;
+    r->events[1].def = -1;
+    r->events[1].other_def = -1;
+    for (int k = 0; k < 3; k++) {
+        BattleRecord_SeriesRow(2, BATTLE_SERIES_KILLS)[k] = k * 2 + 1;
+        BattleRecord_SeriesRow(1, BATTLE_SERIES_GATHERED)[k] = 1000 * k;
+    }
+    g_world->economy.players[1].earned_total = 2500.25;
+    g_world->economy.players[1].spent_total = 1800.5;
+    BattleRecord want = *r;
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+
+    empty_the_battle();
+    for (int k = 0; k < 3; k++) {
+        BattleRecord_SeriesRow(2, BATTLE_SERIES_KILLS)[k] = -1;
+        BattleRecord_SeriesRow(1, BATTLE_SERIES_GATHERED)[k] = -1;
+    }
+    TAK_SaveGame *sg = Save_Read(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(0, Save_Apply(sg, err, sizeof(err)));
+    r = &g_world->record;
+    ASSERT_EQ_INT(600, r->every);
+    ASSERT_EQ_INT(3, r->samples);
+    ASSERT_EQ_INT(0x2, (int)r->standing);
+    for (int q = 0; q <= TAK_MAX_PLAYERS; q++) {
+        const PlayerBattleRecord *a = &want.players[q], *b = &r->players[q];
+        ASSERT_EQ_INT(a->units_trained, b->units_trained);
+        ASSERT_EQ_INT(a->buildings_raised, b->buildings_raised);
+        ASSERT_EQ_INT(a->damage_dealt, b->damage_dealt);
+        ASSERT_EQ_INT(a->damage_taken, b->damage_taken);
+        ASSERT_EQ_INT(a->spells_cast, b->spells_cast);
+        ASSERT_EQ_INT(a->fell_tick, b->fell_tick);
+        ASSERT_EQ_INT((int)a->best_id, (int)b->best_id);
+        ASSERT_EQ_INT(a->best_kills, b->best_kills);
+        ASSERT_EQ_INT(a->best_xp, b->best_xp);
+        ASSERT_EQ_INT(a->kind_count, b->kind_count);
+        if (a->best_id) ASSERT_EQ_INT(a->best_def, b->best_def);
+        for (int k = 0; k < a->kind_count; k++) {
+            ASSERT_EQ_INT(a->kinds[k].def, b->kinds[k].def);
+            ASSERT_EQ_INT(a->kinds[k].count, b->kinds[k].count);
+        }
+    }
+    ASSERT_EQ_INT(2, r->event_count);
+    for (int e = 0; e < 2; e++) {
+        ASSERT_EQ_INT(want.events[e].tick, r->events[e].tick);
+        ASSERT_EQ_INT(want.events[e].kind, r->events[e].kind);
+        ASSERT_EQ_INT(want.events[e].player, r->events[e].player);
+        ASSERT_EQ_INT(want.events[e].other, r->events[e].other);
+        ASSERT_EQ_INT(want.events[e].def, r->events[e].def);
+        ASSERT_EQ_INT(want.events[e].other_def, r->events[e].other_def);
+    }
+    for (int k = 0; k < 3; k++) {
+        ASSERT_EQ_INT(k * 2 + 1, BattleRecord_SeriesRow(2, BATTLE_SERIES_KILLS)[k]);
+        ASSERT_EQ_INT(1000 * k, BattleRecord_SeriesRow(1, BATTLE_SERIES_GATHERED)[k]);
+    }
+    ASSERT(g_world->economy.players[1].earned_total == 2500.25);
+    ASSERT(g_world->economy.players[1].spent_total == 1800.5);
+    Save_ReadClose(sg);
+}
+
 /* The camera is local view state, so it is its own optional section
  * rather than part of the world the simulation hash covers. */
 TEST(the_camera_comes_back_where_it_was) {
@@ -1668,6 +1765,7 @@ int main(int argc, char **argv) {
     RUN(a_save_from_before_claims_keeps_its_numbered_starts);
     RUN(every_world_scalar_survives);
     RUN(the_camera_comes_back_where_it_was);
+    RUN(the_battle_record_comes_back);
     RUN(a_battle_with_no_picture_still_saves);
     RUN(the_generator_comes_back_on_an_even_state);
     RUN(the_engine_tick_comes_back);

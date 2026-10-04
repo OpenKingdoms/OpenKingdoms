@@ -152,6 +152,12 @@ jobs:
           mkdir -p site/mods
           cp web/mods/registry.json web/mods/ok-registry-test-1.0.zip site/mods/
           cp web/CNAME site/CNAME
+          # Which deploy this is. The page carries it and version.txt
+          # names the current one, so a cached or open page from an older
+          # deploy knows to take the new one (web/sw.js, web/shell.html).
+          sed -i "s/@OK_SITE_BUILD@/$GITHUB_SHA/" site/index.html
+          grep -q "$GITHUB_SHA" site/index.html || { echo "::error::the page carries no deploy stamp"; exit 1; }
+          printf '%s\n' "$GITHUB_SHA" > site/version.txt
           [ -n "$RELAY_URL" ] && printf '%s\n' "$RELAY_URL" > site/relay.txt || true
           ls -la site
 

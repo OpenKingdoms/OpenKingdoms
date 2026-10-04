@@ -38,6 +38,10 @@ void InGame_DebugRunSimTicks(int ticks);
 const char *InGame_SeatNotice(void);
 /* Play a match out though no human seat stands, for measuring runs. */
 void InGame_DebugPlayWithoutHumans(int on);
+/* After a skirmish defeat the computers fight on while two seats still
+ * standing are at war, 1 when they do. The war's end is quiet (D-034). */
+int  InGame_PlayOn(void);
+int  InGame_PlayingOn(void);
 
 /* The verdict fired in a match: report every seat's end screen tallies
  * to the server. `present` is by player, 1..TAK_MAX_PLAYERS, the units
@@ -60,6 +64,10 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods);
  * the one an armed command shows there (a HUD_CMD_* or HUD_CUR_* id). */
 int  InGame_HoverCursorAt(int32_t world_x, int32_t world_y);
 int  InGame_CommandCursorAt(int mode, int32_t world_x, int32_t world_y);
+/* The same for a unit already picked where it is drawn (-1 for none),
+ * as a view or an embedding host picks it. */
+int  InGame_HoverCursorOn(int hit, int32_t world_x, int32_t world_y);
+int  InGame_CommandCursorOn(int mode, int hit, int32_t world_x, int32_t world_y);
 
 /* One left-button drag box on the game world, corners in world
  * coordinates. The tick calls this on release and tests call it
@@ -91,6 +99,8 @@ void InGame_DebugEscape(int down);
  * characters the platform collected. Runs the chat console gate and
  * then, only when the console is shut, the battle hotkeys. */
 void InGame_DebugKeyFrame(int scancode, const char *text_in);
+/* The same with IG_CLICK_CTRL and IG_CLICK_SHIFT held as mods says. */
+void InGame_DebugKeyChord(int mods, int scancode);
 
 /* The 3D view. SetView3D switches in place and returns 1 when the view
  * asked for is up (the 3D view can refuse where there is no GL).

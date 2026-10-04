@@ -217,6 +217,39 @@ TEST(the_ground_under_a_pointer_is_the_ground_that_draws_there) {
     ASSERT_EQ_INT(1900, (int)gy);
 }
 
+/* A ray from a raised eye meets a box hanging in the air, such as a
+ * flyer at its height, on the face toward the eye, and misses it when
+ * aimed at the ground under it. */
+TEST(a_ray_meets_a_box_in_the_air_on_its_near_face) {
+    const float lo[3] = { 90.0f, 140.0f, 190.0f };
+    const float hi[3] = { 110.0f, 180.0f, 210.0f };
+    const float eye[3] = { 100.0f, 1000.0f, 700.0f };
+    float centre[3] = { 100.0f, 160.0f, 200.0f };
+    float d[3];
+    for (int k = 0; k < 3; k++) d[k] = centre[k] - eye[k];
+    float t = -1.0f;
+    ASSERT_EQ_INT(1, ClickMap_RayHitsBox(eye, d, lo, hi, &t));
+    ASSERT(t > 0.0f && t < 1.0f);
+    /* The entry point lies on the box. */
+    for (int k = 0; k < 3; k++) {
+        float p = eye[k] + d[k] * t;
+        ASSERT(p >= lo[k] - 0.01f && p <= hi[k] + 0.01f);
+    }
+    /* Aimed at the ground under the box, the ray misses it. */
+    const float ground[3] = { 100.0f, 0.0f, 200.0f };
+    for (int k = 0; k < 3; k++) d[k] = ground[k] - eye[k];
+    ASSERT_EQ_INT(0, ClickMap_RayHitsBox(eye, d, lo, hi, &t));
+    /* A ray along an axis, and one starting inside. */
+    const float side[3] = { 0.0f, 160.0f, 200.0f };
+    const float east[3] = { 1.0f, 0.0f, 0.0f };
+    ASSERT_EQ_INT(1, ClickMap_RayHitsBox(side, east, lo, hi, &t));
+    ASSERT(t > 89.9f && t < 90.1f);
+    ASSERT_EQ_INT(1, ClickMap_RayHitsBox(centre, east, lo, hi, &t));
+    ASSERT(t == 0.0f);
+    const float west[3] = { -1.0f, 0.0f, 0.0f };
+    ASSERT_EQ_INT(0, ClickMap_RayHitsBox(side, west, lo, hi, &t));
+}
+
 int main(void) {
     TEST_SUITE("Click mapping");
     RUN(a_window_pixel_lands_on_a_stated_canvas_pixel);
@@ -225,5 +258,6 @@ int main(void) {
     RUN(a_window_pixel_is_the_camera_plus_itself_in_the_world);
     RUN(a_page_click_is_one_world_pixel_per_css_pixel_at_any_ratio);
     RUN(the_ground_under_a_pointer_is_the_ground_that_draws_there);
+    RUN(a_ray_meets_a_box_in_the_air_on_its_near_face);
     TEST_REPORT();
 }

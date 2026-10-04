@@ -1128,6 +1128,32 @@ Format per entry:
   planner test checks.
 - Citation: the manual describes no rule for routing. Issue #60.
 
+## M-012: Ships keep apart by their hulls
+
+- Change: a ship keeps its hull off other ships' hulls. The hull is a
+  line along the heading with half the beam round it, from bow to
+  stern, read from the drawn extent of the ship's 3DO. A step that
+  would bring two hulls within 2 px is refused unless it takes the ship
+  no closer than it already stands, and a turn that would swing a hull
+  more than 3 px into another is held. A ship stopped short of its
+  order point by another ship settles within two of its own lengths of
+  it, or behind one of its own that ended a move to the same point.
+  Ships give way to each other by their hulls. A shipyard begins a ship
+  once the last one's hull is off the pad and sends each one out until
+  its hull is clear of the yard and of other ships. A ship is a unit
+  whose move class needs a minimum water depth. Ground, hover and
+  flying units are not changed.
+- Why: the original keeps units apart by the cells of their move
+  class alone (legacy:163193-163195, legacy:219329-219340), and a
+  ship's class is a square one and a half to three times shorter than
+  its hull, so fleets sat bow into stern. The owner asked for ships to
+  overlap less. The measurements are in
+  docs/notes/2026-10-02-ship-hulls.md.
+- What is not changed: the cells a ship holds, the ground it may sail
+  on and the route planner, which plans in the class's cells as before.
+- Citation: the manual describes no rule for spacing. Owner request,
+  2026-10-02.
+
 ## D-006: Chat messages expire on the wall clock
 
 - Change: A chat message leaves the message list when it has been on
@@ -1748,6 +1774,19 @@ Format per entry:
   `src/ui/ingame.c`, and the note is
   docs/notes/2026-09-30-watching-a-match.md.
 - Citation: none, a new feature. Issue #294.
+
+## D-034: A lost skirmish can play on between the computers
+
+- Change: a front end may let a skirmish the local player lost go on
+  while two seats still standing are at war, so the player can watch the
+  computers fight it out. The defeat stands, and so do the end's tick
+  and its cue. When one side is left the battle stops where it stands,
+  with no second verdict and no second cue. It never runs in a match, a
+  replay or a campaign mission, and the classic view does not offer it.
+- Why: the owner's call, for the remaster's Look at the field. In the
+  original a skirmish is over for the player once their side is gone,
+  whoever is still fighting (legacy:240018-240028).
+- Where it is: `InGame_PlayOn` in `src/ui/ingame.c`.
 
 ## R-008: A reel's soundtrack goes through the game's mixer
 

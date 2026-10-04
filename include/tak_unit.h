@@ -520,6 +520,14 @@ typedef struct UnitDef {
     int16_t  body_top_px;
     uint8_t  body_span_set;
 
+    /* A ship's hull in px from its 3DO (M-012): bow ahead of the centre,
+     * stern behind, half the beam. hull_set is 0 until worked out, 1 for
+     * a ship and 2 for anything else. */
+    int16_t  hull_fore_px;
+    int16_t  hull_aft_px;
+    int16_t  hull_half_beam_px;
+    uint8_t  hull_set;
+
     /* maneuverleashlength (legacy:163060). */
     int32_t  leash_length;
 
@@ -1361,6 +1369,9 @@ int               Units_GetWeaponArtKind(int def_idx, int weapon_slot,
  * unit instances remain in the array but won't render until next bake.
  * (Caller should typically Units_ClearInstances after this.) */
 void              Units_DropAllMeshCaches(void);
+/* Build the route planner's layers for every walking def now, at
+ * load, rather than in the first tick that plans for each. */
+void              Units_WarmPathCaches(const struct GameWorld *w);
 
 /* Eager-bake the four canonical monarch meshes (ARAKING, TARNECRO,
  * VERMAGE, ZONHUNT). Called once during LS_LOAD_UNITS after
@@ -1599,10 +1610,34 @@ int               Units_SelectInRect(int32_t x0, int32_t y0,
  * returns the resulting count. */
 void              Units_AssignControlGroup(int group);
 int               Units_RecallControlGroup(int group);
+/* The group's living members added to the selection. */
+int               Units_AddControlGroup(int group);
+/* The original's select keys over your finished units not aboard a
+ * transport: every unit of a type the selection holds (Ctrl+Z), every
+ * unit (Ctrl+A), and those whose FBI category names the word, in place
+ * of the selection or added to it (Ctrl+B and the rest). Each returns
+ * the selection count. */
+int               Units_SelectSameType(void);
+int               Units_SelectAllOwn(void);
+int               Units_SelectCategory(const char *word, int add);
 
 /* Find the alive unit closest to (world_x, world_y) within radius pixels.
  * Returns the unit's slot handle, or -1 if no unit is in range. */
 int               Units_PickAt(int32_t world_x, int32_t world_y, int radius);
+/* The unit a ray from the 3D view's eye meets first, by the same box
+ * Units_PickAt reads, standing where the unit is drawn, a flyer at its
+ * height. Coordinates are the 3D view's: x, height, world y. -1 for
+ * none. */
+int               Units_PickRay(const float origin[3], const float dir[3]);
+/* The cursor's and the click's test of one unit against an enemy
+ * (legacy:186135-186330): its weapon in hand can take the target, so
+ * no noairweapon against a flyer in the air. */
+int               Units_WeaponCanTake(int handle, int target_handle);
+/* How many of your selected units can take the target, and in *armed
+ * how many of them carry a weapon at all. */
+int               Units_SelectionCanAttack(int target_handle, int *armed);
+int               Units_IsArmed(int handle);
+int               Units_CanWalk(int handle);
 /* 0 for a unit the player cannot select: none there, dead, or still
  * being built, which the original never selects. */
 int               Units_IsSelectable(int handle);
@@ -1715,6 +1750,14 @@ void              Units_DefFootprint(int def_idx, int facing,
                                      int *out_fx, int *out_fz);
 /* A live unit's facing, 0 for a bad handle. */
 int               Units_GetFacing(int handle);
+/* A ship's hull in px: bow ahead of its centre, stern behind, half the
+ * beam. 1 for a ship, 0 for anything else, with the outputs zeroed.
+ * Needs a loaded world, whose move classes say what is a ship. */
+int               Units_DefHull(int def_idx, int *out_fore, int *out_aft,
+                                int *out_half_beam);
+/* How far two live ships' hulls run into each other in px, 0 when they
+ * are clear or either is not a ship. For tests. */
+float             Units_DebugHullOverlap(int handle_a, int handle_b);
 
 /* ── Factory production queue + rally (manual §Summoning Units) ────
  *

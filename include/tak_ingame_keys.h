@@ -46,4 +46,22 @@ int  InGame_WatchKey(const uint8_t *keys, const uint8_t *prev);
  * in the battle. 0 is the whole map. */
 int  InGame_WatchNextView(uint32_t open, int current);
 
+/* The select keys, Ctrl with a letter, as Keys.TDF binds them. Shift
+ * turns SelectUnits into SelectUnitsAdd and leaves the rest alone. */
+typedef enum InGameSelectKind {
+    IG_SELECT_NONE = 0,
+    IG_SELECT_SAME_TYPE,   /* SelectAllUnitsSelectedType, Ctrl+Z */
+    IG_SELECT_ALL,         /* SelectAllUnits, Ctrl+A */
+    IG_SELECT_ON_SCREEN,   /* SelectUnitsOnScreen, Ctrl+U */
+    IG_SELECT_CATEGORY     /* SelectUnits <category>, Ctrl+B and the rest */
+} InGameSelectKind;
+
+typedef struct InGameSelectKey {
+    InGameSelectKind kind;
+    const char *category;  /* the FBI category word for IG_SELECT_CATEGORY */
+    int add;               /* 1 keeps the selection */
+} InGameSelectKey;
+
+InGameSelectKey InGame_SelectKey(const uint8_t *keys, const uint8_t *prev);
+
 #endif /* TAK_INGAME_KEYS_H */

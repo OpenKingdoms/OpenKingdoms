@@ -386,9 +386,20 @@ int Terrain_IsWalkable(const struct GameWorld *world,
 
 void Terrain_WalkableTiles(const struct GameWorld *world, int max_slope,
                            uint8_t *out, int tw, int th) {
+    Terrain_WalkableTilesRect(world, max_slope, out, tw, th, 0, 0, tw - 1, th - 1);
+}
+
+void Terrain_WalkableTilesRect(const struct GameWorld *world, int max_slope,
+                               uint8_t *out, int tw, int th,
+                               int x0, int y0, int x1, int y1) {
     if (!world || !out || tw <= 0 || th <= 0) return;
-    for (int ty = 0; ty < th; ty++) {
-        for (int tx = 0; tx < tw; tx++) {
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 >= tw) x1 = tw - 1;
+    if (y1 >= th) y1 = th - 1;
+    if (x0 > x1 || y0 > y1) return;
+    for (int ty = y0; ty <= y1; ty++) {
+        for (int tx = x0; tx <= x1; tx++) {
             int32_t x = tx * 16 + 8, y = ty * 16 + 8;
             out[ty * tw + tx] = (uint8_t)(
                 Terrain_SlopeAllows(world, x, y, max_slope) &&
@@ -402,10 +413,11 @@ void Terrain_WalkableTiles(const struct GameWorld *world, int max_slope,
         if (!feature_blocks_movement(fd)) continue;
         int fp_x, fp_z;
         Features_InstanceFootprint(world, i, &fp_x, &fp_z);
-        int x0 = (int)world->features[i].tile_x;
-        int y0 = (int)world->features[i].tile_z;
-        for (int ty = y0; ty < y0 + fp_z && ty < th; ty++) {
-            for (int tx = x0; tx < x0 + fp_x && tx < tw; tx++) {
+        int fx0 = (int)world->features[i].tile_x;
+        int fy0 = (int)world->features[i].tile_z;
+        int ty0 = fy0 > y0 ? fy0 : y0, tx0 = fx0 > x0 ? fx0 : x0;
+        for (int ty = ty0; ty < fy0 + fp_z && ty <= y1; ty++) {
+            for (int tx = tx0; tx < fx0 + fp_x && tx <= x1; tx++) {
                 out[ty * tw + tx] = 0;
             }
         }

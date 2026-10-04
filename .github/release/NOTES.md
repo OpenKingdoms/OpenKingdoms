@@ -2,40 +2,46 @@ OpenKingdoms VERSION_HERE, an engine for Total Annihilation: Kingdoms.
 
 Play in a browser at [openkingdoms.net](https://openkingdoms.net), or download below and play on the desktop.
 
-Three multiplayer features arrive in this release. You can watch a game
-while it is being played, join a game against the computer that has
-already started by taking over a computer player's seat, and see which mod
-set a room runs, with a leaderboard for each mod set. Everyone in a room
-has to be on this version, so refresh the page after the update.
+This release brings back the original's select keys, fixes lodestones that
+refused to go down beside a busy sacred site, and makes sure the site always
+runs the newest engine. Everyone in a room has to be on this version, so
+refresh the page after the update.
 
-## Watch a game under way
+## Select keys
 
-A running game in the room list or on the front page can be watched. You
-catch up on the game so far, then follow it live with a free camera. A
-watcher sees the battle but takes no part in it. (#357)
+The original's select keys are in, as its key file binds them:
 
-## Drop in to a game against the computer
+- Ctrl+Z adds every unit of the types you have selected, across the whole
+  map. It only ever adds to the selection.
+- Ctrl+A selects all your units, and Ctrl+U your units on the screen.
+- Ctrl with a letter selects a kind of unit: B builders, E melee, F
+  factories, G magic, M your monarch, N boats, R ballistic, W armed and Y
+  flyers. Hold Shift as well to add them to the selection.
+- Ctrl+Shift with a number adds that group to the selection.
 
-A host can fill the empty seats with computer players and start at once.
-Someone who joins later takes over one of those computer seats in the
-running game, catching up on the game so far first, and the computer
-player stops giving orders for that seat from then on. The room list and
-the front page show Join in for these games. A room password keeps a seat
-for the people you meant it for. (#358)
+With Ctrl held, W, A, S and D no longer scroll the map. In a browser, Ctrl+W
+and Ctrl+N still belong to the browser. The README lists every key. (#378)
 
-## Mod sets in rooms and on the leaderboard
+## Lodestones beside a sacred site
 
-A room says which data it runs, such as the original game or a named mod
-set, beside the room's name. A room you cannot join because you have
-different game data is greyed, and it names the mod set you need. Each mod
-set gets its own leaderboard table, kept apart from the original game's,
-and the leaderboard page has a table picker. (#356)
+A builder working on one lodestone could stop a few pixels over the edge of
+the next sacred site, and that site then refused every lodestone. As in the
+original, a unit now only blocks the ground it stands on, so the next site
+stays free. (#378)
+
+## Always the newest engine
+
+After an update, a returning visitor used to get the old engine for one
+more visit while the new one downloaded, and a tab left open never updated.
+The site now checks for a new version before it starts, and an open tab
+takes the update the next time it is on the menu or the game list, never in
+a room or a battle. With no network, the game still starts from what the
+browser saved. (#377)
 
 ## Also
 
-A message in the one button box now wraps inside the box, as in the
-original. With no replays yet, the Replays screen says so in a short line
-that fits. (#362)
+The engine can keep a lost skirmish going between the computers, for a
+front end that lets a beaten player watch the rest of the battle. (#376)
 
 ## Multiplayer compatibility
 
@@ -43,4 +49,5 @@ Everyone in a room must be on the same version. A room hosted on an older
 or newer version is greyed in the list with the reason. After an update,
 refresh the page before you host or join, and have everyone else in the
 room do the same. Desktop builds older than this one cannot join games
-hosted with it, and the other way round.
+hosted with it, and the other way round. Replays play only on the version
+that recorded them.

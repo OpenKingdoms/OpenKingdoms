@@ -1331,11 +1331,19 @@ static int v3_pointer_to_world(const GameWorld *world, const TAK_Platform *plat,
     return 1;
 }
 
+/* The unit the pointer's ray meets where it is drawn, a flyer up at
+ * its height and not the ground under it. */
 static int v3_pointer_to_unit(const GameWorld *world, const TAK_Platform *plat,
                               int wx, int wy) {
-    int32_t x = 0, y = 0;
-    if (!v3_pointer_to_world(world, plat, wx, wy, &x, &y)) return -1;
-    return Units_PickAt(x, y, 0);
+    (void)plat;
+    if (!v.ready || !world || !world->loaded) return -1;
+    if (wx < v.viewport.x || wy < v.viewport.y ||
+        wx >= v.viewport.x + v.viewport.w || wy >= v.viewport.y + v.viewport.h)
+        return -1;
+    float o[3], d[3];
+    Camera3D_PointerRay(&v.cam, v.viewport.w, v.viewport.h,
+                        (float)(wx - v.viewport.x), (float)(wy - v.viewport.y), o, d);
+    return Units_PickRay(o, d);
 }
 
 static void v3_scroll(GameWorld *world, int32_t dx, int32_t dy) {

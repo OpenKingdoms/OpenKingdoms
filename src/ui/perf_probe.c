@@ -129,6 +129,14 @@ static struct {
 
 static PpAnchor pp_anchor[PP_MAX_UNITS];
 
+/* TAK_PERF_SPIKE=<ms> prints every tick at least that long with what
+ * ran inside it. The counters as the tick began, and the whole tick
+ * from the end of BeforeTick, orders included. */
+static double pp_spike_ms;
+static double tk_sim[4], tk_eng[4], tk_cmb[5], tk_ai[7], tk_walk[4], tk_path;
+static double tk_plans;
+static uint64_t tk_begin;
+
 /* ── small helpers ──────────────────────────────────────────────── */
 
 static uint64_t pp_clock(void) { return SDL_GetPerformanceCounter(); }
@@ -639,12 +647,13 @@ int PerfProbe_Select(const char *scenario) {
     else if (strcmp(scenario, "build1") == 0) k = PP_BUILD1;
     else if (strcmp(scenario, "big8") == 0) k = PP_BIG8;
     if (k == PP_OFF) return -1;
-    g_cmb_prof_on = g_ai_prof_on = k == PP_BIG8;
     /* TAK_PERF_NO_GRID answers every grid question by a scan, and
      * TAK_PERF_HASH folds the state hash of every tick into the probe
      * lines, so two runs show whether the two pick the same. */
     Units_DebugSetGridQueries(getenv("TAK_PERF_NO_GRID") ? 0 : 1);
     pp_hash_on = getenv("TAK_PERF_HASH") != NULL;
+    pp_spike_ms = getenv("TAK_PERF_SPIKE") ? atof(getenv("TAK_PERF_SPIKE")) : 0.0;
+    g_cmb_prof_on = g_ai_prof_on = k == PP_BIG8 || pp_spike_ms > 0.0;
     pp_hash = TAK_SIM_HASH_SEED;
     pp_reset();
     pp.kind = k;
@@ -736,17 +745,22 @@ int PerfProbe_BeginWorld(TAK_Platform *plat) {
          * repeats the map to see what a larger one costs. */
         map = "Ulasem Arena";
         kingdom = "aramon";
+        /* TAK_PERF_MAP and TAK_PERF_SEATS play the same on another map. */
+        int seats = 8;
+        if (getenv("TAK_PERF_MAP")) map = getenv("TAK_PERF_MAP");
+        if (getenv("TAK_PERF_SEATS")) seats = atoi(getenv("TAK_PERF_SEATS"));
+        if (seats < 2 || seats > 8) seats = 8;
         static const int gsides[4] = {
             TAK_SIDE_ARAMON, TAK_SIDE_TAROS, TAK_SIDE_VERUNA, TAK_SIDE_ZHON
         };
-        for (int p = 0; p < 8; p++) {
+        for (int p = 0; p < seats; p++) {
             cfg.players[p].kind = TAK_SLOT_AI;
             cfg.players[p].side = gsides[p % 4];
             cfg.players[p].team = p + 1;
             cfg.players[p].color = p;
             cfg.players[p].ai_difficulty = 2;
         }
-        for (int p = 8; p < TAK_MAX_PLAYERS; p++) cfg.players[p].kind = TAK_SLOT_CLOSED;
+        for (int p = seats; p < TAK_MAX_PLAYERS; p++) cfg.players[p].kind = TAK_SLOT_CLOSED;
         InGame_DebugPlayWithoutHumans(1);
     } else if (pp.kind == PP_BUILD8 || pp.kind == PP_BUILD1) {
         /* What a computer player builds on its own. Nothing is spawned
@@ -797,6 +811,47 @@ int PerfProbe_BeginWorld(TAK_Platform *plat) {
     return 0;
 }
 
+static void pp_tick_snapshot(void) {
+    memcpy(tk_sim, g_sim_prof_ms, sizeof tk_sim);
+    memcpy(tk_eng, g_eng_prof_ms, sizeof tk_eng);
+    memcpy(tk_cmb, g_cmb_prof_ms, sizeof tk_cmb);
+    memcpy(tk_ai, g_ai_prof_ms, sizeof tk_ai);
+    memcpy(tk_walk, g_walk_prof_ms, sizeof tk_walk);
+    tk_path = g_path_prof_ms;
+    tk_plans = g_path_plan_calls;
+    tk_begin = pp_clock();
+}
+
+static void pp_print_spike(double tick_ms) {
+    double whole = pp_clock_ms(pp_clock() - tk_begin);
+    if (whole < pp_spike_ms) return;
+    int live = 0, count = 0;
+    const Unit *list = Units_GetActive(&count);
+    for (int i = 0; i < count; i++)
+        if (list[i].alive == UNIT_ALIVE_ACTIVE) live++;
+    printf("perf-probe %s spike tick=%d whole=%.2f sim=%.2f ai=%.2f eng=%.2f "
+           "eco=%.2f fog=%.2f cmb=%.2f prj=%.2f cob=%.2f misc=%.2f path=%.2f "
+           "plans=%.0f | upkeep=%.2f acquire=%.2f decide=%.2f act=%.2f tail=%.2f "
+           "| wplan=%.2f wroute=%.2f waim=%.2f wstep=%.2f | maps=%.2f threat=%.2f "
+           "plan=%.2f wave=%.2f break=%.2f builders=%.2f fighters=%.2f units=%d\n",
+           pp.name, pp.tick, whole, tick_ms,
+           g_sim_prof_ms[0] - tk_sim[0], g_sim_prof_ms[1] - tk_sim[1],
+           g_sim_prof_ms[2] - tk_sim[2], g_sim_prof_ms[3] - tk_sim[3],
+           g_eng_prof_ms[0] - tk_eng[0], g_eng_prof_ms[1] - tk_eng[1],
+           g_eng_prof_ms[2] - tk_eng[2], g_eng_prof_ms[3] - tk_eng[3],
+           g_path_prof_ms - tk_path, g_path_plan_calls - tk_plans,
+           g_cmb_prof_ms[0] - tk_cmb[0], g_cmb_prof_ms[1] - tk_cmb[1],
+           g_cmb_prof_ms[2] - tk_cmb[2], g_cmb_prof_ms[3] - tk_cmb[3],
+           g_cmb_prof_ms[4] - tk_cmb[4],
+           g_walk_prof_ms[0] - tk_walk[0], g_walk_prof_ms[1] - tk_walk[1],
+           g_walk_prof_ms[2] - tk_walk[2], g_walk_prof_ms[3] - tk_walk[3],
+           g_ai_prof_ms[0] - tk_ai[0], g_ai_prof_ms[1] - tk_ai[1],
+           g_ai_prof_ms[2] - tk_ai[2], g_ai_prof_ms[3] - tk_ai[3],
+           g_ai_prof_ms[4] - tk_ai[4], g_ai_prof_ms[5] - tk_ai[5],
+           g_ai_prof_ms[6] - tk_ai[6], live);
+    fflush(stdout);
+}
+
 void PerfProbe_BeforeTick(GameWorld *world) {
     if (pp.kind == PP_OFF || pp.finished || !world) return;
     if (!pp.setup_done) {
@@ -812,10 +867,12 @@ void PerfProbe_BeforeTick(GameWorld *world) {
                pp.tick % PP_CROWD_PERIOD == 0) {
         pp_crowd_order();
     }
+    if (pp_spike_ms > 0.0) pp_tick_snapshot();
 }
 
 void PerfProbe_AfterTick(GameWorld *world, double tick_ms) {
     if (pp.kind == PP_OFF || pp.finished) return;
+    if (pp_spike_ms > 0.0) pp_print_spike(tick_ms);
     if (pp_hash_on) pp_hash = TAK_HashU32(pp_hash, TAK_SimHash());
     pp.tick++;
     win.ticks++;

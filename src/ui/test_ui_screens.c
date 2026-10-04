@@ -47,6 +47,7 @@
 #include "tak_savelist.h"
 #include "tak_paths.h"
 #include "tak_end_screen.h"
+#include "tak_battle_record.h"
 #include "tak_story.h"
 #include "tak_world.h"
 #include "tak_unit.h"
@@ -7167,6 +7168,32 @@ static void build_probe_end(TAK_Platform *platform) {
     UI_Shutdown();
     teardown_platform(platform);
     VFS_Shutdown();
+}
+
+/* A measuring tool, not a case. TAK_SPIKE_PROBE=<minutes> plays the
+ * big8 scenario flat out with the map revealed, as the remaster's soak
+ * does. TAK_PERF_SPIKE, TAK_PERF_MAP and TAK_PERF_SEATS pick what it
+ * prints and where it plays. Registered only when asked for. */
+TEST(sim_spike_probe) {
+    const char *ask = getenv("TAK_SPIKE_PROBE");
+    if (!ask || atoi(ask) <= 0) return;
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, PerfProbe_Select("big8"));
+    PerfProbe_SetTicks(atoi(ask) * 3600);
+    PerfProbe_SetRevealed(1);
+    ASSERT_EQ_INT(0, PerfProbe_BeginWorld(&platform));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 2000 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    perf_probe_drive(&platform, 3600.0, 0);
+    PerfProbe_SetRevealed(0);
+    build_probe_end(&platform);
 }
 
 /* One computer player against a seat that never acts, which is seat
@@ -20752,6 +20779,91 @@ static int tr_deep(const GameWorld *w, int32_t x, int32_t y) {
     return 1;
 }
 
+/* Hulls come from the shipped 3DOs (docs/notes/2026-10-02-ship-hulls.md)
+ * and nothing else has one. A real fleet sent onto one point of open sea
+ * ends with no hull on another (M-012). */
+TEST(ship_hulls_come_from_their_models) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, tr_athri_world(&platform, &world));
+    static const struct { const char *name; int fore, aft, half; } hulls[] = {
+        { "ARAWAR", 75, 75, 25 },   { "VERMAN", 100, 76, 34 },
+        { "VERTRE", 70, 75, 79 },   { "VERSCOUT", 51, 62, 41 },
+        { "ZONKRAK", 79, 56, 39 },  { "TARCSHIP", 59, 75, 51 },
+        { "CREIRON", 73, 73, 15 },  { "ARATRANS", 94, 77, 54 },
+    };
+    int found = 0;
+    for (size_t i = 0; i < sizeof hulls / sizeof hulls[0]; i++) {
+        int def = Units_FindDefByName(hulls[i].name);
+        if (def < 0) continue;
+        found++;
+        int fore = 0, aft = 0, half = 0;
+        ASSERT_EQ_INT(1, Units_DefHull(def, &fore, &aft, &half));
+        ASSERT_EQ_INT(hulls[i].fore, fore);
+        ASSERT_EQ_INT(hulls[i].aft, aft);
+        ASSERT_EQ_INT(hulls[i].half, half);
+    }
+    ASSERT(found >= 5);
+    static const char *not_ships[] = { "ARAKNIGH", "VERMER", "TARSHIP", "ARAGOD" };
+    for (size_t i = 0; i < sizeof not_ships / sizeof not_ships[0]; i++) {
+        int def = Units_FindDefByName(not_ships[i]);
+        if (def >= 0) ASSERT_EQ_INT(0, Units_DefHull(def, NULL, NULL, NULL));
+    }
+
+    /* Open sea 800 px across. */
+    int32_t cx = -1, cy = -1;
+    for (int32_t y = 448; y < world->map_pixels_h - 448 && cx < 0; y += 64) {
+        for (int32_t x = 448; x < world->map_pixels_w - 448; x += 64) {
+            int ok = 1;
+            for (int32_t oy = -384; oy <= 384 && ok; oy += 64)
+                for (int32_t ox = -384; ox <= 384 && ok; ox += 64)
+                    if (!tr_deep(world, x + ox, y + oy)) ok = 0;
+            if (ok) { cx = x; cy = y; break; }
+        }
+    }
+    if (cx < 0) { SKIP_MARK("no open sea"); goto done; }
+    {
+        static const char *fleet[6] = { "ARAWAR", "VERMAN", "VERTRE",
+                                        "VERSCOUT", "ZONKRAK", "ARAWAR" };
+        int h[6];
+        for (int i = 0; i < 6; i++) {
+            float a = (float)i * 1.0471976f;
+            h[i] = Units_Spawn(Units_FindDefByName(fleet[i]), 1, 0,
+                               cx + (int32_t)(300.0f * cosf(a)),
+                               cy + (int32_t)(300.0f * sinf(a)));
+            ASSERT(h[i] >= 0);
+            Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+        }
+        for (int i = 0; i < 6; i++) Units_OrderMove(h[i], cx, cy);
+        for (int t = 0; t < 3600; t++) Units_TickEngines();
+        float worst = 0.0f;
+        int64_t far2 = 0;
+        int count = 0;
+        const Unit *units = Units_GetActive(&count);
+        for (int i = 0; i < 6; i++) {
+            int64_t dx = units[h[i]].world_x - cx, dy = units[h[i]].world_y - cy;
+            if (dx * dx + dy * dy > far2) far2 = dx * dx + dy * dy;
+            for (int j = i + 1; j < 6; j++) {
+                float o = Units_DebugHullOverlap(h[i], h[j]);
+                if (o > worst) worst = o;
+            }
+        }
+        printf("(worst overlap %.1f px, farthest %.0f px) ", (double)worst,
+               (double)sqrtf((float)far2));
+        ASSERT(worst <= 2.0f);
+        ASSERT(far2 <= (int64_t)400 * 400);
+    }
+done:
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* Deep water (wx, wy) and dry ground (lx, ly) dmin..dmax from it where
  * a rider can be set down. With far set, (fx, fy) is deep water on the
  * same line 560 px out from the ground, open all the way. */
@@ -23016,6 +23128,76 @@ TEST(skirmish_local_monarch_death_is_defeat_with_two_foes_left) {
     VFS_Shutdown();
 }
 
+/* Beaten with two computers at war, the player watches them fight on, and
+ * when one is left the battle stops without a second end (D-034). */
+TEST(skirmish_lost_battle_plays_on_between_the_computers) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "Angvir's Maze", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 0;
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.players[2].kind = TAK_SLOT_AI;
+    cfg.players[2].side = TAK_SIDE_VERUNA;
+    cfg.players[2].team = 3;
+    cfg.players[2].color = 2;
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, end_load_skirmish(&platform, &cfg, &world));
+    ASSERT(Units_PlayersAreEnemies(2, 3));
+    int local_monarch = end_find_monarch(1);
+    ASSERT(local_monarch >= 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    /* Nothing to play on while the battle runs. */
+    ASSERT_EQ_INT(0, InGame_PlayOn());
+    ASSERT_EQ_INT(local_monarch, Units_DebugKillHandle(local_monarch));
+    for (int t = 0; t < 40 && !world->skirmish_game_over; t++) InGame_DebugRunSimTicks(30);
+    ASSERT_EQ_INT(1, world->skirmish_game_over);
+    ASSERT_EQ_INT(-1, world->skirmish_local_result);
+    int end_tick = world->skirmish_end_tick;
+    int winner = world->skirmish_winner_team;
+    int built2 = world->stats[2].units_built, built3 = world->stats[3].units_built;
+
+    GameSound_DebugRecord(1);
+    GameSound_DebugClear();
+    ASSERT_EQ_INT(1, InGame_PlayOn());
+    ASSERT_EQ_INT(1, InGame_PlayingOn());
+    int from = world->skirmish_elapsed_ticks;
+    InGame_DebugRunSimTicks(60 * 90);
+    ASSERT_EQ_INT(from + 60 * 90, world->skirmish_elapsed_ticks);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    ASSERT(world->stats[2].units_built > built2);
+    ASSERT(world->stats[3].units_built > built3);
+    ASSERT_EQ_INT(-1, world->skirmish_local_result);
+    ASSERT_EQ_STR("Defeat", world->skirmish_end_reason);
+
+    /* One computer left: the battle stops where it stands, quietly. */
+    Units_KillAllOf(3);
+    for (int t = 0; t < 40 && !world->skirmish_game_over; t++) InGame_DebugRunSimTicks(30);
+    ASSERT_EQ_INT(1, world->skirmish_game_over);
+    ASSERT_EQ_INT(0, InGame_PlayingOn());
+    ASSERT_EQ_INT(0, InGame_PlayOn());
+    ASSERT_EQ_INT(end_tick, world->skirmish_end_tick);
+    ASSERT_EQ_INT(winner, world->skirmish_winner_team);
+    ASSERT_EQ_INT(-1, world->skirmish_local_result);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("Victory Condition"));
+    int stopped = world->skirmish_elapsed_ticks;
+    InGame_DebugRunSimTicks(240);
+    ASSERT_EQ_INT(stopped, world->skirmish_elapsed_ticks);
+    GameSound_DebugRecord(0);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* Monarch Expendable on: the original keeps a player in the battle
  * while any unit of theirs remains, a lone lodestone included, because
  * the verdict reads the live-unit count the unit records maintain
@@ -23979,6 +24161,174 @@ static void end_expect_row(int slot, const char *column, int value) {
  * off the side's prefix in sidedata (legacy:153773, legacy:153975), so
  * in the tree's own layout a loose base sidedata must not hide Iron
  * Plague's SIDE7. */
+/* The record behind a remastered end screen: the first blood with its
+ * damage and its champion, a spell, a troop trained by kind, the enemy
+ * monarch slain and its kingdom fallen, the mana totals and a sample
+ * every 5 s. */
+TEST(the_battle_record_keeps_what_an_end_screen_tells) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 0;
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, end_load_skirmish(&platform, &cfg, &world));
+    const BattleRecord *rec = &world->record;
+    ASSERT_EQ_INT(0, rec->samples);
+    ASSERT_EQ_INT(0, rec->event_count);
+
+    int local_monarch = end_find_monarch(1);
+    int ai_monarch = end_find_monarch(2);
+    ASSERT(local_monarch >= 0 && ai_monarch >= 0);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int32_t cx = units[local_monarch].world_x, cy = units[local_monarch].world_y;
+    int king_def = units[local_monarch].def_idx;
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(sword_def >= 0);
+
+    /* First blood: the monarch fells a sword at 1% health. */
+    int prey = Units_Spawn(sword_def, 2, cfg.players[1].color, cx + 40, cy);
+    ASSERT(prey >= 0);
+    Units_SetHealthPercent(prey, 1);
+    units = Units_GetActive(&n);
+    int prey_hp = units[prey].health;
+    ASSERT(prey_hp > 0);
+    Units_CommandAttackUnit(local_monarch, prey);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    for (int f = 0; f < 200; f++) {
+        units = Units_GetActive(&n);
+        if (units[prey].alive != UNIT_ALIVE_ACTIVE) break;
+        timer.accumulator = timer.sim_dt * 30.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    units = Units_GetActive(&n);
+    ASSERT(units[prey].alive != UNIT_ALIVE_ACTIVE);
+    ASSERT_EQ_INT(1, world->stats[1].kills);
+    /* What the sword had left when the blow fell, after it mended a
+     * little, and no more. */
+    ASSERT(rec->players[1].damage_dealt >= prey_hp);
+    ASSERT(rec->players[1].damage_dealt <= Units_GetDef(sword_def)->max_health / 10);
+    ASSERT_EQ_INT(rec->players[1].damage_dealt, rec->players[2].damage_taken);
+    ASSERT(rec->event_count >= 1);
+    ASSERT_EQ_INT(BATTLE_EVENT_FIRST_BLOOD, rec->events[0].kind);
+    ASSERT_EQ_INT(1, rec->events[0].player);
+    ASSERT_EQ_INT(2, rec->events[0].other);
+    ASSERT_EQ_INT(king_def, rec->events[0].def);
+    ASSERT_EQ_INT(sword_def, rec->events[0].other_def);
+    ASSERT(rec->events[0].tick > 0);
+    ASSERT_EQ_INT(units[local_monarch].stable_id, rec->players[1].best_id);
+    ASSERT_EQ_INT(king_def, rec->players[1].best_def);
+    ASSERT_EQ_INT(1, rec->players[1].best_kills);
+    ASSERT_EQ_INT(Units_GetDef(sword_def)->kill_xp_value, rec->players[1].best_xp);
+    ASSERT_EQ_INT(300, rec->every);
+    ASSERT(rec->samples >= 1);
+    /* The monarch stands in the army but is worth nothing: no one buys it. */
+    ASSERT_EQ_INT(1, BattleRecord_SeriesRow(1, BATTLE_SERIES_ARMY)[0]);
+    ASSERT_EQ_INT(0, BattleRecord_SeriesRow(1, BATTLE_SERIES_WORTH)[0]);
+
+    /* A spell: the monarch's second weapon costs 200 mana a shot. */
+    ASSERT(Units_GetDef(king_def)->weapons[1].mana_per_shot > 0);
+    int mark = Units_Spawn(sword_def, 2, cfg.players[1].color, cx + 60, cy + 40);
+    ASSERT(mark >= 0);
+    ASSERT_EQ_INT(0, rec->players[1].spells_cast);
+    ASSERT_EQ_INT(1, Units_DebugFireAt(local_monarch, 1, mark));
+    ASSERT_EQ_INT(1, rec->players[1].spells_cast);
+
+    /* A castle placed whole is not raised. The troop it trains is
+     * trained, and counted by its kind. */
+    int castle_def = Units_FindDefByName("TARCASTL");
+    int troop_def = Units_FindDefByName("TARTROOP");
+    ASSERT(castle_def >= 0 && troop_def >= 0);
+    int castle = Units_Spawn(castle_def, 1, 0, cx - 400, cy);
+    ASSERT(castle >= 0);
+    Economy_AdjustCaps(&world->economy, 1, 100000, 500.0f);
+    Economy_Earn(&world->economy, 1, 100000);
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
+    units = Units_GetActive(&n);
+    int troop = units[castle].build_target;
+    ASSERT(troop >= 0);
+    for (int f = 0; f < 400; f++) {
+        units = Units_GetActive(&n);
+        if (!units[troop].under_construction) break;
+        timer.accumulator = timer.sim_dt * 30.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    units = Units_GetActive(&n);
+    ASSERT_EQ_INT(0, (int)units[troop].under_construction);
+    ASSERT_EQ_INT(1, rec->players[1].units_trained);
+    ASSERT_EQ_INT(0, rec->players[1].buildings_raised);
+    ASSERT_EQ_INT(1, rec->players[1].kind_count);
+    ASSERT_EQ_INT(troop_def, rec->players[1].kinds[0].def);
+    ASSERT_EQ_INT(1, rec->players[1].kinds[0].count);
+
+    /* The mana the pool took in and paid out. */
+    ASSERT(world->economy.players[0].earned_total > 0.0);
+    ASSERT(world->economy.players[0].spent_total > 0.0);
+
+    /* A sample every 5 s, the kills and the totals among them. The
+     * next one sees the troop. */
+    int before = rec->samples;
+    for (int f = 0; f < 20 && rec->samples == before; f++) {
+        timer.accumulator = timer.sim_dt * 30.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    int k = rec->samples;
+    ASSERT_EQ_INT(before + 1, k);
+    ASSERT(k >= 2);
+    ASSERT(world->skirmish_elapsed_ticks >= (k - 1) * rec->every);
+    ASSERT(world->skirmish_elapsed_ticks < k * rec->every);
+    ASSERT(BattleRecord_SeriesRow(1, BATTLE_SERIES_KILLS)[k - 1] >= 1);
+    ASSERT(BattleRecord_SeriesRow(1, BATTLE_SERIES_KILLS)[k - 1] <= world->stats[1].kills);
+    ASSERT(BattleRecord_SeriesRow(1, BATTLE_SERIES_GATHERED)[k - 1] > 0);
+    ASSERT(BattleRecord_SeriesRow(1, BATTLE_SERIES_ARMY)[k - 1] >= 2);
+    ASSERT(BattleRecord_SeriesRow(1, BATTLE_SERIES_WORTH)[k - 1] >=
+           Units_GetDef(troop_def)->build_cost);
+    ASSERT(BattleRecord_SeriesRow(2, BATTLE_SERIES_ARMY)[0] >= 1);
+    int32_t now[BATTLE_SERIES_COUNT];
+    BattleRecord_SampleNow(world, 1, now);
+    ASSERT_EQ_INT(world->stats[1].kills, now[BATTLE_SERIES_KILLS]);
+    ASSERT_EQ_INT(world->stats[1].units_built, now[BATTLE_SERIES_BUILT]);
+
+    /* The enemy monarch falls to a sword of ours: slain, and its
+     * kingdom fallen with its army. */
+    units = Units_GetActive(&n);
+    int ax = units[ai_monarch].world_x, ay = units[ai_monarch].world_y;
+    int blade = Units_Spawn(sword_def, 1, cfg.players[0].color, ax + 40, ay);
+    ASSERT(blade >= 0);
+    Units_SetHealthPercent(ai_monarch, 1);
+    ASSERT_EQ_INT(1, Units_DebugFireAt(blade, 0, ai_monarch));
+    ASSERT(end_run_frames(&platform, world, &timer, 20) >= 0);
+    ASSERT_EQ_INT(1, world->skirmish_local_result);
+    int slain = -1, fell = -1;
+    for (int i = 0; i < rec->event_count; i++) {
+        if (rec->events[i].kind == BATTLE_EVENT_MONARCH_SLAIN) slain = i;
+        if (rec->events[i].kind == BATTLE_EVENT_FELL) fell = i;
+    }
+    ASSERT(slain >= 0 && fell > slain);
+    ASSERT_EQ_INT(2, rec->events[slain].player);
+    ASSERT_EQ_INT(1, rec->events[slain].other);
+    ASSERT_EQ_INT(sword_def, rec->events[slain].other_def);
+    ASSERT_EQ_INT(2, rec->events[fell].player);
+    ASSERT(rec->events[fell].tick >= rec->events[slain].tick);
+    ASSERT(rec->events[fell].tick - rec->events[slain].tick <= 60);
+    ASSERT_EQ_INT(rec->events[fell].tick, rec->players[2].fell_tick);
+    ASSERT_EQ_INT(0, rec->players[1].fell_tick);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+}
+
 TEST(end_screen_names_creon_by_its_side_data) {
     if (setup_vfs() != 0) SKIP("no data dir");
     if (!install_has_iron_plague_files()) {
@@ -28480,6 +28830,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(campaign_keeps_line_of_sight_whatever_the_file_says);
     RUN_UI_TEST(skirmish_monarch_death_ends_match);
     RUN_UI_TEST(skirmish_local_monarch_death_is_defeat_with_two_foes_left);
+    RUN_UI_TEST(skirmish_lost_battle_plays_on_between_the_computers);
     RUN_UI_TEST(skirmish_expendable_player_stands_until_the_last_unit);
     RUN_UI_TEST(ai_hunts_the_last_structure_out_of_sight);
     RUN_UI_TEST(end_screen_shows_victory_dialog_with_the_tallies);
@@ -28487,6 +28838,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(end_screen_a_won_mission_with_a_clip_after_it_plays_the_clip);
     RUN_UI_TEST(end_screen_shows_defeat_when_a_missions_army_dies);
     RUN_UI_TEST(the_mission_end_screen_times_the_battle);
+    RUN_UI_TEST(the_battle_record_keeps_what_an_end_screen_tells);
     RUN_UI_TEST(end_screen_names_creon_by_its_side_data);
     RUN_UI_TEST(end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby);
     RUN_UI_TEST(skirmish_ai_issues_attack_orders);
@@ -28507,6 +28859,9 @@ static void ui_run_cases(void) {
      * that skipped when it is not. */
     if (getenv("TAK_AI_DUEL")) {
         RUN_UI_TEST(ai_duel_tactics_against_none);
+    }
+    if (getenv("TAK_SPIKE_PROBE")) {
+        RUN_UI_TEST(sim_spike_probe);
     }
     /* The same for a real mod: the mod is no part of any install. */
     if (getenv("TAK_TEST_MOD_ROOT")) {
@@ -28693,6 +29048,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(completed_wall_blocks_units);
     RUN_UI_TEST(units_do_not_stack_on_one_another);
     RUN_UI_TEST(boats_stay_in_water_ghost_ships_do_not);
+    RUN_UI_TEST(ship_hulls_come_from_their_models);
     RUN_UI_TEST(a_ship_that_dies_leaves_its_wreck);
     RUN_UI_TEST(posture_passive_holds_offensive_engages);
     RUN_UI_TEST(skirmish_setup_error_requires_two_spawnable_players);
