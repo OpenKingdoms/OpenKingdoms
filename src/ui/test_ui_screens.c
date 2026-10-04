@@ -10570,7 +10570,10 @@ TEST(a_hit_is_scaled_by_attack_and_armour) {
     int taken[3] = { 0, 0, 0 };
     static const int attack[3] = { 100, 100, 200 };
     static const int armour[3] = { 100, 300, 300 };
+    /* Each swing draws the same rolls, so all three land alike. */
+    uint32_t rolls = World_RandState();
     for (int k = 0; k < 3; k++) {
+        World_SetRandState(rolls);
         int attacker = Units_Spawn(sword, 1, 0, cx - 300, cy + 80);
         int victim = Units_Spawn(sword, 2, 1, cx - 260, cy + 80);
         ASSERT(attacker >= 0 && victim >= 0);

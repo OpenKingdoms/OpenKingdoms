@@ -345,6 +345,8 @@ typedef struct ProjectileEffect {
     uint16_t delay_ticks;      /* neither shown nor moved until this runs out */
     int16_t  land_explosion;   /* explosionclass played where a faller lands, -1 none */
     uint8_t  lightmap;         /* the weapon's that made it, drawing only */
+    uint32_t damage_owner_id;  /* damage flame: stable owner, 0 for other effects */
+    int16_t  damage_node;      /* authored damage attachment in the owner's model */
 } ProjectileEffect;
 
 typedef struct UnitDef {

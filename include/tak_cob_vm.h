@@ -32,7 +32,9 @@
 #define COB_THREADS_PER_UNIT     16
 #define COB_THREAD_STACK_DEPTH   40
 #define COB_THREAD_RETURN_DEPTH  8
-#define COB_OPS_PER_TICK_LIMIT   200   /* anti-runaway clamp */
+/* The original runs a thread until it sleeps, waits or ends
+ * (legacy:306252-307002). This only stops a runaway script. */
+#define COB_OPS_PER_TICK_LIMIT   16384
 
 /* Wait-condition kinds for thread blocking. Mirrors the legacy thread
  * states (legacy:306474 0x2100000 wait-turn, :306316 0x2200000
@@ -112,6 +114,9 @@ typedef int32_t (*Cob_CallFunctionFn)(void *user, int fn_id,
 typedef int32_t (*Cob_PlaySoundFn)(void *user, const char *sound_name,
                                    int32_t arg);
 
+/* EMIT-SFX: resolved model node and the script's effect type, no result. */
+typedef void (*Cob_EmitSfxFn)(void *user, int node, int32_t type);
+
 /* SET-VALUE (0x10082000): host receives (port, value); no result. */
 typedef void    (*Cob_SetUnitValueFn)(void *user, int port, int32_t value);
 
@@ -141,6 +146,7 @@ typedef struct CobEngine {
     Cob_CallFunctionFn  host_call_function;
     Cob_SetUnitValueFn  host_set_unit_value;
     Cob_PlaySoundFn     host_play_sound;
+    Cob_EmitSfxFn       host_emit_sfx;
     Cob_RandFn          host_rand;
     Cob_MissionCommandFn host_mission_command;
 } CobEngine;
@@ -156,6 +162,8 @@ void Cob_EngineSetHostSetter(CobEngine *e, Cob_SetUnitValueFn set_unit_value);
 
 /* Optional PLAY-SOUND host hook (unit voices, deaths, weapon cues). */
 void Cob_EngineSetHostPlaySound(CobEngine *e, Cob_PlaySoundFn play_sound);
+
+void Cob_EngineSetHostEmitSfx(CobEngine *e, Cob_EmitSfxFn emit_sfx);
 
 /* Optional RAND host hook. Without one the VM draws from a private
  * Lehmer sequence. */
