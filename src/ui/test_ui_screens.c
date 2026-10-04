@@ -19808,10 +19808,44 @@ static int fw_all_wet(const GameWorld *w, int32_t x, int32_t y, int32_t r) {
     return 1;
 }
 
+/* The corner farthest from dry ground and from the map's edge, by steps
+ * of 16 px in any of eight directions. Returns that distance in px. */
+static int32_t fw_open_middle(const GameWorld *w, int32_t *ox, int32_t *oy) {
+    const TNTFile *t = &w->tnt;
+    int cw = t->height_w, ch = t->height_h;
+    int *d = (int *)malloc(sizeof(int) * (size_t)cw * (size_t)ch);
+    if (!d) return -1;
+    for (int z = 0; z < ch; z++)
+        for (int x = 0; x < cw; x++) {
+            int e = x < z ? x : z;
+            if (cw - 1 - x < e) e = cw - 1 - x;
+            if (ch - 1 - z < e) e = ch - 1 - z;
+            d[z * cw + x] = t->heightmap[z * cw + x] >= w->water_height ? 0 : e;
+        }
+    for (int pass = 0; pass < 2; pass++)
+        for (int k = 0; k < cw * ch; k++) {
+            int i = pass ? cw * ch - 1 - k : k, x = i % cw, z = i / cw;
+            for (int dz = -1; dz <= 1; dz++)
+                for (int dx = -1; dx <= 1; dx++) {
+                    int nx = x + dx, nz = z + dz;
+                    if (nx < 0 || nz < 0 || nx >= cw || nz >= ch) continue;
+                    if (d[nz * cw + nx] + 1 < d[i]) d[i] = d[nz * cw + nx] + 1;
+                }
+        }
+    int best = 0, at = 0;
+    for (int i = 0; i < cw * ch; i++)
+        if (d[i] > best) { best = d[i]; at = i; }
+    free(d);
+    *ox = (at % cw) * 16;
+    *oy = (at / cw) * 16;
+    return best * 16;
+}
+
 typedef struct FwSea {
     GameWorld *world;
     int drag, drag_def;
-    int32_t open_x, open_y;     /* nothing dry within the search's reach */
+    int32_t open_x, open_y;     /* the open water's middle */
+    int32_t open_clear;         /* how far dry ground is from it */
     int32_t shore_x, shore_y;   /* wet under it, dry within 128 px */
     Timer timer;
 } FwSea;
@@ -19834,19 +19868,16 @@ static int fw_setup(TAK_Platform *platform, FwSea *s) {
     const UnitDef *dd = Units_GetDef(s->drag_def);
     int32_t half = dd->footprint_x * 8;
     s->open_x = s->open_y = s->shore_x = s->shore_y = -1;
+    s->open_clear = fw_open_middle(w, &s->open_x, &s->open_y);
     for (int32_t y = 256; y < w->map_pixels_h - 256; y += 32)
         for (int32_t x = 256; x < w->map_pixels_w - 256; x += 32) {
-            if (s->open_x < 0 && fw_all_wet(w, x, y, half + 240 + 16)) {
-                s->open_x = x;
-                s->open_y = y;
-            }
             if (s->shore_x < 0 && fw_all_wet(w, x, y, half + 16) &&
                 !fw_all_wet(w, x, y, half + 128)) {
                 s->shore_x = x;
                 s->shore_y = y;
             }
         }
-    if (s->open_x < 0 || s->shore_x < 0) return -1;
+    if (s->open_clear < half + 240 + 16 || s->shore_x < 0) return -1;
     /* Start on dry ground near the open sea. */
     int32_t lx = -1, ly = -1;
     for (int32_t r = 128; r < 4000 && lx < 0; r += 64)
@@ -19881,21 +19912,31 @@ static void fw_teardown(TAK_Platform *platform) {
     VFS_Shutdown();
 }
 
-/* Left idle over open sea, a dragon stays a flyer at its cruise height
- * and keeps near where it stopped. */
-TEST(flyer_left_over_open_sea_stays_up) {
+/* Left idle over the open water's middle, a dragon finds no dry ground
+ * in its first search and circles on, a flyer at its cruise height over
+ * the sea (legacy:24331-24381). It never comes down in the water: when
+ * the circling brings dry ground into reach it lands there, once. */
+TEST(flyer_left_over_open_sea_never_lands_in_it) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
     FwSea s;
     ASSERT_EQ_INT(0, fw_setup(&platform, &s));
+    GameWorld *w = s.world;
     const UnitDef *dd = Units_GetDef(s.drag_def);
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    /* A move ends 80 to 144 px short of its point (legacy:25066-25110),
+     * so the dragon is sent 112 px past the middle. */
+    float vx = (float)(s.open_x - u[s.drag].world_x);
+    float vy = (float)(s.open_y - u[s.drag].world_y);
+    float vl = sqrtf(vx * vx + vy * vy);
     Units_SelectSingle(s.drag);
-    Units_CommandMoveSelected(s.open_x, s.open_y);
+    Units_CommandMoveSelected(s.open_x + (int32_t)(vx / vl * 112.0f),
+                              s.open_y + (int32_t)(vy / vl * 112.0f));
     Units_SelectSingle(-1);
-    int n = 0, arrived = 0, flew = 0;
-    const Unit *u = NULL;
+    int arrived = 0, flew = 0;
     for (int i = 0; i < 6000 && !arrived; i++) {
         fw_tick(&platform, &s, 1);
         u = Units_GetActive(&n);
@@ -19904,27 +19945,43 @@ TEST(flyer_left_over_open_sea_stays_up) {
     }
     ASSERT(arrived);
     int32_t ax = u[s.drag].world_x, ay = u[s.drag].world_y;
-    int64_t far2 = 0;
-    int landed = 0;
+    int landed_at = -1, circled = 0, waded = 0, low_over_sea = 0, landings = 0;
+    float drawn_low = 1e9f;
     for (int i = 0; i < 1200; i++) {
         fw_tick(&platform, &s, 1);
         u = Units_GetActive(&n);
-        if (!u[s.drag].flying) landed = 1;
-        int64_t dx = u[s.drag].world_x - ax, dy = u[s.drag].world_y - ay;
-        if (dx * dx + dy * dy > far2) far2 = dx * dx + dy * dy;
+        const Unit *d = &u[s.drag];
+        int g = Terrain_SampleHeight(w, d->world_x, d->world_y);
+        if (d->air_mode == UNIT_AIR_CIRCLE) circled = 1;
+        if (d->sfx_occupy == 4) waded = 1;
+        if (!d->flying && landed_at < 0) landed_at = i;
+        if (d->flying && g < w->water_height) {
+            if (d->flight_alt < (float)dd->cruise_alt) low_over_sea = 1;
+            float drawn = (float)g + Units_DrawnAlt(w, d);
+            if (drawn < drawn_low) drawn_low = drawn;
+        }
     }
     u = Units_GetActive(&n);
-    printf("(sea at %d,%d, farthest %.0f px from where it stopped) ",
-           (int)s.open_x, (int)s.open_y, sqrt((double)far2));
-    ASSERT_EQ_INT(0, landed);
-    ASSERT_EQ_INT(1, (int)u[s.drag].flying);
-    ASSERT_EQ_INT(5, (int)u[s.drag].sfx_occupy);
-    ASSERT(u[s.drag].flight_alt >= (float)dd->cruise_alt);
-    ASSERT_EQ_INT(0, Units_DebugScriptEventCount(s.drag, UNIT_SCRIPT_EV_BEGIN_LANDING));
-    ASSERT(far2 <= (int64_t)320 * 320);
-    /* The classic view draws it over the water, not on the sea floor. */
-    ASSERT((float)Terrain_SampleHeight(s.world, u[s.drag].world_x, u[s.drag].world_y) +
-           u[s.drag].flight_alt > (float)s.world->water_height);
+    landings = Units_DebugScriptEventCount(s.drag, UNIT_SCRIPT_EV_BEGIN_LANDING);
+    int low = fw_lowest_corner(w, u[s.drag].world_x, u[s.drag].world_y,
+                               dd->footprint_x, dd->footprint_z);
+    printf("(sea at %d,%d, dry ground %d px off, idle at %d,%d, %s at tick %d, "
+           "lowest corner %d, sea %d, drawn no lower than %.0f over it) ",
+           (int)s.open_x, (int)s.open_y, (int)s.open_clear, (int)ax, (int)ay,
+           landed_at < 0 ? "still up" : "down", landed_at, low,
+           w->water_height, (double)drawn_low);
+    ASSERT(circled);
+    ASSERT_EQ_INT(0, waded);
+    ASSERT_EQ_INT(0, low_over_sea);
+    ASSERT(drawn_low >= (float)(w->water_height + dd->cruise_alt));
+    if (landed_at < 0) {
+        ASSERT_EQ_INT(1, (int)u[s.drag].flying);
+        ASSERT_EQ_INT(5, (int)u[s.drag].sfx_occupy);
+        ASSERT_EQ_INT(0, landings);
+    } else {
+        ASSERT_EQ_INT(1, landings);
+        ASSERT(low >= w->water_height);
+    }
     fw_teardown(&platform);
 }
 
@@ -19940,11 +19997,17 @@ TEST(flyer_stopped_by_the_shore_lands_on_dry_ground) {
     ASSERT_EQ_INT(0, fw_setup(&platform, &s));
     GameWorld *w = s.world;
     const UnitDef *dd = Units_GetDef(s.drag_def);
-    Units_SelectSingle(s.drag);
-    Units_CommandMoveSelected(s.shore_x, s.shore_y);
-    Units_SelectSingle(-1);
     int n = 0, stopped = 0;
-    const Unit *u = NULL;
+    const Unit *u = Units_GetActive(&n);
+    /* Sent 112 px past the point, so it flies over the point before its
+     * move ends on the ring short of it (legacy:25066-25110). */
+    float vx = (float)(s.shore_x - u[s.drag].world_x);
+    float vy = (float)(s.shore_y - u[s.drag].world_y);
+    float vl = sqrtf(vx * vx + vy * vy);
+    Units_SelectSingle(s.drag);
+    Units_CommandMoveSelected(s.shore_x + (int32_t)(vx / vl * 112.0f),
+                              s.shore_y + (int32_t)(vy / vl * 112.0f));
+    Units_SelectSingle(-1);
     for (int i = 0; i < 6000 && !stopped; i++) {
         fw_tick(&platform, &s, 1);
         u = Units_GetActive(&n);
@@ -30848,7 +30911,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(sound_transport_plays_once_per_rider);
     RUN_UI_TEST(cob_entry_points_fire_once);
     RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
-    RUN_UI_TEST(flyer_left_over_open_sea_stays_up);
+    RUN_UI_TEST(flyer_left_over_open_sea_never_lands_in_it);
     RUN_UI_TEST(flyer_stopped_by_the_shore_lands_on_dry_ground);
     RUN_UI_TEST(flyers_cruise_over_the_sea_not_the_sea_floor);
     RUN_UI_TEST(tower_aim_faces_target);
