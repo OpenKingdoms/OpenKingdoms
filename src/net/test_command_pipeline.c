@@ -1734,7 +1734,7 @@ static const char CP_FBI_ALPHA[] =
     "[UNITINFO]\n{\n\tUnitName=ALPHA;\n\tName=Alpha;\n}\n";
 static const char CP_FBI_BUILD[] =
     "[UNITINFO]\n{\n\tUnitName=MIDBUILD;\n\tName=Builder;\n"
-    "\tBuilder=1;\n\tWorkerTime=10;\n}\n";
+    "\tBuilder=1;\n\tBuilderLimited=1;\n\tWorkerTime=10;\n}\n";
 static const char CP_MENU_TDF[] = "[MENU]\n{\n\tPriority=1;\n}\n";
 
 static void cp_order_clean(void) {
@@ -1826,6 +1826,17 @@ TEST(the_def_order_does_not_depend_on_the_archives) {
     ASSERT_EQ_INT(0, alpha);
     ASSERT_EQ_INT(1, mid);
     ASSERT_EQ_INT(2, zed);
+    cp_order_end();
+}
+
+/* The builderlimited line reads into the def, and a def without it is
+ * not limited (legacy:163099-163100). */
+TEST(the_builderlimited_line_is_read) {
+    cp_order_begin();
+    ASSERT_EQ_INT(0, cp_order_one_archive());
+    ASSERT_EQ_INT(3, cp_order_load());
+    ASSERT_EQ_INT(1, Units_GetDef(Units_FindDefByName("MIDBUILD"))->builder_limited);
+    ASSERT_EQ_INT(0, Units_GetDef(Units_FindDefByName("ALPHA"))->builder_limited);
     cp_order_end();
 }
 
@@ -3376,6 +3387,7 @@ int main(int argc, char **argv) {
     RUN(a_player_who_drops_in_mid_game_sees_the_same_world_as_everyone);
     TEST_SUITE("The def order");
     RUN(the_def_order_does_not_depend_on_the_archives);
+    RUN(the_builderlimited_line_is_read);
     RUN(a_new_load_reads_its_own_build_menus);
     RUN(every_build_menu_is_read_when_the_match_loads);
     RUN(the_content_hash_covers_the_order_and_the_menus);

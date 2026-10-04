@@ -18433,6 +18433,29 @@ TEST(weapon_art_resolves_per_weapon) {
     VFS_Shutdown();
 }
 
+/* Every builder but a monarch carries builderlimited, so only a monarch
+ * helps build a type off its own list (legacy:163099-163100). */
+TEST(only_the_monarchs_help_build_off_their_lists) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    ASSERT(Units_LoadDefs() > 0);
+    static const char *const limited[] = {
+        "ARABUILD", "ARAPRIES", "TARPRIES", "TARTB", "VERFLAG", "ZONHAND", "ZONSHAM",
+    };
+    static const char *const monarchs[] = { "ARAKING", "TARNECRO", "VERMAGE", "ZONHUNT" };
+    for (size_t i = 0; i < sizeof(limited) / sizeof(limited[0]); i++) {
+        const UnitDef *d = Units_GetDef(Units_FindDefByName(limited[i]));
+        ASSERT_NOT_NULL(d);
+        ASSERT_EQ_INT(1, d->builder_limited);
+    }
+    for (size_t i = 0; i < sizeof(monarchs) / sizeof(monarchs[0]); i++) {
+        const UnitDef *d = Units_GetDef(Units_FindDefByName(monarchs[i]));
+        ASSERT_NOT_NULL(d);
+        ASSERT_EQ_INT(0, d->builder_limited);
+    }
+    Units_FreeDefs();
+    VFS_Shutdown();
+}
+
 /* Visual probe: an Aramon rolling siege tower (ARATRE, weaponart
  * cannbmed on a lobbed arc) and an arrow tower (ARAAT, the araarrow
  * 3DO) firing at the same time. Saves a frame with both in flight.
@@ -29565,6 +29588,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_mobile_units_ring_is_full_width_and_holds_a_quarter);
     RUN_UI_TEST(perf_probe_shadows);
     RUN_UI_TEST(weapon_art_resolves_per_weapon);
+    RUN_UI_TEST(only_the_monarchs_help_build_off_their_lists);
     RUN_UI_TEST(a_veteran_shooters_shot_uses_the_veteran_model);
     RUN_UI_TEST(a_dragons_breath_starts_at_its_firing_piece);
     RUN_UI_TEST(render_probe_projectile_art);
