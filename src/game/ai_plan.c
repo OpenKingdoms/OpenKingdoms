@@ -10,7 +10,8 @@
 
 /* Goals in the order ties are broken. */
 static const AiGoal k_goal_order[] = {
-    AI_GOAL_ECONOMY, AI_GOAL_DEFEND, AI_GOAL_ATTACK, AI_GOAL_ARMY, AI_GOAL_EXPAND
+    AI_GOAL_ECONOMY, AI_GOAL_DEFEND, AI_GOAL_CLEAR, AI_GOAL_ATTACK, AI_GOAL_ARMY,
+    AI_GOAL_EXPAND
 };
 
 /* The planner's world, one integer each. */
@@ -31,6 +32,7 @@ enum {
     V_UNIT_VALUE,           /* what one training adds */
     V_TOWER_VALUE,          /* what one tower adds */
     V_WAVED,                /* a wave went this plan */
+    V_RUBBLE,               /* rubble the seat's units are stuck at */
     V_COUNT
 };
 
@@ -104,6 +106,16 @@ static const GoapAction k_actions[AI_ACT_COUNT - 1] = {
         .opening_only = 1,
         .tag = AI_ACTOR_ARMY,
     },
+    /* Rubble blocks until it is swept under the remastered rules
+     * (D-036): a builder clears what the seat is stuck at (A-011). */
+    [ACT(AI_ACT_SWEEP)] = {
+        .name = "sweep rubble",
+        .pre = { AI_COND(V_BUILDERS_IDLE, AI_OP_GT, 0),
+                 AI_COND(V_RUBBLE, AI_OP_GT, 0) },
+        .eff = { AI_EFFECT(V_BUILDERS_IDLE, AI_EFF_SUB, 1),
+                 AI_EFFECT(V_RUBBLE, AI_EFF_SUB, 1) },
+        .tag = AI_ACTOR_BUILDER,
+    },
 };
 
 static const GoapDomain k_domain = {
@@ -133,6 +145,9 @@ static const GoapGoal k_goals[AI_GOAL_COUNT] = {
     [AI_GOAL_ATTACK] = {
         .want = { AI_COND(V_WAVED, AI_OP_GE, 1) },
     },
+    [AI_GOAL_CLEAR] = {
+        .want = { AI_COND_START(V_RUBBLE, AI_OP_LT, V_RUBBLE) },
+    },
 };
 
 static void plan_world(const AiPlanState *s, const AiPlanCosts *c,
@@ -153,6 +168,7 @@ static void plan_world(const AiPlanState *s, const AiPlanCosts *c,
     w[V_TARGET_KNOWN]      = s->target_known ? 1 : 0;
     w[V_UNIT_VALUE]        = c->unit_value;
     w[V_TOWER_VALUE]       = c->tower_value;
+    w[V_RUBBLE]            = s->rubble;
 }
 
 AiActorClass AI_Plan_ActorOf(AiAction action) {
@@ -204,6 +220,10 @@ int AI_Plan_GoalPriority(const AiPlanState *s, AiGoal goal) {
     case AI_GOAL_ATTACK:
         if (!s->target_known || s->army <= 0) return 0;
         return s->enemy_weak > 0 ? 70 : 45;
+    case AI_GOAL_CLEAR:
+        /* Below a threat at home and a stalled economy, above the rest:
+         * an army that cannot get out does none of it. */
+        return s->rubble > 0 ? 80 : 0;
     default:
         return 0;
     }

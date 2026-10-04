@@ -16,6 +16,7 @@ typedef enum {
     AI_GOAL_ARMY,       /* an army sized to the threat */
     AI_GOAL_EXPAND,     /* secure a nearby sacred site */
     AI_GOAL_ATTACK,     /* send a wave at the weakest enemy */
+    AI_GOAL_CLEAR,      /* sweep the rubble the seat's units are stuck at */
     AI_GOAL_COUNT
 } AiGoal;
 
@@ -27,6 +28,7 @@ typedef enum {
     AI_ACT_TRAIN,
     AI_ACT_HOLD,
     AI_ACT_WAVE,
+    AI_ACT_SWEEP,
     AI_ACT_COUNT
 } AiAction;
 
@@ -67,6 +69,9 @@ typedef struct AiPlanState {
     int     site_near;         /* one of them within reach */
     int     target_known;      /* a wave target exists */
     int32_t enemy_weak;        /* largest weakness among seen enemy cells */
+    /* Rubble that blocks until swept, under the remastered rules (D-036),
+     * lying where one of the seat's units is stuck. */
+    int     rubble;
 } AiPlanState;
 
 typedef struct AiPlanCosts {

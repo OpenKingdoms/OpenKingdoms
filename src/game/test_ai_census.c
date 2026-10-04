@@ -217,6 +217,18 @@ void Units_CommandMoveUnit(int handle, int32_t world_x, int32_t world_y) {
     g_units[handle].target = -1;
 }
 
+/* The census runs with the remastered rules off, so neither is asked. */
+int Units_OrderReclaimFeature(int handle, int32_t world_x, int32_t world_y,
+                              int target_handle) {
+    (void)handle; (void)world_x; (void)world_y; (void)target_handle;
+    return 0;
+}
+int Features_InstanceCentre(const struct GameWorld *world, int idx,
+                            int32_t *out_x, int32_t *out_y) {
+    (void)world; (void)idx; (void)out_x; (void)out_y;
+    return -1;
+}
+
 int Units_OrderStop(int handle) {
     log_i(2); log_i(handle);
     if (handle < 0 || handle >= g_unit_count) return 0;

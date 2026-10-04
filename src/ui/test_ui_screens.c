@@ -7712,24 +7712,32 @@ TEST(a_dead_monarch_leaves_no_mana_in_the_pool) {
 
 /* A measuring tool, not a case. TAK_AI_DUEL=<minutes> plays two
  * computer seats against each other on Two Castles, one with the
- * army's behaviours of A-007 named by TAK_AI_DUEL_MASK (all of them
- * when unset) and one with none, for TAK_AI_DUEL_GAMES seeds (2 when
- * unset), each seed twice with the seats swapped so the ground favours
- * nobody, and prints what each side killed and lost. It is registered
- * only when asked for. */
+ * behaviours named by TAK_AI_DUEL_MASK (all of them when unset) and one
+ * with those of TAK_AI_DUEL_BASE (none when unset), for
+ * TAK_AI_DUEL_GAMES seeds (2 when unset), each seed twice with the
+ * seats swapped so the ground favours nobody, under the remastered
+ * battlefield rules when TAK_AI_DUEL_REMASTERED is 1, and prints what
+ * each side killed and lost. It is registered only when asked for. */
 static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
-                         int minutes, uint32_t seed,
+                         int base, int remastered, int minutes, uint32_t seed,
                          int32_t kills[3], int32_t losses[3], int *winner) {
+    const char *map = getenv("TAK_AI_DUEL_MAP");
+    const char *kingdom = getenv("TAK_AI_DUEL_WORLD");
+    const char *sides = getenv("TAK_AI_DUEL_SIDES");
+    if (!map || !*map) map = "two castles";
+    if (!kingdom || !*kingdom) kingdom = "aramon";
     BattleConfig cfg;
     BattleConfig_SetDefaults(&cfg);
-    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    strncpy(cfg.map_name, map, sizeof(cfg.map_name) - 1);
     cfg.seed = seed;
+    cfg.remastered = remastered;
+    if (sides) sscanf(sides, "%d,%d", &cfg.players[0].side, &cfg.players[1].side);
     cfg.players[0].kind = TAK_SLOT_AI;
     cfg.players[0].ai_difficulty = 2;
     cfg.players[1].kind = TAK_SLOT_AI;
     cfg.players[1].ai_difficulty = 2;
     *winner = 0;
-    if (World_BeginLoad(platform, &cfg, "two castles", "aramon") != 0) return;
+    if (World_BeginLoad(platform, &cfg, map, kingdom) != 0) return;
     if (Loading_Init(platform) != 0) return;
     int next = GAMESTATE_GAME_LOADING;
     for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
@@ -7737,12 +7745,17 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
     if (next != GAMESTATE_IN_GAME) return;
     GameWorld *world = World_Get();
     if (!world || InGame_Init(platform) != 0) return;
-    TAK_AI_DebugSetTactics(plain_seat, 0);
+    TAK_AI_DebugSetTactics(plain_seat, base);
     TAK_AI_DebugSetTactics(3 - plain_seat, mask);
     InGame_DebugPlayWithoutHumans(1);
     const int total = minutes * 60 * 60;
-    for (int t = 0; t < total && !world->skirmish_game_over; t += 60)
+    int fire_seconds = 0, rubble = 0;
+    for (int t = 0; t < total && !world->skirmish_game_over; t += 60) {
         InGame_DebugRunSimTicks(60);
+        for (int i = 0; i < world->feature_count; i++)
+            fire_seconds += world->features[i].fx == FEATURE_FX_BURNING;
+    }
+    for (int i = 0; i < world->feature_count; i++) rubble += world->features[i].rubble;
     for (int p = 1; p <= 2; p++) {
         kills[p] = world->stats[p].kills;
         losses[p] = world->stats[p].losses;
@@ -7758,13 +7771,15 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                 : alive[2] > 0 && alive[1] == 0 ? 2 : 0;
     }
     fprintf(stderr, "duel: seed %u plain seat %d: seat 1 killed %d lost %d, "
-            "seat 2 killed %d lost %d, ended tick %d winner %d\n",
+            "seat 2 killed %d lost %d, ended tick %d winner %d, burning "
+            "feature seconds %d, rubble left %d\n",
             (unsigned)seed, plain_seat, kills[1], losses[1], kills[2],
-            losses[2], world->skirmish_elapsed_ticks, *winner);
+            losses[2], world->skirmish_elapsed_ticks, *winner, fire_seconds,
+            rubble);
     for (int p = 1; p <= 2; p++) {
         fprintf(stderr, "duel:   seat %d%s strikes %d held %d break offs %d raids %d "
                 "ejected %d spent %d builder retreats %d stragglers %d "
-                "reinforced %d squad waits %d\n", p,
+                "reinforced %d squad waits %d sweeps %d fire steps %d\n", p,
                 p == plain_seat ? " (plain)" : "",
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_STRIKES),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_HELD),
@@ -7775,12 +7790,195 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_BUILDER_RETREATS),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_STRAGGLERS),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_REINFORCED),
-                TAK_AI_DebugCount(p, TAK_AI_COUNT_SQUAD_WAITS));
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_SQUAD_WAITS),
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_SWEEPS),
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_FIRE_STEPS));
     }
     InGame_DebugPlayWithoutHumans(0);
     InGame_Shutdown();
     Loading_Shutdown();
     World_End(platform);
+}
+
+/* ── The computer on the remastered battlefield (A-011) ────────────── */
+
+static int corpse_find_clear_ground(const GameWorld *world,
+                                    int32_t near_x, int32_t near_y,
+                                    int half_px, int32_t *out_x,
+                                    int32_t *out_y);
+
+/* Two Castles with the Taros computer in seat 2 and the remastered
+ * rules on, the seat's behaviours as `tactics`, its monarch's handle
+ * out. 0 when it is up. */
+static int remaster_ai_boot(TAK_Platform *platform, int tactics, int *monarch) {
+    if (setup_vfs() != 0) return 1;
+    if (setup_platform(platform) != 0) { VFS_Shutdown(); return 1; }
+    if (UI_Init() != 0) return -1;
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].ai_difficulty = 2;
+    cfg.remastered = 1;
+    cfg.seed = 4242;
+    if (World_BeginLoad(platform, &cfg, "two castles", "aramon") != 0) return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    if (next != GAMESTATE_IN_GAME || InGame_Init(platform) != 0) return -1;
+    TAK_AI_DebugSetTactics(2, tactics);
+    *monarch = hostility_monarch_of(2);
+    return *monarch >= 0 ? 0 : -1;
+}
+
+/* A Taros troop of the computer's walled in by the rubble of a ring of
+ * eight AraWall01, three cells square each, near its monarch and told
+ * to walk out. Seconds until it stands outside the ring, -1 when it is
+ * still in after two minutes, and how many sweeps the seat ordered. */
+static int remaster_rubble_escape(int tactics, int *sweeps, int *ringed) {
+    TAK_Platform platform;
+    int monarch = -1, out = -2;
+    *sweeps = *ringed = 0;
+    int rc = remaster_ai_boot(&platform, tactics, &monarch);
+    if (rc != 0) {
+        if (rc < 0) hostility_teardown(&platform);
+        return rc > 0 ? -3 : -2;
+    }
+    GameWorld *world = World_Get();
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int wall = Features_FindByName("AraWall01");
+    int troop_def = hostility_combat_def_for_side(TAK_SIDE_TAROS);
+    int32_t gx = 0, gy = 0;
+    if (wall >= 0 && troop_def >= 0 &&
+        corpse_find_clear_ground(world, units[monarch].world_x + 256,
+                                 units[monarch].world_y, 96, &gx, &gy)) {
+        int cx = gx / 16 - 1, cz = gy / 16 - 1;
+        int ring[8], n = 0;
+        static const int at[8][2] = {
+            { -3, -3 }, { 0, -3 }, { 3, -3 }, { -3, 0 },
+            {  3,  0 }, { -3, 3 }, { 0,  3 }, { 3,  3 },
+        };
+        for (int k = 0; k < 8; k++) {
+            int tx = cx + at[k][0], tz = cz + at[k][1];
+            ring[n++] = Features_AddInstance(world, wall, tx, tz, tx * 16 + 24,
+                                             tz * 16 + 24, 0, -1);
+        }
+        for (int stage = 0; stage < 2; stage++) {
+            for (int k = 0; k < n; k++) Features_DebugHit(world, ring[k], 30000, 0);
+            for (int f = 0; f < 60; f++) Features_TickFrame(world);
+        }
+        for (int k = 0; k < n; k++) *ringed += world->features[ring[k]].rubble;
+        int32_t mx = cx * 16 + 24, my = cz * 16 + 24;
+        int troop = Units_Spawn(troop_def, 2, 1, mx, my);
+        if (troop >= 0) {
+            Units_CommandMoveUnit(troop, mx + 320, my);
+            out = -1;
+            for (int s = 0; s < 120 && out < 0; s++) {
+                InGame_DebugRunSimTicks(60);
+                units = Units_GetActive(&unit_count);
+                const Unit *t = &units[troop];
+                if (t->alive != UNIT_ALIVE_ACTIVE) break;
+                /* It keeps being told to go, as a player would. */
+                if (t->cmd_kind == UNIT_CMD_NONE)
+                    Units_CommandMoveUnit(troop, mx + 320, my);
+                int32_t dx = t->world_x - mx, dy = t->world_y - my;
+                if (dx > 80 || dx < -80 || dy > 80 || dy < -80) out = s + 1;
+            }
+        }
+    }
+    *sweeps = TAK_AI_DebugCount(2, TAK_AI_COUNT_SWEEPS);
+    hostility_teardown(&platform);
+    return out;
+}
+
+/* Under the remastered rules a computer's unit walled in by rubble gets
+ * out because a builder of its sweeps a way, and without the sweep it
+ * stays in. The classic rules have no rubble that blocks (A-011). */
+TEST(the_computer_sweeps_its_way_out_of_rubble) {
+    int sweeps_on = 0, sweeps_off = 0, ringed_on = 0, ringed_off = 0;
+    int on = remaster_rubble_escape(TAK_AI_TACTIC_ALL, &sweeps_on, &ringed_on);
+    if (on == -3) SKIP("no data dir");
+    int off = remaster_rubble_escape(TAK_AI_TACTIC_ALL & ~TAK_AI_TACTIC_SWEEP,
+                                     &sweeps_off, &ringed_off);
+    printf("[rubble ring of %d: out after %d s with %d sweeps, %d s without] ",
+           ringed_on, on, sweeps_on, off);
+    ASSERT_EQ_INT(8, ringed_on);
+    ASSERT_EQ_INT(8, ringed_off);
+    ASSERT(on > 0 && on <= 90);
+    ASSERT(sweeps_on >= 1);
+    ASSERT_EQ_INT(-1, off);
+    ASSERT_EQ_INT(0, sweeps_off);
+}
+
+/* Six Taros troops of the computer's stand in a grove of AraTree01 by
+ * its monarch, a tree on every third cell, and every tree catches. The
+ * hit points they lose to the fire in twenty seconds, and how many
+ * fall. */
+static int remaster_fire_losses(int tactics, int *fallen, int *steps) {
+    TAK_Platform platform;
+    int monarch = -1, lost = -2;
+    *fallen = *steps = 0;
+    int rc = remaster_ai_boot(&platform, tactics, &monarch);
+    if (rc != 0) {
+        if (rc < 0) hostility_teardown(&platform);
+        return rc > 0 ? -3 : -2;
+    }
+    GameWorld *world = World_Get();
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int tree = Features_FindByName("AraTree01");
+    int troop_def = hostility_combat_def_for_side(TAK_SIDE_TAROS);
+    int32_t gx = 0, gy = 0;
+    if (tree >= 0 && troop_def >= 0 &&
+        corpse_find_clear_ground(world, units[monarch].world_x + 256,
+                                 units[monarch].world_y, 96, &gx, &gy)) {
+        int cx = gx / 16 - 6, cz = gy / 16 - 4;
+        int first = world->feature_count;
+        for (int z = 0; z < 5; z++)
+            for (int x = 0; x < 6; x++)
+                Features_AddInstance(world, tree, cx + 3 * x, cz + 3 * z,
+                                     (cx + 3 * x) * 16 + 8, (cz + 3 * z) * 16 + 8, 0, -1);
+        /* Each just east of a tree, in its reach. */
+        int troops[6], hp0 = 0, n = 0;
+        for (int k = 0; k < 6; k++) {
+            int tx = cx + 3 * (1 + k % 3) + 2, tz = cz + 3 * (1 + k / 3) + 1;
+            troops[n] = Units_Spawn(troop_def, 2, 1, tx * 16, tz * 16);
+            if (troops[n] >= 0) n++;
+        }
+        units = Units_GetActive(&unit_count);
+        for (int k = 0; k < n; k++) hp0 += units[troops[k]].health;
+        for (int i = first; i < world->feature_count; i++)
+            Features_DebugHit(world, i, 50, 1);
+        InGame_DebugRunSimTicks(60 * 20);
+        units = Units_GetActive(&unit_count);
+        int hp = 0;
+        for (int k = 0; k < n; k++) {
+            if (units[troops[k]].alive == UNIT_ALIVE_ACTIVE) hp += units[troops[k]].health;
+            else (*fallen)++;
+        }
+        lost = hp0 - hp;
+    }
+    *steps = TAK_AI_DebugCount(2, TAK_AI_COUNT_FIRE_STEPS);
+    hostility_teardown(&platform);
+    return lost;
+}
+
+/* Under the remastered rules a computer's troops caught in a forest fire
+ * walk out of it and lose less to it than troops that stand (A-011). */
+TEST(the_computer_walks_its_units_out_of_a_forest_fire) {
+    int fallen_on = 0, fallen_off = 0, steps_on = 0, steps_off = 0;
+    int on = remaster_fire_losses(TAK_AI_TACTIC_ALL, &fallen_on, &steps_on);
+    if (on == -3) SKIP("no data dir");
+    int off = remaster_fire_losses(TAK_AI_TACTIC_ALL & ~TAK_AI_TACTIC_FIRE,
+                                   &fallen_off, &steps_off);
+    printf("[six troops in a burning grove lost %d hp and %d fell with %d steps "
+           "out, %d hp and %d fell standing] ", on, fallen_on, steps_on, off,
+           fallen_off);
+    ASSERT(on >= 0 && off > 0);
+    ASSERT(steps_on >= 1);
+    ASSERT_EQ_INT(0, steps_off);
+    ASSERT(on * 2 <= off);
 }
 
 TEST(ai_duel_tactics_against_none) {
@@ -7795,14 +7993,20 @@ TEST(ai_duel_tactics_against_none) {
     int mask = m ? atoi(m) : TAK_AI_TACTIC_ALL;
     const char *g = getenv("TAK_AI_DUEL_GAMES");
     int games = g && atoi(g) > 0 ? atoi(g) : 2;
+    /* What the plain seat keeps, none by default, and whether both play
+     * the remastered battlefield rules (D-036). */
+    const char *b = getenv("TAK_AI_DUEL_BASE");
+    int base = b ? atoi(b) : 0;
+    const char *r = getenv("TAK_AI_DUEL_REMASTERED");
+    int remastered = r && atoi(r) != 0;
     int32_t with_k = 0, with_l = 0, plain_k = 0, plain_l = 0;
     int with_wins = 0, plain_wins = 0;
     for (int s = 1; s <= games; s++) {
         for (int plain = 1; plain <= 2; plain++) {
             int32_t kills[3] = { 0 }, losses[3] = { 0 };
             int winner = 0;
-            ai_duel_once(&platform, plain, mask, minutes, (uint32_t)(s * 7919),
-                         kills, losses, &winner);
+            ai_duel_once(&platform, plain, mask, base, remastered, minutes,
+                         (uint32_t)(s * 7919), kills, losses, &winner);
             int with = 3 - plain;
             with_k += kills[with];   with_l += losses[with];
             plain_k += kills[plain]; plain_l += losses[plain];
@@ -7810,8 +8014,9 @@ TEST(ai_duel_tactics_against_none) {
             if (winner == plain) plain_wins++;
         }
     }
-    printf("(mask %d over %d games of %d minutes: with killed %d lost %d won %d, "
-           "without killed %d lost %d won %d) ", mask, games * 2, minutes,
+    printf("(mask %d against %d%s over %d games of %d minutes: with killed %d "
+           "lost %d won %d, without killed %d lost %d won %d) ", mask, base,
+           remastered ? " remastered" : "", games * 2, minutes,
            with_k, with_l, with_wins, plain_k, plain_l, plain_wins);
     UI_Shutdown();
     teardown_platform(&platform);
@@ -29220,6 +29425,8 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(skirmish_ai_full_progression);
     /* A measuring tool: it runs only when asked for, and is not a case
      * that skipped when it is not. */
+    RUN_UI_TEST(the_computer_sweeps_its_way_out_of_rubble);
+    RUN_UI_TEST(the_computer_walks_its_units_out_of_a_forest_fire);
     if (getenv("TAK_AI_DUEL")) {
         RUN_UI_TEST(ai_duel_tactics_against_none);
     }
