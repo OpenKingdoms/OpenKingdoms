@@ -146,6 +146,7 @@ ui = [
   ["harpies_sent_to_one_place_do_not_stack", 1],
   ["flyer_left_over_open_sea_stays_up", 1],
   ["flyer_stopped_by_the_shore_lands_on_dry_ground", 1],
+  ["flyers_cruise_over_the_sea_not_the_sea_floor", 1],
   ["boats_stay_in_water_ghost_ships_do_not", 1],
   ["skirmish_ai_duel_reaches_game_over", 1],
   ["group_selection_and_control_groups", 1],

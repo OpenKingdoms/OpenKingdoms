@@ -1676,7 +1676,8 @@ TEST(a_ground_crowd_packs_as_it_did) {
 #define MV_ISLAND   120     /* the island's height, dry over the sea */
 #define MV_SHALLOW   60     /* wet, but above an amphibious flyer's floor */
 
-enum { MV_FLY_DRAG = MV_DEF_SEA_COUNT, MV_FLY_HUNT, MV_FLY_AMPH, MV_FLY_COUNT };
+enum { MV_FLY_DRAG = MV_DEF_SEA_COUNT, MV_FLY_HUNT, MV_FLY_AMPH, MV_FLY_HOVER,
+       MV_FLY_COUNT };
 
 static void mv_fill_flyer(UnitDef *d, const char *name, int max_wd,
                           int amphibious) {
@@ -1713,11 +1714,14 @@ static GameWorld *mv_island(void) {
     mv_fill_flyer(&defs[MV_FLY_DRAG], "TESTDRAG", 0, 0);
     mv_fill_flyer(&defs[MV_FLY_HUNT], "TESTHUNT", 10000, 0);
     mv_fill_flyer(&defs[MV_FLY_AMPH], "TESTAMPH", 30, 1);
+    /* No flight pair: it hovers at its cruise height, as the ghost ship. */
+    mv_fill_flyer(&defs[MV_FLY_HOVER], "TESTHOVR", 10000, 0);
+    defs[MV_FLY_HOVER].cruise_alt = 50;
     if (Units_DebugSetDefs(defs, MV_FLY_COUNT) != MV_FLY_COUNT) return NULL;
     static const uint32_t ret[] = { 0x10065000u };
     static const char *const names[] = { "BeginFlight", "BeginLanding" };
     static const uint32_t offsets[] = { 0, 0 };
-    for (int d = MV_FLY_DRAG; d < MV_FLY_COUNT; d++)
+    for (int d = MV_FLY_DRAG; d < MV_FLY_HOVER; d++)
         if (Units_DebugSetDefScript(d, ret, 1, names, offsets, 2) != 0) return NULL;
     return w;
 }
@@ -1934,6 +1938,39 @@ TEST(the_landing_search_repeats_exactly) {
     ASSERT_EQ_INT((int)rand_state[0], (int)rand_state[1]);
 }
 
+/* Over the sea a flyer cruises cruisealt over the water, not over the
+ * sea floor, and one that hovers hovers over the surface
+ * (legacy:190499-190507). Over land nothing changes. */
+TEST(a_flyer_cruises_over_the_sea_not_the_sea_floor) {
+    GameWorld *w = mv_island();
+    ASSERT_NOT_NULL(w);
+    int32_t ax = 0, ay = 0;
+    int h = mv_fly_west(800, 0, &ax, &ay);
+    ASSERT(h >= 0);
+    const Unit *u = mv_unit(h);
+    ASSERT_EQ_INT(1, (int)u->flying);
+    int ground = Terrain_SampleHeight(w, u->world_x, u->world_y);
+    printf("(sea floor %d, sea %d, stands at %.0f, drawn at %.0f) ", ground,
+           MV_WATER, (double)Units_DebugStandHeight(h),
+           (double)((float)ground + Units_DrawnAlt(w, u)));
+    ASSERT(ground < MV_WATER);
+    ASSERT(Units_DebugStandHeight(h) >= (float)(MV_WATER + 150));
+    ASSERT((float)ground + Units_DrawnAlt(w, u) >= (float)(MV_WATER + 150));
+    int hov = Units_Spawn(MV_FLY_HOVER, 1, 0, 1200, 1500);
+    ASSERT(hov >= 0);
+    mv_run(120);
+    ASSERT(Units_DebugStandHeight(hov) >= (float)(MV_WATER + 50));
+    ASSERT((float)Terrain_SampleHeight(w, 1200, 1500) +
+           Units_DrawnAlt(w, mv_unit(hov)) >= (float)(MV_WATER + 50));
+    /* On the island a landed flyer stands on the ground. */
+    int down = Units_Spawn(MV_FLY_DRAG, 1, 0, 2600, 900);
+    ASSERT(down >= 0);
+    mv_run(2);
+    ASSERT_EQ_INT(MV_ISLAND, (int)Units_DebugStandHeight(down));
+    ASSERT(Units_DrawnAlt(w, mv_unit(down)) == 0.0f);
+    mv_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("Movement without game data");
@@ -1970,6 +2007,7 @@ int main(int argc, char **argv) {
     RUN(a_flyer_stopped_off_the_shore_lands_on_the_island);
     RUN(a_flyer_stopped_over_land_lands_where_it_is);
     RUN(the_landing_search_repeats_exactly);
+    RUN(a_flyer_cruises_over_the_sea_not_the_sea_floor);
     TEST_SUITE("State hash");
     RUN(a_repeated_run_hashes_the_same);
     RUN(a_cold_planner_hashes_the_same);

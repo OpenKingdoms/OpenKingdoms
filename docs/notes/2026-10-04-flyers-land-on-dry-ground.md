@@ -65,7 +65,20 @@ flies a glide leg 32 px ahead before it looks. A landing leg, a glide, a
 spot or a circle, ends when the flyer gets an order or a target, and the
 search starts over once it is idle again. Engine build 32.
 
-Still open: the original measures a flyer's cruise height from the
-higher of sea level and the ground under it, so over water a flyer
-cruises at least `cruisealt` over the surface (legacy:190499-190507).
-The engine still measures it from the sea floor.
+## Cruise height over water
+
+The original's cruise target is `cruisealt` over a ceiling, the highest
+of sea level and the cell heights in the 128 px buckets round the unit
+(legacy:190499-190507, 241336-241344, 224299-224390). So over water a
+flyer is always at least `cruisealt` over the surface. The engine held
+a flyer `cruisealt` over the ground under it, the sea floor over water,
+so over deep water a hovering flyer such as the ghost ship sat under the
+surface.
+
+A flyer, and a hoverer, now stands on the higher of the ground and the
+sea, plus its altitude. `unit_base_height` gives the simulation that
+height, for the shots it fires and the shots aimed at it, and
+`Units_DrawnAlt` gives every view the same height over the ground under
+it. Over land the engine still follows the ground under the unit rather
+than the bucket ceiling, which is a difference only over hills. Engine
+build 33.

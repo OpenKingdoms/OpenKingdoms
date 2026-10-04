@@ -104,8 +104,9 @@
  * point, and land only on clear ground, where they hold their cells.
  * 32: the landing test takes the original's depth window, amphibious
  * and unexplored ground, and a stopped flyer flies on before it looks
- * for ground. */
-#define TAK_ENGINE_BUILD_ID           32
+ * for ground. 33: a flyer over water flies, hovers, shoots and is shot
+ * at over the sea, not over the sea floor. */
+#define TAK_ENGINE_BUILD_ID           33
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

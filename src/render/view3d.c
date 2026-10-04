@@ -805,7 +805,7 @@ static void draw_units(const GameWorld *world, const float planes[6][4]) {
         if (!def) continue;
         const GpuModel *m = ModelStore_Get(def->objectname, u->team_color_idx);
         if (!m) continue;
-        float h = (float)Terrain_SampleHeight(world, u->world_x, u->world_y) + u->flight_alt;
+        float h = (float)Terrain_SampleHeight(world, u->world_x, u->world_y) + Units_DrawnAlt(world, u);
         float c[3] = { (float)u->world_x, h + m->height_px * 0.5f, (float)u->world_y };
         if (!Camera3D_SphereInFrustum(planes, c, m->radius_px)) continue;
         float alpha = 1.0f;

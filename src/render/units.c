@@ -1072,14 +1072,33 @@ static float projectile_launch_pitch(float speed_ppt, float run,
     return tak_atanf(lob_preferred ? (k + root) : (k - root));
 }
 
-/* Where a unit stands: the ground, the sea over it for a floater, and
- * its altitude on top. The original keeps this on the unit (unit+0x6c). */
+/* Where a unit stands: the ground, the sea over it for a floater or a
+ * flyer, and its altitude on top. The original keeps this on the unit
+ * (unit+0x6c), and holds a flyer cruisealt over the higher of the
+ * ground and the sea (legacy:190499-190507). */
 static float unit_base_height(const GameWorld *w, const Unit *v) {
     if (!w || !v) return 0.0f;
     float g = (float)Terrain_SampleHeight(w, v->world_x, v->world_y);
     const UnitDef *d = Units_GetDef(v->def_idx);
-    if (d && d->floater && (float)w->water_height > g) g = (float)w->water_height;
+    if (d && (d->floater || d->can_fly) && (float)w->water_height > g)
+        g = (float)w->water_height;
     return g + v->flight_alt;
+}
+
+float Units_DrawnAlt(const GameWorld *w, const Unit *u) {
+    if (!u) return 0.0f;
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    float lift = 0.0f;
+    if (w && d && d->can_fly) {
+        int g = Terrain_SampleHeight(w, u->world_x, u->world_y);
+        if (w->water_height > g) lift = (float)(w->water_height - g);
+    }
+    return u->flight_alt + lift;
+}
+
+float Units_DebugStandHeight(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return -1.0f;
+    return unit_base_height(World_Get(), &g_units[handle]);
 }
 
 /* The height a shot aims at: a unit's sweet spot above where it
@@ -1242,7 +1261,8 @@ static int spawn_projectile(int32_t x, int32_t y,
         if (unit_weapon_muzzle(shooter, wslot, &mdx, &mdy, &mup)) {
             p->from_piece = 1;
             float base = (float)p->src_height;
-            if (sd && sd->floater && lw->water_height > p->src_height)
+            if (sd && (sd->floater || sd->can_fly) &&
+                lw->water_height > p->src_height)
                 base = (float)lw->water_height;
             float fx = (float)x + mdx, fy = (float)y + mdy;
             p->world_x = (int32_t)floorf(fx);
@@ -1258,8 +1278,10 @@ static int spawn_projectile(int32_t x, int32_t y,
             p->heading = tak_atan2f(dx, -dy);
         }
     }
-    /* A flyer fires from where it is drawn. */
-    if (shooter) p->height += shooter->flight_alt;
+    /* A flyer fires from where it is drawn, over the sea when over water. */
+    if (shooter)
+        p->height += p->from_piece ? shooter->flight_alt
+                                   : Units_DrawnAlt(lw, shooter);
     p->muzzle_height = p->height;
     proj_note_source(slot, shooter, source_weapon);
     if (source_weapon) {
@@ -2868,7 +2890,7 @@ static int ground_height_at(void *ctx, int32_t x, int32_t y) {
 static int32_t unit_drawn_y(const GameWorld *world, const Unit *u) {
     return ClickMap_DrawnY(u->world_y,
                            (float)Terrain_SampleHeight(world, u->world_x, u->world_y)
-                               + u->flight_alt, g_tan_tilt);
+                               + Units_DrawnAlt(world, u), g_tan_tilt);
 }
 
 void Units_GroundUnderPoint(int32_t flat_x, int32_t flat_y,
@@ -2988,7 +3010,7 @@ int Units_PickRay(const float origin[3], const float dir[3]) {
         }
         if (hi_px - lo_px < 8.0f) hi_px = lo_px + 8.0f;
         float base = (float)Terrain_SampleHeight(world, u->world_x, u->world_y)
-                   + u->flight_alt;
+                   + Units_DrawnAlt(world, u);
         /* Into the unit's own frame: across, up, along its heading. */
         float sh = turns ? tak_sinf(u->heading) : 0.0f;
         float ch = turns ? tak_cosf(u->heading) : -1.0f;
@@ -4650,8 +4672,8 @@ int Units_LoadCandidatesInRect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
         /* Where the unit is drawn, as the box is (legacy:237695-237729,
          * :238144-238166). */
         int32_t uy = u->world_y - (int32_t)(((float)Terrain_SampleHeight(
-                         world, u->world_x, u->world_y) + u->flight_alt) *
-                         g_tan_tilt);
+                         world, u->world_x, u->world_y) +
+                         Units_DrawnAlt(world, u)) * g_tan_tilt);
         if (u->world_x < x0 || u->world_x > x1 || uy < y0 || uy > y1)
             continue;
         if (!unit_can_carry_target(&g_units[carrier], u)) continue;
@@ -14686,7 +14708,7 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
     const float ux = (float)u->world_x;
     const float uz = (float)u->world_y;
     const float uh = (float)Terrain_SampleHeight(world, u->world_x, u->world_y)
-                   + u->flight_alt;   /* airborne units draw at their height */
+                   + Units_DrawnAlt(world, u);   /* airborne units draw at their height */
     const float ch = tak_cosf(u->heading);
     const float sh = tak_sinf(u->heading);
     const float cp = tak_cosf(u->pitch), sp = tak_sinf(u->pitch);
@@ -15479,7 +15501,7 @@ static int unit_health_bar_rect(const struct GameWorld *world, const Unit *u,
     float sx = (float)(u->world_x - world->cam_x);
     float sy = (float)(u->world_y - world->cam_y)
              - ((float)Terrain_SampleHeight(world, u->world_x, u->world_y)
-                + u->flight_alt) * g_tan_tilt;
+                + Units_DrawnAlt(world, u)) * g_tan_tilt;
     out->x = (int)sx - 16;
     out->y = (int)sy + 10 - 2;
     out->w = 32;
@@ -15567,7 +15589,7 @@ static void render_selection_rings(const struct GameWorld *world, TAK_Platform *
         float fx = (float)(u->world_x - world->cam_x);
         float fy = (float)(u->world_y - world->cam_y)
                  - ((float)Terrain_SampleHeight(world, u->world_x, u->world_y)
-                    + u->flight_alt) * tilt;
+                    + Units_DrawnAlt(world, u)) * tilt;
 
         /* Eight dashes = 8 short polyline arcs, each spanning 1/16
          * of the circle, with 1/16 gaps between. Gives the dashed-oval
