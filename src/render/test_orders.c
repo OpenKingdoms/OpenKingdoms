@@ -2045,6 +2045,28 @@ TEST(a_summons_frame_never_goes_up_on_a_unit) {
     oq_end();
 }
 
+/* The looks are counted once the builder is in reach, so one sent from
+ * far off still holds the order when it gets there (legacy:12063-12124). */
+TEST(a_summons_from_far_off_counts_its_looks_from_reach) {
+    ASSERT_NOT_NULL(oq_world());
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int s = Units_Spawn(OQ_ARCHER, 1, 0, sx, sy);
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx + 1000, sy + 900);
+    ASSERT(s >= 0 && bd >= 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_SOLDIER, 0));
+    oq_ticks(32 * 20 + 40);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(0, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    ASSERT_EQ_INT(1, Units_OrderMove(s, sx + 200, sy));
+    int framed = 0;
+    for (int t = 0; t < 200 && !framed; t++) {
+        oq_ticks(1);
+        framed = oq_frames_of_at(OQ_SOLDIER, sx, sy);
+    }
+    ASSERT_EQ_INT(1, framed);
+    oq_end();
+}
+
 static int     g_oq_ghost_valid = -1;
 static void oq_ghost(int def, int color, int32_t x, int32_t y, int valid,
                      int facing) {
@@ -2187,6 +2209,7 @@ int main(int argc, char **argv) {
     RUN(a_summons_on_a_spot_its_last_one_keeps_gives_up);
     RUN(a_summons_on_a_building_is_refused_at_once);
     RUN(a_summons_frame_never_goes_up_on_a_unit);
+    RUN(a_summons_from_far_off_counts_its_looks_from_reach);
     RUN(the_ghost_of_a_summons_is_green_over_a_soldier);
     RUN(a_summons_snaps_to_its_move_class_footprint);
     RUN(the_computers_summons_site_is_one_no_unit_stands_on);
