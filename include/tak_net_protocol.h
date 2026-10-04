@@ -92,8 +92,9 @@
  * flamable scenery burning to its burnt stage with one spread of
  * sparks, and the wind blows in the map's range, turning the units
  * that hear it. 25: a room or a skirmish may play the remastered
- * battlefield rules (D-036). */
-#define TAK_ENGINE_BUILD_ID           25
+ * battlefield rules (D-036). 26: a finished unit struck down bursts its
+ * death weapon as its death ends, on units and scenery alike. */
+#define TAK_ENGINE_BUILD_ID           26
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

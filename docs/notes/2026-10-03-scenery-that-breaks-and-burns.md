@@ -109,6 +109,39 @@ same through the two GET values that ask for it (legacy:178908-178916,
 223290-223293). The skirmish maps blow 25 to 5000, so a fire's downwind
 steps go at most a cell.
 
+## Death blasts
+
+A unit file can name the weapon its death bursts with in an
+`[EXPLODEAS]` section, and the one a self destruct bursts with in
+`[SELFDESTRUCTAS]`. Both are inline weapons, read the way a `[WEAPONn]`
+is (legacy:163574-163603). With Iron Plague and the patches mounted,
+six units have one: the Grenadier (423 over an area of 189), the
+Kamikaze Rat (8000 over 203), the Dirigible (500 over 313), the Bomb
+Sprinkler (4000 over 320), the Fire Wagon (180 over 210) and the Shock
+Trooper (200 over 189). The Crusades set adds the Giant Orm (10000 over
+100). No unit has a `[SELFDESTRUCTAS]`, no building has either, and none
+of them starts fires.
+
+The weapon bursts as the unit is taken off the map, when its death
+ends: after its death script, or at once for a unit with none
+(legacy:227346-227349). Only a finished unit that was struck down
+bursts. A frame still being built does not, and neither does a unit
+the original removes with no death of its own, as when a side's army
+is taken off the map (legacy:227119-227144). A unit already dying when
+its side is taken off still bursts (legacy:227574). The engine also
+gives no burst to a unit a builder takes apart.
+
+The burst is a blast on the ground where the unit stood, at its
+height, through the routine a shell landing there runs
+(legacy:245709-245739, 244963-245050). It plays the weapon's hit sound
+and explosion, wounds every unit within half its area with the curved
+falloff, friend or foe as a shot fired at the ground does (D-024), and
+then reaches the scenery. It is the dead unit's player's blast and no
+unit fired it, so a kill counts for that player and ranks no unit
+(legacy:227300-227327). A death that still owes its blast keeps owing
+it across a save. A self destruct would burst `[SELFDESTRUCTAS]`, and
+the engine has no self destruct order yet.
+
 ## Death pieces
 
 A unit script's EXPLODE asks the host to throw the named piece. The

@@ -598,6 +598,8 @@ static int setup(const char *map_name) {
         u->build_gx = i == 1 ? 5555 : 0;
         u->build_gy = i == 1 ? 6666 : 0;
         u->research_wait = (uint8_t)(i == 1 ? 17 : 0);
+        /* One unit still owes its death blast. */
+        u->death_blast = (uint8_t)(i == 4 ? 1 : 0);
         /* ARAGUARD appears on the dead slot only, so the definition
          * test can prove a tombstone's stale index is not followed. */
         /* The frame in slot 4 is a building, which can stand turned. */
@@ -1588,8 +1590,8 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
-    ASSERT_EQ_INT(8, (int)version);
-    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1, (int)stored);
+    ASSERT_EQ_INT(9, (int)version);
+    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1, (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;
     /* The bowman's formation group at 487 and its second leg at 520. */
     ASSERT_EQ_INT((int)((2u << 24) | 7u), (int)rec_u32(r1, 487));
@@ -1611,6 +1613,9 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     ASSERT_EQ_INT(5555, (int)rec_u32(r1, 983));
     ASSERT_EQ_INT(6666, (int)rec_u32(r1, 987));
     ASSERT_EQ_INT(17, r1[991]);
+    /* The death blast unit 4 still owes, at 992. */
+    ASSERT_EQ_INT(0, r1[992]);
+    ASSERT_EQ_INT(1, recs[(size_t)4 * stored + 992]);
     Save_Close(r);
 }
 

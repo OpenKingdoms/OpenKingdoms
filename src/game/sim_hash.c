@@ -174,6 +174,8 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     h = TAK_HashI32(h, u->magic_death);
     h = TAK_HashI32(h, u->death_finished);
     h = TAK_HashI32(h, u->magic_death_fade);
+    /* Only a death that owes a blast adds to the hash. */
+    if (u->death_blast) h = TAK_HashI32(h, 0x200 | u->death_blast);
     h = TAK_HashF32(h, u->flight_alt);
     h = TAK_HashI32(h, u->flying);
     h = TAK_HashI32(h, u->sfx_occupy);

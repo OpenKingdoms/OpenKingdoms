@@ -528,6 +528,11 @@ typedef struct UnitDef {
     /* Inline [WEAPON1..3] sections from FBI. num_weapons is 0..3. */
     int          num_weapons;
     UnitWeapon   weapons[3];
+    /* The weapons a death bursts with: [EXPLODEAS], then [SELFDESTRUCTAS]
+     * for a self destruct (legacy:163574-163603). Bit k of death_weapon_set
+     * says death_weapons[k] was read. */
+    UnitWeapon   death_weapons[2];
+    uint8_t      death_weapon_set;
 
     /* Per-player-color baked meshes. NULL until first spawn with
      * that color; Mesh_Bake fills it lazily. */
@@ -842,6 +847,9 @@ typedef struct Unit {
     uint8_t    magic_death;       /* port 31 MAGIC_DEATH   */
     uint8_t    death_finished;    /* port 26 FINISHED_DYING */
     uint8_t    magic_death_fade;  /* ticks of whiteout left */
+    /* The death weapon a dying unit bursts with when its death ends,
+     * 1 + its index in death_weapons, 0 for none (legacy:227346-227349). */
+    uint8_t    death_blast;
     /* Flight. A flyer takes off when it gets something to do and lands
      * when it goes idle (legacy:24117, legacy:24302). flight_alt is the
      * height above the ground it is drawn and hit at; sfx_occupy is the
