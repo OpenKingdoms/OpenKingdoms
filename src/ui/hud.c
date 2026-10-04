@@ -62,6 +62,9 @@ static int g_cmd_mode = HUD_CMD_NONE;
 static int g_build_def_idx = -1;
 static int g_build_facing = 0;
 static int g_build_turn_allowed = 1;
+/* Ctrl was held on a walking builder's button for a unit: the click
+ * summons it without end (legacy:150077-150084). */
+static int g_build_repeat = 0;
 
 /* Build menu state: list of buildables for the currently selected
  * builder, refreshed when the selection's def changes. */
@@ -1516,19 +1519,32 @@ int HUD_GetCommandMode(void) { return g_cmd_mode; }
 void HUD_ClearCommandMode(void) {
     g_cmd_mode = HUD_CMD_NONE;
     g_build_def_idx = -1;
+    g_build_repeat = 0;
 }
 void HUD_SetCommandMode(int mode) {
     g_cmd_mode = mode;
-    if (mode != HUD_CMD_PLACE_BUILD) g_build_def_idx = -1;
+    if (mode != HUD_CMD_PLACE_BUILD) {
+        g_build_def_idx = -1;
+        g_build_repeat = 0;
+    }
 }
 
 int  HUD_GetBuildPlacementDefIdx(void) {
     return (g_cmd_mode == HUD_CMD_PLACE_BUILD) ? g_build_def_idx : -1;
 }
 void HUD_BeginBuildPlacement(int def_idx) {
+    HUD_BeginBuildPlacementRepeat(def_idx, 0);
+}
+
+void HUD_BeginBuildPlacementRepeat(int def_idx, int repeat) {
     g_build_def_idx = def_idx;
     g_build_facing = 0;
+    g_build_repeat = repeat && Units_DefCanRepeat(def_idx);
     g_cmd_mode = HUD_CMD_PLACE_BUILD;
+}
+
+int HUD_BuildPlacementRepeats(void) {
+    return g_cmd_mode == HUD_CMD_PLACE_BUILD && g_build_repeat;
 }
 
 const char *HUD_BuildHint(void) {
@@ -1655,10 +1671,15 @@ uint16_t HUD_BuildCountArg(void) {
 int HUD_QueueBadgeText(int factory, int def_idx, char *out, size_t cap) {
     if (!out || cap == 0) return 0;
     out[0] = 0;
+    /* A factory's run without end, or a builder's summons
+     * (legacy:149922-149929). */
+    if (Units_FactoryRepeatOf(factory) == def_idx) {
+        snprintf(out, cap, "+++");
+        return 1;
+    }
     int qn = Units_FactoryQueuedCountForDef(factory, def_idx);
     if (qn <= 0) return 0;
-    if (Units_FactoryRepeatOf(factory) == def_idx) snprintf(out, cap, "+++");
-    else snprintf(out, cap, "%d", qn);
+    snprintf(out, cap, "%d", qn);
     return 1;
 }
 
@@ -1744,7 +1765,9 @@ int HUD_HandleSidebarClick(int win_x, int win_y, TAK_Platform *plat) {
                 return 1;
             }
         }
-        HUD_BeginBuildPlacement(bs->def_idx);
+        /* Ctrl on a unit summons it without end (legacy:150077-150084). */
+        HUD_BeginBuildPlacementRepeat(bs->def_idx,
+                                      (SDL_GetModState() & KMOD_CTRL) != 0);
         GameSound_PlayUI("addbuild");   /* legacy queue-add cue (:150087) */
         return 1;
     }

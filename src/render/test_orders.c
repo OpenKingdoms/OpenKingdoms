@@ -40,7 +40,7 @@
 #define OQ_GROUND 64
 
 enum { OQ_BUILDER = 0, OQ_SOLDIER, OQ_ARCHER, OQ_BARRACKS, OQ_HELPER, OQ_GATE,
-       OQ_HALL, OQ_BOW, OQ_CANNON, OQ_FLYER, OQ_DEF_COUNT };
+       OQ_HALL, OQ_BOW, OQ_CANNON, OQ_FLYER, OQ_LIMITED, OQ_DEF_COUNT };
 
 static void oq_fill(UnitDef *d, const char *name, float velocity, int fx, int fz) {
     memset(d, 0, sizeof(*d));
@@ -128,6 +128,12 @@ static GameWorld *oq_world(void) {
     oq_fill(&defs[OQ_FLYER], "TESTFLYER", 2.0f, 1, 1);
     defs[OQ_FLYER].can_fly = 1;
     defs[OQ_FLYER].cruise_alt = 120;
+    /* A builder held to its own list, as every builder but a monarch is. */
+    oq_fill(&defs[OQ_LIMITED], "TESTMAGE", 1.4f, 1, 1);
+    defs[OQ_LIMITED].cap_flags |= UNIT_CAP_BUILDER;
+    defs[OQ_LIMITED].worker_time = 60.0f;
+    defs[OQ_LIMITED].build_distance = 32;
+    defs[OQ_LIMITED].builder_limited = 1;
     /* FBI category lines, for the select keys. */
     strcpy(defs[OQ_BUILDER].category, "TEST BUILDER");
     strcpy(defs[OQ_HELPER].category, "TEST BUILDER");
@@ -726,6 +732,170 @@ TEST(a_shift_click_on_a_frame_queues_the_help) {
     oq_ticks(1);
     ASSERT_EQ_INT(1, (int)oq_unit(bd)->leg_count);
     ASSERT_EQ_INT(UNIT_LEG_REPAIR, oq_unit(bd)->legs[0].kind);
+    oq_end();
+}
+
+/* ── several builders on one frame ────────────────────────────────── */
+
+/* Ticks a hall frame takes with n builders of workertime 60 at it from
+ * the start, and the mana it took. */
+static int oq_build_hall_with(int n, double *spent) {
+    GameWorld *w = oq_world();
+    if (!w) return -1;
+    int b0 = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 50, OQ_CY);
+    int b1 = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX + 50, OQ_CY);
+    int frame = Units_BeginBuildingForUnit(b0, OQ_HALL, OQ_CX, OQ_CY);
+    if (frame < 0) { oq_end(); return -1; }
+    if (n > 1 && Units_OrderRepair(b1, frame) != 1) { oq_end(); return -1; }
+    double was = w->economy.players[0].spent_total;
+    int t = 0;
+    while (t < 2000 && oq_unit(frame)->under_construction) { oq_ticks(1); t++; }
+    *spent = w->economy.players[0].spent_total - was;
+    oq_end();
+    return t;
+}
+
+/* Each builder adds its own workertime, so two finish in half the time,
+ * and the frame costs its buildcost however many work on it: the drain
+ * doubles and the total stays (legacy:39451-39505). */
+TEST(two_builders_finish_a_frame_in_half_the_time_for_the_same_mana) {
+    double one_spent = 0.0, two_spent = 0.0;
+    int one = oq_build_hall_with(1, &one_spent);
+    int two = oq_build_hall_with(2, &two_spent);
+    printf("(one builder %d ticks %.1f mana, two %d ticks %.1f mana) ",
+           one, one_spent, two, two_spent);
+    ASSERT(one > 0 && one < 2000);
+    ASSERT(two > 0);
+    ASSERT(two * 2 >= one - 2 && two * 2 <= one + 2);
+    ASSERT(one_spent >= 98.0 && one_spent <= 102.0);
+    ASSERT(two_spent >= one_spent - 2.0 && two_spent <= one_spent + 2.0);
+}
+
+/* A monarch is not limited to its list, so it helps a frame it could not
+ * start, a soldier in a barracks among them (legacy:233569-233572). */
+TEST(a_monarch_helps_a_frame_it_could_not_start) {
+    ASSERT_NOT_NULL(oq_world());
+    const int hall = OQ_HALL;
+    Units_DebugSetBuildables(OQ_BUILDER, &hall, 1);
+    int b = oq_barracks();
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(b, OQ_SOLDIER));
+    int frame = oq_unit(b)->build_target;
+    ASSERT(frame >= 0);
+    int king = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX + 50, OQ_CY);
+    ASSERT_EQ_INT(1, Units_CanHelpBuild(king, frame));
+    ASSERT_EQ_INT(1, Units_OrderRepair(king, frame));
+    /* The barracks alone takes 100 ticks, with the help about 50. */
+    int t = 0;
+    while (t < 200 && oq_unit(frame)->under_construction) { oq_ticks(1); t++; }
+    printf("(%d ticks) ", t);
+    ASSERT(t <= 70);
+    oq_end();
+}
+
+/* A limited builder helps only the types on its own build list, so a
+ * mage builder walks past a barracks soldier (legacy:233569-233572). */
+TEST(a_limited_builder_does_not_help_a_frame_off_its_list) {
+    ASSERT_NOT_NULL(oq_world());
+    const int hall = OQ_HALL;
+    Units_DebugSetBuildables(OQ_LIMITED, &hall, 1);
+    int b = oq_barracks();
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(b, OQ_SOLDIER));
+    int frame = oq_unit(b)->build_target;
+    ASSERT(frame >= 0);
+    int mage = Units_Spawn(OQ_LIMITED, 1, 0, OQ_CX + 70, OQ_CY);
+    ASSERT_EQ_INT(0, Units_CanHelpBuild(mage, frame));
+    ASSERT_EQ_INT(0, Units_OrderRepair(mage, frame));
+    oq_command(TAK_CMD_REPAIR, mage, OQ_CX, OQ_CY, frame, -1, 0);
+    oq_command(TAK_CMD_REPAIR, mage, OQ_CX, OQ_CY, frame, -1, TAK_CMD_ARG_QUEUE);
+    oq_ticks(1);
+    ASSERT(oq_unit(mage)->cmd_kind != UNIT_CMD_BUILD);
+    ASSERT_EQ_INT(0, (int)oq_unit(mage)->leg_count);
+    oq_end();
+}
+
+/* The same builder helps a type its list holds. */
+TEST(a_limited_builder_helps_a_frame_on_its_list) {
+    ASSERT_NOT_NULL(oq_world());
+    const int hall = OQ_HALL;
+    Units_DebugSetBuildables(OQ_LIMITED, &hall, 1);
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 50, OQ_CY);
+    int frame = Units_BeginBuildingForUnit(bd, OQ_HALL, OQ_CX, OQ_CY);
+    ASSERT(frame >= 0);
+    int mage = Units_Spawn(OQ_LIMITED, 1, 0, OQ_CX + 50, OQ_CY);
+    ASSERT_EQ_INT(1, Units_OrderRepair(mage, frame));
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(mage)->cmd_kind);
+    ASSERT_EQ_INT(frame, (int)oq_unit(mage)->build_target);
+    oq_end();
+}
+
+/* Only the frame's owner helps build it: the original compares the
+ * players, so an ally's frame is no help (legacy:233564). */
+TEST(a_builder_does_not_help_an_allys_frame) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    w->allied[1][2] = w->allied[2][1] = 1;
+    int theirs = Units_Spawn(OQ_BUILDER, 2, 1, OQ_CX - 50, OQ_CY);
+    int frame = Units_BeginBuildingForUnit(theirs, OQ_HALL, OQ_CX, OQ_CY);
+    ASSERT(frame >= 0);
+    int mine = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX + 50, OQ_CY);
+    ASSERT_EQ_INT(0, Units_OrderRepair(mine, frame));
+    oq_command(TAK_CMD_REPAIR, mine, OQ_CX, OQ_CY, frame, -1, TAK_CMD_ARG_QUEUE);
+    oq_ticks(1);
+    ASSERT_EQ_INT(0, (int)oq_unit(mine)->leg_count);
+    oq_end();
+}
+
+/* The hammer shows over your own frame only when a selected unit could
+ * help build it (legacy:186541-186545). */
+TEST(the_hammer_shows_only_for_a_helper_that_could_build_it) {
+    ASSERT_NOT_NULL(oq_world());
+    const int hall = OQ_HALL;
+    Units_DebugSetBuildables(OQ_LIMITED, &hall, 1);
+    int b = oq_barracks();
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(b, OQ_SOLDIER));
+    int frame = oq_unit(b)->build_target;
+    ASSERT(frame >= 0);
+    int king = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX + 300, OQ_CY);
+    int mage = Units_Spawn(OQ_LIMITED, 1, 0, OQ_CX + 300, OQ_CY + 60);
+    Units_SelectSingle(king);
+    ASSERT_EQ_INT(HUD_CMD_HEAL, InGame_HoverCursorOn(frame, OQ_CX, OQ_CY));
+    Units_SelectSingle(mage);
+    ASSERT(InGame_HoverCursorOn(frame, OQ_CX, OQ_CY) != HUD_CMD_HEAL);
+    oq_end();
+}
+
+/* A frame is never selected, so with nobody to help it the pointer is
+ * the ground's and not the select hand (legacy:186553, 186603). */
+TEST(a_frame_nobody_selected_can_help_shows_no_select_hand) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 50, OQ_CY);
+    int frame = Units_BeginBuildingForUnit(bd, OQ_HALL, OQ_CX, OQ_CY);
+    ASSERT(frame >= 0);
+    int s = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX + 300, OQ_CY);
+    Units_SelectSingle(s);
+    ASSERT_EQ_INT(HUD_CUR_NORMAL, InGame_HoverCursorOn(frame, OQ_CX, OQ_CY));
+    Units_SelectSingle(-1);
+    ASSERT_EQ_INT(HUD_CUR_NORMAL, InGame_HoverCursorOn(frame, OQ_CX, OQ_CY));
+    oq_end();
+}
+
+/* A click on your own frame orders each unit for itself: a builder that
+ * can help joins the work and a soldier walks to the spot
+ * (legacy:238458-238660). */
+TEST(a_click_on_a_frame_sends_the_helpers_and_walks_the_rest) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 50, OQ_CY);
+    int frame = Units_BeginBuildingForUnit(bd, OQ_HALL, OQ_CX, OQ_CY);
+    ASSERT(frame >= 0);
+    int helper = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX + 300, OQ_CY);
+    int s = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX + 300, OQ_CY + 60);
+    Units_SelectSingle(helper);
+    Units_SelectAdd(s);
+    InGame_WorldClickOn(OQ_CX, OQ_CY, frame, 0);
+    oq_ticks(1);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(helper)->cmd_kind);
+    ASSERT_EQ_INT(frame, (int)oq_unit(helper)->build_target);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)oq_unit(s)->cmd_kind);
     oq_end();
 }
 
@@ -1540,6 +1710,209 @@ TEST(ctrl_u_selects_your_units_in_the_view) {
     oq_end();
 }
 
+/* ── a walking builder's summons without end ──────────────────────── */
+
+/* Frames of def under construction at (x, y). */
+static int oq_frames_of_at(int def, int32_t x, int32_t y) {
+    int count = 0, n = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count; i++)
+        n += units[i].alive == UNIT_ALIVE_ACTIVE && units[i].def_idx == def &&
+             units[i].under_construction && units[i].world_x == x &&
+             units[i].world_y == y;
+    return n;
+}
+
+/* Ticks until the frame is done, at most limit. */
+static void oq_until_done(int frame, int limit) {
+    for (int t = 0; t < limit && oq_unit(frame)->under_construction; t++)
+        oq_ticks(1);
+}
+
+/* Ctrl on a walking builder's button for a unit, then a click: the unit
+ * is summoned there without end, each one stepping off the spot, and the
+ * button reads +++ (legacy:150077-150084, 39237, 12272-12315). */
+TEST(ctrl_on_a_builders_unit_button_summons_without_end) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    Units_SelectSingle(bd);
+    HUD_BeginBuildPlacementRepeat(OQ_SOLDIER, 1);
+    ASSERT_EQ_INT(1, HUD_BuildPlacementRepeats());
+    InGame_WorldClickOn(OQ_CX + 8, OQ_CY + 8, -1, 0);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+    oq_ticks(1);
+    int first = oq_unit(bd)->build_target;
+    ASSERT(first >= 0);
+    int32_t sx = oq_unit(first)->world_x, sy = oq_unit(first)->world_y;
+    char label[8];
+    ASSERT_EQ_INT(1, HUD_QueueBadgeText(bd, OQ_SOLDIER, label, sizeof label));
+    ASSERT_EQ_STR("+++", label);
+    oq_until_done(first, 300);
+    ASSERT_EQ_INT(0, (int)oq_unit(first)->under_construction);
+    /* At least 32 px off: one cell of footprint and one roll. */
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)oq_unit(first)->cmd_kind);
+    int32_t dx = oq_unit(first)->cmd_x - sx, dy = oq_unit(first)->cmd_y - sy;
+    ASSERT(dx * dx + dy * dy >= 32 * 32);
+    ASSERT(dx * dx + dy * dy <= 3 * 128 * 3 * 128);
+    for (int t = 0; t < 900 && oq_frames_of_at(OQ_SOLDIER, sx, sy) == 0; t++)
+        oq_ticks(1);
+    ASSERT_EQ_INT(1, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    oq_ticks(900);
+    fprintf(stderr, "  soldiers=%d builder cmd=%d\n", oq_count(OQ_SOLDIER),
+            (int)oq_unit(bd)->cmd_kind);
+    ASSERT(oq_count(OQ_SOLDIER) >= 4);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(OQ_SOLDIER, Units_FactoryRepeatOf(bd));
+    ASSERT_EQ_INT(1, HUD_QueueBadgeText(bd, OQ_SOLDIER, label, sizeof label));
+    ASSERT_EQ_STR("+++", label);
+    oq_end();
+}
+
+/* Ctrl still held at the placing click is no Ctrl-click: the summons
+ * replaces what the builder holds, queue and all (legacy:39177-39180). */
+TEST(ctrl_through_both_clicks_summons_without_end) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, bd, OQ_CX - 300, OQ_CY, -1, -1, 0));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, bd, OQ_CX - 300, OQ_CY + 200, -1, -1,
+                                TAK_CMD_ARG_QUEUE));
+    Units_SelectSingle(bd);
+    HUD_BeginBuildPlacementRepeat(OQ_SOLDIER, 1);
+    InGame_WorldClickOn(OQ_CX + 8, OQ_CY + 8, -1, IG_CLICK_CTRL);
+    oq_ticks(1);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(1, (int)oq_unit(bd)->build_endless);
+    ASSERT_EQ_INT(0, (int)oq_unit(bd)->leg_count);
+    oq_ticks(900);
+    fprintf(stderr, "  soldiers=%d builder cmd=%d\n", oq_count(OQ_SOLDIER),
+            (int)oq_unit(bd)->cmd_kind);
+    ASSERT(oq_count(OQ_SOLDIER) >= 3);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    oq_end();
+}
+
+/* With Shift the summons queues and the placement still ends after the
+ * one click (legacy:242531-242540). Nothing Shift places goes behind it
+ * (legacy:39208-39219). */
+TEST(a_shift_click_queues_a_summons_and_nothing_goes_behind_it) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 104, -1,
+                                OQ_HALL, 0));
+    Units_SelectSingle(bd);
+    HUD_BeginBuildPlacementRepeat(OQ_SOLDIER, 1);
+    InGame_WorldClickOn(OQ_CX + 8, OQ_CY + 8, -1, IG_CLICK_SHIFT);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+    oq_ticks(1);
+    ASSERT_EQ_INT(1, oq_legs_of(bd, UNIT_LEG_BUILD, OQ_SOLDIER));
+    ASSERT_EQ_INT(1, (int)oq_unit(bd)->legs[0].endless);
+    ASSERT_EQ_INT(OQ_SOLDIER, Units_FactoryRepeatOf(bd));
+    ASSERT_EQ_INT(0, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 200, OQ_CY + 8, -1,
+                                OQ_HALL, TAK_CMD_ARG_QUEUE));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, bd, OQ_CX, OQ_CY + 300, -1, -1,
+                                TAK_CMD_ARG_QUEUE));
+    oq_ticks(1500);
+    ASSERT_EQ_INT(1, oq_count(OQ_HALL));
+    ASSERT(oq_count(OQ_SOLDIER) >= 2);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(1, (int)oq_unit(bd)->build_endless);
+    oq_end();
+}
+
+/* A right click on the button ends the summons and leaves the frame in
+ * hand standing (legacy:150087-150093, 181838-181866). */
+TEST(a_right_click_ends_a_summons_without_end) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1,
+                                OQ_SOLDIER, TAK_CMD_ARG_ENDLESS));
+    oq_until_done(oq_unit(bd)->build_target, 300);
+    for (int t = 0; t < 600 && oq_unit(bd)->build_target < 0; t++) oq_ticks(1);
+    int frame = oq_unit(bd)->build_target;
+    ASSERT(frame >= 0);
+    Units_SelectSingle(bd);
+    SDL_SetModState(KMOD_NONE);
+    ASSERT_EQ_INT(1, HUD_BuildButtonRightClick(OQ_SOLDIER));
+    oq_ticks(1);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(-1, Units_FactoryRepeatOf(bd));
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(frame)->alive);
+    int made = oq_count(OQ_SOLDIER);
+    oq_ticks(600);
+    ASSERT_EQ_INT(made, oq_count(OQ_SOLDIER));
+    char label[8];
+    ASSERT_EQ_INT(0, HUD_QueueBadgeText(bd, OQ_SOLDIER, label, sizeof label));
+    oq_end();
+}
+
+/* A unit on the spot is waited for and the next goes up once it leaves,
+ * while a building there ends the order (legacy:12088-12124). */
+TEST(a_summons_waits_for_a_unit_on_its_spot_and_ends_on_a_building) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1,
+                                OQ_SOLDIER, TAK_CMD_ARG_ENDLESS));
+    int first = oq_unit(bd)->build_target;
+    int32_t sx = oq_unit(first)->world_x, sy = oq_unit(first)->world_y;
+    oq_until_done(first, 300);
+    int blocker = Units_Spawn(OQ_ARCHER, 1, 0, sx, sy);
+    ASSERT(blocker >= 0);
+    oq_ticks(200);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(0, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    ASSERT(oq_unit(bd)->build_tries > 0);
+    ASSERT_EQ_INT(1, Units_OrderMove(blocker, sx + 200, sy));
+    for (int t = 0; t < 200 && oq_frames_of_at(OQ_SOLDIER, sx, sy) == 0; t++)
+        oq_ticks(1);
+    ASSERT_EQ_INT(1, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    oq_until_done(oq_unit(bd)->build_target, 300);
+    ASSERT(Units_Spawn(OQ_HALL, 1, 0, sx, sy) >= 0);
+    oq_ticks(10);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(-1, Units_FactoryRepeatOf(bd));
+    oq_end();
+}
+
+/* A unit that stays on the spot ends the summons once 30 looks, ten
+ * frames apart, have gone by (legacy:12097-12124). */
+TEST(a_summons_gives_up_on_a_spot_a_unit_keeps) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1,
+                                OQ_SOLDIER, TAK_CMD_ARG_ENDLESS));
+    int first = oq_unit(bd)->build_target;
+    int32_t sx = oq_unit(first)->world_x, sy = oq_unit(first)->world_y;
+    oq_until_done(first, 300);
+    ASSERT(Units_Spawn(OQ_ARCHER, 1, 0, sx, sy) >= 0);
+    oq_ticks(30 * 20);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    oq_ticks(2 * 20 + 4);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)oq_unit(bd)->cmd_kind);
+    oq_end();
+}
+
+/* Ctrl means nothing on a building's button, and a command that asks
+ * for a building without end gets one (legacy:150077-150084). */
+TEST(ctrl_on_a_buildings_button_places_it_once) {
+    ASSERT_NOT_NULL(oq_world());
+    ASSERT_EQ_INT(0, Units_DefCanRepeat(OQ_HALL));
+    ASSERT_EQ_INT(1, Units_DefCanRepeat(OQ_SOLDIER));
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    Units_SelectSingle(bd);
+    HUD_BeginBuildPlacementRepeat(OQ_HALL, 1);
+    ASSERT_EQ_INT(0, HUD_BuildPlacementRepeats());
+    InGame_WorldClickOn(OQ_CX + 8, OQ_CY + 8, -1, IG_CLICK_SHIFT);
+    ASSERT_EQ_INT(HUD_CMD_PLACE_BUILD, HUD_GetCommandMode());
+    HUD_ClearCommandMode();
+    oq_ticks(1);
+    ASSERT_EQ_INT(0, (int)oq_unit(bd)->build_endless);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 104, -1,
+                                OQ_HALL, TAK_CMD_ARG_ENDLESS));
+    ASSERT_EQ_INT(0, (int)oq_unit(bd)->build_endless);
+    ASSERT_EQ_INT(-1, Units_FactoryRepeatOf(bd));
+    oq_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     SDL_Init(0);
@@ -1570,6 +1943,14 @@ int main(int argc, char **argv) {
     RUN(a_cancelled_frame_frees_its_site);
     RUN(a_move_queued_after_a_patrol_keeps_the_route_whole);
     RUN(a_shift_click_on_a_frame_queues_the_help);
+    RUN(two_builders_finish_a_frame_in_half_the_time_for_the_same_mana);
+    RUN(a_monarch_helps_a_frame_it_could_not_start);
+    RUN(a_limited_builder_does_not_help_a_frame_off_its_list);
+    RUN(a_limited_builder_helps_a_frame_on_its_list);
+    RUN(a_builder_does_not_help_an_allys_frame);
+    RUN(the_hammer_shows_only_for_a_helper_that_could_build_it);
+    RUN(a_frame_nobody_selected_can_help_shows_no_select_hand);
+    RUN(a_click_on_a_frame_sends_the_helpers_and_walks_the_rest);
     RUN(a_builder_goes_round_a_ridge_as_a_move_does);
     RUN(a_repairer_goes_round_a_ridge_as_a_move_does);
     RUN(a_builder_walking_out_of_a_pocket_keeps_its_frame);
@@ -1590,5 +1971,12 @@ int main(int argc, char **argv) {
     RUN(ctrl_letters_select_by_category_and_ctrl_a_takes_all);
     RUN(ctrl_shift_digit_adds_a_group_to_the_selection);
     RUN(ctrl_u_selects_your_units_in_the_view);
+    RUN(ctrl_on_a_builders_unit_button_summons_without_end);
+    RUN(ctrl_through_both_clicks_summons_without_end);
+    RUN(a_shift_click_queues_a_summons_and_nothing_goes_behind_it);
+    RUN(a_right_click_ends_a_summons_without_end);
+    RUN(a_summons_waits_for_a_unit_on_its_spot_and_ends_on_a_building);
+    RUN(a_summons_gives_up_on_a_spot_a_unit_keeps);
+    RUN(ctrl_on_a_buildings_button_places_it_once);
     TEST_REPORT();
 }

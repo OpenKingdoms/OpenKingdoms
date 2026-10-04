@@ -395,6 +395,9 @@ typedef struct UnitDef {
     int      build_cost;        /* mana spent to construct this unit  */
     float    worker_time;       /* builder work rate from FBI workertime */
     int32_t  build_distance;    /* builddistance — reach to the build site */
+    /* `builderlimited`: helps build only the types on its own build
+     * list (legacy:163099-163100, legacy:233569-233572). */
+    uint8_t  builder_limited;
     /* `healtime`: build work per second of free self repair, not hit
      * points per second. Health restored each second is
      * heal_time/buildtime of the maximum, so a unit left alone mends
@@ -710,7 +713,8 @@ typedef struct UnitWeaponState {
  * walks no faster than the slowest of its group still walking that move.
  * With face set it turns to heading on arrival, in 65536ths of a turn, as
  * Units_HeadingFromTurn reads it. target is the stable id of the unit the
- * order names, and a build carries its def and quarter turns. */
+ * order names, and a build carries its def and quarter turns, and with
+ * endless set summons the def there without end. */
 typedef struct UnitMoveLeg {
     int32_t  x, y;
     uint32_t group;
@@ -721,6 +725,7 @@ typedef struct UnitMoveLeg {
     uint8_t  facing;
     int16_t  def;
     uint32_t target;
+    uint8_t  endless;
 } UnitMoveLeg;
 #define UNIT_MOVE_LEGS_MAX 16
 
@@ -873,6 +878,14 @@ typedef struct Unit {
     /* Where a builder walks to reach its site: fixed on its side of the
      * site when the order is given, so the route has one goal. */
     int32_t    build_gx, build_gy;
+    /* A walking builder's summons without end (legacy:150077-150084,
+     * 12272-12315), read only with UNIT_CMD_BUILD: build_def goes up
+     * again at cmd_x, cmd_y once each is done, build_wait ticks on, and
+     * build_tries counts the looks while a unit still stands there. */
+    uint8_t    build_endless;
+    uint8_t    build_tries;
+    uint8_t    build_wait;
+    int16_t    build_def;
     /* Ticks left in the attack handler's wait, after which a fight it
      * took on for itself looks again (legacy:11485-11509). 0 when not
      * waiting. */
@@ -1765,6 +1778,12 @@ int               Units_GetSelectedVeteranLevel(void);
 void              Units_CommandAttackGroundSelected(int32_t world_x,
                                                     int32_t world_y);
 int               Units_SelectionHasBuilder(void);
+/* Could this unit join the work on that frame (legacy HelpBuild,
+ * legacy:233556-233574): its own player's frame, a builder that walks,
+ * and for a limited builder a type on its own build list. */
+int               Units_CanHelpBuild(int helper, int frame);
+/* Any selected unit of the local player's that could help that frame. */
+int               Units_SelectionCanHelpBuild(int frame);
 
 /* HUD-side accessors for the first selected unit (NULL/zero when no
  * selection). Display strings are derived from the unit's anim_state
@@ -1819,6 +1838,16 @@ int               Units_BeginBuildingForUnitFacing(int builder_handle,
                                                    int32_t world_x,
                                                    int32_t world_y,
                                                    int facing);
+/* A build order as a command gives it: 1 when the builder took it. With
+ * endless a walking builder summons a def Units_DefCanRepeat names there
+ * without end, each one done stepping off the spot for the next
+ * (legacy:12272-12315). */
+int               Units_OrderBuild(int builder_handle, int def_idx,
+                                   int32_t world_x, int32_t world_y,
+                                   int facing, int endless);
+/* 1 when Ctrl on a walking builder's button summons def without end,
+ * which takes bmcode 1 (legacy:150077-150084). */
+int               Units_DefCanRepeat(int def_idx);
 
 /* ── Building facing ─────────────────────────────────────────────────
  *
@@ -1877,7 +1906,8 @@ int               Units_FactoryRemove(int factory_handle, int def_idx, int count
 int               Units_QueuedBuildCountForDef(int handle, int def_idx);
 /* The same, with the build order in hand counted when it is for def. */
 int               Units_BuildOrderCountForDef(int handle, int def_idx);
-/* The def the factory makes without end, or -1. */
+/* The def the factory makes without end, or the one a walking builder
+ * summons without end, in hand or queued. -1 for none. */
 int               Units_FactoryRepeatOf(int factory_handle);
 
 /* Cancel the in-progress production (removes the nanoframe; mana
@@ -2217,6 +2247,8 @@ int               Units_DebugSetDefScript(int def_idx, const uint32_t *code,
 /* Test hook: give a registered def a yardmap from an FBI yardmap string,
  * which makes a def with bmcode 0 a structure. Returns 0 on success. */
 int               Units_DebugSetYardmap(int def_idx, const char *spec);
+/* Test hook: def_idx's build menu is the n defs in list. */
+void              Units_DebugSetBuildables(int def_idx, const int *list, int n);
 /* Test hook: the unit dies and lays down the body its death script
  * would ask for with corpse type 1. Returns the feature instance, or -1. */
 int               Units_DebugLeaveCorpse(int handle);

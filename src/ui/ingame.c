@@ -923,17 +923,25 @@ static int ig_enemy_cursor(int hover) {
 
 int InGame_HoverCursorOn(int hover, int32_t world_x, int32_t world_y) {
     if (hover >= 0) {
+        /* The hammer over your own frame when a selected unit could
+         * help build it (legacy:186541-186545). */
         if (g_units_get_player(hover) == Units_LocalPlayer() &&
             Units_IsUnderConstruction(hover) &&
-            Units_SelectionHasBuilder())
-            return HUD_CMD_HEAL;   /* resume-build cursor */
+            Units_SelectionCanHelpBuild(hover))
+            return HUD_CMD_HEAL;
         /* Only an enemy is something to attack. An ally's unit takes
          * no order from us, and the sword over it said otherwise. */
         int enemy = Units_PlayersAreEnemies(Units_LocalPlayer(),
                                             g_units_get_player(hover));
-        if (!enemy || Units_SelectionOwnedCount() == 0) return HUD_CUR_SELECT;
-        int cur = ig_enemy_cursor(hover);
-        if (cur >= 0) return cur;
+        /* A frame is never selected, so one nobody can help is the
+         * ground under it, as its click is (legacy:186553, 186603). */
+        if (!enemy && !Units_IsSelectable(hover)) {
+            hover = -1;
+        } else {
+            if (!enemy || Units_SelectionOwnedCount() == 0) return HUD_CUR_SELECT;
+            int cur = ig_enemy_cursor(hover);
+            if (cur >= 0) return cur;
+        }
     }
     /* Bodies are looked up on the ground under the pointer, which the
      * terrain lift puts further down the map than the flat reading. */
@@ -1176,6 +1184,14 @@ static void ig_world_click_rest(GameWorld *world, int32_t world_x, int32_t world
                                 int32_t gx, int32_t gy, int hit, int shift_held,
                                 uint16_t q);
 
+/* The frame a click lands on, for the filter of who walks instead. */
+static int ig_click_frame = -1;
+
+static int ig_walker_not_helper(int handle, int target) {
+    (void)target;
+    return Units_CanWalk(handle) && !Units_CanHelpBuild(handle, ig_click_frame);
+}
+
 void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
     if (!World_Get()) return;
     InGame_WorldClickOn(world_x, world_y, Units_PickAt(world_x, world_y, 0),
@@ -1191,6 +1207,7 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
      * changes the one in hand and keeps those (manual section IV). */
     const uint16_t q = shift_held ? (uint16_t)TAK_CMD_ARG_QUEUE
                      : (mods & IG_CLICK_CTRL) ? (uint16_t)TAK_CMD_ARG_KEEP : 0;
+    int repeat = cmd == HUD_CMD_PLACE_BUILD && HUD_BuildPlacementRepeats();
     /* Every order on the ground takes the cell under the pointer, the
      * one that projects there (legacy:212277). Units draw lifted by
      * half the ground's height, so the flat reading sits that far
@@ -1268,6 +1285,14 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
                     int32_t bx = gx, by = gy;
                     int facing = HUD_GetBuildFacing();
                     Units_SnapBuildSiteFacing(bdef, facing, &bx, &by);
+                    /* A summons without end: Ctrl at the click drops
+                     * Shift with it, so it replaces what the builder
+                     * holds (legacy:39177-39180, 39237). */
+                    uint16_t bq = q;
+                    if (repeat)
+                        bq = (uint16_t)(TAK_CMD_ARG_ENDLESS |
+                             (shift_held && !(mods & IG_CLICK_CTRL)
+                                  ? TAK_CMD_ARG_QUEUE : 0u));
                     /* The click is answered now
                      * (legacy:243684-243688), and a site the
                      * building cannot take answers no. That is the
@@ -1282,7 +1307,7 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
                                 bx, by);
                     } else if (TAK_Cmd_EmitSelection(TAK_CMD_BUILD, bx, by, -1,
                                                      (uint16_t)bdef,
-                                                     (uint16_t)(facing | q)) == 0) {
+                                                     (uint16_t)(facing | bq)) == 0) {
                         GameSound_PlayUI("oktobuild");
                         fprintf(stderr, "Build: ordered def=%d at (%d,%d)\n",
                                 bdef, bx, by);
@@ -1306,15 +1331,22 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
             ig_play_order_ack(world, ack);
         }
         /* With Shift held the order stays armed for the next click
-         * until Shift comes up (legacy:243644-243648, 243685). */
-        if (shift_held) ig.shift_hold = 1;
+         * until Shift comes up (legacy:243644-243648, 243685). A
+         * summons without end is placed once (legacy:242531-242540). */
+        if (shift_held && !repeat) ig.shift_hold = 1;
         else HUD_ClearCommandMode();
     } else if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer() &&
                Units_IsUnderConstruction(hit) &&
-               Units_SelectionHasBuilder()) {
-        /* Builder + nanoframe click = resume (legacy HelpBuild), and
-         * with Shift a queued one. */
-        TAK_Cmd_EmitSelection(TAK_CMD_REPAIR, world_x, world_y, hit, 0, q);
+               Units_SelectionCanHelpBuild(hit)) {
+        /* Each unit answers for itself (legacy:238458-238660): one that
+         * can help joins the work (HelpBuild) and a walker that cannot
+         * goes to the ground there. Shift queues both. */
+        TAK_Cmd_EmitSelectionWhere(TAK_CMD_REPAIR, world_x, world_y, hit, 0, q,
+                                   Units_CanHelpBuild);
+        ig_click_frame = hit;
+        TAK_Cmd_EmitSelectionWhere(TAK_CMD_MOVE, gx, gy, -1, 0, q,
+                                   ig_walker_not_helper);
+        ig_click_frame = -1;
         ig_play_order_ack(world, "default");
     } else {
         ig_world_click_rest(world, world_x, world_y, gx, gy, hit, shift_held, q);

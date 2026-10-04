@@ -192,6 +192,13 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     h = TAK_HashI32(h, u->skip_ty);
     h = TAK_HashI32(h, u->build_gx);
     h = TAK_HashI32(h, u->build_gy);
+    /* Only a summons without end adds to the hash. */
+    if (u->build_endless) {
+        h = TAK_HashI32(h, 0x300 | u->build_endless);
+        h = TAK_HashI32(h, u->build_def);
+        h = TAK_HashI32(h, u->build_tries);
+        h = TAK_HashI32(h, u->build_wait);
+    }
     h = TAK_HashI32(h, u->research_wait);
     /* The caster's own pool, separate from the player economy. */
     h = TAK_HashF32(h, u->mana);
@@ -306,6 +313,7 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
         h = TAK_HashI32(h, u->legs[i].facing);
         h = TAK_HashI32(h, u->legs[i].def);
         h = TAK_HashU32(h, u->legs[i].target);
+        if (u->legs[i].endless) h = TAK_HashI32(h, 0x301);
     }
 
     h = hash_cob(h, u->cob);

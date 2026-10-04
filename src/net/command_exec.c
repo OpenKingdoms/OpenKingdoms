@@ -269,6 +269,7 @@ static int exec_leg(int handle, int kind, const TAK_GameCommand *cmd,
     if (kind == UNIT_LEG_BUILD) {
         leg.def = (int16_t)cmd->build_type_id;
         leg.facing = (uint8_t)(cmd->arg & 3u);
+        leg.endless = (cmd->arg & TAK_CMD_ARG_ENDLESS) ? 1 : 0;
     }
     return Units_OrderLeg(handle, &leg, g_exec_mode);
 }
@@ -439,11 +440,11 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
             for (int i = 0; i < count; i++) {
                 int took = mode
                     ? exec_leg(g_exec_handles[i], UNIT_LEG_BUILD, cmd, -1)
-                    : Units_BeginBuildingForUnitFacing(g_exec_handles[i],
-                                                       (int)cmd->build_type_id,
-                                                       cmd->target_x,
-                                                       cmd->target_y,
-                                                       cmd->arg & 3u) >= 0;
+                    : Units_OrderBuild(g_exec_handles[i],
+                                       (int)cmd->build_type_id,
+                                       cmd->target_x, cmd->target_y,
+                                       (int)(cmd->arg & 3u),
+                                       (cmd->arg & TAK_CMD_ARG_ENDLESS) != 0);
                 if (took) {
                     applied++;
                     break;
