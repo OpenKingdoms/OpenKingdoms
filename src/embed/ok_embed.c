@@ -1655,6 +1655,10 @@ int32_t okx_cursor_at(float x, float z, int32_t unit, int32_t *clear) {
     }
 }
 
+int32_t okx_can_help(int32_t handle, int32_t frame) {
+    return g.in_game && Units_CanHelpBuild(handle, frame) ? 1 : 0;
+}
+
 /* The sequences in cursors.gaf, by OKX_CURSOR_*. A placement shows the
  * plain pointer beside its ghost. */
 static const char *const s_cursor_seq[OKX_CURSOR_COUNT] = {

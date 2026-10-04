@@ -658,6 +658,12 @@ enum {
  * OKX_CURSOR_PLACE, where a building's ghost stands in for the pointer,
  * clear says whether the building can stand there. */
 OKX_API int32_t okx_cursor_at(float x, float z, int32_t unit, int32_t *clear);
+/* 1 when the unit could join the work on that frame, as the hammer over
+ * it says: the frame is its own player's and still being built, the
+ * unit is a builder that walks, and one limited to its build list has
+ * the frame's type on it. 0 otherwise. A host splits a selection by it,
+ * TAK_CMD_REPAIR on the frame for the helpers. */
+OKX_API int32_t okx_can_help(int32_t handle, int32_t frame);
 
 /* A frame of the game's interface art, anims/<gaf> ("mainscreen" or
  * "mainscreen.gaf") in the palette the game's own screens load it with:

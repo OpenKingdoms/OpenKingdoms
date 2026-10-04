@@ -2248,6 +2248,71 @@ TEST(a_beam_from_a_save_leaves_12_px_over_the_ground) {
     stop_all(&h, 1);
 }
 
+/* A builder over its own frame shows the hammer, and the game's click on
+ * the frame sets it to work there, as the manual's left click does. Only
+ * the frame's own player can help it (legacy:233556-233574). */
+TEST(the_hammer_over_a_frame_sends_the_builder_to_help) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    static OkxUnit units[512];
+    int n = okx_units(units, 512), me = okx_local_player();
+    int builder = -1, theirs = -1, product = -1;
+    for (int i = 0; i < n; i++) {
+        if (units[i].state != OKX_UNIT_ACTIVE) continue;
+        if (units[i].player != me) {
+            if (theirs < 0) theirs = i;
+            continue;
+        }
+        static int32_t opts[256];
+        int k = product < 0 ? okx_def_buildables(units[i].def, opts, 256) : 0;
+        for (int j = 0; j < k && product < 0; j++) {
+            OkxDefInfo d;
+            if (okx_def_info(opts[j], &d) == 0 && d.is_building) {
+                product = opts[j];
+                builder = i;
+            }
+        }
+    }
+    ASSERT(builder >= 0 && theirs >= 0 && product >= 0);
+    const OkxUnit *b = &units[builder];
+    int32_t sx = 0, sy = 0, found = 0;
+    for (int r = 96; r <= 800 && !found; r += 32)
+        for (int a = 0; a < 8 && !found; a++) {
+            int32_t x = (int32_t)b->x + (a % 3 - 1) * r, y = (int32_t)b->z + (a / 3 - 1) * r;
+            if (okx_build_site_facing(product, 0, x, y, &sx, &sy)) found = 1;
+        }
+    ASSERT(found);
+    ASSERT_EQ_INT(0, okx_command(3, b->handle, sx, sy, -1, product, 0));
+    okx_tick(5);
+    OkxOrder o;
+    ASSERT_EQ_INT(0, okx_unit_order(b->handle, &o));
+    int32_t frame = o.building;
+    ASSERT(frame >= 0);
+    /* Stopped, the builder leaves its frame standing. */
+    ASSERT_EQ_INT(0, okx_command(TAK_CMD_STOP_ORDER, b->handle, 0, 0, -1, -1, 0));
+    okx_tick(2);
+    ASSERT_EQ_INT(0, okx_unit_order(b->handle, &o));
+    ASSERT(o.building != frame);
+    OkxUnit fr;
+    ASSERT_EQ_INT(0, okx_unit(frame, &fr));
+    ASSERT_EQ_INT(1, okx_can_help(b->handle, frame));
+    ASSERT_EQ_INT(0, okx_can_help(units[theirs].handle, frame));
+
+    okx_cancel();
+    okx_cancel();
+    ASSERT(okx_cursor_at(fr.x, fr.z, frame, NULL) != OKX_CURSOR_REPAIR);
+    okx_select(&b->handle, 1, 0);
+    ASSERT_EQ_INT(OKX_CURSOR_REPAIR, okx_cursor_at(fr.x, fr.z, frame, NULL));
+    okx_click(fr.x, fr.z, frame, 0);
+    okx_tick(2);
+    ASSERT_EQ_INT(0, okx_unit_order(b->handle, &o));
+    ASSERT_EQ_INT(OKX_ORDER_BUILD, o.kind);
+    ASSERT_EQ_INT(frame, o.building);
+    okx_cancel();
+    okx_cancel();
+}
+
 /* Every flyer up at its height, as the host picks it where it draws it:
  * the cursor over each is the flyer's, the select hand while it is
  * yours, and once it is the computer's the attack cursor with your
@@ -2908,6 +2973,7 @@ int main(void) {
     RUN(a_nimbus_ends_with_its_caster);
     RUN(a_nimbus_in_the_fog_is_not_shown);
     RUN(the_cursor_over_a_flyer_in_the_air_is_the_flyers);
+    RUN(the_hammer_over_a_frame_sends_the_builder_to_help);
     RUN(a_decided_battle_hands_out_its_record);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();
