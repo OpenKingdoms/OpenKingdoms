@@ -1954,19 +1954,22 @@ TEST(a_summon_waits_for_the_soldier_on_its_spot) {
  * that frame becomes, and goes up once it walks off
  * (legacy:12088-12124). */
 TEST(a_shift_summons_on_the_frame_in_hand_waits_for_it) {
-    ASSERT_NOT_NULL(oq_world());
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
     int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int32_t py = oq_drawn_y(w, sx, sy, 0.0f);
     int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx - 64, sy);
     ASSERT(bd >= 0);
     SDL_SetModState(KMOD_NONE);
     Units_SelectSingle(bd);
     HUD_BeginBuildPlacement(OQ_SOLDIER);
-    InGame_WorldClickOn(sx, sy, -1, 0);
+    InGame_WorldClickOn(sx, py, -1, 0);
     oq_ticks(1);
     int first = oq_unit(bd)->build_target;
     ASSERT(first >= 0);
+    ASSERT_EQ_INT(1, oq_frames_of_at(OQ_SOLDIER, sx, sy));
     HUD_BeginBuildPlacement(OQ_SOLDIER);
-    InGame_WorldClickOn(sx, sy, -1, IG_CLICK_SHIFT);
+    InGame_WorldClickOn(sx, py, -1, IG_CLICK_SHIFT);
     HUD_ClearCommandMode();
     oq_ticks(1);
     ASSERT_EQ_INT(1, oq_legs_of(bd, UNIT_LEG_BUILD, OQ_SOLDIER));
@@ -2105,8 +2108,10 @@ static void oq_ghost(int def, int color, int32_t x, int32_t y, int valid,
 /* The ghost is green for a summons over a soldier and red for a hall
  * there (legacy:218797-218811). */
 TEST(the_ghost_of_a_summons_is_green_over_a_soldier) {
-    ASSERT_NOT_NULL(oq_world());
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
     int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int32_t py = oq_drawn_y(w, sx, sy, 0.0f);
     ASSERT(Units_Spawn(OQ_ARCHER, 1, 0, sx, sy) >= 0);
     int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx - 120, sy);
     ASSERT(bd >= 0);
@@ -2117,10 +2122,10 @@ TEST(the_ghost_of_a_summons_is_green_over_a_soldier) {
     HUD_BuildGhostFn was = HUD_GetBuildGhostHook();
     HUD_SetBuildGhostHook(oq_ghost);
     HUD_BeginBuildPlacement(OQ_SOLDIER);
-    HUD_DrawCommandCursor(&plat, 0, 0, sx, sy);
+    HUD_DrawCommandCursor(&plat, 0, 0, sx, py);
     int summons = g_oq_ghost_valid;
     HUD_BeginBuildPlacement(OQ_HALL);
-    HUD_DrawCommandCursor(&plat, 0, 0, sx, sy);
+    HUD_DrawCommandCursor(&plat, 0, 0, sx, py);
     int hall = g_oq_ghost_valid;
     HUD_SetBuildGhostHook(was);
     ASSERT_EQ_INT(1, summons);

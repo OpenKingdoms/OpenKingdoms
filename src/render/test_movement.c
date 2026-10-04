@@ -716,7 +716,7 @@ TEST(a_frame_whose_builder_is_not_closing_frees_the_site) {
     int frame = Units_BeginBuildingForUnit(b, MV_DEF_HUT, sx, sy);
     ASSERT(frame >= 0);
     ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)mv_unit(b)->cmd_kind);
-    ASSERT_EQ_INT(0, Units_IsBuildSiteClear(MV_DEF_HUT, sx, sy));
+    ASSERT_EQ_INT(0, Units_IsBuildSiteFree(MV_DEF_HUT, sx, sy));
 
     /* The mover climbs four rungs of 240 ticks before it gives the
      * order up, and that is what the owner sees as ages. The frame
@@ -734,7 +734,7 @@ TEST(a_frame_whose_builder_is_not_closing_frees_the_site) {
      * counted lost: no work was ever done on the frame. */
     ASSERT_EQ_INT(UNIT_CMD_NONE, (int)mv_unit(b)->cmd_kind);
     ASSERT_EQ_INT(-1, (int)mv_unit(b)->build_target);
-    ASSERT_EQ_INT(1, Units_IsBuildSiteClear(MV_DEF_HUT, sx, sy));
+    ASSERT_EQ_INT(1, Units_IsBuildSiteFree(MV_DEF_HUT, sx, sy));
     ASSERT_EQ_INT(0, (int)w->stats[1].losses);
     mv_end();
 }
