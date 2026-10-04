@@ -28,6 +28,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
+#include <stdlib.h>
 
 /* ── the harness ───────────────────────────────────────────────────── */
 
@@ -1378,6 +1379,262 @@ TEST(a_fleet_sails_a_narrow_strait) {
     mv_end();
 }
 
+/* ── Flyers ──────────────────────────────────────────────────────────────── */
+
+/* The Harpy from units/zonharp.fbi, with a script that has the flight
+ * pair so it takes off and lands. Returns its def index or -1. */
+static int mv_add_harpy(void) {
+    UnitDef defs[MV_DEF_COUNT + 1];
+    for (int i = 0; i < MV_DEF_COUNT; i++) defs[i] = *Units_GetDef(i);
+    UnitDef *d = &defs[MV_DEF_COUNT];
+    mv_fill_def(d, "TESTHARPY", "", 3.5f, 913);
+    strncpy(d->category, "TEST FLY", sizeof(d->category) - 1);
+    d->acceleration = 0.25f;
+    d->brake_rate = 0.25f;
+    d->turn_rate = 300.0f;
+    d->footprint_x = 2;
+    d->footprint_z = 2;
+    d->can_fly = 1;
+    d->cruise_alt = 200;
+    if (Units_DebugSetDefs(defs, MV_DEF_COUNT + 1) != MV_DEF_COUNT + 1) return -1;
+    static const uint32_t ret[] = { 0x10065000u };
+    static const char *const names[] = { "BeginFlight", "BeginLanding" };
+    static const uint32_t offsets[] = { 0, 0 };
+    if (Units_DebugSetDefScript(MV_DEF_COUNT, ret, 1, names, offsets, 2) != 0) return -1;
+    return MV_DEF_COUNT;
+}
+
+/* Do two two tile footprints, stamped as the step test stamps them,
+ * share a cell. */
+static int mv_flyers_share(const Unit *a, const Unit *b) {
+    return abs(Occ_TileOf(a->world_x - 16) - Occ_TileOf(b->world_x - 16)) < 2 &&
+           abs(Occ_TileOf(a->world_y - 16) - Occ_TileOf(b->world_y - 16)) < 2;
+}
+
+/* Pairs whose two tile footprints, stamped as the step test stamps
+ * them, share a cell. */
+static int mv_flyer_overlaps(const int *h, int n, int32_t *out_min_px) {
+    int pairs = 0;
+    int64_t best = INT64_MAX;
+    for (int i = 0; i < n; i++) {
+        const Unit *a = mv_unit(h[i]);
+        int ax = Occ_TileOf(a->world_x - 16), ay = Occ_TileOf(a->world_y - 16);
+        for (int j = i + 1; j < n; j++) {
+            const Unit *b = mv_unit(h[j]);
+            int bx = Occ_TileOf(b->world_x - 16), by = Occ_TileOf(b->world_y - 16);
+            if (abs(ax - bx) < 2 && abs(ay - by) < 2) pairs++;
+            int64_t d2 = mv_dist2(a, b->world_x, b->world_y);
+            if (d2 < best) best = d2;
+        }
+    }
+    if (out_min_px) *out_min_px = (int32_t)sqrtf((float)best);
+    return pairs;
+}
+
+/* Ten Harpies sent to one point. A flyer whose footprint shares cells
+ * with others in the air moves off (legacy:236040-236113,
+ * legacy:32801-32880) and one lands only where its footprint is clear
+ * (legacy:24297-24399, legacy:220068-220178), so the flock does not
+ * end as one stack. */
+TEST(flyers_sent_to_one_place_do_not_stack) {
+    ASSERT_NOT_NULL(mv_world());
+    int harpy = mv_add_harpy();
+    ASSERT(harpy >= 0);
+    #define MV_FLOCK_N 10
+    int h[MV_FLOCK_N];
+    for (int i = 0; i < MV_FLOCK_N; i++) {
+        h[i] = Units_Spawn(harpy, 1, 0, 1000 + (i % 5) * 48, 1500 + (i / 5) * 48);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    ASSERT_EQ_INT(0, mv_flyer_overlaps(h, MV_FLOCK_N, NULL));
+    int32_t gx = 2000, gy = 1600;
+    for (int i = 0; i < MV_FLOCK_N; i++) Units_OrderMove(h[i], gx, gy);
+    int worst_air = 0, airborne_ticks = 0, landed_at = -1, longest = 0;
+    int shared_for[MV_FLOCK_N][MV_FLOCK_N];
+    memset(shared_for, 0, sizeof shared_for);
+    for (int t = 0; t < 3600; t++) {
+        Units_TickEngines();
+        int up = 0;
+        for (int i = 0; i < MV_FLOCK_N; i++) up += mv_unit(h[i])->flying ? 1 : 0;
+        if (up) airborne_ticks++;
+        else if (landed_at < 0 && t > 60) landed_at = t;
+        if (up == MV_FLOCK_N && mv_dist2(mv_unit(h[0]), gx, gy) <= 160 * 160) {
+            int o = mv_flyer_overlaps(h, MV_FLOCK_N, NULL);
+            if (o > worst_air) worst_air = o;
+        }
+        /* The longest any two airborne Harpies go on sharing cells. */
+        for (int i = 0; i < MV_FLOCK_N; i++) {
+            for (int j = i + 1; j < MV_FLOCK_N; j++) {
+                const Unit *a = mv_unit(h[i]), *b = mv_unit(h[j]);
+                if (a->flying && b->flying && mv_flyers_share(a, b)) {
+                    if (++shared_for[i][j] > longest) longest = shared_for[i][j];
+                } else {
+                    shared_for[i][j] = 0;
+                }
+            }
+        }
+    }
+    int32_t min_px = 0;
+    int rest = mv_flyer_overlaps(h, MV_FLOCK_N, &min_px);
+    int64_t far2 = 0;
+    for (int i = 0; i < MV_FLOCK_N; i++) {
+        int64_t d2 = mv_dist2(mv_unit(h[i]), gx, gy);
+        if (d2 > far2) far2 = d2;
+    }
+    printf("(%d of 45 pairs overlap in the air at the point, %d at rest, "
+           "closest pair %d px apart, farthest %.0f px from the point, "
+           "airborne %d ticks, all down at tick %d, longest shared in the "
+           "air %d ticks) ", worst_air, rest, (int)min_px,
+           (double)sqrtf((float)far2), airborne_ticks, landed_at, longest);
+    ASSERT_EQ_INT(0, rest);
+    ASSERT(far2 <= (int64_t)480 * 480);
+    ASSERT(landed_at > 0);
+    ASSERT(longest <= 360);
+    #undef MV_FLOCK_N
+    mv_end();
+}
+
+/* Eight Harpies packed closer than their footprints patrol to one point
+ * and back. On patrol they never land, so only the step outs part them
+ * (legacy:26180, legacy:32733-32880): pairs that share cells in the air
+ * do so for a few seconds at a time and for a small part of the flight. */
+TEST(a_patrolling_flock_spreads_out) {
+    ASSERT_NOT_NULL(mv_world());
+    int harpy = mv_add_harpy();
+    ASSERT(harpy >= 0);
+    #define MV_PATROL_N 8
+    int h[MV_PATROL_N];
+    for (int i = 0; i < MV_PATROL_N; i++) {
+        h[i] = Units_Spawn(harpy, 1, 0, 1000 + (i % 4) * 20, 1500 + (i / 4) * 20);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    for (int i = 0; i < MV_PATROL_N; i++) Units_OrderPatrol(h[i], 2400, 1500);
+    int run[MV_PATROL_N][MV_PATROL_N];
+    memset(run, 0, sizeof run);
+    int64_t shared = 0, sampled = 0;
+    int longest = 0, landed = 0;
+    for (int t = 0; t < 4800; t++) {
+        Units_TickEngines();
+        for (int i = 0; i < MV_PATROL_N; i++) {
+            const Unit *a = mv_unit(h[i]);
+            if (t >= 600 && !a->flying) landed++;
+            for (int j = i + 1; j < MV_PATROL_N; j++) {
+                const Unit *b = mv_unit(h[j]);
+                int both = a->flying && b->flying;
+                int share = both && mv_flyers_share(a, b);
+                run[i][j] = share ? run[i][j] + 1 : 0;
+                if (run[i][j] > longest) longest = run[i][j];
+                if (t >= 600 && both) {
+                    sampled++;
+                    shared += share;
+                }
+            }
+        }
+    }
+    printf("(%.1f%% of airborne pair ticks shared after the first 10 s, "
+           "longest shared %d ticks) ",
+           sampled ? 100.0 * (double)shared / (double)sampled : 0.0, longest);
+    ASSERT_EQ_INT(0, landed);
+    ASSERT(sampled > 0);
+    ASSERT(shared * 4 < sampled);
+    ASSERT(longest <= 600);
+    #undef MV_PATROL_N
+    mv_end();
+}
+
+/* Two Harpies flying north side by side, a few px apart, each step out
+ * away from the other: the cheapest bearing for each is the one away
+ * from its neighbour (legacy:29973-30000, legacy:32801-32860). */
+TEST(flyers_side_by_side_step_apart) {
+    ASSERT_NOT_NULL(mv_world());
+    int harpy = mv_add_harpy();
+    ASSERT(harpy >= 0);
+    int a = Units_Spawn(harpy, 1, 0, 1500, 2600);
+    int b = Units_Spawn(harpy, 1, 0, 1510, 2600);
+    ASSERT(a >= 0 && b >= 0);
+    Units_SetHeading(a, 0.0f);
+    Units_SetHeading(b, 0.0f);
+    Units_DebugSetAggro(a, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetAggro(b, UNIT_AGGRO_PASSIVE);
+    Units_OrderMove(a, 1500, 300);
+    Units_OrderMove(b, 1510, 300);
+    int met = -1, parted = -1;
+    int32_t ax = 0, bx = 0;
+    for (int t = 0; t < 1200 && parted < 0; t++) {
+        Units_TickEngines();
+        const Unit *ua = mv_unit(a), *ub = mv_unit(b);
+        if (!ua->flying || !ub->flying) continue;
+        int share = mv_flyers_share(ua, ub);
+        if (share && met < 0) met = t;
+        if (!share && met >= 0) {
+            parted = t;
+            ax = ua->world_x;
+            bx = ub->world_x;
+        }
+    }
+    printf("(met at %d, parted at %d, %d px abreast) ", met, parted,
+           (int)(bx - ax));
+    ASSERT(met >= 0);
+    ASSERT(parted >= 0 && parted - met <= 300);
+    /* Neither crossed over the other. */
+    ASSERT(ax < bx);
+    mv_end();
+}
+
+/* A Harpy that comes down where a walker stands takes a clear spot near
+ * by instead (legacy:24297-24399), and once down it holds its cells
+ * like any walker (legacy:218217-218250) until it takes off again. */
+TEST(a_flyer_lands_clear_and_holds_its_ground) {
+    GameWorld *w = mv_world();
+    ASSERT_NOT_NULL(w);
+    int harpy = mv_add_harpy();
+    ASSERT(harpy >= 0);
+    int walker = Units_Spawn(MV_DEF_WALKER, 2, 1, 1500, 1500);
+    int h = Units_Spawn(harpy, 1, 0, 1500, 1500);
+    ASSERT(walker >= 0 && h >= 0);
+    Units_DebugSetAggro(walker, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    Units_OrderMove(h, 1510, 1500);
+    int up = 0, down_at = -1;
+    for (int t = 0; t < 1800 && down_at < 0; t++) {
+        Units_TickEngines();
+        if (mv_unit(h)->flying) up = 1;
+        else if (up) down_at = t;
+    }
+    const Unit *u = mv_unit(h);
+    const Unit *wk = mv_unit(walker);
+    int32_t hx = u->world_x, hy = u->world_y;
+    printf("(down at %d, %d px from the walker) ", down_at,
+           (int)sqrtf((float)mv_dist2(u, wk->world_x, wk->world_y)));
+    ASSERT(down_at > 0);
+    ASSERT(!mv_flyers_share(u, wk));
+    ASSERT(mv_dist2(u, 1500, 1500) <= (int64_t)320 * 320);
+    /* Down, its cells are held against the other side. */
+    int tx = Occ_TileOf(hx - 16), ty = Occ_TileOf(hy - 16);
+    for (int r = 0; r < 2; r++)
+        for (int c = 0; c < 2; c++)
+            ASSERT_EQ_INT(1, Occ_QueryTile(w, tx + c, ty + r, 2, 0));
+    /* The walker sent onto it stops short of its cells. */
+    Units_OrderMove(walker, hx, hy);
+    int stood_on = 0;
+    for (int t = 0; t < 900; t++) {
+        Units_TickEngines();
+        if (mv_flyers_share(mv_unit(h), mv_unit(walker))) stood_on++;
+    }
+    ASSERT_EQ_INT(0, stood_on);
+    ASSERT_EQ_INT(0, (int)mv_unit(h)->flying);
+    /* Up again, the cells are free. */
+    Units_OrderMove(h, hx + 800, hy);
+    for (int t = 0; t < 120; t++) Units_TickEngines();
+    ASSERT_EQ_INT(1, (int)mv_unit(h)->flying);
+    for (int r = 0; r < 2; r++)
+        for (int c = 0; c < 2; c++)
+            ASSERT_EQ_INT(0, Occ_QueryTile(w, tx + c, ty + r, 2, 0));
+    mv_end();
+}
+
 /* A ground crowd lands where it did before ships had hulls. The layout
  * hash is pinned from that build. */
 TEST(a_ground_crowd_packs_as_it_did) {
@@ -1434,6 +1691,11 @@ int main(int argc, char **argv) {
     RUN(a_shipyard_launches_ship_after_ship);
     RUN(a_fleet_sails_a_narrow_strait);
     RUN(a_ground_crowd_packs_as_it_did);
+    TEST_SUITE("Flyers");
+    RUN(flyers_sent_to_one_place_do_not_stack);
+    RUN(a_patrolling_flock_spreads_out);
+    RUN(flyers_side_by_side_step_apart);
+    RUN(a_flyer_lands_clear_and_holds_its_ground);
     TEST_SUITE("State hash");
     RUN(a_repeated_run_hashes_the_same);
     RUN(a_cold_planner_hashes_the_same);
