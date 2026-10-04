@@ -7658,6 +7658,9 @@ void Units_LoadSyncThreadCount(int slot) {
 Projectile *Units_LoadProjectiles(int count) {
     if (count < 0 || count > TAK_MAX_PROJECTILES) return NULL;
     memset(g_projectiles, 0, sizeof(g_projectiles));
+    /* A shot from a save has no record of whose it was. */
+    memset(g_proj_def, 0xff, sizeof(g_proj_def));
+    memset(g_proj_wslot, 0xff, sizeof(g_proj_wslot));
     g_projectile_count = count;
     return g_projectiles;
 }

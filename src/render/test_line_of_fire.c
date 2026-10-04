@@ -1713,6 +1713,39 @@ TEST(lightning_tells_the_hook_as_it_strikes) {
     lf_end();
 }
 
+/* A shot read back from a save keeps no record of whose it was, and must
+ * not take the record of the last shot that held its slot. */
+TEST(a_shot_read_back_from_a_save_names_no_weapon) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int pult = lf_spawn(LF_SIEGE, 1, LF_SX, LF_ROW);
+    int bow = lf_spawn(LF_ARCHER, 1, LF_SX, LF_ROW + 200);
+    int t = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW + 200);
+    ASSERT(pult >= 0 && bow >= 0 && t >= 0);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    ASSERT(Units_DebugFireGround(pult, 0, LF_TX, LF_ROW));
+    Units_TickEngines();
+    int count = 0;
+    const Projectile *ps = Units_GetProjectiles(&count);
+    ASSERT(count >= 1 && count <= 4);
+    Projectile saved[4];
+    memcpy(saved, ps, sizeof(Projectile) * (size_t)count);
+    int n = count;
+    for (int i = 0; i < 400; i++) Units_TickEngines();
+    /* The bow's arrow takes the rock's slot and lands. */
+    LfShot r = lf_fire(bow, t, 300);
+    ASSERT(r.fired);
+    Projectile *pool = Units_LoadProjectiles(n);
+    ASSERT_NOT_NULL(pool);
+    memcpy(pool, saved, sizeof(Projectile) * (size_t)n);
+    lf_listen();
+    for (int i = 0; i < 400 && g_lf_blasts == 0; i++) Units_TickEngines();
+    Units_SetBlastHook(NULL);
+    ASSERT_EQ_INT(1, g_lf_blasts);
+    ASSERT_EQ_INT(-1, g_lf_blast[0].def);
+    ASSERT_EQ_INT(-1, g_lf_blast[0].slot);
+    lf_end();
+}
+
 TEST(the_blast_hook_leaves_the_volley_as_it_was) {
     int hurt_a = 0, hurt_b = 0;
     uint32_t a = lf_volley_hash(&hurt_a);
@@ -1731,6 +1764,7 @@ int main(int argc, char **argv) {
     RUN(a_rock_on_the_ground_tells_the_hook_where_and_whose);
     RUN(an_arrow_tells_the_hook_the_unit_it_struck);
     RUN(lightning_tells_the_hook_as_it_strikes);
+    RUN(a_shot_read_back_from_a_save_names_no_weapon);
     RUN(the_blast_hook_leaves_the_volley_as_it_was);
     TEST_SUITE("Combat rules");
     RUN(a_veteran_hits_harder_and_takes_less);
