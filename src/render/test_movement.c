@@ -1495,6 +1495,55 @@ TEST(flyers_sent_to_one_place_do_not_stack) {
     mv_end();
 }
 
+/* Eight Harpies packed closer than their footprints patrol to one point
+ * and back. On patrol they never land, so only the step outs part them
+ * (legacy:26180, legacy:32733-32880): pairs that share cells in the air
+ * do so for a few seconds at a time and for a small part of the flight. */
+TEST(a_patrolling_flock_spreads_out) {
+    ASSERT_NOT_NULL(mv_world());
+    int harpy = mv_add_harpy();
+    ASSERT(harpy >= 0);
+    #define MV_PATROL_N 8
+    int h[MV_PATROL_N];
+    for (int i = 0; i < MV_PATROL_N; i++) {
+        h[i] = Units_Spawn(harpy, 1, 0, 1000 + (i % 4) * 20, 1500 + (i / 4) * 20);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    for (int i = 0; i < MV_PATROL_N; i++) Units_OrderPatrol(h[i], 2400, 1500);
+    int run[MV_PATROL_N][MV_PATROL_N];
+    memset(run, 0, sizeof run);
+    int64_t shared = 0, sampled = 0;
+    int longest = 0, landed = 0;
+    for (int t = 0; t < 4800; t++) {
+        Units_TickEngines();
+        for (int i = 0; i < MV_PATROL_N; i++) {
+            const Unit *a = mv_unit(h[i]);
+            if (t >= 600 && !a->flying) landed++;
+            for (int j = i + 1; j < MV_PATROL_N; j++) {
+                const Unit *b = mv_unit(h[j]);
+                int both = a->flying && b->flying;
+                int share = both && mv_flyers_share(a, b);
+                run[i][j] = share ? run[i][j] + 1 : 0;
+                if (run[i][j] > longest) longest = run[i][j];
+                if (t >= 600 && both) {
+                    sampled++;
+                    shared += share;
+                }
+            }
+        }
+    }
+    printf("(%.1f%% of airborne pair ticks shared after the first 10 s, "
+           "longest shared %d ticks) ",
+           sampled ? 100.0 * (double)shared / (double)sampled : 0.0, longest);
+    ASSERT_EQ_INT(0, landed);
+    ASSERT(sampled > 0);
+    ASSERT(shared * 4 < sampled);
+    ASSERT(longest <= 600);
+    #undef MV_PATROL_N
+    mv_end();
+}
+
 /* Two Harpies flying north side by side, a few px apart, each step out
  * away from the other: the cheapest bearing for each is the one away
  * from its neighbour (legacy:29973-30000, legacy:32801-32860). */
@@ -1644,6 +1693,7 @@ int main(int argc, char **argv) {
     RUN(a_ground_crowd_packs_as_it_did);
     TEST_SUITE("Flyers");
     RUN(flyers_sent_to_one_place_do_not_stack);
+    RUN(a_patrolling_flock_spreads_out);
     RUN(flyers_side_by_side_step_apart);
     RUN(a_flyer_lands_clear_and_holds_its_ground);
     TEST_SUITE("State hash");
