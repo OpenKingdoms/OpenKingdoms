@@ -354,6 +354,8 @@ static uint32_t hash_projectiles(uint32_t h) {
         h = TAK_HashI32(h, p[i].mind_control);
         /* What the shot may pass through on its way. */
         h = TAK_HashI32(h, p[i].path_flags);
+        /* What its blast does to scenery. */
+        if (p[i].blast_flags) h = TAK_HashI32(h, 0x200 | p[i].blast_flags);
         h = TAK_HashI32(h, p[i].dest_x);
         h = TAK_HashI32(h, p[i].dest_y);
         h = TAK_HashI32(h, p[i].is_beam);
@@ -414,6 +416,35 @@ static uint32_t hash_features(uint32_t h, const GameWorld *w) {
         h = TAK_HashI32(h, f->decompose_ticks);
         h = TAK_HashI32(h, f->sink_ticks);
         if (f->facing) h = TAK_HashI32(h, 0x100 | f->facing);
+        /* Blast damage, a death or a burn, once one has begun. */
+        if (f->damage_taken || f->fx || f->fx_serial) {
+            h = TAK_HashI32(h, f->damage_taken);
+            h = TAK_HashI32(h, f->fx);
+            h = TAK_HashI32(h, f->spark);
+            h = TAK_HashI32(h, f->anim_on | (f->front_on << 1) | (f->back_on << 2));
+            h = TAK_HashI32(h, f->anim_frame);
+            h = TAK_HashI32(h, f->anim_wait);
+            h = TAK_HashI32(h, f->front_frame);
+            h = TAK_HashI32(h, f->front_wait);
+            h = TAK_HashI32(h, f->back_frame);
+            h = TAK_HashI32(h, f->back_wait);
+            h = TAK_HashU32(h, f->fx_serial);
+        }
+    }
+    /* The wind and the frames the scenery keeps, where a map blows or
+     * a feature has been set to work. */
+    if (w->wind_min || w->wind_max || w->feat_fx_serial) {
+        h = TAK_HashU32(h, w->feat_frame);
+        h = TAK_HashU32(h, w->feat_fx_serial);
+        h = TAK_HashI32(h, w->wind_min);
+        h = TAK_HashI32(h, w->wind_max);
+        h = TAK_HashI32(h, w->wind_speed);
+        h = TAK_HashI32(h, w->wind_heading);
+        h = TAK_HashI32(h, w->wind_x);
+        h = TAK_HashI32(h, w->wind_z);
+        h = TAK_HashU32(h, w->wind_next_frame);
+        h = TAK_HashI32(h, w->wind_changed);
+        h = TAK_HashU32(h, w->wind_rand);
     }
     return h;
 }

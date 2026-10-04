@@ -1788,6 +1788,26 @@ Format per entry:
   whoever is still fighting (legacy:240018-240028).
 - Where it is: `InGame_PlayOn` in `src/ui/ingame.c`.
 
+## D-035: The wind keeps its own clock, and a save keeps a fire where it was
+
+- Change: the wind's next change, 3 to 14 seconds on, is drawn from a
+  stream of its own that starts where the original starts its C library
+  generator at the battle's start. Every machine runs every hit on
+  scenery, where the original's host decided each and told the others.
+  A save keeps a death or a burn at the picture it had reached.
+- Why: the original draws the wind's timing from the C library's
+  generator, which every picture it draws shares, so its wind changed
+  with what was on screen (legacy:241703-241718). Lockstep needs it the
+  same on every machine. The original's host decides scenery hits
+  because its machines do not run the same battle (legacy:128759-128776),
+  and its save restarts a burning or dying feature from the first
+  picture (legacy:129249-129270), which a lockstep load cannot do
+  without leaving the battle it was saved from. The wind's speed and
+  turn, the spark and the spread rolls draw from the simulation's
+  generator as the original's do.
+- Where it is: `wind_step` and `wind_rand` in `src/game/features.c`, the
+  FEAT and WRLD sections in `src/game/savegame.c`.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

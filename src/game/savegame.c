@@ -96,7 +96,20 @@ _Static_assert(WRLD_END == TAK_WRLD_BYTES, "WRLD layout and width disagree");
 #define WRLD_CON_PCT        (WRLD_CON_LIMIT + 4u * (TAK_MAX_PLAYERS + 1))
 #define WRLD_CON_CALLED     (WRLD_CON_PCT + 4u * (TAK_MAX_PLAYERS + 1))
 #define WRLD_CON_END        (WRLD_CON_CALLED + (TAK_MAX_PLAYERS + 1))
-#define WRLD_WRITE_BYTES    WRLD_CON_END
+/* The scenery's frame count and serial and the wind, after the console. */
+#define WRLD_FX_FRAME       WRLD_CON_END
+#define WRLD_FX_SERIAL      (WRLD_FX_FRAME + 4u)
+#define WRLD_WIND_MIN       (WRLD_FX_SERIAL + 4u)
+#define WRLD_WIND_MAX       (WRLD_WIND_MIN + 4u)
+#define WRLD_WIND_SPEED     (WRLD_WIND_MAX + 4u)
+#define WRLD_WIND_X         (WRLD_WIND_SPEED + 4u)
+#define WRLD_WIND_Z         (WRLD_WIND_X + 4u)
+#define WRLD_WIND_NEXT      (WRLD_WIND_Z + 4u)
+#define WRLD_WIND_RAND      (WRLD_WIND_NEXT + 4u)
+#define WRLD_WIND_HEADING   (WRLD_WIND_RAND + 4u)
+#define WRLD_WIND_CHANGED   (WRLD_WIND_HEADING + 2u)
+#define WRLD_FX_END         (WRLD_WIND_CHANGED + 1u)
+#define WRLD_WRITE_BYTES    WRLD_FX_END
 _Static_assert(WRLD_WRITE_BYTES == TAK_WRLD_WRITE_BYTES, "WRLD tail and width disagree");
 
 /* The scalars, in the order they are written. */
@@ -387,7 +400,8 @@ _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree")
 /* Version 2 on. A version 1 record has 0 here, a shot that is never
  * stopped on its way, which is how every shot flew then. */
 #define P_PATH_FLAGS    (P_MIND_CONTROL + 1u)
-#define P_END           (P_PATH_FLAGS + 1u)
+#define P_BLAST_FLAGS   (P_PATH_FLAGS + 1u)   /* version 3 on */
+#define P_END           (P_BLAST_FLAGS + 1u)
 _Static_assert(P_END == TAK_PROJ_RECORD_BYTES, "PROJ layout and width disagree");
 
 /* FEAT, one record per placed feature, corpses included. */
@@ -404,7 +418,19 @@ _Static_assert(P_END == TAK_PROJ_RECORD_BYTES, "PROJ layout and width disagree")
 #define F_DECOMPOSE  24u
 #define F_SINK       28u
 #define F_FACING     30u   /* version 2 on, 0 in a version 1 record */
-#define F_END        32u
+/* Version 3 on: blast damage, death and fire, all 0 in an older record. */
+#define F_DAMAGE     32u
+#define F_FX         34u
+#define F_SPARK      35u
+#define F_ANIM_ON    36u   /* bit 0 the sequence, 1 the front flame, 2 the back */
+#define F_ANIM_FRAME 38u
+#define F_ANIM_WAIT  40u
+#define F_FRONT_FRAME 42u
+#define F_FRONT_WAIT 44u
+#define F_BACK_FRAME 46u
+#define F_BACK_WAIT  48u
+#define F_FX_SERIAL  50u
+#define F_END        56u
 _Static_assert(F_END == TAK_FEAT_RECORD_BYTES, "FEAT layout and width disagree");
 
 /* FOGV. Fog is history and cannot be recomputed from the present, so
@@ -523,8 +549,8 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_UNIT 8
 #define VER_UPTH 1
 #define VER_UCOB 1
-#define VER_PROJ 2
-#define VER_FEAT 2
+#define VER_PROJ 3
+#define VER_FEAT 3
 #define VER_FOGV 1
 #define VER_ECON 1
 #define VER_AIST 1
@@ -1800,6 +1826,7 @@ static int encode_projectiles(uint8_t *recs, const Projectile *pool, int count,
         tak_put_u8(r + P_COLOR_IDX, p->color_idx);
         tak_put_u8(r + P_MIND_CONTROL, p->mind_control);
         tak_put_u8(r + P_PATH_FLAGS, p->path_flags);
+        tak_put_u8(r + P_BLAST_FLAGS, p->blast_flags);
         int scales = p->damage_scale_count;
         if (scales < 0) scales = 0;
         if (scales > TAK_DAMAGE_CATEGORY_MAX) scales = TAK_DAMAGE_CATEGORY_MAX;
@@ -1860,6 +1887,7 @@ static void decode_projectile(Projectile *p, const uint8_t *r,
     p->color_idx = tak_get_u8(r + P_COLOR_IDX);
     p->mind_control = tak_get_u8(r + P_MIND_CONTROL);
     p->path_flags = tak_get_u8(r + P_PATH_FLAGS);
+    p->blast_flags = tak_get_u8(r + P_BLAST_FLAGS);
     int scales = (int)tak_get_u8(r + P_SCALE_COUNT);
     if (scales > TAK_DAMAGE_CATEGORY_MAX) scales = TAK_DAMAGE_CATEGORY_MAX;
     p->damage_scale_count = scales;
@@ -1903,6 +1931,18 @@ static void encode_feature(uint8_t *r, const struct MapFeature *f,
     tak_put_i32(r + F_DECOMPOSE, f->decompose_ticks);
     tak_put_i16(r + F_SINK, f->sink_ticks);
     tak_put_u8(r + F_FACING, f->facing);
+    tak_put_u16(r + F_DAMAGE, f->damage_taken);
+    tak_put_u8(r + F_FX, f->fx);
+    tak_put_u8(r + F_SPARK, f->spark);
+    tak_put_u8(r + F_ANIM_ON, (uint8_t)((f->anim_on ? 1 : 0) | (f->front_on ? 2 : 0) |
+                                        (f->back_on ? 4 : 0)));
+    tak_put_u16(r + F_ANIM_FRAME, f->anim_frame);
+    tak_put_u16(r + F_ANIM_WAIT, f->anim_wait);
+    tak_put_u16(r + F_FRONT_FRAME, f->front_frame);
+    tak_put_u16(r + F_FRONT_WAIT, f->front_wait);
+    tak_put_u16(r + F_BACK_FRAME, f->back_frame);
+    tak_put_u16(r + F_BACK_WAIT, f->back_wait);
+    tak_put_u32(r + F_FX_SERIAL, f->fx_serial);
 }
 
 static void decode_feature(struct MapFeature *f, const uint8_t *r,
@@ -1922,6 +1962,20 @@ static void decode_feature(struct MapFeature *f, const uint8_t *r,
     f->decompose_ticks = tak_get_i32(r + F_DECOMPOSE);
     f->sink_ticks = tak_get_i16(r + F_SINK);
     f->facing = tak_get_u8(r + F_FACING) & 3u;
+    f->damage_taken = tak_get_u16(r + F_DAMAGE);
+    f->fx = tak_get_u8(r + F_FX);
+    f->spark = tak_get_u8(r + F_SPARK);
+    uint8_t on = tak_get_u8(r + F_ANIM_ON);
+    f->anim_on = on & 1u;
+    f->front_on = (on >> 1) & 1u;
+    f->back_on = (on >> 2) & 1u;
+    f->anim_frame = tak_get_u16(r + F_ANIM_FRAME);
+    f->anim_wait = tak_get_u16(r + F_ANIM_WAIT);
+    f->front_frame = tak_get_u16(r + F_FRONT_FRAME);
+    f->front_wait = tak_get_u16(r + F_FRONT_WAIT);
+    f->back_frame = tak_get_u16(r + F_BACK_FRAME);
+    f->back_wait = tak_get_u16(r + F_BACK_WAIT);
+    f->fx_serial = tak_get_u32(r + F_FX_SERIAL);
 }
 
 /* ── fog ──────────────────────────────────────────────────────────── */
@@ -2478,6 +2532,17 @@ static void encode_wrld(uint8_t *p, const GameWorld *w) {
         tak_put_f32(p + WRLD_CON_PCT + 4u * (size_t)a, c->share_pct[a]);
         tak_put_u8(p + WRLD_CON_CALLED + (size_t)a, (uint8_t)c->called[a]);
     }
+    tak_put_u32(p + WRLD_FX_FRAME, w->feat_frame);
+    tak_put_u32(p + WRLD_FX_SERIAL, w->feat_fx_serial);
+    tak_put_i32(p + WRLD_WIND_MIN, w->wind_min);
+    tak_put_i32(p + WRLD_WIND_MAX, w->wind_max);
+    tak_put_i32(p + WRLD_WIND_SPEED, w->wind_speed);
+    tak_put_i32(p + WRLD_WIND_X, w->wind_x);
+    tak_put_i32(p + WRLD_WIND_Z, w->wind_z);
+    tak_put_u32(p + WRLD_WIND_NEXT, w->wind_next_frame);
+    tak_put_u32(p + WRLD_WIND_RAND, w->wind_rand);
+    tak_put_u16(p + WRLD_WIND_HEADING, w->wind_heading);
+    tak_put_u8(p + WRLD_WIND_CHANGED, w->wind_changed);
 }
 
 /* The console's changes, or none for a save from before them. */
@@ -2498,6 +2563,20 @@ static void apply_wrld_console(const uint8_t *p, size_t len, GameWorld *w) {
         c->share_pct[a] = tak_get_f32(p + WRLD_CON_PCT + 4u * (size_t)a);
         c->called[a] = (int8_t)tak_get_u8(p + WRLD_CON_CALLED + (size_t)a);
     }
+    /* A save from before the scenery kept these starts its wind afresh
+     * with the map's range the loader read. */
+    if (len < WRLD_FX_END) return;
+    w->feat_frame = tak_get_u32(p + WRLD_FX_FRAME);
+    w->feat_fx_serial = tak_get_u32(p + WRLD_FX_SERIAL);
+    w->wind_min = tak_get_i32(p + WRLD_WIND_MIN);
+    w->wind_max = tak_get_i32(p + WRLD_WIND_MAX);
+    w->wind_speed = tak_get_i32(p + WRLD_WIND_SPEED);
+    w->wind_x = tak_get_i32(p + WRLD_WIND_X);
+    w->wind_z = tak_get_i32(p + WRLD_WIND_Z);
+    w->wind_next_frame = tak_get_u32(p + WRLD_WIND_NEXT);
+    w->wind_rand = tak_get_u32(p + WRLD_WIND_RAND);
+    w->wind_heading = tak_get_u16(p + WRLD_WIND_HEADING);
+    w->wind_changed = tak_get_u8(p + WRLD_WIND_CHANGED);
 }
 
 /* The engine tick the save carries. A save from before it was kept

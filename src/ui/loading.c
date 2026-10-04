@@ -365,11 +365,17 @@ static void loading_advance_step(TAK_Platform *platform) {
          *    a separate iter_section cursor that survives Push/Pop. */
         world->num_start_positions = 0;
         world->no_sea_level_trigger = 0;
+        /* The wind blows 100 to 2000 on a map that names none
+         * (legacy:168998-169001). */
+        int wind_min = 100, wind_max = 2000;
         if (TDF_PushSection(tdf, "GlobalHeader") == 0) {
             world->no_sea_level_trigger =
                 TDF_ReadInt(tdf, "nosealeveltrigger", 0) ? 1 : 0;
+            wind_min = TDF_ReadInt(tdf, "minwindspeed", 100);
+            wind_max = TDF_ReadInt(tdf, "maxwindspeed", 2000);
             TDF_PopSection(tdf);
         }
+        Features_WindBegin(world, wind_min, wind_max);
         if (TDF_PushSection(tdf, "GlobalHeader") == 0 &&
             TDF_PushSection(tdf, "Map Data")     == 0 &&
             TDF_PushSection(tdf, "specials")     == 0) {
@@ -566,6 +572,8 @@ static void loading_advance_step(TAK_Platform *platform) {
                                             gidx = Features_FindByName(nm);
                                         }
                                     }
+                                    memset(&world->features[k], 0,
+                                           sizeof(world->features[k]));
                                     world->features[k].feat_id    = v;
                                     world->features[k].tile_x     = (uint16_t)x;
                                     world->features[k].tile_z     = (uint16_t)z;

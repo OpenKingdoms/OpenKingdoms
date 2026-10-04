@@ -11606,6 +11606,90 @@ TEST(zhon_plants_and_ruins_resolve) {
     ASSERT_EQ_INT(0, smudge.damage);
 }
 
+/* The shipped scenery dies and burns the way its files say: a tree of
+ * 1000 plays its ten picture death and leaves the dead tree that still
+ * blocks, a second ball leaves the smudge that does not, a wall of
+ * 12000 drops a stage and then to rubble, and a burning tree is done
+ * when its 62 frame flame is, before its spark (legacy:127838-128116). */
+TEST(the_shipped_scenery_dies_and_burns_as_its_files_say) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    Features_LoadAll();
+    int tree = Features_FindByName("CreTree01");
+    int tree_a = Features_FindByName("CreTree01a");
+    int smudge = Features_FindByName("CreTreesmudge01");
+    int wall = Features_FindByName("AraWall01");
+    int wall_a = Features_FindByName("AraWall01a");
+    int wall_b = Features_FindByName("AraWall01b");
+    int ara = Features_FindByName("AraTree01");
+    int ara_a = Features_FindByName("AraTree01a");
+    int die = Features_SequenceFrames(ara, 0);
+    int burn = Features_SequenceFrames(ara, 1);
+    int front = Features_SequenceFrames(ara, 2);
+    int back = Features_SequenceFrames(ara, 3);
+    int tree_die = Features_SequenceFrames(tree, 0);
+    int wall_die = Features_SequenceFrames(wall, 0);
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    int ok = World_BeginLoad(NULL, &cfg, "synthetic", "aramon") == 0;
+    GameWorld *w = World_Get();
+    int stages[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+    int blocks[4] = { -1, -1, -1, -1 };
+    int burnt_after = -1, neighbour_fx = -1;
+    if (ok && w && tree >= 0 && wall >= 0 && ara >= 0 && tree_die > 0 && wall_die > 0) {
+        w->map_pixels_w = w->map_pixels_h = 64 * 16;
+        int t = Features_AddInstance(w, tree, 10, 10, 168, 168, 0, -1);
+        int wl = Features_AddInstance(w, wall, 20, 20, 344, 344, 0, -1);
+        int a = Features_AddInstance(w, ara, 40, 40, 648, 648, 0, -1);
+        int n = Features_AddInstance(w, ara, 42, 40, 680, 648, 0, -1);
+        Features_DebugHit(w, t, 2000, 0);
+        for (int f = 0; f < tree_die; f++) Features_TickFrame(w);
+        stages[0] = w->features[t].global_idx;
+        blocks[0] = Features_GetByIndex(stages[0])->blocking;
+        Features_DebugHit(w, t, 2000, 0);
+        for (int f = 0; f < 200; f++) Features_TickFrame(w);
+        stages[1] = w->features[t].global_idx;
+        blocks[1] = Features_GetByIndex(stages[1])->blocking;
+        for (int i = 0; i < 6; i++) Features_DebugHit(w, wl, 2000, 0);
+        for (int f = 0; f < wall_die; f++) Features_TickFrame(w);
+        stages[2] = w->features[wl].global_idx;
+        blocks[2] = Features_GetByIndex(stages[2])->blocking;
+        for (int i = 0; i < 5; i++) Features_DebugHit(w, wl, 2000, 0);
+        for (int f = 0; f < 200; f++) Features_TickFrame(w);
+        stages[3] = w->features[wl].global_idx;
+        blocks[3] = Features_GetByIndex(stages[3])->blocking;
+        Features_DebugHit(w, a, 50, 1);
+        int f = 0;
+        while (f < 400 && w->features[a].global_idx == ara) { Features_TickFrame(w); f++; }
+        burnt_after = f;
+        stages[4] = w->features[a].global_idx;
+        neighbour_fx = w->features[n].fx;
+    }
+    World_End(NULL);
+    Features_FreeAll();
+    VFS_Shutdown();
+
+    ASSERT(ok);
+    ASSERT(tree >= 0 && tree_a >= 0 && smudge >= 0);
+    ASSERT(wall >= 0 && wall_a >= 0 && wall_b >= 0);
+    ASSERT(ara >= 0 && ara_a >= 0);
+    ASSERT_EQ_INT(20, die);
+    ASSERT_EQ_INT(74, burn);
+    ASSERT_EQ_INT(60, front);
+    ASSERT_EQ_INT(62, back);
+    ASSERT_EQ_INT(tree_a, stages[0]);
+    ASSERT_EQ_INT(1, blocks[0]);
+    ASSERT_EQ_INT(smudge, stages[1]);
+    ASSERT_EQ_INT(0, blocks[1]);
+    ASSERT_EQ_INT(wall_a, stages[2]);
+    ASSERT_EQ_INT(1, blocks[2]);
+    ASSERT_EQ_INT(wall_b, stages[3]);
+    ASSERT_EQ_INT(0, blocks[3]);
+    ASSERT_EQ_INT(62, burnt_after);
+    ASSERT_EQ_INT(ara_a, stages[4]);
+    ASSERT_EQ_INT(FEATURE_FX_NONE, neighbour_fx);
+}
+
 /* Every feature a map's name table lists resolves to a definition, on
  * the skirmish maps and the campaign's alike. The Temple of Blood map
  * pack names a zonhand_dead that no shipped file defines. */
@@ -28733,6 +28817,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(story_help_bar_does_not_show_the_authored_placeholder);
     RUN_UI_TEST(story_chapter_heading_uses_the_book_font);
     RUN_UI_TEST(zhon_plants_and_ruins_resolve);
+    RUN_UI_TEST(the_shipped_scenery_dies_and_burns_as_its_files_say);
     RUN_UI_TEST(every_feature_a_map_names_resolves);
     RUN_UI_TEST(a_creon_save_needs_the_expansion_installed);
     RUN_UI_TEST(battle_setup_play_refuses_everyone_on_one_team);

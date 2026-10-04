@@ -155,9 +155,6 @@ target it had no way to shoot for as long as that target lived.
 
 ## What is still left out
 
-- Shots do not damage features. The original's burst damages a tree
-  or a rock it lands in or near (legacy:245240-245300), which needs
-  feature hit points and the `featuredead` chain.
 - The body test stops at the model's span. The original follows it
   with a test against the model's pieces (legacy:236960-236975).
 - The original leads a moving target by its speed over the flight time
