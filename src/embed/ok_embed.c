@@ -486,6 +486,13 @@ static void map_kingdom(const char *map, char *out, size_t cap) {
 
 static int s_loading;
 
+/* The remastered battlefield rules for every battle this host starts
+ * or hosts, and the only rooms it joins (D-036). */
+static int s_remastered;
+
+void okx_set_remastered(int32_t on) { s_remastered = on ? 1 : 0; }
+int32_t okx_remastered(void) { return s_remastered; }
+
 int32_t okx_load_begin(const OkxSkirmish *cfg) {
     if (!g.ready) { fail("okx_init first"); return -1; }
     if (!cfg || !cfg->map[0]) { fail("no map"); return -1; }
@@ -544,6 +551,7 @@ int32_t okx_load_begin(const OkxSkirmish *cfg) {
     if (cfg->units_per_side > 0) bc.units_per_side = cfg->units_per_side;
     bc.monarch_expendable = cfg->monarch_expendable ? 1 : 0;
     bc.random_start_locations = cfg->random_start_locations ? 1 : 0;
+    bc.remastered = s_remastered;
 
     char kingdom[32];
     map_kingdom(cfg->map, kingdom, sizeof(kingdom));
@@ -1847,7 +1855,8 @@ int32_t okx_net_rooms(OkxNetRoom *out, int32_t cap) {
         o->players = r->players;
         o->max_players = r->max_players;
         o->status = r->status;
-        o->joinable = r->compat == 0;
+        o->joinable = r->compat == 0 &&
+                      (!s_remastered || (r->options & TAK_ROOMOPT_REMASTERED));
     }
     return n;
 }
@@ -1866,7 +1875,7 @@ int32_t okx_net_create_room(const char *name, const char *map, int32_t options) 
     BattleConfig defaults;
     BattleConfig_SetDefaults(&defaults);
     cr.unit_cap = (uint16_t)defaults.units_per_side;
-    cr.options = (uint32_t)options;
+    cr.options = (uint32_t)options | (s_remastered ? TAK_ROOMOPT_REMASTERED : 0u);
     s_net.have_map_sent = 0;
     return TAK_NetClient_CreateRoom(c, &cr) == 0 ? 0 : -1;
 }
@@ -1874,6 +1883,17 @@ int32_t okx_net_create_room(const char *name, const char *map, int32_t options) 
 int32_t okx_net_join_room(uint32_t id, const char *code) {
     TAK_NetClient *c = NetSession_Client();
     if (!c) return -1;
+    /* A host on the remastered rules takes no room on the original's. */
+    for (int i = 0; s_remastered && i < c->rooms.count; i++) {
+        const TAK_RoomSummary *r = &c->rooms.room[i];
+        int match = id ? r->room_id == id : (code && tak_stricmp(r->code, code) == 0);
+        if (match && !(r->options & TAK_ROOMOPT_REMASTERED)) {
+            snprintf(s_net.why, sizeof s_net.why, "%s",
+                     "That game plays the original's battlefield rules, and this game "
+                     "plays only the remastered ones.");
+            return -1;
+        }
+    }
     TAK_MsgJoinRoom jr;
     memset(&jr, 0, sizeof jr);
     jr.room_id = id;
@@ -1926,6 +1946,8 @@ int32_t okx_net_edit(int32_t field, int32_t seat, int32_t value, const char *tex
     e.field = (uint8_t)field;
     e.seat = seat < 0 ? TAK_NET_SEAT_NONE : (uint8_t)seat;
     e.value = (uint32_t)value;
+    /* A host on the remastered rules keeps them in its room's options. */
+    if (field == TAK_EDIT_OPTIONS && s_remastered) e.value |= TAK_ROOMOPT_REMASTERED;
     if (text) snprintf(e.text, sizeof e.text, "%s", text);
     if (field == TAK_EDIT_MAP && text) (void)TAK_MapFingerprint_FromName(text, e.fingerprint);
     return TAK_NetClient_EditRoom(c, &e) == 0 ? 0 : -1;

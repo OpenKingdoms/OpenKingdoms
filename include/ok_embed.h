@@ -41,8 +41,8 @@ extern "C" {
  * 23: OKX_EFFECT_NIMBUS and an effect's follow, a beam's source at its
  * firing piece with from_piece on OkxProjectile, okx_def_effect_strips.
  * Added since, without a bump: okx_battle_stats, okx_battle_series,
- * okx_battle_built, okx_battle_events, okx_unit_record, okx_blasts and
- * okx_weapon_info.
+ * okx_battle_built, okx_battle_events, okx_unit_record, okx_blasts,
+ * okx_weapon_info, okx_set_remastered and okx_remastered.
  * 22: okx_gui_art, okx_map_starts, map sizes in cells, a seat's claimed
  * start on OkxSeat and OkxNetSeat (TAK_EDIT_START and
  * TAK_EDIT_MOVE_START in a room), okx_sprite_by_name and
@@ -177,6 +177,14 @@ typedef struct OkxSkirmish {
 
 /* Load a map with its armies and stand ready at tick 0. 0 on success. */
 OKX_API int32_t okx_start_skirmish(const OkxSkirmish *cfg);
+
+/* The remastered battlefield rules (D-036). With them on, every
+ * skirmish this host starts plays them, every room it hosts has them,
+ * and it joins only rooms that have them: okx_net_rooms marks the rest
+ * not joinable and okx_net_join_room refuses them, saying why through
+ * okx_net_why. 0, the default, leaves battles to the original's rules. */
+OKX_API void    okx_set_remastered(int32_t on);
+OKX_API int32_t okx_remastered(void);
 
 /* The same load in slices, for a loading screen. okx_load_begin starts
  * it, and each okx_load_step works for up to max_ms and reports how far

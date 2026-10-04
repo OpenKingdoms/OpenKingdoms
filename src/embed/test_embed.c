@@ -1059,6 +1059,30 @@ TEST(the_lobby_lineup_sets_the_seats) {
     ASSERT(near[1]);
 }
 
+/* A host on the remastered battlefield rules starts every skirmish on
+ * them: the same seed builds another battle, and turning them off
+ * builds the first one again (D-036). */
+TEST(a_host_on_the_remastered_rules_starts_its_skirmishes_on_them) {
+    if (okx_init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) { SKIP("no game data"); }
+    OkxSkirmish cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.map, sizeof(cfg.map), "%s", MAP_NAME);
+    cfg.seed = 11;
+    cfg.ai_players = 1;
+    ASSERT_EQ_INT(0, okx_remastered());
+    ASSERT_EQ_INT(0, okx_start_skirmish(&cfg));
+    g_booted = 1;
+    uint32_t original = okx_sim_hash();
+    okx_set_remastered(1);
+    ASSERT_EQ_INT(1, okx_remastered());
+    ASSERT_EQ_INT(0, okx_start_skirmish(&cfg));
+    uint32_t remastered = okx_sim_hash();
+    okx_set_remastered(0);
+    ASSERT_EQ_INT(0, okx_start_skirmish(&cfg));
+    ASSERT(remastered != original);
+    ASSERT_EQ_INT((int)original, (int)okx_sim_hash());
+}
+
 TEST(a_saved_battle_comes_back_as_it_was) {
     int rc = boot();
     if (rc == 1) return;
@@ -2647,6 +2671,7 @@ int main(void) {
     RUN(an_override_model_replaces_the_shipped_one);
     RUN(a_load_comes_in_slices_with_progress);
     RUN(the_lobby_lineup_sets_the_seats);
+    RUN(a_host_on_the_remastered_rules_starts_its_skirmishes_on_them);
     RUN(a_saved_battle_comes_back_as_it_was);
     RUN(an_edited_map_saves_and_plays);
     RUN(a_factory_queue_takes_counts_repeats_and_a_rally);
