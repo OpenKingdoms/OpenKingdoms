@@ -772,8 +772,7 @@ TEST(a_building_placed_turned_stands_turned) {
     ASSERT(found);
     ASSERT_EQ_INT(0, okx_command(3, b->handle, sx, sy, -1, product, 3));
     okx_tick(5);
-    /* A frame is not drawn until it is half raised, so read it by the
-     * builder's order. */
+    /* The frame, by the builder's order. */
     OkxOrder bo;
     ASSERT_EQ_INT(0, okx_unit_order(b->handle, &bo));
     OkxUnit fr;
@@ -2313,6 +2312,56 @@ TEST(the_hammer_over_a_frame_sends_the_builder_to_help) {
     okx_cancel();
 }
 
+/* A host raises a frame from the ground as it is built, so the list
+ * carries it from the start, where the classic view draws nothing of it
+ * until it is half built. */
+TEST(a_frame_is_listed_from_the_start_of_its_build) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    static OkxUnit units[512];
+    int n = okx_units(units, 512), me = okx_local_player();
+    int builder = -1, product = -1;
+    for (int i = 0; i < n && product < 0; i++) {
+        if (units[i].state != OKX_UNIT_ACTIVE || units[i].player != me) continue;
+        static int32_t opts[256];
+        int k = okx_def_buildables(units[i].def, opts, 256);
+        for (int j = 0; j < k && product < 0; j++) {
+            OkxDefInfo d;
+            if (okx_def_info(opts[j], &d) == 0 && d.is_building) {
+                product = opts[j];
+                builder = i;
+            }
+        }
+    }
+    ASSERT(builder >= 0 && product >= 0);
+    const OkxUnit *b = &units[builder];
+    int32_t sx = 0, sy = 0, found = 0;
+    for (int r = 96; r <= 800 && !found; r += 32)
+        for (int a = 0; a < 8 && !found; a++) {
+            int32_t x = (int32_t)b->x + (a % 3 - 1) * r, y = (int32_t)b->z + (a / 3 - 1) * r;
+            if (okx_build_site_facing(product, 0, x, y, &sx, &sy)) found = 1;
+        }
+    ASSERT(found);
+    ASSERT_EQ_INT(0, okx_command(3, b->handle, sx, sy, -1, product, 0));
+    okx_tick(5);
+    OkxOrder o;
+    ASSERT_EQ_INT(0, okx_unit_order(b->handle, &o));
+    int32_t frame = o.building;
+    ASSERT(frame >= 0);
+    OkxUnit fr;
+    ASSERT_EQ_INT(0, okx_unit(frame, &fr));
+    ASSERT(fr.health * 2 < fr.max_health);
+    n = okx_units(units, 512);
+    int listed = 0;
+    for (int i = 0; i < n; i++)
+        if (units[i].handle == frame) {
+            listed = 1;
+            ASSERT_EQ_INT(1, units[i].building);
+        }
+    ASSERT_EQ_INT(1, listed);
+}
+
 /* Every flyer up at its height, as the host picks it where it draws it:
  * the cursor over each is the flyer's, the select hand while it is
  * yours, and once it is the computer's the attack cursor with your
@@ -2974,6 +3023,7 @@ int main(void) {
     RUN(a_nimbus_in_the_fog_is_not_shown);
     RUN(the_cursor_over_a_flyer_in_the_air_is_the_flyers);
     RUN(the_hammer_over_a_frame_sends_the_builder_to_help);
+    RUN(a_frame_is_listed_from_the_start_of_its_build);
     RUN(a_decided_battle_hands_out_its_record);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();

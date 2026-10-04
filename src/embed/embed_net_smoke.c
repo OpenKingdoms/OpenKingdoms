@@ -223,7 +223,7 @@ int main(int argc, char **argv) {
     printf("%-5s   %u ticks on the relay's turns\n", g_role, okx_tick_count() - t0);
     ok(okx_tick_count() == stop, "the battle runs on the relay's turns");
     printf("%-5s   hash at tick %u: %08x\n", g_role, stop, okx_sim_hash());
-    /* Frames are read by handle, since one is not drawn until half up. */
+    /* Every unit by handle, the other side's in the fog included. */
     int turned_mine = 0, turned_theirs = 0;
     for (int h = 0; h < 512; h++) {
         OkxUnit u;

@@ -945,11 +945,11 @@ typedef struct OkxUnit {
     int32_t  facing;       /* a building's quarter turns clockwise, 0 to 3 */
 } OkxUnit;
 
-/* Every unit on the map that the local player may see. Returns how many
- * there are, writing up to cap. */
+/* Every unit on the map that the local player may see, a frame from the
+ * start of its build. Returns how many there are, writing up to cap. */
 OKX_API int32_t okx_units(OkxUnit *out, int32_t cap);
-/* One unit by handle, whether or not the frame lists it: a building
- * frame before it is half raised, say. 0, or -1 for no such unit. */
+/* One unit by handle, whether or not the list carries it: one the local
+ * player cannot see, say. 0, or -1 for no such unit. */
 OKX_API int32_t okx_unit(int32_t handle, OkxUnit *out);
 
 enum { OKX_ANIM_IDLE = 0, OKX_ANIM_MOVING = 1, OKX_ANIM_ATTACKING = 2,

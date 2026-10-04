@@ -2869,9 +2869,11 @@ static int32_t write_pose(const Model *m, const CobPiece *pieces, int pieces_cou
     return n;
 }
 
+/* What the local player sees. A frame counts from the start of its build,
+ * since the host raises it from the ground where the classic view draws
+ * nothing of it until it is half built. */
 static int unit_drawn(const Unit *u) {
     if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) return 0;
-    if (u->under_construction && u->max_health > 0 && u->health * 2 < u->max_health) return 0;
     return Units_IsVisibleToLocalPlayer(u);
 }
 
