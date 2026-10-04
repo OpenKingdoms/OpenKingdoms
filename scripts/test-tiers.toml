@@ -111,6 +111,7 @@ ui = [
   ["factory_", 3],
   ["hud_idle_frames_selection_and_queue_badges", 1],
   ["ctrl_on_a_zhon_builders_button_summons_without_end", 1],
+  ["ctrl_on_a_beast_tamers_harpy_button_summons_without_end", 1],
   ["nanoframe_decay_refunds_mana", 1],
   ["reclaim_clears_feature_and_pays_mana", 1],
   ["the_sweep_clears_a_corpse_and_keeps_it_from_rotting", 1],
@@ -221,6 +222,7 @@ ui = [
   ["escape_closes_the_console_before_the_battle_sees_it", 1],
   ["factory_product_spawns_on_build_pad", 1],
   ["ctrl_on_a_zhon_builders_button_summons_without_end", 1],
+  ["ctrl_on_a_beast_tamers_harpy_button_summons_without_end", 1],
   ["the_briefing_sits_like_the_original_at_1280x600", 1],
 ]
 
