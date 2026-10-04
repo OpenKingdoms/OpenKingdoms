@@ -145,6 +145,8 @@ typedef struct UnitWeapon {
     char    type[32];          /* type: Ballistic, Line of Sight, Remote Effect */
     char    damage_type[32];   /* damagetype */
     char    explosion_class[32]; /* explosionclass */
+    /* waterexplosionclass, read for a host's look. The simulation never reads it. */
+    char    water_explosion_class[32];
     char    weapon_art[32];    /* weaponart */
     char    model[32];         /* model projectile 3DO basename */
     char    subtype[32];       /* subtype for spell/special rules */
