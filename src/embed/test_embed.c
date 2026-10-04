@@ -2655,6 +2655,58 @@ static int def_by_name(const char *name) {
     return -1;
 }
 
+/* A unit with a death weapon that is struck down bursts it as its death
+ * ends, and the host hears that blast as a death, of the unit's def and
+ * from the death slot, which names the unit's [EXPLODEAS]. */
+TEST(a_death_blast_says_it_is_a_death_and_names_its_weapon) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int rat = def_by_name("TARKAM"), pult = def_by_name("ARAPULT");
+    ASSERT(rat >= 0 && pult >= 0);
+    OkxWeaponInfo wi;
+    ASSERT_EQ_INT(0, okx_weapon_info(rat, OKX_SLOT_DEATH, &wi));
+    printf("(%s: area %d, damage %d, %s) ", wi.name, wi.area_of_effect, wi.damage,
+           wi.explosion_class);
+    ASSERT_EQ_INT(203, wi.area_of_effect);
+    ASSERT_EQ_INT(8000, wi.damage);
+    ASSERT_EQ_INT(-1, okx_weapon_info(pult, OKX_SLOT_DEATH, &wi));
+    int me = okx_local_player();
+    int r = okx_place_unit(rat, me), c = okx_place_unit(pult, me);
+    ASSERT(r >= 0 && c >= 0);
+    OkxUnit ru, cu;
+    ASSERT_EQ_INT(0, okx_unit(c, &cu));
+    /* The rat walks off, and the catapult's rock comes down on it. */
+    ASSERT_EQ_INT(0, okx_command(1, r, (int)cu.x + 300, (int)cu.z, -1, -1, 0));
+    for (int t = 0; t < 900; t += 4) okx_tick(4);
+    ASSERT_EQ_INT(0, okx_unit(r, &ru));
+    int32_t since = last_blast();
+    ASSERT_EQ_INT(0, okx_command(20, c, (int)ru.x, (int)ru.z, -1, -1, 0));
+    static OkxBlast bl[OKX_RING];
+    OkxBlast death;
+    memset(&death, 0, sizeof death);
+    for (int t = 0; t < 2400 && !death.id; t += 2) {
+        okx_tick(2);
+        int n = okx_blasts(since, bl, OKX_RING);
+        for (int i = 0; i < n && i < OKX_RING && !death.id; i++)
+            if (bl[i].cause == OKX_BLAST_DEATH) death = bl[i];
+    }
+    printf("(burst at %.0f %.0f, radius %.0f) ", death.x, death.z, death.radius);
+    ASSERT(death.id > since);
+    ASSERT_EQ_INT(rat, death.def);
+    ASSERT_EQ_INT(OKX_SLOT_DEATH, death.slot);
+    ASSERT_EQ_INT(me, death.player);
+    ASSERT_EQ_INT(8000, death.damage);
+    ASSERT(fabsf(death.radius - 101.5f) < 0.01f);
+    ASSERT_EQ_INT(-1, death.unit);
+    ASSERT_EQ_INT(0, okx_weapon_info(death.def, death.slot, &wi));
+    ASSERT_EQ_INT(203, wi.area_of_effect);
+    /* The burst cleared the scenery by the start, so the next case
+     * starts on a fresh battle. */
+    okx_end_game();
+    g_booted = 0;
+}
+
 /* The wind blows within the map's range, a fire starter says so, and a
  * feature def names the stages it leaves. */
 TEST(the_field_tells_its_wind_fire_and_stages) {
@@ -2843,6 +2895,7 @@ int main(void) {
     RUN(a_picture_comes_by_name_for_painting_a_model);
     RUN(a_shot_and_its_blast_carry_the_weapons_lightmap);
     RUN(a_blast_names_its_weapon_and_where_it_burst);
+    RUN(a_death_blast_says_it_is_a_death_and_names_its_weapon);
     RUN(the_field_tells_its_wind_fire_and_stages);
     RUN(a_dying_archer_throws_its_pieces);
     RUN(scenery_a_rock_destroys_tells_each_step);

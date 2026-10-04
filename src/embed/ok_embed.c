@@ -1270,6 +1270,15 @@ static int32_t feature_under(const GameWorld *w, int32_t x, int32_t y) {
     return -1;
 }
 
+/* The weapon a blast's def and slot name: one of its three, or for the
+ * death slot the [EXPLODEAS] its death bursts with. NULL for none. */
+static const UnitWeapon *blast_weapon(const UnitDef *d, int32_t slot) {
+    if (!d) return NULL;
+    if (slot == OKX_SLOT_DEATH) return (d->death_weapon_set & 1u) ? &d->death_weapons[0] : NULL;
+    if (slot < 0 || slot >= 3 || slot >= d->num_weapons) return NULL;
+    return &d->weapons[slot];
+}
+
 /* Units_SetBlastHook's listener: called inside the tick, so it reads only. */
 static void note_blast(const UnitsBlast *b) {
     const GameWorld *w = g.in_game ? World_Get() : NULL;
@@ -1296,9 +1305,9 @@ static void note_blast(const UnitsBlast *b) {
     o->damage = b->damage;
     o->unit = b->struck;
     o->feature = b->struck >= 0 ? -1 : feature_under(w, b->x, b->y);
-    const UnitDef *d = b->def >= 0 ? Units_GetDef(b->def) : NULL;
-    if (d && b->slot >= 0 && b->slot < 3 && d->weapons[b->slot].units_only) o->flags |= OKX_BLAST_UNITS_ONLY;
-    if (d && b->slot >= 0 && b->slot < 3 && d->weapons[b->slot].fire_starter) o->flags |= OKX_BLAST_FIRE_STARTER;
+    const UnitWeapon *wp = blast_weapon(b->def >= 0 ? Units_GetDef(b->def) : NULL, b->slot);
+    if (wp && wp->units_only) o->flags |= OKX_BLAST_UNITS_ONLY;
+    if (wp && wp->fire_starter) o->flags |= OKX_BLAST_FIRE_STARTER;
     if (b->in_water && b->struck < 0) o->flags |= OKX_BLAST_WATER;
     /* The original spares scenery from a shot of under 17 px of area that
      * comes down on a unit (legacy:245029-245033). */
@@ -1318,10 +1327,8 @@ static void copy_key(char *dst, size_t cap, const char *src) {
 }
 
 int32_t okx_weapon_info(int32_t def, int32_t slot, OkxWeaponInfo *out) {
-    const UnitDef *d = def >= 0 ? Units_GetDef(def) : NULL;
-    if (!d || !out || slot < 0 || slot >= 3 || slot >= d->num_weapons) return -1;
-    const UnitWeapon *wp = &d->weapons[slot];
-    if (!wp->name[0] && !wp->type[0]) return -1;
+    const UnitWeapon *wp = blast_weapon(def >= 0 ? Units_GetDef(def) : NULL, slot);
+    if (!out || !wp || (!wp->name[0] && !wp->type[0])) return -1;
     memset(out, 0, sizeof(*out));
     copy_key(out->name, sizeof(out->name), wp->name);
     copy_key(out->type, sizeof(out->type), wp->type);

@@ -2045,8 +2045,9 @@ static void unit_death_blast(Unit *u, int handle) {
     note_blast(&b, NULL, u->def_idx, UNITS_BLAST_SLOT_DEATH, handle);
     play_projectile_hit_sound(&b, NULL);
     blast_shake_at(b.world_x, b.world_y, wp->shake_magnitude, wp->shake_duration);
-    spawn_impact_effect(b.explosion_idx, b.world_x, b.world_y, (int32_t)b.height,
-                        (uint32_t)handle);
+    ProjectileEffect *fx = spawn_impact_effect(b.explosion_idx, b.world_x, b.world_y,
+                                               (int32_t)b.height, (uint32_t)handle);
+    if (fx) fx->lightmap = wp->lightmap;
     apply_projectile_area_damage(&b);
     blast_scenery(&b, -1);
 }
