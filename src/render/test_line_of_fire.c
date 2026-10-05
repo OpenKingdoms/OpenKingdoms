@@ -1519,6 +1519,27 @@ TEST(a_remastered_sparse_wood_fire_saved_and_loaded_runs_on_the_same) {
     lf_end();
 }
 
+/* A remastered fire runs the same without the sparks' grid of features
+ * by cell, as when it cannot be allocated, so a machine short of memory
+ * stays in step. */
+TEST(a_remastered_fire_runs_the_same_without_the_spark_grid) {
+    uint32_t hash[2] = { 0, 0 };
+    int lit[2] = { 0, 0 };
+    for (int k = 0; k < 2; k++) {
+        Features_DebugSparkGrid(k == 0);
+        GameWorld *w = lf_sparse_wood();
+        if (!w) break;
+        lf_ticks(2400);
+        hash[k] = TAK_SimHash();
+        lit[k] = lf_sparse_wood_lit(w);
+        lf_end();
+    }
+    Features_DebugSparkGrid(1);
+    ASSERT(lit[0] >= 40);
+    ASSERT_EQ_INT(lit[0], lit[1]);
+    ASSERT_EQ_INT((int)hash[0], (int)hash[1]);
+}
+
 /* With the rules off a spark still reaches three cells and no further,
  * and a wind of 2000 carries it nowhere. */
 TEST(the_classic_spark_still_reaches_three_cells) {
@@ -3067,6 +3088,7 @@ int main(int argc, char **argv) {
     RUN(remastered_sparks_light_no_more_than_four_a_frame);
     RUN(a_remastered_spark_with_nothing_to_light_never_waits);
     RUN(a_remastered_sparse_wood_fire_saved_and_loaded_runs_on_the_same);
+    RUN(a_remastered_fire_runs_the_same_without_the_spark_grid);
     RUN(the_classic_spark_still_reaches_three_cells);
     RUN(rubble_blocks_until_swept_under_the_remastered_rules);
     RUN(the_remastered_rules_come_back_with_a_save);

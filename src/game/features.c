@@ -256,7 +256,7 @@ static void fx_reset(void);
  * grid stale until the next spark builds it again. */
 static int *g_spark_cells;
 static int  g_spark_cells_cap, g_spark_cells_w, g_spark_cells_h;
-static int  g_spark_cells_ok;
+static int  g_spark_cells_ok, g_spark_cells_live, g_spark_grid_off;
 static void feat_event(const struct GameWorld *w, int kind, int idx, int def, int new_def,
                        int damage, int left, int frames);
 static int  g_remove_kind;
@@ -1413,25 +1413,34 @@ static void spark_cells_build(const struct GameWorld *w) {
     if (mw < 0) mw = 0;
     if (mh < 0) mh = 0;
     int n = mw * mh;
-    if (n > g_spark_cells_cap) {
+    if (n > g_spark_cells_cap && !g_spark_grid_off) {
         tak_free(g_spark_cells);
         g_spark_cells = (int *)tak_malloc((size_t)n * sizeof(int));
         g_spark_cells_cap = g_spark_cells ? n : 0;
     }
-    if (!g_spark_cells) mw = mh = 0;
     g_spark_cells_w = mw;
     g_spark_cells_h = mh;
-    for (int c = 0; c < mw * mh; c++) g_spark_cells[c] = -1;
-    for (int i = 0; i < w->feature_count; i++) {
-        int x = w->features[i].tile_x, z = w->features[i].tile_z;
-        if (x < mw && z < mh) g_spark_cells[z * mw + x] = i;
+    g_spark_cells_live = g_spark_cells && n <= g_spark_cells_cap && !g_spark_grid_off;
+    if (g_spark_cells_live) {
+        for (int c = 0; c < n; c++) g_spark_cells[c] = -1;
+        for (int i = 0; i < w->feature_count; i++) {
+            int x = w->features[i].tile_x, z = w->features[i].tile_z;
+            if (x < mw && z < mh) g_spark_cells[z * mw + x] = i;
+        }
     }
     g_spark_cells_ok = 1;
 }
 
-static int spark_cell(int x, int z) {
+/* Without the grid every machine finds the same feature the slow way. */
+static int spark_cell(const struct GameWorld *w, int x, int z) {
     if (x < 0 || z < 0 || x >= g_spark_cells_w || z >= g_spark_cells_h) return -1;
+    if (!g_spark_cells_live) return feat_at_origin(w, x, z);
     return g_spark_cells[z * g_spark_cells_w + x];
+}
+
+void Features_DebugSparkGrid(int on) {
+    g_spark_grid_off = !on;
+    g_spark_cells_ok = 0;
 }
 
 /* A spark under the remastered rules (D-036). It reaches every cell
@@ -1455,7 +1464,7 @@ static int feat_spark_remastered(struct GameWorld *w, int sx, int sz, int turn) 
         for (int dz = -d; dz <= d && ring < 0; dz++) {
             int step = dz == -d || dz == d || d == 0 ? 1 : 2 * d;
             for (int dx = -d; dx <= d; dx += step)
-                if (spark_can_catch(w, spark_cell(sx + dx, sz + dz))) {
+                if (spark_can_catch(w, spark_cell(w, sx + dx, sz + dz))) {
                     ring = d;
                     break;
                 }
@@ -1469,7 +1478,7 @@ static int feat_spark_remastered(struct GameWorld *w, int sx, int sz, int turn) 
                 int ez = dz < bz0 ? bz0 - dz : dz > bz1 ? dz - bz1 : 0;
                 int d = ex > ez ? ex : ez;
                 if (d > FEATURE_SPARK_REACH || (ring >= 0 && d >= ring)) continue;
-                if (spark_can_catch(w, spark_cell(sx + dx, sz + dz))) ring = d;
+                if (spark_can_catch(w, spark_cell(w, sx + dx, sz + dz))) ring = d;
             }
     }
     if (ring < 0) return 0;
@@ -1480,7 +1489,7 @@ static int feat_spark_remastered(struct GameWorld *w, int sx, int sz, int turn) 
         for (int b = 0; b <= x1 - x0; b++) {
             int dz = (turn & 2) ? z1 - a : z0 + a;
             int dx = (turn & 1) ? x1 - b : x0 + b;
-            int j = spark_cell(sx + dx, sz + dz);
+            int j = spark_cell(w, sx + dx, sz + dz);
             if (!spark_can_catch(w, j)) continue;
             if (g_spark_catches >= FEATURE_SPARK_CATCH_CAP) return 0;
             const FeatureDef *fd = Features_GetByIndex(w->features[j].global_idx);

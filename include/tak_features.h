@@ -254,6 +254,9 @@ void Features_DebugHit(struct GameWorld *world, int idx, int damage, int fire_st
 void Features_WindBegin(struct GameWorld *world, int min_speed, int max_speed);
 /* Set the wind now, as the original's +wind does. */
 void Features_DebugSetWind(struct GameWorld *world, int speed, uint16_t heading);
+/* Run the remastered sparks without their grid of features by cell, as
+ * when it cannot be allocated, or with it again. For tests. */
+void Features_DebugSparkGrid(int on);
 
 /* Give def `def_idx` a sequence of `frames` pictures, `frame_frames` of
  * the original's frames each, in place of what its files hold. `which`
