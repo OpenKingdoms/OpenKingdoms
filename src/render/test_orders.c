@@ -1892,6 +1892,60 @@ TEST(a_summons_gives_up_on_a_spot_a_unit_keeps) {
     oq_end();
 }
 
+/* A Harpy: a flyer with the flight pair, so it takes off and lands.
+ * Returns its def index or -1. */
+static int oq_add_harpy(void) {
+    UnitDef defs[OQ_DEF_COUNT + 1];
+    for (int i = 0; i < OQ_DEF_COUNT; i++) defs[i] = *Units_GetDef(i);
+    UnitDef *d = &defs[OQ_DEF_COUNT];
+    oq_fill(d, "TESTHARPY", 3.5f, 2, 2);
+    d->movement_class[0] = '\0';
+    d->acceleration = 0.25f;
+    d->brake_rate = 0.25f;
+    d->turn_rate = 300.0f;
+    d->can_fly = 1;
+    d->cruise_alt = 200;
+    if (Units_DebugSetDefs(defs, OQ_DEF_COUNT + 1) != OQ_DEF_COUNT + 1) return -1;
+    static const uint32_t ret[] = { 0x10065000u };
+    static const char *const names[] = { "BeginFlight", "BeginLanding" };
+    static const uint32_t offsets[] = { 0, 0 };
+    if (Units_DebugSetDefScript(OQ_DEF_COUNT, ret, 1, names, offsets, 2) != 0)
+        return -1;
+    return OQ_DEF_COUNT;
+}
+
+/* Harpies summoned without end. A short step off the spot ends inside
+ * a flyer's ring and leaves it hovering there, but it holds no ground
+ * cell, so the next frame goes up under it at once, it lands somewhere
+ * else and the order goes on (legacy:12088-12124, 12272-12315,
+ * 25066-25110, 219134-219147). */
+TEST(a_summons_of_flyers_goes_on_without_end) {
+    ASSERT_NOT_NULL(oq_world());
+    int harpy = oq_add_harpy();
+    ASSERT(harpy >= 0);
+    ASSERT_EQ_INT(1, Units_DefCanRepeat(harpy));
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    ASSERT(bd >= 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1,
+                                harpy, TAK_CMD_ARG_ENDLESS));
+    int made = 0, gap = 0, worst_gap = 0, framed = 1;
+    for (int t = 0; t < 9000; t++) {
+        oq_ticks(1);
+        int n = oq_count(harpy);
+        if (n > made) { made = n; framed = 0; gap = 0; }
+        if (!framed) {
+            if (oq_unit(bd)->build_target >= 0) framed = 1;
+            else if (++gap > worst_gap) worst_gap = gap;
+        }
+    }
+    printf("(%d made, longest wait for the next frame %d ticks) ", made,
+           worst_gap);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    ASSERT(made >= 12);
+    ASSERT(worst_gap <= 8);
+    oq_end();
+}
+
 /* Ctrl means nothing on a building's button, and a command that asks
  * for a building without end gets one (legacy:150077-150084). */
 TEST(ctrl_on_a_buildings_button_places_it_once) {
@@ -2272,6 +2326,7 @@ int main(int argc, char **argv) {
     RUN(a_right_click_ends_a_summons_without_end);
     RUN(a_summons_waits_for_a_unit_on_its_spot_and_ends_on_a_building);
     RUN(a_summons_gives_up_on_a_spot_a_unit_keeps);
+    RUN(a_summons_of_flyers_goes_on_without_end);
     RUN(ctrl_on_a_buildings_button_places_it_once);
     RUN(a_summon_is_placed_where_a_soldier_stands);
     RUN(a_summon_waits_for_the_soldier_on_its_spot);
