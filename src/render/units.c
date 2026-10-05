@@ -1072,14 +1072,33 @@ static float projectile_launch_pitch(float speed_ppt, float run,
     return tak_atanf(lob_preferred ? (k + root) : (k - root));
 }
 
-/* Where a unit stands: the ground, the sea over it for a floater, and
- * its altitude on top. The original keeps this on the unit (unit+0x6c). */
+/* Where a unit stands: the ground, the sea over it for a floater or a
+ * flyer, and its altitude on top. The original keeps this on the unit
+ * (unit+0x6c), and holds a flyer cruisealt over the higher of the
+ * ground and the sea (legacy:190499-190507). */
 static float unit_base_height(const GameWorld *w, const Unit *v) {
     if (!w || !v) return 0.0f;
     float g = (float)Terrain_SampleHeight(w, v->world_x, v->world_y);
     const UnitDef *d = Units_GetDef(v->def_idx);
-    if (d && d->floater && (float)w->water_height > g) g = (float)w->water_height;
+    if (d && (d->floater || d->can_fly) && (float)w->water_height > g)
+        g = (float)w->water_height;
     return g + v->flight_alt;
+}
+
+float Units_DrawnAlt(const GameWorld *w, const Unit *u) {
+    if (!u) return 0.0f;
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    float lift = 0.0f;
+    if (w && d && d->can_fly) {
+        int g = Terrain_SampleHeight(w, u->world_x, u->world_y);
+        if (w->water_height > g) lift = (float)(w->water_height - g);
+    }
+    return u->flight_alt + lift;
+}
+
+float Units_DebugStandHeight(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return -1.0f;
+    return unit_base_height(World_Get(), &g_units[handle]);
 }
 
 /* The height a shot aims at: a unit's sweet spot above where it
@@ -1242,7 +1261,8 @@ static int spawn_projectile(int32_t x, int32_t y,
         if (unit_weapon_muzzle(shooter, wslot, &mdx, &mdy, &mup)) {
             p->from_piece = 1;
             float base = (float)p->src_height;
-            if (sd && sd->floater && lw->water_height > p->src_height)
+            if (sd && (sd->floater || sd->can_fly) &&
+                lw->water_height > p->src_height)
                 base = (float)lw->water_height;
             float fx = (float)x + mdx, fy = (float)y + mdy;
             p->world_x = (int32_t)floorf(fx);
@@ -1258,8 +1278,10 @@ static int spawn_projectile(int32_t x, int32_t y,
             p->heading = tak_atan2f(dx, -dy);
         }
     }
-    /* A flyer fires from where it is drawn. */
-    if (shooter) p->height += shooter->flight_alt;
+    /* A flyer fires from where it is drawn, over the sea when over water. */
+    if (shooter)
+        p->height += p->from_piece ? shooter->flight_alt
+                                   : Units_DrawnAlt(lw, shooter);
     p->muzzle_height = p->height;
     proj_note_source(slot, shooter, source_weapon);
     if (source_weapon) {
@@ -2964,7 +2986,7 @@ static int ground_height_at(void *ctx, int32_t x, int32_t y) {
 static int32_t unit_drawn_y(const GameWorld *world, const Unit *u) {
     return ClickMap_DrawnY(u->world_y,
                            (float)Terrain_SampleHeight(world, u->world_x, u->world_y)
-                               + u->flight_alt, g_tan_tilt);
+                               + Units_DrawnAlt(world, u), g_tan_tilt);
 }
 
 void Units_GroundUnderPoint(int32_t flat_x, int32_t flat_y,
@@ -3084,7 +3106,7 @@ int Units_PickRay(const float origin[3], const float dir[3]) {
         }
         if (hi_px - lo_px < 8.0f) hi_px = lo_px + 8.0f;
         float base = (float)Terrain_SampleHeight(world, u->world_x, u->world_y)
-                   + u->flight_alt;
+                   + Units_DrawnAlt(world, u);
         /* Into the unit's own frame: across, up, along its heading. */
         float sh = turns ? tak_sinf(u->heading) : 0.0f;
         float ch = turns ? tak_cosf(u->heading) : -1.0f;
@@ -4049,7 +4071,9 @@ int Units_OrderStop(int handle) {
     u->build_target = -1;
     u->cmd_x    = u->world_x;
     u->cmd_y    = u->world_y;
-    u->velocity = 0; u->cur_speed_ppt = 0.0f;
+    /* An airborne flyer keeps its speed for the landing mission the
+     * stop gives it (legacy:8871-8893, legacy:24276-24295). */
+    if (!u->flying) { u->velocity = 0; u->cur_speed_ppt = 0.0f; }
     unit_clear_path(u);
     return 1;
 }
@@ -4752,8 +4776,8 @@ int Units_LoadCandidatesInRect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
         /* Where the unit is drawn, as the box is (legacy:237695-237729,
          * :238144-238166). */
         int32_t uy = u->world_y - (int32_t)(((float)Terrain_SampleHeight(
-                         world, u->world_x, u->world_y) + u->flight_alt) *
-                         g_tan_tilt);
+                         world, u->world_x, u->world_y) +
+                         Units_DrawnAlt(world, u)) * g_tan_tilt);
         if (u->world_x < x0 || u->world_x > x1 || uy < y0 || uy > y1)
             continue;
         if (!unit_can_carry_target(&g_units[carrier], u)) continue;
@@ -6433,6 +6457,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->can_fly        = TDF_ReadInt(tdf, "canfly", 0);
     out->cruise_alt     = TDF_ReadInt(tdf, "cruisealt", 0);
     out->floater        = TDF_ReadInt(tdf, "floater", 0);
+    out->amphibious     = (uint8_t)(TDF_ReadInt(tdf, "amphibious", 0) & 1);
     out->leash_length   = TDF_ReadInt(tdf, "maneuverleashlength", 0) & 0xffff;
     out->fire_at_will_random = (uint8_t)(TDF_ReadInt(tdf, "fireatwillrandom", 0) & 1);
     {
@@ -12068,31 +12093,64 @@ static void flyer_step_out(Unit *u, int h) {
             u->world_y + (int32_t)(ay * (float)dist), reach);
 }
 
-/* Could the flyer land with its footprint at (x, y): no unit but itself
- * on those cells or in the air over them, nothing built or blocking
- * there, no water and no slope past its maxslope
- * (legacy:220068-220178). */
+/* The original's landing test with the footprint at (x, y)
+ * (legacy:220068-220183). Ground its owner has never explored passes
+ * untested. Otherwise no unit but itself may hold the cells or fly over
+ * them and nothing may block them. Each cell's lowest corner must be no
+ * lower than sea level less maxwaterdepth, raised to sea level for a
+ * flyer that is not amphibious, its highest no higher than sea level
+ * less minwaterdepth, and its corners no further apart than maxslope. */
 static int flyer_spot_clear(const GameWorld *w, const Unit *u, int h,
                             const UnitDef *def, int32_t x, int32_t y) {
     if (!w) return 1;
-    int tx, ty, fx, fz;
-    unit_fp_cells(u, x, y, &tx, &ty, &fx, &fz);
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    /* The footprint's corner cell, to the nearest cell as the original
+     * takes it (legacy:220088-220089). */
+    int tx = Occ_TileOf(x - fx * 8 + 8), ty = Occ_TileOf(y - fz * 8 + 8);
     int cw = w->map_pixels_w / 16, ch = w->map_pixels_h / 16;
     if (tx < 0 || ty < 0 || tx + fx >= cw || ty + fz >= ch) return 0;
+    /* The fog cell is offset by a quarter of the footprint's width on
+     * both axes, as the original reads it (legacy:220095-220102). */
+    if (Fog_StateAtForPlayer(w, u->player_id,
+                             ((tx >> 1) + (fx >> 2)) * TAK_FOG_CELL_PX,
+                             ((ty >> 1) + (fx >> 2)) * TAK_FOG_CELL_PX) ==
+        TAK_FOG_UNEXPLORED)
+        return 1;
+    int sea = w->water_height;
+    int min_wd = 0, max_wd = 0;
+    unit_water_depth_window(w, def, &min_wd, &max_wd);
+    int low = sea - max_wd;
+    if (low < sea && def->can_fly && !def->amphibious) low = sea;
+    int high = sea - min_wd;
+    int slope = unit_effective_max_slope(def, unit_move_class(w, def));
     for (int r = 0; r < fz; r++) {
         for (int c = 0; c < fx; c++) {
-            int cx = tx + c, cy = ty + r;
-            if (w->occ && Occ_QueryTile(w, cx, cy, u->player_id, h + 1) != 0)
-                return 0;
-            int32_t px = cx * 16 + 8, py = cy * 16 + 8;
+            int32_t px = (tx + c) * 16 + 8, py = (ty + r) * 16 + 8;
             if (!Terrain_IsWalkable(w, px, py, 255)) return 0;
             int lo = 0, hi = 0;
             cell_height_span(w, px, py, &lo, &hi);
-            if (w->water_height > 0 && lo < w->water_height) return 0;
-            if (hi - lo > def->max_slope) return 0;
+            if (lo < low || hi > high || hi - lo > slope) return 0;
         }
     }
-    return air_flyers_on(h, tx, ty, fx, fz, NULL, 0) == 0;
+    /* Other units, and flyers over it, on the cells it will hold once
+     * down, so no two landed units share a cell. */
+    int ox = 0, oy = 0;
+    unit_fp_cells(u, x, y, &ox, &oy, &fx, &fz);
+    if (ox < 0 || oy < 0) return 0;
+    for (int r = 0; r < fz && w->occ; r++)
+        for (int c = 0; c < fx; c++)
+            if (Occ_QueryTile(w, ox + c, oy + r, u->player_id, h + 1) != 0)
+                return 0;
+    return air_flyers_on(h, ox, oy, fx, fz, NULL, 0) == 0;
+}
+
+int Units_DebugCanLandAt(int handle, int32_t x, int32_t y) {
+    if (handle < 0 || handle >= g_unit_count) return -1;
+    const Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return -1;
+    return flyer_spot_clear(World_Get(), u, handle,
+                            Units_GetDef(u->def_idx), x, y);
 }
 
 static void flyer_land(Unit *u, int h, const UnitDef *def) {
@@ -12124,10 +12182,11 @@ static void flyer_land_if_can(Unit *u, int h, const UnitDef *def) {
                    - (64 + 16 * k);
         int32_t sy = u->world_y + (int32_t)World_Rand(129u + 32u * (uint32_t)k)
                    - (64 + 16 * k);
-        /* The footprint's origin mid cell, so arriving a few px off the
-         * spot still covers the cells tested. */
-        sx = Occ_TileOf(sx - fx * 8 + 8) * 16 + fx * 8 + 8;
-        sy = Occ_TileOf(sy - fz * 8 + 8) * 16 + fz * 8 + 8;
+        /* Snapped to the cells as the original snaps it
+         * (legacy:24341-24345), so arriving a few px off the spot still
+         * covers the cells tested. */
+        sx = Occ_TileOf(sx - fx * 8 + 8) * 16 + fx * 8;
+        sy = Occ_TileOf(sy - fz * 8 + 8) * 16 + fz * 8;
         if (flyer_spot_clear(w, u, h, def, sx, sy)) {
             air_leg(u, UNIT_AIR_SPOT, sx, sy, 8);
             return;
@@ -12194,9 +12253,16 @@ static void flyer_move_band(Unit *u, const UnitDef *def,
     *goal_y = u->cmd_y + (int32_t)((float)dy * s);
 }
 
-/* An airborne flyer's own legs: a step out of a crowd, a landing spot or
- * a circle, flown in place of its order's goal. The decisions are its
- * missions', taken once a frame. Returns 1 while it flies one. */
+/* Whether a flyer holds more than a tenth of its top speed
+ * (legacy:184890-184921). */
+static int flyer_fast(const Unit *u, const UnitDef *def) {
+    float top = def->max_velocity * 0.5f;
+    return top > 0.0f && (int)(u->cur_speed_ppt * 100.0f / top) > 10;
+}
+
+/* An airborne flyer's own legs: a step out of a crowd, a glide, a landing
+ * spot or a circle, flown in place of its order's goal. The decisions are
+ * its missions', taken once a frame. Returns 1 while it flies one. */
 static int flyer_air_tick(Unit *u, int h, const UnitDef *def,
                           UnitAnimState *desired,
                           int32_t *goal_x, int32_t *goal_y) {
@@ -12206,20 +12272,43 @@ static int flyer_air_tick(Unit *u, int h, const UnitDef *def,
         u->air_mode = UNIT_AIR_NONE;
         return 0;
     }
-    if (u->air_mode != UNIT_AIR_NONE) {
+    /* A landing leg gives way to an order or a target, and a new
+     * search starts once the flyer is idle again (legacy:24257). */
+    if (u->air_mode != UNIT_AIR_NONE && u->air_mode != UNIT_AIR_STEP &&
+        (u->cmd_kind != UNIT_CMD_NONE || u->target >= 0)) {
+        u->air_mode = UNIT_AIR_NONE;
+        u->air_circles = 0;
+    }
+    if (u->air_mode == UNIT_AIR_GLIDE) {
+        /* The walk's arrival at the glide's point brakes it to a stop. */
+        if (!flyer_fast(u, def)) u->air_mode = UNIT_AIR_NONE;
+    } else if (u->air_mode != UNIT_AIR_NONE && u->air_mode != UNIT_AIR_LOOK) {
         int64_t dx = (int64_t)u->air_x - u->world_x;
         int64_t dy = (int64_t)u->air_y - u->world_y;
         if (dx * dx + dy * dy <= (int64_t)u->air_reach * u->air_reach)
-            u->air_mode = UNIT_AIR_NONE;
+            u->air_mode = u->air_mode == UNIT_AIR_STEP ? UNIT_AIR_NONE
+                                                       : UNIT_AIR_LOOK;
     }
-    if (u->air_mode == UNIT_AIR_NONE && (g_sim_tick & 1u) == 0) {
+    int looking = u->air_mode == UNIT_AIR_NONE || u->air_mode == UNIT_AIR_LOOK;
+    if (looking && (g_sim_tick & 1u) == 0) {
         int idle = *desired == UNIT_ANIM_IDLE &&
                    u->cmd_kind == UNIT_CMD_NONE && u->target < 0;
         int limit = flyer_crowd_limit(u);
-        if (limit >= 0 && u->air_crowd > limit) flyer_step_out(u, h);
-        else if (idle && !u->air_hold) flyer_land_if_can(u, h, def);
+        if (limit >= 0 && u->air_crowd > limit) {
+            flyer_step_out(u, h);
+        } else if (idle && !u->air_hold && u->air_mode == UNIT_AIR_NONE &&
+                   flyer_fast(u, def)) {
+            /* Still fast, as after a stop: fly on first
+             * (legacy:24276-24295). */
+            air_leg(u, UNIT_AIR_GLIDE,
+                    u->world_x + (int32_t)(tak_sinf(u->heading) * 32.0f),
+                    u->world_y - (int32_t)(tak_cosf(u->heading) * 32.0f), 8);
+        } else if (idle && !u->air_hold) {
+            u->air_mode = UNIT_AIR_NONE;
+            flyer_land_if_can(u, h, def);
+        }
     }
-    if (u->air_mode == UNIT_AIR_NONE) return 0;
+    if (u->air_mode == UNIT_AIR_NONE || u->air_mode == UNIT_AIR_LOOK) return 0;
     *desired = UNIT_ANIM_MOVING;
     *goal_x = u->air_x;
     *goal_y = u->air_y;
@@ -14895,7 +14984,7 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
     const float ux = (float)u->world_x;
     const float uz = (float)u->world_y;
     const float uh = (float)Terrain_SampleHeight(world, u->world_x, u->world_y)
-                   + u->flight_alt;   /* airborne units draw at their height */
+                   + Units_DrawnAlt(world, u);   /* airborne units draw at their height */
     const float ch = tak_cosf(u->heading);
     const float sh = tak_sinf(u->heading);
     const float cp = tak_cosf(u->pitch), sp = tak_sinf(u->pitch);
@@ -15688,7 +15777,7 @@ static int unit_health_bar_rect(const struct GameWorld *world, const Unit *u,
     float sx = (float)(u->world_x - world->cam_x);
     float sy = (float)(u->world_y - world->cam_y)
              - ((float)Terrain_SampleHeight(world, u->world_x, u->world_y)
-                + u->flight_alt) * g_tan_tilt;
+                + Units_DrawnAlt(world, u)) * g_tan_tilt;
     out->x = (int)sx - 16;
     out->y = (int)sy + 10 - 2;
     out->w = 32;
@@ -15776,7 +15865,7 @@ static void render_selection_rings(const struct GameWorld *world, TAK_Platform *
         float fx = (float)(u->world_x - world->cam_x);
         float fy = (float)(u->world_y - world->cam_y)
                  - ((float)Terrain_SampleHeight(world, u->world_x, u->world_y)
-                    + u->flight_alt) * tilt;
+                    + Units_DrawnAlt(world, u)) * tilt;
 
         /* Eight dashes = 8 short polyline arcs, each spanning 1/16
          * of the circle, with 1/16 gaps between. Gives the dashed-oval

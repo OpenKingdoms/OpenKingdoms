@@ -419,6 +419,9 @@ typedef struct UnitDef {
      * lodestones raise their crystal through this). */
     int32_t  activate_when_built;
     int32_t  floater;          /* floater; unit floats on water surface */
+    /* amphibious (legacy:162997): a flyer with it may land under water,
+     * down to its maxwaterdepth (legacy:220103-220109). */
+    uint8_t  amphibious;
     /* Shadow keys. `noshadow` drops the shadow (legacy:163001), and a
      * unit naming both `shadowgaf` and `shadowart` blits that sprite
      * instead of casting a silhouette (legacy:163413-163418). */
@@ -764,6 +767,13 @@ typedef struct UnitMoveLeg {
 #define UNIT_AIR_STEP    1
 #define UNIT_AIR_SPOT    2
 #define UNIT_AIR_CIRCLE  3
+/* Stopped while still fast, a flyer flies on toward a point 32 px ahead
+ * until it holds no more than a tenth of its speed, then looks for
+ * ground (legacy:24276-24295). */
+#define UNIT_AIR_GLIDE   4
+/* A landing spot or circle point reached: the next look tests the ground
+ * under it straight away, with no glide (legacy:24296-24382). */
+#define UNIT_AIR_LOOK    5
 
 /* Unit.face_mode: no heading asked for, one to take on arrival, or one
  * reached and held until the next order. */
@@ -1341,6 +1351,18 @@ int               Units_DebugCorpseDrawHeight(int instance_idx);
 void              Units_EliminatePlayer(int player_id, int keep_handle);
 /* Test hook: set posture on any unit (PASSIVE also clears its target). */
 void              Units_DebugSetAggro(int handle, int aggro_mode);
+
+/* How high over the ground under it a unit is drawn: its altitude, on
+ * top of the sea for a flyer over water (legacy:190499-190507). */
+float             Units_DrawnAlt(const struct GameWorld *w, const Unit *u);
+
+/* Test hook: the height a unit stands at for the simulation, its shots
+ * and the shots aimed at it. -1 for a bad handle. */
+float             Units_DebugStandHeight(int handle);
+
+/* Test hook: 1 when the original's landing test would let this flyer
+ * land with its footprint at (x, y), 0 when not, -1 for a bad handle. */
+int               Units_DebugCanLandAt(int handle, int32_t x, int32_t y);
 
 /* Test hook: how many times the engine has invoked one of the
  * once-per-edge entry points on this unit. -1 for a bad handle. */

@@ -19779,6 +19779,338 @@ TEST(flyer_takes_off_flaps_and_lands) {
     VFS_Shutdown();
 }
 
+/* A flyer over water on Two Castles. The original lands one only where
+ * every footprint corner stands at or above sea level
+ * (legacy:220103-220109, legacy:220164-220166), hunts for dry ground
+ * within 240 px, and else circles where it stopped (legacy:24331-24381). */
+static int fw_lowest_corner(const GameWorld *w, int32_t x, int32_t y, int fx, int fz) {
+    int tx = (x - fx * 8 + 8) >> 4, tz = (y - fz * 8 + 8) >> 4;
+    const TNTFile *t = &w->tnt;
+    int low = 255;
+    for (int z = tz; z <= tz + fz; z++)
+        for (int c = tx; c <= tx + fx; c++) {
+            if (c < 0 || z < 0 || c >= t->height_w || z >= t->height_h) return -1;
+            int h = t->heightmap[z * t->height_w + c];
+            if (h < low) low = h;
+        }
+    return low;
+}
+
+/* Every corner within r px of (x, y) under sea level. */
+static int fw_all_wet(const GameWorld *w, int32_t x, int32_t y, int32_t r) {
+    const TNTFile *t = &w->tnt;
+    for (int32_t py = y - r; py <= y + r; py += 16)
+        for (int32_t px = x - r; px <= x + r; px += 16) {
+            int c = px >> 4, z = py >> 4;
+            if (px < 0 || py < 0 || c >= t->height_w || z >= t->height_h) return 0;
+            if (t->heightmap[z * t->height_w + c] >= w->water_height) return 0;
+        }
+    return 1;
+}
+
+/* The corner farthest from dry ground and from the map's edge, by steps
+ * of 16 px in any of eight directions. Returns that distance in px. */
+static int32_t fw_open_middle(const GameWorld *w, int32_t *ox, int32_t *oy) {
+    const TNTFile *t = &w->tnt;
+    int cw = t->height_w, ch = t->height_h;
+    int *d = (int *)malloc(sizeof(int) * (size_t)cw * (size_t)ch);
+    if (!d) return -1;
+    for (int z = 0; z < ch; z++)
+        for (int x = 0; x < cw; x++) {
+            int e = x < z ? x : z;
+            if (cw - 1 - x < e) e = cw - 1 - x;
+            if (ch - 1 - z < e) e = ch - 1 - z;
+            d[z * cw + x] = t->heightmap[z * cw + x] >= w->water_height ? 0 : e;
+        }
+    for (int pass = 0; pass < 2; pass++)
+        for (int k = 0; k < cw * ch; k++) {
+            int i = pass ? cw * ch - 1 - k : k, x = i % cw, z = i / cw;
+            for (int dz = -1; dz <= 1; dz++)
+                for (int dx = -1; dx <= 1; dx++) {
+                    int nx = x + dx, nz = z + dz;
+                    if (nx < 0 || nz < 0 || nx >= cw || nz >= ch) continue;
+                    if (d[nz * cw + nx] + 1 < d[i]) d[i] = d[nz * cw + nx] + 1;
+                }
+        }
+    int best = 0, at = 0;
+    for (int i = 0; i < cw * ch; i++)
+        if (d[i] > best) { best = d[i]; at = i; }
+    free(d);
+    *ox = (at % cw) * 16;
+    *oy = (at / cw) * 16;
+    return best * 16;
+}
+
+typedef struct FwSea {
+    GameWorld *world;
+    int drag, drag_def;
+    int32_t open_x, open_y;     /* the open water's middle */
+    int32_t open_clear;         /* how far dry ground is from it */
+    int32_t shore_x, shore_y;   /* wet under it, dry within 128 px */
+    Timer timer;
+} FwSea;
+
+static void fw_tick(TAK_Platform *p, FwSea *s, int n) {
+    for (int i = 0; i < n; i++) {
+        s->timer.accumulator = s->timer.sim_dt;
+        InGame_Tick(p, &s->timer);
+    }
+}
+
+/* Two Castles with a passive Aramon dragon on dry ground. */
+static int fw_setup(TAK_Platform *platform, FwSea *s) {
+    memset(s, 0, sizeof(*s));
+    if (gates_setup_world(platform, &s->world) != 0) return -1;
+    GameWorld *w = s->world;
+    if (w->water_height <= 0) return -1;
+    s->drag_def = Units_FindDefByName("ARADRAG");
+    if (s->drag_def < 0) return -1;
+    const UnitDef *dd = Units_GetDef(s->drag_def);
+    int32_t half = dd->footprint_x * 8;
+    s->open_x = s->open_y = s->shore_x = s->shore_y = -1;
+    s->open_clear = fw_open_middle(w, &s->open_x, &s->open_y);
+    for (int32_t y = 256; y < w->map_pixels_h - 256; y += 32)
+        for (int32_t x = 256; x < w->map_pixels_w - 256; x += 32) {
+            if (s->shore_x < 0 && fw_all_wet(w, x, y, half + 16) &&
+                !fw_all_wet(w, x, y, half + 128)) {
+                s->shore_x = x;
+                s->shore_y = y;
+            }
+        }
+    if (s->open_clear < half + 240 + 16 || s->shore_x < 0) return -1;
+    /* Start on dry ground near the open sea. */
+    int32_t lx = -1, ly = -1;
+    for (int32_t r = 128; r < 4000 && lx < 0; r += 64)
+        for (int k = 0; k < 16 && lx < 0; k++) {
+            float a = (float)k * 6.2831853f / 16.0f;
+            int32_t x = s->open_x + (int32_t)((float)r * cosf(a));
+            int32_t y = s->open_y + (int32_t)((float)r * sinf(a));
+            if (x < 64 || y < 64 || x > w->map_pixels_w - 64 ||
+                y > w->map_pixels_h - 64) continue;
+            if (fw_lowest_corner(w, x, y, dd->footprint_x, dd->footprint_z) >
+                w->water_height && Units_IsBuildSiteClear(s->drag_def, x, y)) {
+                lx = x;
+                ly = y;
+            }
+        }
+    if (lx < 0) return -1;
+    s->drag = Units_Spawn(s->drag_def, 1, 0, lx, ly);
+    if (s->drag < 0) return -1;
+    Units_DebugSetAggro(s->drag, UNIT_AGGRO_PASSIVE);
+    if (InGame_Init(platform) != 0) return -1;
+    Timer_Init(&s->timer);
+    fw_tick(platform, s, 5);
+    return 0;
+}
+
+static void fw_teardown(TAK_Platform *platform) {
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(platform);
+    UI_Shutdown();
+    teardown_platform(platform);
+    VFS_Shutdown();
+}
+
+/* Left idle over the open water's middle, a dragon finds no dry ground
+ * in its first search and circles on, a flyer at its cruise height over
+ * the sea (legacy:24331-24381). It never comes down in the water: when
+ * the circling brings dry ground into reach it lands there, once. */
+TEST(flyer_left_over_open_sea_never_lands_in_it) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    FwSea s;
+    ASSERT_EQ_INT(0, fw_setup(&platform, &s));
+    GameWorld *w = s.world;
+    const UnitDef *dd = Units_GetDef(s.drag_def);
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    /* A move ends 80 to 144 px short of its point (legacy:25066-25110),
+     * so the dragon is sent 112 px past the middle. */
+    float vx = (float)(s.open_x - u[s.drag].world_x);
+    float vy = (float)(s.open_y - u[s.drag].world_y);
+    float vl = sqrtf(vx * vx + vy * vy);
+    Units_SelectSingle(s.drag);
+    Units_CommandMoveSelected(s.open_x + (int32_t)(vx / vl * 112.0f),
+                              s.open_y + (int32_t)(vy / vl * 112.0f));
+    Units_SelectSingle(-1);
+    int arrived = 0, flew = 0;
+    for (int i = 0; i < 6000 && !arrived; i++) {
+        fw_tick(&platform, &s, 1);
+        u = Units_GetActive(&n);
+        if (u[s.drag].flying) flew = 1;
+        arrived = flew && u[s.drag].cmd_kind == UNIT_CMD_NONE;
+    }
+    ASSERT(arrived);
+    int32_t ax = u[s.drag].world_x, ay = u[s.drag].world_y;
+    int landed_at = -1, circled = 0, waded = 0, low_over_sea = 0, landings = 0;
+    float drawn_low = 1e9f;
+    for (int i = 0; i < 1200; i++) {
+        fw_tick(&platform, &s, 1);
+        u = Units_GetActive(&n);
+        const Unit *d = &u[s.drag];
+        int g = Terrain_SampleHeight(w, d->world_x, d->world_y);
+        if (d->air_mode == UNIT_AIR_CIRCLE) circled = 1;
+        if (d->sfx_occupy == 4) waded = 1;
+        if (!d->flying && landed_at < 0) landed_at = i;
+        if (d->flying && g < w->water_height) {
+            if (d->flight_alt < (float)dd->cruise_alt) low_over_sea = 1;
+            float drawn = (float)g + Units_DrawnAlt(w, d);
+            if (drawn < drawn_low) drawn_low = drawn;
+        }
+    }
+    u = Units_GetActive(&n);
+    landings = Units_DebugScriptEventCount(s.drag, UNIT_SCRIPT_EV_BEGIN_LANDING);
+    int low = fw_lowest_corner(w, u[s.drag].world_x, u[s.drag].world_y,
+                               dd->footprint_x, dd->footprint_z);
+    printf("(sea at %d,%d, dry ground %d px off, idle at %d,%d, %s at tick %d, "
+           "lowest corner %d, sea %d, drawn no lower than %.0f over it) ",
+           (int)s.open_x, (int)s.open_y, (int)s.open_clear, (int)ax, (int)ay,
+           landed_at < 0 ? "still up" : "down", landed_at, low,
+           w->water_height, (double)drawn_low);
+    ASSERT(circled);
+    ASSERT_EQ_INT(0, waded);
+    ASSERT_EQ_INT(0, low_over_sea);
+    ASSERT(drawn_low >= (float)(w->water_height + dd->cruise_alt));
+    if (landed_at < 0) {
+        ASSERT_EQ_INT(1, (int)u[s.drag].flying);
+        ASSERT_EQ_INT(5, (int)u[s.drag].sfx_occupy);
+        ASSERT_EQ_INT(0, landings);
+    } else {
+        ASSERT_EQ_INT(1, landings);
+        ASSERT(low >= w->water_height);
+    }
+    fw_teardown(&platform);
+}
+
+/* Stopped over the water by the shore, a dragon lands once, on ground
+ * where no corner under it is below sea level. Scenery it has seen
+ * refuses it as the original's test does (legacy:220115-220140). */
+TEST(flyer_stopped_by_the_shore_lands_on_dry_ground) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    FwSea s;
+    ASSERT_EQ_INT(0, fw_setup(&platform, &s));
+    GameWorld *w = s.world;
+    const UnitDef *dd = Units_GetDef(s.drag_def);
+    int n = 0, stopped = 0;
+    const Unit *u = Units_GetActive(&n);
+    /* Sent 112 px past the point, so it flies over the point before its
+     * move ends on the ring short of it (legacy:25066-25110). */
+    float vx = (float)(s.shore_x - u[s.drag].world_x);
+    float vy = (float)(s.shore_y - u[s.drag].world_y);
+    float vl = sqrtf(vx * vx + vy * vy);
+    Units_SelectSingle(s.drag);
+    Units_CommandMoveSelected(s.shore_x + (int32_t)(vx / vl * 112.0f),
+                              s.shore_y + (int32_t)(vy / vl * 112.0f));
+    Units_SelectSingle(-1);
+    for (int i = 0; i < 6000 && !stopped; i++) {
+        fw_tick(&platform, &s, 1);
+        u = Units_GetActive(&n);
+        int64_t dx = u[s.drag].world_x - s.shore_x, dy = u[s.drag].world_y - s.shore_y;
+        if (u[s.drag].flying && u[s.drag].flight_alt >= (float)dd->cruise_alt &&
+            dx * dx + dy * dy <= 48 * 48) {
+            Units_SelectSingle(s.drag);
+            Units_CommandStopSelected();
+            Units_SelectSingle(-1);
+            stopped = 1;
+        }
+    }
+    ASSERT(stopped);
+    int landed_at = -1;
+    for (int i = 0; i < 3600 && landed_at < 0; i++) {
+        fw_tick(&platform, &s, 1);
+        u = Units_GetActive(&n);
+        if (!u[s.drag].flying) landed_at = i;
+    }
+    fw_tick(&platform, &s, 600);
+    u = Units_GetActive(&n);
+    int low = fw_lowest_corner(w, u[s.drag].world_x, u[s.drag].world_y,
+                               dd->footprint_x, dd->footprint_z);
+    printf("(shore at %d,%d, down after %d ticks at %d,%d, lowest corner %d, "
+           "sea %d) ", (int)s.shore_x, (int)s.shore_y, landed_at,
+           (int)u[s.drag].world_x, (int)u[s.drag].world_y, low, w->water_height);
+    ASSERT(landed_at >= 0);
+    ASSERT_EQ_INT(0, (int)u[s.drag].flying);
+    ASSERT(u[s.drag].flight_alt <= 0.0f);
+    ASSERT(low >= w->water_height);
+    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(s.drag, UNIT_SCRIPT_EV_BEGIN_LANDING));
+
+    /* A blocking piece of scenery on seen, dry, clear ground. */
+    int checked = 0;
+    for (int f = 0; f < w->feature_count && !checked; f++) {
+        if (!Features_InstanceBlocks(w, f)) continue;
+        int32_t x = w->features[f].tile_x * 16 + 8, y = w->features[f].tile_z * 16 + 8;
+        if (fw_lowest_corner(w, x, y, dd->footprint_x, dd->footprint_z) < w->water_height)
+            continue;
+        /* The fog cell the test reads, from the footprint's origin. */
+        int ftx = (x - dd->footprint_x * 8 + 8) >> 4;
+        int ftz = (y - dd->footprint_z * 8 + 8) >> 4;
+        if (Fog_StateAtForPlayer(w, 1, ((ftx >> 1) + (dd->footprint_x >> 2)) * 32,
+                                 ((ftz >> 1) + (dd->footprint_z >> 2)) * 32) ==
+            TAK_FOG_UNEXPLORED)
+            continue;
+        int near = 0;
+        for (int k = 0; k < n; k++) {
+            int64_t dx = u[k].world_x - x, dy = u[k].world_y - y;
+            if (u[k].alive && dx * dx + dy * dy < 128 * 128) near = 1;
+        }
+        if (near) continue;
+        printf("(scenery at %d,%d) ", (int)x, (int)y);
+        ASSERT_EQ_INT(0, Units_DebugCanLandAt(s.drag, x, y));
+        checked = 1;
+    }
+    if (!checked) printf("(no seen scenery to try) ");
+    fw_teardown(&platform);
+}
+
+/* Over the sea on Two Castles a dragon cruises 150 over the water, not
+ * over the sea floor, and the ghost ship hovers 50 over it
+ * (legacy:190499-190507). */
+TEST(flyers_cruise_over_the_sea_not_the_sea_floor) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    FwSea s;
+    ASSERT_EQ_INT(0, fw_setup(&platform, &s));
+    GameWorld *w = s.world;
+    const UnitDef *dd = Units_GetDef(s.drag_def);
+    Units_SelectSingle(s.drag);
+    Units_CommandMoveSelected(s.open_x, s.open_y);
+    Units_SelectSingle(-1);
+    int n = 0, cruising = 0;
+    const Unit *u = NULL;
+    for (int i = 0; i < 6000 && !cruising; i++) {
+        fw_tick(&platform, &s, 1);
+        u = Units_GetActive(&n);
+        int g = Terrain_SampleHeight(w, u[s.drag].world_x, u[s.drag].world_y);
+        cruising = u[s.drag].flying && u[s.drag].cmd_kind == UNIT_CMD_NONE &&
+                   g < w->water_height;
+    }
+    ASSERT(cruising);
+    float stands = Units_DebugStandHeight(s.drag);
+    float drawn = (float)Terrain_SampleHeight(w, u[s.drag].world_x, u[s.drag].world_y) +
+                  Units_DrawnAlt(w, &u[s.drag]);
+    int ghost_def = Units_FindDefByName("TARSHIP");
+    ASSERT(ghost_def >= 0);
+    int ghost = Units_Spawn(ghost_def, 1, 0, s.open_x, s.open_y + 200);
+    ASSERT(ghost >= 0);
+    fw_tick(&platform, &s, 120);
+    u = Units_GetActive(&n);
+    float ghost_at = Units_DebugStandHeight(ghost);
+    printf("(sea %d, dragon stands at %.0f and is drawn at %.0f, ghost ship at "
+           "%.0f) ", w->water_height, (double)stands, (double)drawn, (double)ghost_at);
+    ASSERT(stands >= (float)(w->water_height + dd->cruise_alt));
+    ASSERT(drawn >= (float)(w->water_height + dd->cruise_alt));
+    ASSERT(ghost_at >= (float)(w->water_height + 50));
+    fw_teardown(&platform);
+}
+
 /* Damage bars follow the Visual Options setting (#23): off by default,
  * the Show Damage checkbox flips DisplayDamageBars and keeps it, the
  * bar draws only for the local player unless cheat codes are allowed,
@@ -30579,6 +30911,9 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(sound_transport_plays_once_per_rider);
     RUN_UI_TEST(cob_entry_points_fire_once);
     RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
+    RUN_UI_TEST(flyer_left_over_open_sea_never_lands_in_it);
+    RUN_UI_TEST(flyer_stopped_by_the_shore_lands_on_dry_ground);
+    RUN_UI_TEST(flyers_cruise_over_the_sea_not_the_sea_floor);
     RUN_UI_TEST(tower_aim_faces_target);
     RUN_UI_TEST(war_galley_attacks_shore_target);
     RUN_UI_TEST(monarch_attacks_large_structure);

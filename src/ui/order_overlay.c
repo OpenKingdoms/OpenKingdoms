@@ -285,14 +285,14 @@ int OrderOverlay_Draw(const GameWorld *world, TAK_Platform *plat) {
 
         SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
         float ax, ay;
-        overlay_screen(world, tilt, u->world_x, u->world_y, u->flight_alt,
+        overlay_screen(world, tilt, u->world_x, u->world_y, Units_DrawnAlt(world, u),
                        &ax, &ay);
         for (int i = 0; i < n; i++) {
             const OrderStop *st = &stops[i];
             const Unit *t = st->target >= 0 && st->target < count
                           ? &units[st->target] : NULL;
             float bx, by;
-            overlay_screen(world, tilt, st->x, st->y, t ? t->flight_alt : 0.0f,
+            overlay_screen(world, tilt, st->x, st->y, t ? Units_DrawnAlt(world, t) : 0.0f,
                            &bx, &by);
             if (!overlay_off(ax, ay, bx, by, vw, vh)) {
                 overlay_color(r, st->mark, OVERLAY_LINE_ALPHA);

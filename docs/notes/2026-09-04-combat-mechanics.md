@@ -312,7 +312,9 @@ transport.
 
 Pickup runs at :14365-14483 (mutual order match, a squared-distance gate on
 `transportdistance`, and it gathers other eligible units in range). Unload is
-at :14487 onwards with a drop-point scatter (:24329-24359). COB entries used:
+at :14487 onwards. The random spots at :24329-24359 are the flyer landing
+search, not an unload scatter (see 2026-10-04-flyers-land-on-dry-ground.md).
+COB entries used:
 `BeginTransport` / `EndTransport` (:24300), `BECARRIED` (:179284),
 `VTOL_StepOut*` (:24242 onwards), `BeginLanding`. **TAK has no
 `TransportPickup` / `TransportDrop` pieces**. Those are a TA-ism. The air
