@@ -250,6 +250,13 @@ int Features_FindByName(const char *name) {
 
 static void hold_note_removed(int idx);
 static void fx_reset(void);
+
+/* The frame's sparks find a cell's feature in a grid by top-left cell,
+ * under the remastered rules. A feature that comes or goes leaves the
+ * grid stale until the next spark builds it again. */
+static int *g_spark_cells;
+static int  g_spark_cells_cap, g_spark_cells_w, g_spark_cells_h;
+static int  g_spark_cells_ok;
 static void feat_event(const struct GameWorld *w, int kind, int idx, int def, int new_def,
                        int damage, int left, int frames);
 static int  g_remove_kind;
@@ -470,6 +477,7 @@ int Features_AddInstanceFacing(struct GameWorld *world, int global_idx,
     mf->facing = (uint8_t)facing;
     if (fd->sacred_site > 0.0f) Features_NoteListReplaced();
     int idx = world->feature_count++;
+    g_spark_cells_ok = 0;
     /* The shot grid takes the new feature in place when it was current. */
     if (grid_current) {
         feat_top_stamp(world, idx, 0, 0, world->feat_top_w, world->feat_top_h);
@@ -981,6 +989,7 @@ static void feat_event(const struct GameWorld *w, int kind, int idx, int def, in
 }
 
 static void hold_note_removed(int idx) {
+    g_spark_cells_ok = 0;
     for (int i = 0; i < g_hold_count; i++) {
         if (g_hold[i] == idx) g_hold[i] = -1;
         else if (g_hold[i] > idx) g_hold[i]--;
@@ -1397,55 +1406,83 @@ static int spark_carry(int32_t v) {
     return c < -FEATURE_SPARK_CARRY ? -FEATURE_SPARK_CARRY : c;
 }
 
+/* The frame's grid of features by top-left cell: the last placed on a
+ * cell, as a spark reads it, or -1. */
+static void spark_cells_build(const struct GameWorld *w) {
+    int mw = w->map_pixels_w / 16, mh = w->map_pixels_h / 16;
+    if (mw < 0) mw = 0;
+    if (mh < 0) mh = 0;
+    int n = mw * mh;
+    if (n > g_spark_cells_cap) {
+        tak_free(g_spark_cells);
+        g_spark_cells = (int *)tak_malloc((size_t)n * sizeof(int));
+        g_spark_cells_cap = g_spark_cells ? n : 0;
+    }
+    if (!g_spark_cells) mw = mh = 0;
+    g_spark_cells_w = mw;
+    g_spark_cells_h = mh;
+    for (int c = 0; c < mw * mh; c++) g_spark_cells[c] = -1;
+    for (int i = 0; i < w->feature_count; i++) {
+        int x = w->features[i].tile_x, z = w->features[i].tile_z;
+        if (x < mw && z < mh) g_spark_cells[z * mw + x] = i;
+    }
+    g_spark_cells_ok = 1;
+}
+
+static int spark_cell(int x, int z) {
+    if (x < 0 || z < 0 || x >= g_spark_cells_w || z >= g_spark_cells_h) return -1;
+    return g_spark_cells[z * g_spark_cells_w + x];
+}
+
 /* A spark under the remastered rules (D-036). It reaches every cell
  * within three, or out to the nearest ring holding a feature that can
  * catch, and the wind stretches that reach downwind by its carry. A
  * feature upwind catches at FEATURE_SPARK_UPWIND percent of the chance.
  * Cells go row by row from the corner `turn` names (bit 0 east first,
- * bit 1 south first), and the spark stops once the frame has lit its cap. */
-static void feat_spark_remastered(struct GameWorld *w, int sx, int sz, int turn) {
-    enum { WIN = FEATURE_SPARK_REACH + FEATURE_SPARK_CARRY, SPAN = 2 * WIN + 1 };
-    int cells[SPAN * SPAN];
-    for (int k = 0; k < SPAN * SPAN; k++) cells[k] = -1;
-    for (int i = 0; i < w->feature_count; i++) {
-        int dx = (int)w->features[i].tile_x - sx, dz = (int)w->features[i].tile_z - sz;
-        if (dx < -WIN || dx > WIN || dz < -WIN || dz > WIN) continue;
-        cells[(dz + WIN) * SPAN + dx + WIN] = i;
-    }
+ * bit 1 south first), and the spark stops once the frame has lit its cap.
+ * Gives 1 when the cap was full before the spark and a feature in its
+ * reach could catch, and the spark then waits for the next frame. */
+static int feat_spark_remastered(struct GameWorld *w, int sx, int sz, int turn) {
+    enum { WIN = FEATURE_SPARK_REACH + FEATURE_SPARK_CARRY };
+    if (!g_spark_cells_ok) spark_cells_build(w);
     int lx = spark_carry(w->wind_x), lz = spark_carry(w->wind_z);
     int bx0 = lx < 0 ? lx : 0, bx1 = lx > 0 ? lx : 0;
     int bz0 = lz < 0 ? lz : 0, bz1 = lz > 0 ? lz : 0;
     /* The nearest ring around the spark's cell, or with nothing there,
      * around the cells the wind carries it over. */
-    int ring = -1, carried = -1;
-    for (int dz = -WIN; dz <= WIN; dz++)
-        for (int dx = -WIN; dx <= WIN; dx++) {
-            if (!spark_can_catch(w, cells[(dz + WIN) * SPAN + dx + WIN])) continue;
-            int ax = dx < 0 ? -dx : dx, az = dz < 0 ? -dz : dz;
-            int d = ax > az ? ax : az;
-            if (d <= FEATURE_SPARK_REACH) {
-                if (ring < 0 || d < ring) ring = d;
-                continue;
-            }
-            int ex = dx < bx0 ? bx0 - dx : dx > bx1 ? dx - bx1 : 0;
-            int ez = dz < bz0 ? bz0 - dz : dz > bz1 ? dz - bz1 : 0;
-            d = ex > ez ? ex : ez;
-            if (d <= FEATURE_SPARK_REACH && (carried < 0 || d < carried)) carried = d;
+    int ring = -1;
+    for (int d = 0; d <= FEATURE_SPARK_REACH && ring < 0; d++)
+        for (int dz = -d; dz <= d && ring < 0; dz++) {
+            int step = dz == -d || dz == d || d == 0 ? 1 : 2 * d;
+            for (int dx = -d; dx <= d; dx += step)
+                if (spark_can_catch(w, spark_cell(sx + dx, sz + dz))) {
+                    ring = d;
+                    break;
+                }
         }
-    if (ring < 0) ring = carried;
-    if (ring < 0) return;
+    if (ring < 0 && (lx || lz)) {
+        for (int dz = -WIN; dz <= WIN; dz++)
+            for (int dx = -WIN; dx <= WIN; dx++) {
+                int ax = dx < 0 ? -dx : dx, az = dz < 0 ? -dz : dz;
+                if ((ax > az ? ax : az) <= FEATURE_SPARK_REACH) continue;
+                int ex = dx < bx0 ? bx0 - dx : dx > bx1 ? dx - bx1 : 0;
+                int ez = dz < bz0 ? bz0 - dz : dz > bz1 ? dz - bz1 : 0;
+                int d = ex > ez ? ex : ez;
+                if (d > FEATURE_SPARK_REACH || (ring >= 0 && d >= ring)) continue;
+                if (spark_can_catch(w, spark_cell(sx + dx, sz + dz))) ring = d;
+            }
+    }
+    if (ring < 0) return 0;
+    if (g_spark_catches >= FEATURE_SPARK_CATCH_CAP) return 1;
     if (ring < 3) ring = 3;
     int x0 = bx0 - ring, x1 = bx1 + ring, z0 = bz0 - ring, z1 = bz1 + ring;
-    int mw = w->map_pixels_w / 16, mh = w->map_pixels_h / 16;
     for (int a = 0; a <= z1 - z0; a++)
         for (int b = 0; b <= x1 - x0; b++) {
             int dz = (turn & 2) ? z1 - a : z0 + a;
             int dx = (turn & 1) ? x1 - b : x0 + b;
-            int x = sx + dx, z = sz + dz;
-            if (x < 0 || z < 0 || x >= mw || z >= mh) continue;
-            int j = cells[(dz + WIN) * SPAN + dx + WIN];
+            int j = spark_cell(sx + dx, sz + dz);
             if (!spark_can_catch(w, j)) continue;
-            if (g_spark_catches >= FEATURE_SPARK_CATCH_CAP) return;
+            if (g_spark_catches >= FEATURE_SPARK_CATCH_CAP) return 0;
             const FeatureDef *fd = Features_GetByIndex(w->features[j].global_idx);
             int pct = (fd->spread_chance & 0xff) * FEATURE_SPARK_CHANCE / 100;
             if (dx * lx + dz * lz < 0) pct = pct * FEATURE_SPARK_UPWIND / 100;
@@ -1454,6 +1491,7 @@ static void feat_spark_remastered(struct GameWorld *w, int sx, int sz, int turn)
                 g_spark_catches++;
             }
         }
+    return 0;
 }
 
 /* ── The wind ─────────────────────────────────────────────────────── */
@@ -1541,23 +1579,53 @@ void Features_DebugSetWind(struct GameWorld *w, int speed, uint16_t heading) {
 
 /* ── The frame ────────────────────────────────────────────────────── */
 
+/* Newest first, the order of the original's list: by serial down, two
+ * with one serial in list order. A merge, so a field of fires sorts in
+ * n log n. */
+static void work_sort(const struct GameWorld *w, int *a, int n) {
+    if (n < 2) return;
+    int *t = (int *)tak_malloc((size_t)n * sizeof(int));
+    if (!t) {
+        for (int i = 1; i < n; i++) {
+            int v = a[i], b = i - 1;
+            while (b >= 0 && w->features[a[b]].fx_serial < w->features[v].fx_serial) {
+                a[b + 1] = a[b];
+                b--;
+            }
+            a[b + 1] = v;
+        }
+        return;
+    }
+    int *src = a, *dst = t;
+    for (int run = 1; run < n; run *= 2) {
+        for (int lo = 0; lo < n; lo += 2 * run) {
+            int mid = lo + run < n ? lo + run : n;
+            int hi = lo + 2 * run < n ? lo + 2 * run : n;
+            int i = lo, j = mid, k = lo;
+            while (i < mid && j < hi)
+                dst[k++] = w->features[src[j]].fx_serial > w->features[src[i]].fx_serial
+                               ? src[j++] : src[i++];
+            while (i < mid) dst[k++] = src[i++];
+            while (j < hi) dst[k++] = src[j++];
+        }
+        int *x = src;
+        src = dst;
+        dst = x;
+    }
+    if (src != a) memcpy(a, src, (size_t)n * sizeof(int));
+    tak_free(t);
+}
+
 void Features_TickFrame(struct GameWorld *w) {
     if (!w || g_hold) return;
     w->feat_frame++;
     g_spark_catches = 0;
+    g_spark_cells_ok = 0;
     int *work = NULL, work_n = 0, cap = 0;
     for (int i = 0; i < w->feature_count; i++)
         if (w->features[i].fx != FEATURE_FX_NONE &&
             ivec_push(&work, &work_n, &cap, i) != 0) break;
-    /* Newest first, the order of the original's list. */
-    for (int a = 1; a < work_n; a++) {
-        int v = work[a], b = a - 1;
-        while (b >= 0 && w->features[work[b]].fx_serial < w->features[v].fx_serial) {
-            work[b + 1] = work[b];
-            b--;
-        }
-        work[b + 1] = v;
-    }
+    work_sort(w, work, work_n);
     g_hold = work;
     g_hold_count = work_n;
     for (int k = 0; k < g_hold_count; k++) {
@@ -1607,19 +1675,22 @@ void Features_TickFrame(struct GameWorld *w) {
             }
             continue;
         }
-        /* A spark due once the frame has lit its cap waits for the next. */
-        if (mf->spark == 0 || (mf->spark == 1 && g_spark_catches >= FEATURE_SPARK_CATCH_CAP))
+        if (mf->spark == 0) continue;
+        if (mf->spark > 1) {
+            mf->spark--;
             continue;
+        }
         /* Each spark starts its cells from another corner, by the fire's
-         * serial and the sparks it has left. */
-        if (--mf->spark == 0) {
-            feat_spark_remastered(w, mf->tile_x, mf->tile_z,
-                                  (int)((mf->fx_serial + mf->sparks) & 3u));
-            mf = &w->features[i];
-            if (mf->sparks != 0) {
-                mf->sparks--;
-                mf->spark = spark_delay(Features_GetByIndex(mf->global_idx), 1);
-            }
+         * serial and the sparks it has left. One the frame's cap holds
+         * back waits for the next frame. */
+        if (feat_spark_remastered(w, mf->tile_x, mf->tile_z,
+                                  (int)((mf->fx_serial + mf->sparks) & 3u)))
+            continue;
+        mf = &w->features[i];
+        mf->spark = 0;
+        if (mf->sparks != 0) {
+            mf->sparks--;
+            mf->spark = spark_delay(Features_GetByIndex(mf->global_idx), 1);
         }
     }
     g_hold = NULL;
@@ -1642,6 +1713,10 @@ int Features_DebugSetDefs(const FeatureDef *defs, int count) {
 void Features_FreeAll(void) {
     Features_NoteListReplaced();
     fx_reset();
+    tak_free(g_spark_cells);
+    g_spark_cells = NULL;
+    g_spark_cells_cap = g_spark_cells_w = g_spark_cells_h = 0;
+    g_spark_cells_ok = 0;
     if (g_feats) {
         tak_free(g_feats);
         g_feats = NULL;
