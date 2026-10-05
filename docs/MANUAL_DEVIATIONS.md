@@ -1930,13 +1930,13 @@ Format per entry:
   to 149 frames after it catches and its flames end 44 to 72 frames in,
   so the original's fires never spread. Its spark would reach three
   cells, and the scenery that burns stands farther apart than that. Of
-  the 50,524 flamable features on the 310 shipped maps, skirmish and
+  the 50,524 flammable features on the 310 shipped maps, skirmish and
   campaign, 28 percent have another within three cells, 58 percent
   within five, 69 percent within six and 82 percent within eight. Under
   the rules a burning feature throws four sparks, each 125 percent of
   the original's spark time after the last, 93 to 186 frames for a tree,
   and its flames start over until the last, so a tree burns 12 to 27
-  seconds. A spark reaches every flamable feature within three cells, or
+  seconds. A spark reaches every flammable feature within three cells, or
   out to the nearest ring that holds one, at most six, which puts a
   quarter of the shipped scenery that burns in a group of ten or more a
   fire can cross, against 5 percent at three. The wind stretches the
