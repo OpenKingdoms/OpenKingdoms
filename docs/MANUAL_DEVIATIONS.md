@@ -704,8 +704,9 @@ Format per entry:
   point clear of every fire, trying eight ways at steps of 24 px out to
   six steps. Each way weighs four for every fire it passes, one for
   every step and one for every 24 px it gives up toward where the unit
-  is bound, its order's point or else home, and the lightest is taken,
-  unless the unit is already walking somewhere clear. With the rules off
+  is bound, the unit it attacks, its order's point or else home, and
+  the lightest is taken, unless the unit is already walking somewhere
+  clear. With the rules off
   neither happens and the classic computer plays as before. The tactic
   bits `TAK_AI_TACTIC_SWEEP` and `TAK_AI_TACTIC_FIRE` let the duel
   measure each, and the code is `ai_find_rubble`, `ai_try_sweep` and
@@ -724,8 +725,17 @@ Format per entry:
   took the nearest way out and they lost 218. Once trees burned through
   four sparks (D-036) that way lost 1,193, because a troop stepped out
   on the far side and the seat's next order walked it back through the
-  fire, so the footing now leans toward where the unit is bound. In the
-  duel on Two Castles, measured before that change, Taros against Taros
+  fire, so the footing now leans toward where the unit is bound. That
+  grove is one placement. With the six troops moved over nine
+  placements in an all-lit grove of 25 trees three cells apart, the
+  footing lost less in five and more in four, 10,256 hit points in all
+  against 5,993 without, because a troop that steps out on the far side
+  from home is still walked back through by the seat's next order. In
+  six duels of ten minutes each on Thorn Boscage and on Two Castles, the
+  seat with the footing against one without killed 192 and lost 214
+  against 194 and 208, and 126 and 142 against 141 and 128, within what
+  six games can tell. In the duel on Two Castles, measured before that
+  change, Taros against Taros
   under the rules, four seeds each played twice with the seats swapped,
   the seat with both behaviours killed 409 and lost 390 and the one
   without killed 357 and lost 426, with three wins each and two draws.
@@ -1949,9 +1959,10 @@ Format per entry:
   cells can still light a feature up to eight cells downwind. A feature
   catches at twice its spreadchance, 80 percent for most trees, and
   upwind at a quarter of that. No more than four features catch from
-  sparks in one frame, and a spark due past that waits for the next.
-  Each spark starts its cells from another corner, so the cap favours no
-  side. Measured with no units on the field, one tree lit near the
+  sparks in one frame, and a spark due past that waits for the next
+  when its reach holds a feature that could catch. One with nothing in
+  its reach to light never waits, however busy the frame. Each spark
+  starts its cells from another corner, so the cap favours no side. Measured with no units on the field, one tree lit near the
   middle of each map's largest group, five seeds: calm, Lake Ferrix_JM
   burns all of its 78 in 48 seconds, New Hindigal all 63 in 67,
   Riverfork Wood all 88 in 117, Two Castles 13 of 14 in 57, Thorn
@@ -1960,13 +1971,22 @@ Format per entry:
   average and creeps upwind at 1 to 6, so less of a forest burns: 77,
   60, 57, 5, 42 and 6 of them. In a square of AraTree01 under a steady
   wind it crosses 20 to 24 px a second downwind and 8 to 13 upwind, and
-  11 to 21 calm. Its front, from the first tree to one 10 cells off,
-  never averaged more than 22 px a second but in one windy Thorn Boscage
-  run at 33, and no frame lit more than four. Lit along one edge, a
-  grove of AraTree01 28 cells (448 px) across burns through in 18 to 33
-  seconds with a tree on every cell or on every other. With the rules
-  off each map burns the one tree and stops. Infantry walks 33 to 45 px
-  a second, so it outruns a fire. And the rubble a wall, a model wall or
+  11 to 21 calm. Lit the same way in battles loaded from Sea Dragon
+  Spine, Lake Ferrix_JM, Thorn Boscage, Riverfork Wood and Lake
+  Cuhmoniwanakilya under their own wind, six seeds each, the front from
+  the first tree to one 10 or more cells off averaged 11 to 26 px a
+  second in 26 of the 30 runs and 30 to 42 in the other four, all on
+  the sparse woods, where a spark the wind carries crosses up to eight
+  cells at a time. Over 20 or more cells the fastest averaged 39. No
+  frame lit more than four and no tree outlasted its 27 seconds.
+  Lit along one edge, a grove of AraTree01 28 cells (448 px) across
+  burns through in 18 to 33 seconds with a tree on every cell or on
+  every other. A wood of 10,000 AraTree01, one on every cell or on every
+  other, burns through in 126 to 144 seconds at the cap of four a frame.
+  With the rules off each map burns the one tree and stops. Infantry
+  walks 33 to 45 px a second, so it outruns most fires, but the slowest
+  infantry fleeing straight downwind through a sparse wood can be
+  caught by the fastest. And the rubble a wall, a model wall or
   a building leaves blocks until it is swept, which pays its mana as
   clearing anything does (D-021). The original's wall rubble and the
   wrecks of model walls let units through.

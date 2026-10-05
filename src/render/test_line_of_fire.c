@@ -1429,6 +1429,38 @@ TEST(remastered_sparks_light_no_more_than_four_a_frame) {
     lf_end();
 }
 
+/* A remastered spark with nothing in its reach never waits for the
+ * frame's cap. A lone tree throws its spark in a frame where ten fires
+ * lit after it fill the cap, and burns out after its fourth. */
+TEST(a_remastered_spark_with_nothing_to_light_never_waits) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->cfg.remastered = 1;
+    int alone = lf_place(w, FD_TREE, 20, 20);
+    int src[10], dst[10];
+    for (int k = 0; k < 10; k++) {
+        src[k] = lf_place(w, FD_TREE, 40 + 10 * k, 100);
+        dst[k] = lf_place(w, FD_TREE, 40 + 10 * k, 102);
+        ASSERT(src[k] >= 0 && dst[k] >= 0);
+    }
+    ASSERT(alone >= 0);
+    Features_DebugHit(w, alone, 50, 1);
+    w->features[alone].spark = 1;
+    for (int k = 0; k < 10; k++) {
+        Features_DebugHit(w, src[k], 50, 1);
+        w->features[src[k]].spark = 1;
+    }
+    lf_frames(w, 1);
+    int lit = 0;
+    for (int k = 0; k < 10; k++) lit += w->features[dst[k]].fx == FEATURE_FX_BURNING;
+    ASSERT_EQ_INT(4, lit);
+    ASSERT_EQ_INT(FEATURE_SPARKS - 2, w->features[alone].sparks);
+    ASSERT(w->features[alone].spark >= 93 && w->features[alone].spark <= 186);
+    lf_frames(w, 3 * 186 + 80);
+    ASSERT_EQ_INT(FD_TREEBURNT, w->features[alone].global_idx);
+    lf_end();
+}
+
 /* A remastered fire crosses a wood with a tree every five cells under a
  * changing wind, which the original's never can. Two runs hash the
  * same, and one saved and loaded part way runs on to the same. */
@@ -1485,6 +1517,27 @@ TEST(a_remastered_sparse_wood_fire_saved_and_loaded_runs_on_the_same) {
     ASSERT(lit >= 40);
     remove(path);
     lf_end();
+}
+
+/* A remastered fire runs the same without the sparks' grid of features
+ * by cell, as when it cannot be allocated, so a machine short of memory
+ * stays in step. */
+TEST(a_remastered_fire_runs_the_same_without_the_spark_grid) {
+    uint32_t hash[2] = { 0, 0 };
+    int lit[2] = { 0, 0 };
+    for (int k = 0; k < 2; k++) {
+        Features_DebugSparkGrid(k == 0);
+        GameWorld *w = lf_sparse_wood();
+        if (!w) break;
+        lf_ticks(2400);
+        hash[k] = TAK_SimHash();
+        lit[k] = lf_sparse_wood_lit(w);
+        lf_end();
+    }
+    Features_DebugSparkGrid(1);
+    ASSERT(lit[0] >= 40);
+    ASSERT_EQ_INT(lit[0], lit[1]);
+    ASSERT_EQ_INT((int)hash[0], (int)hash[1]);
 }
 
 /* With the rules off a spark still reaches three cells and no further,
@@ -3033,7 +3086,9 @@ int main(int argc, char **argv) {
     RUN(a_remastered_wind_favours_the_trees_downwind);
     RUN(a_remastered_calm_fire_spreads_alike_every_way);
     RUN(remastered_sparks_light_no_more_than_four_a_frame);
+    RUN(a_remastered_spark_with_nothing_to_light_never_waits);
     RUN(a_remastered_sparse_wood_fire_saved_and_loaded_runs_on_the_same);
+    RUN(a_remastered_fire_runs_the_same_without_the_spark_grid);
     RUN(the_classic_spark_still_reaches_three_cells);
     RUN(rubble_blocks_until_swept_under_the_remastered_rules);
     RUN(the_remastered_rules_come_back_with_a_save);
