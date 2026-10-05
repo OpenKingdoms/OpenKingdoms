@@ -353,15 +353,31 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 /* Version 9 on: the death weapon a dying unit still owes. An older
  * record reads back owing none. */
 #define U_DEATH_BLAST   (U_RESEARCH_WAIT + 1u)
-/* Version 10 on: a builder's summons without end, its def as a
- * definition ordinal, and a bit for each queued leg that is one. An
- * older record reads back none. */
+/* Version 10 on: a builder's summons, 1 without end and 2 held for
+ * units on its spot, its def as a definition ordinal, and a bit for
+ * each queued leg that is one without end. An older record reads back
+ * none. */
 #define U_BUILD_ENDLESS (U_DEATH_BLAST + 1u)
 #define U_BUILD_TRIES   (U_BUILD_ENDLESS + 1u)
 #define U_BUILD_WAIT    (U_BUILD_ENDLESS + 2u)
 #define U_BUILD_DEF     (U_BUILD_ENDLESS + 3u)
 #define U_LEG_ENDLESS   (U_BUILD_ENDLESS + 5u)
-#define U_END           (U_LEG_ENDLESS + 2u)
+/* Version 11 on: a flyer's crowd score, the air leg it flies, how near
+ * its point its move ends and the frames it holds. An older record
+ * reads back uncrowded, on no leg, with the ring still to draw and
+ * nothing held. */
+#define U_AIR_CROWD     (U_LEG_ENDLESS + 2u)
+#define U_AIR_MODE      (U_AIR_CROWD + 1u)
+#define U_AIR_REACH     (U_AIR_CROWD + 2u)
+#define U_AIR_CIRCLES   (U_AIR_CROWD + 3u)
+#define U_AIR_BEARING   (U_AIR_CROWD + 4u)
+#define U_AIR_X         (U_AIR_CROWD + 6u)
+#define U_AIR_Y         (U_AIR_CROWD + 10u)
+#define U_AIR_OX        (U_AIR_CROWD + 14u)
+#define U_AIR_OY        (U_AIR_CROWD + 18u)
+#define U_AIR_BAND      (U_AIR_CROWD + 22u)
+#define U_AIR_HOLD      (U_AIR_CROWD + 23u)
+#define U_END           (U_AIR_CROWD + 24u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -443,6 +459,7 @@ _Static_assert(P_END == TAK_PROJ_RECORD_BYTES, "PROJ layout and width disagree")
 #define F_BACK_WAIT  48u
 #define F_FX_SERIAL  50u
 #define F_RUBBLE     54u
+#define F_SPARKS     55u   /* 0 in an older record */
 #define F_END        56u
 _Static_assert(F_END == TAK_FEAT_RECORD_BYTES, "FEAT layout and width disagree");
 
@@ -559,7 +576,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 10
+#define VER_UNIT 11
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 3
@@ -877,7 +894,7 @@ static int defset_collect(DefSet *s, const GameWorld *w) {
                     defset_add(s, TAK_DEF_KIND_UNIT,
                                (int32_t)u->legs[q].def) != 0) return -1;
             }
-            if (u->build_endless &&
+            if ((u->build_endless || u->build_held) &&
                 defset_add(s, TAK_DEF_KIND_UNIT, (int32_t)u->build_def) != 0)
                 return -1;
         }
@@ -1145,10 +1162,22 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_i32(r + U_BUILD_GY, u->build_gy);
     tak_put_u8(r + U_RESEARCH_WAIT, u->research_wait);
     tak_put_u8(r + U_DEATH_BLAST, u->death_blast);
-    tak_put_u8(r + U_BUILD_ENDLESS, u->build_endless);
+    tak_put_u8(r + U_AIR_CROWD, (uint8_t)u->air_crowd);
+    tak_put_u8(r + U_AIR_MODE, u->air_mode);
+    tak_put_u8(r + U_AIR_REACH, u->air_reach);
+    tak_put_u8(r + U_AIR_CIRCLES, u->air_circles);
+    tak_put_u16(r + U_AIR_BEARING, u->air_bearing);
+    tak_put_i32(r + U_AIR_X, u->air_x);
+    tak_put_i32(r + U_AIR_Y, u->air_y);
+    tak_put_i32(r + U_AIR_OX, u->air_ox);
+    tak_put_i32(r + U_AIR_OY, u->air_oy);
+    tak_put_u8(r + U_AIR_BAND, u->air_band);
+    tak_put_u8(r + U_AIR_HOLD, u->air_hold);
+    tak_put_u8(r + U_BUILD_ENDLESS, (uint8_t)((u->build_endless ? 1u : 0u) |
+                                              (u->build_held ? 2u : 0u)));
     tak_put_u8(r + U_BUILD_TRIES, u->build_tries);
     tak_put_u8(r + U_BUILD_WAIT, u->build_wait);
-    tak_put_i16(r + U_BUILD_DEF, (int16_t)(u->build_endless
+    tak_put_i16(r + U_BUILD_DEF, (int16_t)(u->build_endless || u->build_held
         ? defords_get(o, TAK_DEF_KIND_UNIT, u->build_def) : 0));
     tak_put_i16(r + U_WP_STALL, u->wp_stall);
     tak_put_i16(r + U_PATH_REPLAN, u->path_replan_cd);
@@ -1384,11 +1413,24 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->build_gy = tak_get_i32(r + U_BUILD_GY);
     u->research_wait = tak_get_u8(r + U_RESEARCH_WAIT);
     u->death_blast = tak_get_u8(r + U_DEATH_BLAST);
-    u->build_endless = tak_get_u8(r + U_BUILD_ENDLESS) ? 1 : 0;
+    u->air_crowd = (int8_t)tak_get_u8(r + U_AIR_CROWD);
+    u->air_mode = tak_get_u8(r + U_AIR_MODE);
+    u->air_reach = tak_get_u8(r + U_AIR_REACH);
+    u->air_circles = tak_get_u8(r + U_AIR_CIRCLES);
+    u->air_bearing = tak_get_u16(r + U_AIR_BEARING);
+    u->air_x = tak_get_i32(r + U_AIR_X);
+    u->air_y = tak_get_i32(r + U_AIR_Y);
+    u->air_ox = tak_get_i32(r + U_AIR_OX);
+    u->air_oy = tak_get_i32(r + U_AIR_OY);
+    u->air_band = tak_get_u8(r + U_AIR_BAND);
+    u->air_hold = tak_get_u8(r + U_AIR_HOLD);
+    uint8_t summons = tak_get_u8(r + U_BUILD_ENDLESS);
+    u->build_endless = (summons & 1u) ? 1 : 0;
+    u->build_held = (summons & 2u) ? 1 : 0;
     u->build_tries = tak_get_u8(r + U_BUILD_TRIES);
     u->build_wait = tak_get_u8(r + U_BUILD_WAIT);
     u->build_def = 0;
-    if (u->build_endless) {
+    if (u->build_endless || u->build_held) {
         int32_t idx = save_def_index(sg, tak_get_i16(r + U_BUILD_DEF),
                                      TAK_DEF_KIND_UNIT);
         if (idx < 0) {
@@ -1994,6 +2036,7 @@ static void encode_feature(uint8_t *r, const struct MapFeature *f,
     tak_put_u16(r + F_BACK_WAIT, f->back_wait);
     tak_put_u32(r + F_FX_SERIAL, f->fx_serial);
     tak_put_u8(r + F_RUBBLE, f->rubble);
+    tak_put_u8(r + F_SPARKS, f->sparks);
 }
 
 static void decode_feature(struct MapFeature *f, const uint8_t *r,
@@ -2028,6 +2071,7 @@ static void decode_feature(struct MapFeature *f, const uint8_t *r,
     f->back_wait = tak_get_u16(r + F_BACK_WAIT);
     f->fx_serial = tak_get_u32(r + F_FX_SERIAL);
     f->rubble = tak_get_u8(r + F_RUBBLE) & 1u;
+    f->sparks = tak_get_u8(r + F_SPARKS);
 }
 
 /* ── fog ──────────────────────────────────────────────────────────── */

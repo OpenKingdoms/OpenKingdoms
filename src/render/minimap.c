@@ -402,78 +402,23 @@ void Minimap_Draw(TAK_Platform *plat) {
     SDL_RenderDrawRect(plat->renderer, &camera_rect);
 }
 
-int Minimap_HandleInput(TAK_Platform *plat,
-                         int win_mouse_x, int win_mouse_y,
-                         int left_button_down,
-                         int32_t *out_cam_x, int32_t *out_cam_y) {
-    if (!plat || !out_cam_x || !out_cam_y) return 0;
-    if (!mm.tex) return 0;
-
-    SDL_Rect dst;
-    if (!minimap_compute_rect(plat, &dst)) return 0;
-
-    /* Hit-test: must be left-button-held AND over the minimap rect.
-     * Supporting both point-and-click and drag falls out naturally —
-     * as long as the button is held inside the rect, we keep jumping
-     * the camera each frame. Release = stop. */
-    if (!left_button_down) return 0;
-    if (win_mouse_x < dst.x || win_mouse_x >= dst.x + dst.w) return 0;
-    if (win_mouse_y < dst.y || win_mouse_y >= dst.y + dst.h) return 0;
-
+int Minimap_PointToWorld(TAK_Platform *plat, int win_x, int win_y, int clamp,
+                         int32_t *out_x, int32_t *out_y) {
+    if (!plat || !out_x || !out_y || !mm.tex) return 0;
     const GameWorld *world = World_Get();
     if (!world || !world->loaded) return 0;
-
-    /* ---------- TODO (user): fill this in ----------
-     *
-     * Given:
-     *   win_mouse_x, win_mouse_y   window-pixel mouse coords
-     *   dst                         minimap's window rect (x, y, w, h)
-     *   world->map_pixels_w/h       full map size in world pixels
-     *   world->viewport_w/h         current viewport size
-     *
-     * Compute:
-     *   1. Mouse offset inside the minimap rect:
-     *        rel_x = win_mouse_x - dst.x
-     *        rel_y = win_mouse_y - dst.y
-     *
-     *   2. Inverse scale to world coords (what the mouse is pointing
-     *      AT on the full map — integer math, multiply first to
-     *      avoid truncating to zero, same trick as Minimap_Draw):
-     *        target_wx = rel_x * map_pixels_w / dst.w
-     *        target_wy = rel_y * map_pixels_h / dst.h
-     *
-     *   3. Turn that point into a camera top-left (what cam_x/cam_y
-     *      actually hold) by subtracting half the viewport so the
-     *      clicked point ends up centered on screen:
-     *        cam_x = target_wx - viewport_w / 2
-     *        cam_y = target_wy - viewport_h / 2
-     *
-     *   4. Clamp to valid camera range [0, map_pixels_{w,h} - viewport_{w,h}].
-     *      Match the clamp already used in ingame.c so behaviour is
-     *      consistent with WASD scroll.
-     *
-     * Write the results to *out_cam_x and *out_cam_y. Leave the
-     * return 1 below intact — it signals "I consumed the click,
-     * skip edge-scroll this frame".
-     * ------------------------------------------------- */
-
-    int rel_x = win_mouse_x - dst.x;
-    int rel_y = win_mouse_y - dst.y;
-
-    int target_world_x = rel_x * world->map_pixels_w / dst.w;
-    int target_world_y = rel_y * world->map_pixels_h / dst.h;
-
-    int cam_x = target_world_x - world->viewport_w / 2;
-    int cam_y = target_world_y - world->viewport_h / 2;
-
-    if (cam_x < 0) cam_x = 0;
-    if (cam_y < 0) cam_y = 0;
-    if (cam_x > world->map_pixels_w - world->viewport_w) cam_x = world->map_pixels_w - world->viewport_w;
-    if (cam_y > world->map_pixels_h - world->viewport_h) cam_y = world->map_pixels_h - world->viewport_h;
-
-    *out_cam_x = cam_x;
-    *out_cam_y = cam_y;
-
+    SDL_Rect dst;
+    if (!minimap_compute_rect(plat, &dst) || dst.w < 1 || dst.h < 1) return 0;
+    int inside = win_x >= dst.x && win_x < dst.x + dst.w &&
+                 win_y >= dst.y && win_y < dst.y + dst.h;
+    if (!inside && !clamp) return 0;
+    if (win_x < dst.x) win_x = dst.x;
+    if (win_x > dst.x + dst.w - 1) win_x = dst.x + dst.w - 1;
+    if (win_y < dst.y) win_y = dst.y;
+    if (win_y > dst.y + dst.h - 1) win_y = dst.y + dst.h - 1;
+    /* The radar's own scale (legacy:208734-208740). */
+    *out_x = (int32_t)((int64_t)(win_x - dst.x) * world->map_pixels_w / dst.w);
+    *out_y = (int32_t)((int64_t)(win_y - dst.y) * world->map_pixels_h / dst.h);
     return 1;
 }
 

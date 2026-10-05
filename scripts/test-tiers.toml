@@ -91,6 +91,7 @@ ui = [
   ["campaign_map_water_comes_from_the_map", 1],
   ["the_revive_cursor_shows_over_a_body_the_selection_can_raise", 1],
   ["a_wrecked_keep_shows_its_timbers_over_its_walls", 1],
+  ["flyer_stopped_by_the_shore_lands_on_dry_ground", 1],
 ]
 
 [[tier1]]
@@ -142,6 +143,10 @@ ui = [
   ["own_unit_walks_through_its_gate_and_gate_opens", 1],
   ["completed_wall_blocks_units", 1],
   ["units_do_not_stack_on_one_another", 1],
+  ["harpies_sent_to_one_place_do_not_stack", 1],
+  ["flyer_left_over_open_sea_never_lands_in_it", 1],
+  ["flyer_stopped_by_the_shore_lands_on_dry_ground", 1],
+  ["flyers_cruise_over_the_sea_not_the_sea_floor", 1],
   ["boats_stay_in_water_ghost_ships_do_not", 1],
   ["skirmish_ai_duel_reaches_game_over", 1],
   ["group_selection_and_control_groups", 1],
@@ -214,6 +219,9 @@ ui = [
   ["creon_skirmish_plays_with_two_sages", 1],
   ["base_game_skirmish_spawns_the_kingdom_monarchs", 1],
   ["escape_cancels_the_armed_command_and_stays_in_the_battle", 1],
+  ["escape_with_no_command_armed_clears_the_selection", 1],
+  ["minimap_right_button_", 2],
+  ["minimap_left_button_", 2],
   ["escape_is_edge_triggered", 1],
   ["typing_a_chat_line_issues_no_orders", 1],
   ["a_campaign_save_loaded_from_the_book_takes_orders", 1],

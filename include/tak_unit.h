@@ -426,6 +426,9 @@ typedef struct UnitDef {
      * lodestones raise their crystal through this). */
     int32_t  activate_when_built;
     int32_t  floater;          /* floater; unit floats on water surface */
+    /* amphibious (legacy:162997): a flyer with it may land under water,
+     * down to its maxwaterdepth (legacy:220103-220109). */
+    uint8_t  amphibious;
     /* Shadow keys. `noshadow` drops the shadow (legacy:163001), and a
      * unit naming both `shadowgaf` and `shadowart` blits that sprite
      * instead of casting a silhouette (legacy:163413-163418). */
@@ -553,6 +556,11 @@ typedef struct UnitDef {
      * which a blast measures to unturned (legacy:245164-245209). */
     int16_t  body_min_x_px, body_max_x_px;
     int16_t  body_min_z_px, body_max_z_px;
+    /* The root piece's selection quad in model units, read with the span.
+     * A shot in the unit's cell strikes only inside it (legacy:237007-237027).
+     * No model takes its footprint, a model without one leaves it unset. */
+    int32_t  body_quad[4][2];
+    uint8_t  body_quad_set;
 
     /* A ship's hull in px from its 3DO (M-012): bow ahead of the centre,
      * stern behind, half the beam. hull_set is 0 until worked out, 1 for
@@ -580,6 +588,9 @@ typedef struct UnitDef {
     /* The script releases the shot itself, by setting port 23 during
      * FireWeapon (legacy:223397-223400). Found by reading the script. */
     uint8_t  script_launches;
+    /* The script has BeginFlight, so the unit takes off and lands
+     * (legacy:24117). Found by reading the script. */
+    uint8_t  script_flies;
 
     /* COB script bundle (Phase D). Loaded eagerly per-def. */
     CobScript *cob_script;
@@ -757,6 +768,20 @@ typedef struct UnitMoveLeg {
 #define UNIT_ATTACK_ORDER 1
 #define UNIT_ATTACK_HELD  2
 
+/* Unit.air_mode: an airborne flyer stepping out of a crowd, making for a
+ * clear spot to land on, or circling while it finds none. */
+#define UNIT_AIR_NONE    0
+#define UNIT_AIR_STEP    1
+#define UNIT_AIR_SPOT    2
+#define UNIT_AIR_CIRCLE  3
+/* Stopped while still fast, a flyer flies on toward a point 32 px ahead
+ * until it holds no more than a tenth of its speed, then looks for
+ * ground (legacy:24276-24295). */
+#define UNIT_AIR_GLIDE   4
+/* A landing spot or circle point reached: the next look tests the ground
+ * under it straight away, with no glide (legacy:24296-24382). */
+#define UNIT_AIR_LOOK    5
+
 /* Unit.face_mode: no heading asked for, one to take on arrival, or one
  * reached and held until the next order. */
 #define UNIT_FACE_NONE    0
@@ -862,6 +887,23 @@ typedef struct Unit {
     float      flight_alt;
     uint8_t    flying;
     uint8_t    sfx_occupy;
+    /* Air traffic (legacy:236083-236120, legacy:32733-32880,
+     * legacy:24297-24399). air_crowd is the crowd score, air_mode a
+     * UNIT_AIR_* leg flown to (air_x, air_y) until within air_reach px,
+     * and air_circles counts the circles flown round (air_ox, air_oy) at
+     * bearing air_bearing while no landing spot is clear. air_band is
+     * how near its point a move ends, in 16 px, 0 before it is drawn,
+     * and air_hold the frames before the move may end or, once it has,
+     * before the flyer may land. */
+    int8_t     air_crowd;
+    uint8_t    air_mode;
+    uint8_t    air_band;
+    uint8_t    air_hold;
+    uint8_t    air_reach;
+    uint8_t    air_circles;
+    uint16_t   air_bearing;
+    int32_t    air_x, air_y;
+    int32_t    air_ox, air_oy;
     /* An attack order, not a target it took itself: UNIT_ATTACK_ORDER,
      * or UNIT_ATTACK_HELD for a mission script's, which D-025 never
      * lets go. */
@@ -886,6 +928,10 @@ typedef struct Unit {
     uint8_t    build_tries;
     uint8_t    build_wait;
     int16_t    build_def;
+    /* A summons taken while units stand on its spot: no frame yet, and
+     * build_def goes up at cmd_x, cmd_y once they leave, looked for as
+     * build_endless's next is (legacy:12088-12124). */
+    uint8_t    build_held;
     /* Ticks left in the attack handler's wait, after which a fight it
      * took on for itself looks again (legacy:11485-11509). 0 when not
      * waiting. */
@@ -1294,6 +1340,10 @@ int               Units_DebugKillHandle(int handle);
 /* Test hook: take a unit out at once, as elimination does, script or
  * no script. */
 int               Units_DebugRemove(int handle);
+/* Set a standing unit down at (x, y) at once, for tests. */
+int               Units_DebugPlace(int handle, int32_t x, int32_t y);
+/* Whether (x, y) is inside the unit's selection quad as it stands. */
+int               Units_DebugQuadHolds(int handle, int32_t x, int32_t y);
 /* Corpse model meshes currently baked and cached. */
 int               Units_DebugCorpseMeshCount(void);
 /* A unit's sub-pixel movement offset, for tests. */
@@ -1308,6 +1358,18 @@ int               Units_DebugCorpseDrawHeight(int instance_idx);
 void              Units_EliminatePlayer(int player_id, int keep_handle);
 /* Test hook: set posture on any unit (PASSIVE also clears its target). */
 void              Units_DebugSetAggro(int handle, int aggro_mode);
+
+/* How high over the ground under it a unit is drawn: its altitude, on
+ * top of the sea for a flyer over water (legacy:190499-190507). */
+float             Units_DrawnAlt(const struct GameWorld *w, const Unit *u);
+
+/* Test hook: the height a unit stands at for the simulation, its shots
+ * and the shots aimed at it. -1 for a bad handle. */
+float             Units_DebugStandHeight(int handle);
+
+/* Test hook: 1 when the original's landing test would let this flyer
+ * land with its footprint at (x, y), 0 when not, -1 for a bad handle. */
+int               Units_DebugCanLandAt(int handle, int32_t x, int32_t y);
 
 /* Test hook: how many times the engine has invoked one of the
  * once-per-edge entry points on this unit. -1 for a bad handle. */
@@ -1841,7 +1903,9 @@ int               Units_BeginBuildingForUnitFacing(int builder_handle,
 /* A build order as a command gives it: 1 when the builder took it. With
  * endless a walking builder summons a def Units_DefCanRepeat names there
  * without end, each one done stepping off the spot for the next
- * (legacy:12272-12315). */
+ * (legacy:12272-12315). A walking builder takes a summons whose spot
+ * only units hold and waits for them to leave (legacy:12088-12124),
+ * where Units_BeginBuildingForUnit refuses it. */
 int               Units_OrderBuild(int builder_handle, int def_idx,
                                    int32_t world_x, int32_t world_y,
                                    int facing, int endless);
@@ -1959,6 +2023,16 @@ int               Units_IsBuildSiteClear(int def_idx,
 int               Units_IsBuildSiteClearFacing(int def_idx,
                                                 int32_t world_x, int32_t world_y,
                                                 int facing);
+/* The cursor's test above looks for units only on a building's cells.
+ * A def that walks has an open yard and is placed over units
+ * (legacy:163272-163292, 218800-218811). The frame itself goes up only
+ * where no unit stands at all, which this tests (legacy:12088,
+ * 219094-219160). */
+int               Units_IsBuildSiteFree(int def_idx,
+                                        int32_t world_x, int32_t world_y);
+int               Units_IsBuildSiteFreeFacing(int def_idx,
+                                              int32_t world_x, int32_t world_y,
+                                              int facing);
 
 /* Snap a build centre onto the cell grid the way legacy turns a
  * cursor into a build cell and reads its centre back

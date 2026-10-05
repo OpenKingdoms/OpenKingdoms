@@ -163,7 +163,8 @@ are the ones most worth knowing.
 |---|---|
 | Click a build button | Queue one unit |
 | Shift and click a build button | Queue five |
-| Ctrl and click a build button | Train that unit without end, shown as `+++` on the button |
+| Ctrl and click a build button | Train that unit without end, shown as `+++` on the button. On a builder that walks, the click on the map summons it there without end, each one stepping off the spot for the next |
+| Place a summoned unit | It may go over your units, and the builder waits for them to leave the spot |
 | Right click a build button | Take the last queued one off, or stop a Ctrl run and clear that unit from the queue |
 | Shift with any order | Queue it behind the orders already given, up to sixteen |
 | Shift with patrol points | Join the points into one patrol route |

@@ -739,6 +739,23 @@ static int setup(const char *map_name) {
     g_units[0].build_def = 3;
     g_units[0].build_tries = 7;
     g_units[0].build_wait = 11;
+    /* Unit 1 steps out of a crowd in the air, circling once already. */
+    g_units[1].air_crowd = 6;
+    g_units[1].air_mode = UNIT_AIR_STEP;
+    g_units[1].air_reach = 96;
+    g_units[1].air_circles = 2;
+    g_units[1].air_bearing = 0x5432;
+    g_units[1].air_x = 1777;
+    g_units[1].air_y = 1888;
+    g_units[1].air_ox = 1999;
+    g_units[1].air_oy = 2111;
+    g_units[1].air_band = 7;
+    g_units[1].air_hold = 9;
+    /* The bowman holds a summons of TARNECRO for a unit on its spot. */
+    g_units[1].build_held = 1;
+    g_units[1].build_def = 3;
+    g_units[1].build_tries = 5;
+    g_units[1].build_wait = 13;
     /* A dead slot keeps a stale definition index nothing may follow. */
     g_units[2].alive = UNIT_ALIVE_DEAD;
     /* A caster part way through raising a corpse. */
@@ -1514,6 +1531,13 @@ TEST(a_build_queue_survives_a_reordered_registry) {
     ASSERT_EQ_STR("TARNECRO", Units_GetDef(g_units[0].build_def)->unitname);
     ASSERT_EQ_INT(7, (int)g_units[0].build_tries);
     ASSERT_EQ_INT(11, (int)g_units[0].build_wait);
+    ASSERT_EQ_INT(0, (int)g_units[0].build_held);
+    /* So does a summons held for units on its spot. */
+    ASSERT_EQ_INT(1, (int)g_units[1].build_held);
+    ASSERT_EQ_INT(0, (int)g_units[1].build_endless);
+    ASSERT_EQ_STR("TARNECRO", Units_GetDef(g_units[1].build_def)->unitname);
+    ASSERT_EQ_INT(5, (int)g_units[1].build_tries);
+    ASSERT_EQ_INT(13, (int)g_units[1].build_wait);
 }
 
 /* A refusal before anything has been written leaves the world exactly
@@ -1591,7 +1615,8 @@ static uint32_t rec_u32(const uint8_t *r, int at) {
  * the production runs' lengths come last. Version 6 adds each weapon's
  * drawn shot at 974, version 7 a builder's walk goal at 983,
  * version 8 the attack handler's wait at 991, version 9 the death blast
- * at 992 and version 10 a summons without end at 993. */
+ * at 992, version 10 a summons without end at 993 and version 11 a
+ * flyer's air traffic at 1000. */
 TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
@@ -1603,8 +1628,9 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
-    ASSERT_EQ_INT(10, (int)version);
-    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7, (int)stored);
+    ASSERT_EQ_INT(11, (int)version);
+    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24,
+                  (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;
     /* The bowman's formation group at 487 and its second leg at 520. */
     ASSERT_EQ_INT((int)((2u << 24) | 7u), (int)rec_u32(r1, 487));
@@ -1638,7 +1664,27 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     ASSERT_EQ_INT(r1[496 + 2 * 24 + 18], r0[996]);
     ASSERT_EQ_INT(r1[496 + 2 * 24 + 19], r0[997]);
     ASSERT_EQ_INT(4, r1[998] | r1[999] << 8);
-    ASSERT_EQ_INT(0, r1[993]);
+    /* The bowman's summons held for units on its spot is bit 2 there. */
+    ASSERT_EQ_INT(2, r1[993]);
+    ASSERT_EQ_INT(5, r1[994]);
+    ASSERT_EQ_INT(13, r1[995]);
+    ASSERT_EQ_INT(r0[996], r1[996]);
+    ASSERT_EQ_INT(r0[997], r1[997]);
+    /* The flyer's crowd score, leg, circles and bearing at 1000, the
+     * leg's point and the circle's centre at 1006, its ring at 1022 and
+     * the frames it holds at 1023. */
+    ASSERT_EQ_INT(6, r1[1000]);
+    ASSERT_EQ_INT(UNIT_AIR_STEP, r1[1001]);
+    ASSERT_EQ_INT(96, r1[1002]);
+    ASSERT_EQ_INT(2, r1[1003]);
+    ASSERT_EQ_INT(0x5432, r1[1004] | r1[1005] << 8);
+    ASSERT_EQ_INT(1777, (int)rec_u32(r1, 1006));
+    ASSERT_EQ_INT(1888, (int)rec_u32(r1, 1010));
+    ASSERT_EQ_INT(1999, (int)rec_u32(r1, 1014));
+    ASSERT_EQ_INT(2111, (int)rec_u32(r1, 1018));
+    ASSERT_EQ_INT(7, r1[1022]);
+    ASSERT_EQ_INT(9, r1[1023]);
+    ASSERT_EQ_INT(0, r0[1000]);
     Save_Close(r);
 }
 

@@ -102,6 +102,10 @@ void InGame_DebugKeyFrame(int scancode, const char *text_in);
 /* The same with IG_CLICK_CTRL and IG_CLICK_SHIFT held as mods says. */
 void InGame_DebugKeyChord(int mods, int scancode);
 
+/* Test seam: the mouse InGame_Tick reads in place of SDL's, window
+ * coordinates and SDL_BUTTON masks; on = 0 hands it back. */
+void InGame_DebugMouse(int on, int win_x, int win_y, uint32_t buttons);
+
 /* The 3D view. SetView3D switches in place and returns 1 when the view
  * asked for is up (the 3D view can refuse where there is no GL).
  * RequestView3D asks the next battle to open in 3D. */

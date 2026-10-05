@@ -22,12 +22,15 @@
 #include "tak_command_queue.h"
 #include "tak_terrain.h"
 #include "tak_economy.h"
+#include "tak_fog.h"
+#include "tak_sim_rand.h"
 
 #include <SDL.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
+#include <stdlib.h>
 
 /* ── the harness ───────────────────────────────────────────────────── */
 
@@ -715,7 +718,7 @@ TEST(a_frame_whose_builder_is_not_closing_frees_the_site) {
     int frame = Units_BeginBuildingForUnit(b, MV_DEF_HUT, sx, sy);
     ASSERT(frame >= 0);
     ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)mv_unit(b)->cmd_kind);
-    ASSERT_EQ_INT(0, Units_IsBuildSiteClear(MV_DEF_HUT, sx, sy));
+    ASSERT_EQ_INT(0, Units_IsBuildSiteFree(MV_DEF_HUT, sx, sy));
 
     /* The mover climbs four rungs of 240 ticks before it gives the
      * order up, and that is what the owner sees as ages. The frame
@@ -733,7 +736,7 @@ TEST(a_frame_whose_builder_is_not_closing_frees_the_site) {
      * counted lost: no work was ever done on the frame. */
     ASSERT_EQ_INT(UNIT_CMD_NONE, (int)mv_unit(b)->cmd_kind);
     ASSERT_EQ_INT(-1, (int)mv_unit(b)->build_target);
-    ASSERT_EQ_INT(1, Units_IsBuildSiteClear(MV_DEF_HUT, sx, sy));
+    ASSERT_EQ_INT(1, Units_IsBuildSiteFree(MV_DEF_HUT, sx, sy));
     ASSERT_EQ_INT(0, (int)w->stats[1].losses);
     mv_end();
 }
@@ -1378,6 +1381,265 @@ TEST(a_fleet_sails_a_narrow_strait) {
     mv_end();
 }
 
+/* ── Flyers ──────────────────────────────────────────────────────────────── */
+
+/* The Harpy from units/zonharp.fbi, with a script that has the flight
+ * pair so it takes off and lands. Returns its def index or -1. */
+static int mv_add_harpy(void) {
+    UnitDef defs[MV_DEF_COUNT + 1];
+    for (int i = 0; i < MV_DEF_COUNT; i++) defs[i] = *Units_GetDef(i);
+    UnitDef *d = &defs[MV_DEF_COUNT];
+    mv_fill_def(d, "TESTHARPY", "", 3.5f, 913);
+    strncpy(d->category, "TEST FLY", sizeof(d->category) - 1);
+    d->acceleration = 0.25f;
+    d->brake_rate = 0.25f;
+    d->turn_rate = 300.0f;
+    d->footprint_x = 2;
+    d->footprint_z = 2;
+    d->can_fly = 1;
+    d->cruise_alt = 200;
+    /* Its maxwaterdepth, and the minwaterdepth every file defaults. */
+    d->max_water_depth = 0;
+    d->min_water_depth = -10000;
+    if (Units_DebugSetDefs(defs, MV_DEF_COUNT + 1) != MV_DEF_COUNT + 1) return -1;
+    static const uint32_t ret[] = { 0x10065000u };
+    static const char *const names[] = { "BeginFlight", "BeginLanding" };
+    static const uint32_t offsets[] = { 0, 0 };
+    if (Units_DebugSetDefScript(MV_DEF_COUNT, ret, 1, names, offsets, 2) != 0) return -1;
+    return MV_DEF_COUNT;
+}
+
+/* Do two two tile footprints, stamped as the step test stamps them,
+ * share a cell. */
+static int mv_flyers_share(const Unit *a, const Unit *b) {
+    return abs(Occ_TileOf(a->world_x - 16) - Occ_TileOf(b->world_x - 16)) < 2 &&
+           abs(Occ_TileOf(a->world_y - 16) - Occ_TileOf(b->world_y - 16)) < 2;
+}
+
+/* Pairs whose two tile footprints, stamped as the step test stamps
+ * them, share a cell. */
+static int mv_flyer_overlaps(const int *h, int n, int32_t *out_min_px) {
+    int pairs = 0;
+    int64_t best = INT64_MAX;
+    for (int i = 0; i < n; i++) {
+        const Unit *a = mv_unit(h[i]);
+        int ax = Occ_TileOf(a->world_x - 16), ay = Occ_TileOf(a->world_y - 16);
+        for (int j = i + 1; j < n; j++) {
+            const Unit *b = mv_unit(h[j]);
+            int bx = Occ_TileOf(b->world_x - 16), by = Occ_TileOf(b->world_y - 16);
+            if (abs(ax - bx) < 2 && abs(ay - by) < 2) pairs++;
+            int64_t d2 = mv_dist2(a, b->world_x, b->world_y);
+            if (d2 < best) best = d2;
+        }
+    }
+    if (out_min_px) *out_min_px = (int32_t)sqrtf((float)best);
+    return pairs;
+}
+
+/* Ten Harpies sent to one point. A flyer whose footprint shares cells
+ * with others in the air moves off (legacy:236040-236113,
+ * legacy:32801-32880) and one lands only where its footprint is clear
+ * (legacy:24297-24399, legacy:220068-220178), so the flock does not
+ * end as one stack. */
+TEST(flyers_sent_to_one_place_do_not_stack) {
+    ASSERT_NOT_NULL(mv_world());
+    int harpy = mv_add_harpy();
+    ASSERT(harpy >= 0);
+    #define MV_FLOCK_N 10
+    int h[MV_FLOCK_N];
+    for (int i = 0; i < MV_FLOCK_N; i++) {
+        h[i] = Units_Spawn(harpy, 1, 0, 1000 + (i % 5) * 48, 1500 + (i / 5) * 48);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    ASSERT_EQ_INT(0, mv_flyer_overlaps(h, MV_FLOCK_N, NULL));
+    int32_t gx = 2000, gy = 1600;
+    for (int i = 0; i < MV_FLOCK_N; i++) Units_OrderMove(h[i], gx, gy);
+    int worst_air = 0, airborne_ticks = 0, landed_at = -1, longest = 0;
+    int shared_for[MV_FLOCK_N][MV_FLOCK_N];
+    memset(shared_for, 0, sizeof shared_for);
+    for (int t = 0; t < 3600; t++) {
+        Units_TickEngines();
+        int up = 0;
+        for (int i = 0; i < MV_FLOCK_N; i++) up += mv_unit(h[i])->flying ? 1 : 0;
+        if (up) airborne_ticks++;
+        else if (landed_at < 0 && t > 60) landed_at = t;
+        if (up == MV_FLOCK_N && mv_dist2(mv_unit(h[0]), gx, gy) <= 160 * 160) {
+            int o = mv_flyer_overlaps(h, MV_FLOCK_N, NULL);
+            if (o > worst_air) worst_air = o;
+        }
+        /* The longest any two airborne Harpies go on sharing cells. */
+        for (int i = 0; i < MV_FLOCK_N; i++) {
+            for (int j = i + 1; j < MV_FLOCK_N; j++) {
+                const Unit *a = mv_unit(h[i]), *b = mv_unit(h[j]);
+                if (a->flying && b->flying && mv_flyers_share(a, b)) {
+                    if (++shared_for[i][j] > longest) longest = shared_for[i][j];
+                } else {
+                    shared_for[i][j] = 0;
+                }
+            }
+        }
+    }
+    int32_t min_px = 0;
+    int rest = mv_flyer_overlaps(h, MV_FLOCK_N, &min_px);
+    int64_t far2 = 0;
+    for (int i = 0; i < MV_FLOCK_N; i++) {
+        int64_t d2 = mv_dist2(mv_unit(h[i]), gx, gy);
+        if (d2 > far2) far2 = d2;
+    }
+    printf("(%d of 45 pairs overlap in the air at the point, %d at rest, "
+           "closest pair %d px apart, farthest %.0f px from the point, "
+           "airborne %d ticks, all down at tick %d, longest shared in the "
+           "air %d ticks) ", worst_air, rest, (int)min_px,
+           (double)sqrtf((float)far2), airborne_ticks, landed_at, longest);
+    ASSERT_EQ_INT(0, rest);
+    ASSERT(far2 <= (int64_t)480 * 480);
+    ASSERT(landed_at > 0);
+    ASSERT(longest <= 360);
+    #undef MV_FLOCK_N
+    mv_end();
+}
+
+/* Eight Harpies packed closer than their footprints patrol to one point
+ * and back. On patrol they never land, so only the step outs part them
+ * (legacy:26180, legacy:32733-32880): pairs that share cells in the air
+ * do so for a few seconds at a time and for a small part of the flight. */
+TEST(a_patrolling_flock_spreads_out) {
+    ASSERT_NOT_NULL(mv_world());
+    int harpy = mv_add_harpy();
+    ASSERT(harpy >= 0);
+    #define MV_PATROL_N 8
+    int h[MV_PATROL_N];
+    for (int i = 0; i < MV_PATROL_N; i++) {
+        h[i] = Units_Spawn(harpy, 1, 0, 1000 + (i % 4) * 20, 1500 + (i / 4) * 20);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    for (int i = 0; i < MV_PATROL_N; i++) Units_OrderPatrol(h[i], 2400, 1500);
+    int run[MV_PATROL_N][MV_PATROL_N];
+    memset(run, 0, sizeof run);
+    int64_t shared = 0, sampled = 0;
+    int longest = 0, landed = 0;
+    for (int t = 0; t < 4800; t++) {
+        Units_TickEngines();
+        for (int i = 0; i < MV_PATROL_N; i++) {
+            const Unit *a = mv_unit(h[i]);
+            if (t >= 600 && !a->flying) landed++;
+            for (int j = i + 1; j < MV_PATROL_N; j++) {
+                const Unit *b = mv_unit(h[j]);
+                int both = a->flying && b->flying;
+                int share = both && mv_flyers_share(a, b);
+                run[i][j] = share ? run[i][j] + 1 : 0;
+                if (run[i][j] > longest) longest = run[i][j];
+                if (t >= 600 && both) {
+                    sampled++;
+                    shared += share;
+                }
+            }
+        }
+    }
+    printf("(%.1f%% of airborne pair ticks shared after the first 10 s, "
+           "longest shared %d ticks) ",
+           sampled ? 100.0 * (double)shared / (double)sampled : 0.0, longest);
+    ASSERT_EQ_INT(0, landed);
+    ASSERT(sampled > 0);
+    ASSERT(shared * 4 < sampled);
+    ASSERT(longest <= 600);
+    #undef MV_PATROL_N
+    mv_end();
+}
+
+/* Two Harpies flying north side by side, a few px apart, each step out
+ * away from the other: the cheapest bearing for each is the one away
+ * from its neighbour (legacy:29973-30000, legacy:32801-32860). */
+TEST(flyers_side_by_side_step_apart) {
+    ASSERT_NOT_NULL(mv_world());
+    int harpy = mv_add_harpy();
+    ASSERT(harpy >= 0);
+    int a = Units_Spawn(harpy, 1, 0, 1500, 2600);
+    int b = Units_Spawn(harpy, 1, 0, 1510, 2600);
+    ASSERT(a >= 0 && b >= 0);
+    Units_SetHeading(a, 0.0f);
+    Units_SetHeading(b, 0.0f);
+    Units_DebugSetAggro(a, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetAggro(b, UNIT_AGGRO_PASSIVE);
+    Units_OrderMove(a, 1500, 300);
+    Units_OrderMove(b, 1510, 300);
+    int met = -1, parted = -1;
+    int32_t ax = 0, bx = 0;
+    for (int t = 0; t < 1200 && parted < 0; t++) {
+        Units_TickEngines();
+        const Unit *ua = mv_unit(a), *ub = mv_unit(b);
+        if (!ua->flying || !ub->flying) continue;
+        int share = mv_flyers_share(ua, ub);
+        if (share && met < 0) met = t;
+        if (!share && met >= 0) {
+            parted = t;
+            ax = ua->world_x;
+            bx = ub->world_x;
+        }
+    }
+    printf("(met at %d, parted at %d, %d px abreast) ", met, parted,
+           (int)(bx - ax));
+    ASSERT(met >= 0);
+    ASSERT(parted >= 0 && parted - met <= 300);
+    /* Neither crossed over the other. */
+    ASSERT(ax < bx);
+    mv_end();
+}
+
+/* A Harpy that comes down where a walker stands takes a clear spot near
+ * by instead (legacy:24297-24399), and once down it holds its cells
+ * like any walker (legacy:218217-218250) until it takes off again. */
+TEST(a_flyer_lands_clear_and_holds_its_ground) {
+    GameWorld *w = mv_world();
+    ASSERT_NOT_NULL(w);
+    int harpy = mv_add_harpy();
+    ASSERT(harpy >= 0);
+    int walker = Units_Spawn(MV_DEF_WALKER, 2, 1, 1500, 1500);
+    int h = Units_Spawn(harpy, 1, 0, 1500, 1500);
+    ASSERT(walker >= 0 && h >= 0);
+    Units_DebugSetAggro(walker, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    Units_OrderMove(h, 1510, 1500);
+    int up = 0, down_at = -1;
+    for (int t = 0; t < 1800 && down_at < 0; t++) {
+        Units_TickEngines();
+        if (mv_unit(h)->flying) up = 1;
+        else if (up) down_at = t;
+    }
+    const Unit *u = mv_unit(h);
+    const Unit *wk = mv_unit(walker);
+    int32_t hx = u->world_x, hy = u->world_y;
+    printf("(down at %d, %d px from the walker) ", down_at,
+           (int)sqrtf((float)mv_dist2(u, wk->world_x, wk->world_y)));
+    ASSERT(down_at > 0);
+    ASSERT(!mv_flyers_share(u, wk));
+    ASSERT(mv_dist2(u, 1500, 1500) <= (int64_t)320 * 320);
+    /* Down, its cells are held against the other side. */
+    int tx = Occ_TileOf(hx - 16), ty = Occ_TileOf(hy - 16);
+    for (int r = 0; r < 2; r++)
+        for (int c = 0; c < 2; c++)
+            ASSERT_EQ_INT(1, Occ_QueryTile(w, tx + c, ty + r, 2, 0));
+    /* The walker sent onto it stops short of its cells. */
+    Units_OrderMove(walker, hx, hy);
+    int stood_on = 0;
+    for (int t = 0; t < 900; t++) {
+        Units_TickEngines();
+        if (mv_flyers_share(mv_unit(h), mv_unit(walker))) stood_on++;
+    }
+    ASSERT_EQ_INT(0, stood_on);
+    ASSERT_EQ_INT(0, (int)mv_unit(h)->flying);
+    /* Up again, the cells are free. */
+    Units_OrderMove(h, hx + 800, hy);
+    for (int t = 0; t < 120; t++) Units_TickEngines();
+    ASSERT_EQ_INT(1, (int)mv_unit(h)->flying);
+    for (int r = 0; r < 2; r++)
+        for (int c = 0; c < 2; c++)
+            ASSERT_EQ_INT(0, Occ_QueryTile(w, tx + c, ty + r, 2, 0));
+    mv_end();
+}
+
 /* A ground crowd lands where it did before ships had hulls. The layout
  * hash is pinned from that build. */
 TEST(a_ground_crowd_packs_as_it_did) {
@@ -1408,6 +1670,315 @@ TEST(a_ground_crowd_packs_as_it_did) {
     mv_end();
 }
 
+/* ── Flyers land only where the original lets them ─────────────────── */
+
+#define MV_SHORE_TX 128     /* the island's first dry corner column */
+#define MV_ISLAND   120     /* the island's height, dry over the sea */
+#define MV_SHALLOW   60     /* wet, but above an amphibious flyer's floor */
+
+enum { MV_FLY_DRAG = MV_DEF_SEA_COUNT, MV_FLY_HUNT, MV_FLY_AMPH, MV_FLY_HOVER,
+       MV_FLY_COUNT };
+
+static void mv_fill_flyer(UnitDef *d, const char *name, int max_wd,
+                          int amphibious) {
+    /* The Aramon dragon's numbers from units/aradrag.fbi. */
+    mv_fill_def(d, name, "", 7.0f, 2000);
+    strncpy(d->category, "TEST FLY", sizeof(d->category) - 1);
+    d->acceleration = 0.2f;
+    d->brake_rate = 0.15f;
+    d->turn_rate = 500.0f;
+    d->footprint_x = 4;
+    d->footprint_z = 4;
+    d->can_fly = 1;
+    d->cruise_alt = 150;
+    d->max_slope = 40;
+    d->max_water_depth = max_wd;
+    d->min_water_depth = -10000;
+    d->amphibious = (uint8_t)amphibious;
+}
+
+/* A sea world whose east part, from corner column MV_SHORE_TX on, is an
+ * island of flat dry ground, and three flyers with the flight pair in
+ * their scripts: one with the dragon's maxwaterdepth of 0, one that
+ * keeps the default 10000 as the Zhon hunter does, and an amphibious
+ * one that may go 30 under. */
+static GameWorld *mv_island(void) {
+    GameWorld *w = mv_sea();
+    if (!w) return NULL;
+    for (int y = 0; y < w->tnt.height_h; y++)
+        for (int x = MV_SHORE_TX; x < w->tnt.height_w; x++)
+            w->tnt.heightmap[y * w->tnt.height_w + x] = MV_ISLAND;
+    TAK_PathCacheReset();
+    UnitDef defs[MV_FLY_COUNT];
+    for (int i = 0; i < MV_DEF_SEA_COUNT; i++) defs[i] = *Units_GetDef(i);
+    mv_fill_flyer(&defs[MV_FLY_DRAG], "TESTDRAG", 0, 0);
+    mv_fill_flyer(&defs[MV_FLY_HUNT], "TESTHUNT", 10000, 0);
+    mv_fill_flyer(&defs[MV_FLY_AMPH], "TESTAMPH", 30, 1);
+    /* No flight pair: it hovers at its cruise height, as the ghost ship. */
+    mv_fill_flyer(&defs[MV_FLY_HOVER], "TESTHOVR", 10000, 0);
+    defs[MV_FLY_HOVER].cruise_alt = 50;
+    if (Units_DebugSetDefs(defs, MV_FLY_COUNT) != MV_FLY_COUNT) return NULL;
+    static const uint32_t ret[] = { 0x10065000u };
+    static const char *const names[] = { "BeginFlight", "BeginLanding" };
+    static const uint32_t offsets[] = { 0, 0 };
+    for (int d = MV_FLY_DRAG; d < MV_FLY_HOVER; d++)
+        if (Units_DebugSetDefScript(d, ret, 1, names, offsets, 2) != 0) return NULL;
+    return w;
+}
+
+/* Every corner under a flyer's footprint, lowest first. */
+static int mv_lowest_corner(const GameWorld *w, const Unit *u) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    int fx = d->footprint_x, fz = d->footprint_z;
+    int tx = (u->world_x - fx * 8 + 8) >> 4, tz = (u->world_y - fz * 8 + 8) >> 4;
+    int low = 255;
+    for (int z = tz; z <= tz + fz; z++)
+        for (int x = tx; x <= tx + fx; x++) {
+            int h = w->tnt.heightmap[z * w->tnt.height_w + x];
+            if (h < low) low = h;
+        }
+    return low;
+}
+
+/* Take off from the island and fly west; stop is called once the flyer
+ * is up at cruise height with its x at or past stop_x, or never when
+ * stop_x is 0 and it is left to arrive. Returns the handle. */
+static int mv_fly_west(int32_t to_x, int32_t stop_x, int32_t *at_x, int32_t *at_y) {
+    int h = Units_Spawn(MV_FLY_DRAG, 1, 0, 2600, 1500);
+    if (h < 0) return -1;
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    Units_OrderMove(h, to_x, 1500);
+    for (int t = 0; t < 4000; t++) {
+        Units_TickEngines();
+        const Unit *u = mv_unit(h);
+        if (stop_x && u->flying && u->flight_alt >= 150.0f && u->world_x <= stop_x) {
+            Units_OrderStop(h);
+            break;
+        }
+        if (!stop_x && u->flying && u->cmd_kind == UNIT_CMD_NONE) break;
+    }
+    *at_x = mv_unit(h)->world_x;
+    *at_y = mv_unit(h)->world_y;
+    return h;
+}
+
+/* The landing test, case by case (legacy:220068-220183). */
+TEST(the_landing_test_is_the_originals) {
+    GameWorld *w = mv_island();
+    ASSERT_NOT_NULL(w);
+    int drag = Units_Spawn(MV_FLY_DRAG, 1, 0, 2600, 1504);
+    int hunt = Units_Spawn(MV_FLY_HUNT, 1, 0, 2600, 1200);
+    int amph = Units_Spawn(MV_FLY_AMPH, 1, 0, 2600, 900);
+    ASSERT(drag >= 0 && hunt >= 0 && amph >= 0);
+    /* Its own cells do not count against it. */
+    ASSERT_EQ_INT(1, Units_DebugCanLandAt(drag, 2600, 1504));
+    /* Open sea, and a footprint whose west column takes the shore cell. */
+    ASSERT_EQ_INT(0, Units_DebugCanLandAt(drag, 800, 1504));
+    ASSERT_EQ_INT(0, Units_DebugCanLandAt(drag, 125 * 16 + 32, 1504));
+    ASSERT_EQ_INT(1, Units_DebugCanLandAt(drag, 128 * 16 + 32, 1504));
+    /* The footprint must stop short of the last column. */
+    ASSERT_EQ_INT(1, Units_DebugCanLandAt(drag, 187 * 16 + 32, 1504));
+    ASSERT_EQ_INT(0, Units_DebugCanLandAt(drag, 188 * 16 + 32, 1504));
+    /* One corner a step under the sea refuses its cells. */
+    uint8_t *corner = &w->tnt.heightmap[100 * w->tnt.height_w + 170];
+    *corner = (uint8_t)(MV_WATER - 1);
+    ASSERT_EQ_INT(0, Units_DebugCanLandAt(drag, 170 * 16, 100 * 16));
+    *corner = (uint8_t)MV_WATER;
+    ASSERT_EQ_INT(1, Units_DebugCanLandAt(drag, 170 * 16, 100 * 16));
+    /* A spread past maxslope, 40 here. */
+    *corner = (uint8_t)(MV_ISLAND + 41);
+    ASSERT_EQ_INT(0, Units_DebugCanLandAt(drag, 170 * 16, 100 * 16));
+    *corner = (uint8_t)(MV_ISLAND + 40);
+    ASSERT_EQ_INT(1, Units_DebugCanLandAt(drag, 170 * 16, 100 * 16));
+    *corner = (uint8_t)MV_ISLAND;
+    /* The corner cell is the nearest one (legacy:220088-220089): half a
+     * cell over, the footprint takes in the next column's wet corner. */
+    uint8_t *east = &w->tnt.heightmap[100 * w->tnt.height_w + 171];
+    *east = (uint8_t)(MV_WATER - 1);
+    ASSERT_EQ_INT(0, Units_DebugCanLandAt(drag, 166 * 16 + 8 + 32, 100 * 16));
+    ASSERT_EQ_INT(1, Units_DebugCanLandAt(drag, 166 * 16 + 7 + 32, 100 * 16));
+    *east = (uint8_t)MV_ISLAND;
+    /* A cell the map marks blocked. */
+    for (int i = 0; i < MV_TILES * MV_TILES; i++) g_mv_marks[i] = 0xFFFFu;
+    g_mv_marks[60 * MV_TILES + 150] = TNT_CELL_IMPASSABLE;
+    w->tnt.feature_layer = g_mv_marks;
+    ASSERT_EQ_INT(0, Units_DebugCanLandAt(drag, 150 * 16 + 16, 60 * 16 + 16));
+    ASSERT_EQ_INT(1, Units_DebugCanLandAt(drag, 150 * 16 + 16 + 64, 60 * 16 + 16));
+    w->tnt.feature_layer = NULL;
+    /* Another unit on the cells, and the cells beside it. */
+    int sword = Units_Spawn(MV_DEF_WALKER, 2, 0, 2400, 2000);
+    ASSERT(sword >= 0);
+    mv_run(30);
+    ASSERT_EQ_INT(0, Units_DebugCanLandAt(drag, 2400, 2000));
+    ASSERT_EQ_INT(1, Units_DebugCanLandAt(drag, 2400 + 48, 2000));
+    /* maxwaterdepth 10000 still needs dry ground on a flyer, and an
+     * amphibious one may go under, down to sea level less its depth. */
+    for (int z = 40; z < 60; z++)
+        for (int x = 40; x < 60; x++)
+            w->tnt.heightmap[z * w->tnt.height_w + x] = MV_SHALLOW;
+    ASSERT_EQ_INT(0, Units_DebugCanLandAt(hunt, 50 * 16, 50 * 16));
+    ASSERT_EQ_INT(0, Units_DebugCanLandAt(drag, 50 * 16, 50 * 16));
+    ASSERT_EQ_INT(1, Units_DebugCanLandAt(amph, 50 * 16, 50 * 16));
+    ASSERT_EQ_INT(0, Units_DebugCanLandAt(amph, 800, 1504));
+    ASSERT_EQ_INT(1, Units_DebugCanLandAt(hunt, 2800, 1200));
+    /* Ground its owner has never explored passes untested. */
+    ASSERT_EQ_INT(0, Fog_Init(w));
+    ASSERT_EQ_INT(1, Units_DebugCanLandAt(drag, 800, 1504));
+    /* Its owner's map, not the other seat's that is still blank. */
+    for (int i = 0; i < w->fog_w * w->fog_h; i++)
+        w->fog_layers[1][i] = TAK_FOG_EXPLORED;
+    ASSERT_EQ_INT(0, Units_DebugCanLandAt(drag, 800, 1504));
+    /* The fog cell read is the footprint's middle one, from its origin. */
+    int ftx = ((800 - 32 + 8) >> 4), ftz = ((1504 - 32 + 8) >> 4);
+    w->fog_layers[1][((ftz >> 1) + 1) * w->fog_w + (ftx >> 1) + 1] = TAK_FOG_UNEXPLORED;
+    ASSERT_EQ_INT(1, Units_DebugCanLandAt(drag, 800, 1504));
+    mv_end();
+}
+
+/* Left over open sea, a flyer never lands. It circles the point where
+ * it went idle, 160 px out (legacy:24363-24381), and stays a flyer. */
+TEST(a_flyer_left_over_open_sea_stays_up) {
+    ASSERT_NOT_NULL(mv_island());
+    int32_t ax = 0, ay = 0;
+    int h = mv_fly_west(800, 0, &ax, &ay);
+    ASSERT(h >= 0);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, mv_unit(h)->cmd_kind);
+    int64_t far2 = 0;
+    int landed = 0, circling = 0;
+    for (int t = 0; t < 1200; t++) {
+        Units_TickEngines();
+        const Unit *u = mv_unit(h);
+        if (!u->flying) landed = 1;
+        if (u->air_mode == UNIT_AIR_CIRCLE) circling = 1;
+        int64_t d2 = mv_dist2(u, ax, ay);
+        if (d2 > far2) far2 = d2;
+    }
+    const Unit *u = mv_unit(h);
+    printf("(farthest %.0f px from where it went idle) ", sqrt((double)far2));
+    ASSERT_EQ_INT(0, landed);
+    ASSERT(circling);
+    ASSERT_EQ_INT(0, Units_DebugScriptEventCount(h, UNIT_SCRIPT_EV_BEGIN_LANDING));
+    ASSERT_EQ_INT(1, (int)u->flying);
+    ASSERT(u->flight_alt >= 150.0f);
+    ASSERT(far2 <= (int64_t)320 * 320);
+    mv_end();
+}
+
+/* Stopped over the water off the island, a flyer finds dry ground in
+ * reach and lands there (legacy:24331-24362). */
+TEST(a_flyer_stopped_off_the_shore_lands_on_the_island) {
+    ASSERT_NOT_NULL(mv_island());
+    int32_t sx = 0, sy = 0;
+    int h = mv_fly_west(800, MV_SHORE_TX * 16 - 80, &sx, &sy);
+    ASSERT(h >= 0);
+    ASSERT(sx < MV_SHORE_TX * 16 - 32);
+    int landed_at = -1;
+    for (int t = 0; t < 3600 && landed_at < 0; t++) {
+        Units_TickEngines();
+        if (!mv_unit(h)->flying) landed_at = t;
+    }
+    const Unit *u = mv_unit(h);
+    printf("(down after %d ticks at %d,%d) ", landed_at, (int)u->world_x,
+           (int)u->world_y);
+    ASSERT(landed_at >= 0);
+    mv_run(600);
+    u = mv_unit(h);
+    ASSERT_EQ_INT(0, (int)u->flying);
+    ASSERT(u->flight_alt <= 0.0f);
+    ASSERT(mv_lowest_corner(World_Get(), u) >= MV_WATER);
+    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(h, UNIT_SCRIPT_EV_BEGIN_LANDING));
+    mv_end();
+}
+
+/* Stopped over dry ground, a flyer flies on toward a point 32 px ahead
+ * while it is still fast (legacy:24276-24295) and lands where it slows,
+ * once, with no search. */
+TEST(a_flyer_stopped_over_land_lands_where_it_is) {
+    ASSERT_NOT_NULL(mv_island());
+    int h = Units_Spawn(MV_FLY_DRAG, 1, 0, 2300, 1500);
+    ASSERT(h >= 0);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    Units_OrderMove(h, 2900, 1500);
+    int stopped = 0, searched = 0, landed_at = -1;
+    int32_t sx = 0, sy = 0;
+    for (int t = 0; t < 4000 && landed_at < 0; t++) {
+        Units_TickEngines();
+        const Unit *u = mv_unit(h);
+        if (!stopped && u->flying && u->flight_alt >= 150.0f) {
+            Units_OrderStop(h);
+            stopped = 1;
+            sx = u->world_x;
+            sy = u->world_y;
+        }
+        if (u->air_mode == UNIT_AIR_SPOT || u->air_mode == UNIT_AIR_CIRCLE)
+            searched = 1;
+        if (stopped && !u->flying) landed_at = t;
+    }
+    const Unit *u = mv_unit(h);
+    printf("(down %.0f px past the stop) ", sqrt((double)mv_dist2(u, sx, sy)));
+    ASSERT(stopped);
+    ASSERT(landed_at >= 0);
+    ASSERT_EQ_INT(0, searched);
+    ASSERT(u->world_x > sx);
+    ASSERT(mv_dist2(u, sx, sy) <= (int64_t)48 * 48);
+    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(h, UNIT_SCRIPT_EV_BEGIN_LANDING));
+    mv_end();
+}
+
+/* The search draws from the simulation's generator, so the same game
+ * lands the flyer on the same spot. */
+TEST(the_landing_search_repeats_exactly) {
+    int32_t end_x[2], end_y[2];
+    uint32_t rand_state[2];
+    for (int run = 0; run < 2; run++) {
+        ASSERT_NOT_NULL(mv_island());
+        int32_t sx = 0, sy = 0;
+        int h = mv_fly_west(800, MV_SHORE_TX * 16 - 80, &sx, &sy);
+        ASSERT(h >= 0);
+        mv_run(2400);
+        end_x[run] = mv_unit(h)->world_x;
+        end_y[run] = mv_unit(h)->world_y;
+        rand_state[run] = World_RandState();
+        mv_end();
+    }
+    ASSERT_EQ_INT(end_x[0], end_x[1]);
+    ASSERT_EQ_INT(end_y[0], end_y[1]);
+    ASSERT_EQ_INT((int)rand_state[0], (int)rand_state[1]);
+}
+
+/* Over the sea a flyer cruises cruisealt over the water, not over the
+ * sea floor, and one that hovers hovers over the surface
+ * (legacy:190499-190507). Over land nothing changes. */
+TEST(a_flyer_cruises_over_the_sea_not_the_sea_floor) {
+    GameWorld *w = mv_island();
+    ASSERT_NOT_NULL(w);
+    int32_t ax = 0, ay = 0;
+    int h = mv_fly_west(800, 0, &ax, &ay);
+    ASSERT(h >= 0);
+    const Unit *u = mv_unit(h);
+    ASSERT_EQ_INT(1, (int)u->flying);
+    int ground = Terrain_SampleHeight(w, u->world_x, u->world_y);
+    printf("(sea floor %d, sea %d, stands at %.0f, drawn at %.0f) ", ground,
+           MV_WATER, (double)Units_DebugStandHeight(h),
+           (double)((float)ground + Units_DrawnAlt(w, u)));
+    ASSERT(ground < MV_WATER);
+    ASSERT(Units_DebugStandHeight(h) >= (float)(MV_WATER + 150));
+    ASSERT((float)ground + Units_DrawnAlt(w, u) >= (float)(MV_WATER + 150));
+    int hov = Units_Spawn(MV_FLY_HOVER, 1, 0, 1200, 1500);
+    ASSERT(hov >= 0);
+    mv_run(120);
+    ASSERT(Units_DebugStandHeight(hov) >= (float)(MV_WATER + 50));
+    ASSERT((float)Terrain_SampleHeight(w, 1200, 1500) +
+           Units_DrawnAlt(w, mv_unit(hov)) >= (float)(MV_WATER + 50));
+    /* On the island a landed flyer stands on the ground. */
+    int down = Units_Spawn(MV_FLY_DRAG, 1, 0, 2600, 900);
+    ASSERT(down >= 0);
+    mv_run(2);
+    ASSERT_EQ_INT(MV_ISLAND, (int)Units_DebugStandHeight(down));
+    ASSERT(Units_DrawnAlt(w, mv_unit(down)) == 0.0f);
+    mv_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("Movement without game data");
@@ -1434,6 +2005,17 @@ int main(int argc, char **argv) {
     RUN(a_shipyard_launches_ship_after_ship);
     RUN(a_fleet_sails_a_narrow_strait);
     RUN(a_ground_crowd_packs_as_it_did);
+    TEST_SUITE("Flyers");
+    RUN(flyers_sent_to_one_place_do_not_stack);
+    RUN(a_patrolling_flock_spreads_out);
+    RUN(flyers_side_by_side_step_apart);
+    RUN(a_flyer_lands_clear_and_holds_its_ground);
+    RUN(the_landing_test_is_the_originals);
+    RUN(a_flyer_left_over_open_sea_stays_up);
+    RUN(a_flyer_stopped_off_the_shore_lands_on_the_island);
+    RUN(a_flyer_stopped_over_land_lands_where_it_is);
+    RUN(the_landing_search_repeats_exactly);
+    RUN(a_flyer_cruises_over_the_sea_not_the_sea_floor);
     TEST_SUITE("State hash");
     RUN(a_repeated_run_hashes_the_same);
     RUN(a_cold_planner_hashes_the_same);

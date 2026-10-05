@@ -30,8 +30,9 @@ the executable.
 
 Capture is a weapon, and an attack order is how a player uses it. A
 Line of Sight weapon with `subtype = mindcontrol` gets a behaviour of
-its own when the weapon is read (:249801). Its shot flies like any
-flat shot. When the shot reaches a unit, the behaviour's hit routine
+its own when the weapon is read (:249801). Its shot leaves like any
+straight shot and has a flight of its own, set out below under The
+shot's flight. When the shot reaches a unit, the behaviour's hit routine
 runs in place of the damage routine (:245361). A mind control hit
 therefore never wounds, whether or not it takes the unit. The damage
 table is used for one thing, which is deciding what the weapon may be
@@ -156,6 +157,79 @@ keeps its kills and rank where the original would reset them.
 Turn to stone and turn to frozen use the same roll (:247865) and are
 still not simulated.
 
+## The shot's flight
+
+Added 2026-10-04. The owner found mind control "went from overpowered
+to mind numbingly powerful as it now hits every time and is instant
+instead of having a high chance of missing". The roll, the cost and the
+speed above were the original's all along, and nothing merged since
+this note had changed them. The flight was not.
+
+What the original does with the shot:
+
+- There is no cast time. The launch starts the shot on the next frame
+  (:246909). A `nimbus` weapon waits `nimbustime` times 30 frames more
+  (:246910-246915, :250013-250015), and no shipped file sets
+  `nimbustime`, so the Harpy never waits.
+- The shot leaves on a straight line for the target's sweet spot plus
+  the target's velocity times four fifths of the flight time
+  (:234031-234060, the multiply by 0xCCCC at :234049). The flight time
+  is the distance from the caster to the sweet spot over the weapon's
+  speed.
+- It flies at `weaponvelocity` along that line (:246885-246892). A
+  Harpy 200 px up firing at a unit 220 px away crosses the ground at
+  about three quarters of 169 px a second.
+- Each frame the shot is freed if its caster is dead or dying
+  (:247710-247713), after that frame's step. Every step runs the cell
+  test (:247736). The shot strikes a unit of another owner holding its
+  16 px cell only when its height is within that unit's model span and
+  its place is inside the selection quad of the unit's root piece,
+  turned with the unit (:236974-237027), or a flyer over the cell whose
+  span holds its height (:245426-245437). There is no reach around the
+  target, and the quad is about 29 px across for a swordsman.
+- It lives its range over its speed across the ground and one frame
+  more (:246919-246922), then vanishes with no effect.
+
+So a still recruit is struck by every shot and taken four times in
+five, and a veteran of rank 4 or more 99 times in a hundred. Leading by
+four fifths, the shot lands where a unit walking steadily across its
+line stood a fifth of the flight earlier. For a swordsman at 33 px a
+second and a flight of 1.7 seconds that is 11 px behind it, inside its
+quad. A faster unit, or one that turns or changes pace while the shot
+is in the air, can be missed, and a recruit keeps its side on one roll
+in five.
+
+The engine had the roll right and the flight wrong. It struck its
+target anywhere within 24 px of its body, aimed where the target stood,
+lived one and a half times its aim distance, flew on after its caster
+died, and crossed the ground at the full 169 px a second however steep
+its line. A mind control shot now follows the original in all five.
+The selection quad is read from the root of the unit's 3DO along with
+the model span, its corners in the order the original walks them, and
+a definition with no model takes its footprint. Every other shot keeps
+the reach and aims where its target stands (D-038).
+
+On two castles, a Harpy 220 px from a passive swordsman fires once it
+has climbed, 116 ticks in. Its shot used to land 65 ticks later. It now
+takes 97, a little over a second and a half, and one at a swordsman
+walking across takes 103. The Harpy reloads in 90 ticks, so a second
+shot is often in the air when the first takes its target. Four still
+swordsmen were taken from four seeds before and after. Four walking
+ones were taken after, where none were before.
+
+What read as instant is most likely the Harpies' stack. A Harpy fires
+from wherever it is inside its 300 px reach, and the stack sits close.
+At 100 px a shot used to land in under half a second. The original
+holds a hovering attacker `hoverattackdistance` off its target, 200 px
+for the Harpy (:163005-163007), which the engine does not do yet
+(D-039).
+
+The quad is a function of the 3DO file, which the data fingerprint
+already hashes, and the fingerprint's schema moves to 4 because the
+engine now reads more of that file. The definition hash a save checks
+leaves it out, as it leaves out the model span, so saves made before
+this still load.
+
 ## How it is checked
 
 `test_command_pipeline` has a Capture group that needs no game data.
@@ -174,7 +248,18 @@ of one battle from one seed change the owner on the same tick and
 produce the same hash after every tick.
 
 The first two of those were written first and failed on the engine
-as it stood.
+as it stood. The capture cases now use a prey two cells a side, as
+every shipped unit is, since a shot strikes only the unit holding its
+own cell.
+
+For the flight, a shot passes a unit that stepped 20 px off its line
+and draws no roll, leads a walker by four fifths of its flight, ends
+after its range, and dies with its caster. A unit's quad turns with
+it. These failed on the engine before the change. A recruit standing
+still is struck by every shot and taken exactly when the seed's first
+draw is under 80, which holds before and after. In `test_ui_screens`
+a shipped Harpy takes a shipped swordsman, standing or walking across,
+from four seeds each.
 
 `test_sim_hash` shows the new mark moves the hash, and the save round
 trip in `test_savegame` carries it.

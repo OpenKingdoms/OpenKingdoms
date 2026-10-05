@@ -83,6 +83,7 @@
 #include "tak_terrain.h"
 #include "tak_perf_probe.h"
 #include "tak_sim_rand.h"
+#include "tak_tdf.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12133,6 +12134,516 @@ TEST(a_remastered_forest_fire_crosses_a_grove_in_tens_of_seconds) {
     ASSERT_EQ_INT(8, plain_burnt);
 }
 
+/* ── Fire on the shipped maps ─────────────────────────────────────── */
+
+/* Every map TNT the install holds, the skirmish maps then the campaign's,
+ * each file once. Returns the count and the skirmish share. */
+static int all_map_tnts(char (**out)[256], int *skirmish_out) {
+    char (*paths)[256] = NULL;
+    int npaths = 0, cap = 0;
+    TAK_MapEntry *maps = NULL;
+    int nmaps = 0;
+    if (TAK_Maps_Scan(&maps, &nmaps) == 0) {
+        for (int i = 0; i < nmaps; i++) {
+            if (npaths == cap) {
+                cap = cap ? cap * 2 : 512;
+                paths = tak_realloc(paths, (size_t)cap * sizeof(*paths));
+            }
+            if (TAK_Maps_FindFile(maps[i].key, "tnt", paths[npaths], sizeof(paths[0])) == 0)
+                npaths++;
+        }
+    }
+    TAK_Maps_Free(maps);
+    int skirmish = npaths;
+    static const char *const campaign[] = { "missions/*.tnt", "missions/missions/*.tnt" };
+    for (size_t c = 0; c < sizeof(campaign) / sizeof(campaign[0]); c++) {
+        char **files = NULL;
+        int n = 0;
+        if (VFS_ListFiles(campaign[c], &files, &n) != 0) n = 0;
+        for (int i = 0; i < n; i++) {
+            /* The loose tree and the archive can both list one map. */
+            const char *base = strrchr(files[i], '/');
+            base = base ? base + 1 : files[i];
+            int seen = 0;
+            for (int k = skirmish; k < npaths && !seen; k++) {
+                const char *b = strrchr(paths[k], '/');
+                seen = tak_stricmp(b ? b + 1 : paths[k], base) == 0;
+            }
+            if (!seen) {
+                if (npaths == cap) {
+                    cap = cap ? cap * 2 : 512;
+                    paths = tak_realloc(paths, (size_t)cap * sizeof(*paths));
+                }
+                snprintf(paths[npaths++], sizeof(paths[0]), "%s", files[i]);
+            }
+            tak_free(files[i]);
+        }
+        tak_free(files);
+    }
+    *out = paths;
+    *skirmish_out = skirmish;
+    return npaths;
+}
+
+/* A feature a fire can reach: flamable, drawn from a GAF, with a burn. */
+static int fire_burnable(int g) {
+    const FeatureDef *fd = Features_GetByIndex(g);
+    return fd && fd->flamable && !fd->object[0] && Features_SequenceFrames(g, 1) > 0;
+}
+
+/* The cells of map `t` that hold a burnable feature's top-left, as a
+ * W*H grid of tree numbers or -1, with their cells listed. */
+static int fire_trees(const TNTFile *t, int **grid_out, int **xs_out, int **zs_out) {
+    int W = t->width_tiles, H = t->height_tiles;
+    *grid_out = NULL; *xs_out = *zs_out = NULL;
+    if (!t->feature_layer || W <= 0 || H <= 0) return 0;
+    int names = t->num_feature_names;
+    int8_t *burn = (int8_t *)tak_calloc((size_t)(names > 0 ? names : 1), 1);
+    for (int q = 0; q < names; q++)
+        burn[q] = (int8_t)(t->feature_names[q] &&
+                           fire_burnable(Features_FindByName(t->feature_names[q])));
+    int *grid = (int *)tak_malloc((size_t)W * (size_t)H * sizeof(int));
+    int n = 0;
+    for (int c = 0; c < W * H; c++) {
+        uint16_t v = t->feature_layer[c];
+        grid[c] = (v < 0xFFF0u && v < (uint16_t)names && burn[v]) ? n++ : -1;
+    }
+    int *xs = (int *)tak_malloc((size_t)(n ? n : 1) * sizeof(int));
+    int *zs = (int *)tak_malloc((size_t)(n ? n : 1) * sizeof(int));
+    for (int c = 0; c < W * H; c++)
+        if (grid[c] >= 0) { xs[grid[c]] = c % W; zs[grid[c]] = c / W; }
+    tak_free(burn);
+    *grid_out = grid; *xs_out = xs; *zs_out = zs;
+    return n;
+}
+
+static int fire_uf_find(int *p, int i) {
+    while (p[i] != i) { p[i] = p[p[i]]; i = p[i]; }
+    return i;
+}
+
+/* Groups of trees each within `reach` cells (the square a spark covers)
+ * of another. comp[i] is tree i's group root, the return the largest. */
+static int fire_groups(int W, int H, const int *grid, const int *xs, const int *zs,
+                       int n, int reach, int *comp, int *size) {
+    for (int i = 0; i < n; i++) { comp[i] = i; size[i] = 0; }
+    for (int i = 0; i < n; i++)
+        for (int dz = -reach; dz <= reach; dz++)
+            for (int dx = -reach; dx <= reach; dx++) {
+                int x = xs[i] + dx, z = zs[i] + dz;
+                if (x < 0 || z < 0 || x >= W || z >= H) continue;
+                int j = grid[z * W + x];
+                if (j <= i) continue;
+                int a = fire_uf_find(comp, i), b = fire_uf_find(comp, j);
+                if (a != b) comp[a] = b;
+            }
+    int best = 0;
+    for (int i = 0; i < n; i++) {
+        comp[i] = fire_uf_find(comp, i);
+        if (++size[comp[i]] > best) best = size[comp[i]];
+    }
+    return best;
+}
+
+/* A map's OTA wind range, the loader's defaults when it names none. */
+static void fire_map_wind(const char *tnt_path, int *lo, int *hi) {
+    *lo = 100; *hi = 2000;
+    char ota[256];
+    snprintf(ota, sizeof ota, "%s", tnt_path);
+    size_t len = strlen(ota);
+    if (len < 4) return;
+    int upper = ota[len - 1] == 'T';
+    memcpy(ota + len - 3, upper ? "OTA" : "ota", 3);
+    TDFFile *t = TDF_Open(ota);
+    if (!t) return;
+    if (TDF_Load(t) == 0 && TDF_PushSection(t, "GlobalHeader") == 0) {
+        *lo = TDF_ReadInt(t, "minwindspeed", 100);
+        *hi = TDF_ReadInt(t, "maxwindspeed", 2000);
+        TDF_PopSection(t);
+    }
+    TDF_Close(t);
+}
+
+#define FIRE_GAP_MAX 16
+
+/* The gaps between the trees on every shipped map: each burnable tree's
+ * nearest burnable neighbour, and the largest group each spark reach
+ * from 3 to 8 cells joins. A measuring tool (TAK_FIRE_PROBE). */
+TEST(fire_census_of_the_shipped_maps) {
+    if (mount_iron_plague() != 0) SKIP("no game dir");
+    Features_LoadAll();
+    static uint32_t rgba[256];
+    char (*paths)[256] = NULL;
+    int skirmish = 0;
+    int npaths = all_map_tnts(&paths, &skirmish);
+    long cheb[FIRE_GAP_MAX + 2] = { 0 }, eucl[FIRE_GAP_MAX + 2] = { 0 };
+    long trees_all = 0, in_ten[9] = { 0 }, in_five[9] = { 0 };
+    int loaded = 0, with_trees = 0, wind_hist[8] = { 0 }, maps_ten[9] = { 0 };
+    for (int m = 0; m < npaths; m++) {
+        TNTFile tnt;
+        if (TNT_Load(&tnt, paths[m], rgba) != 0) continue;
+        loaded++;
+        int lo, hi;
+        fire_map_wind(paths[m], &lo, &hi);
+        wind_hist[hi < 1000 ? 0 : hi < 2000 ? 1 : hi == 2000 ? 2 : hi < 4000 ? 3 : 4]++;
+        int *grid, *xs, *zs;
+        int n = fire_trees(&tnt, &grid, &xs, &zs);
+        int W = tnt.width_tiles, H = tnt.height_tiles;
+        if (n > 0) with_trees++;
+        trees_all += n;
+        int gap_n[FIRE_GAP_MAX + 2] = { 0 };
+        for (int i = 0; i < n; i++) {
+            int best_c = FIRE_GAP_MAX + 1, best_e2 = 1 << 30;
+            for (int d = 1; d <= FIRE_GAP_MAX; d++) {
+                for (int dz = -d; dz <= d; dz++)
+                    for (int dx = -d; dx <= d; dx++) {
+                        if (dx > -d && dx < d && dz > -d && dz < d) continue;
+                        int x = xs[i] + dx, z = zs[i] + dz;
+                        if (x < 0 || z < 0 || x >= W || z >= H || grid[z * W + x] < 0) continue;
+                        if (d < best_c) best_c = d;
+                        if (dx * dx + dz * dz < best_e2) best_e2 = dx * dx + dz * dz;
+                    }
+                if (best_e2 <= d * d) break;
+            }
+            int e = FIRE_GAP_MAX + 1;
+            if (best_e2 < (1 << 30)) {
+                e = (int)ceil(sqrt((double)best_e2));
+                if (e > FIRE_GAP_MAX) e = FIRE_GAP_MAX + 1;
+            }
+            cheb[best_c]++;
+            eucl[e]++;
+            gap_n[best_c]++;
+        }
+        int median = 0;
+        for (int acc = 0; median <= FIRE_GAP_MAX + 1; median++)
+            if ((acc += gap_n[median]) * 2 >= n) break;
+        int largest[9] = { 0 };
+        int *comp = (int *)tak_malloc((size_t)(n ? n : 1) * sizeof(int));
+        int *size = (int *)tak_malloc((size_t)(n ? n : 1) * sizeof(int));
+        for (int r = 3; r <= 8; r++) {
+            largest[r] = fire_groups(W, H, grid, xs, zs, n, r, comp, size);
+            maps_ten[r] += largest[r] >= 10;
+            for (int i = 0; i < n; i++) {
+                if (size[comp[i]] >= 10) in_ten[r]++;
+                if (size[comp[i]] >= 5) in_five[r]++;
+            }
+        }
+        const char *base = strrchr(paths[m], '/');
+        printf("\n    %-34s %3dx%-3d wind %4d-%-5d trees %5d  median gap %2d  "
+               "largest at 3..8: %4d %4d %4d %4d %4d %4d",
+               base ? base + 1 : paths[m], W, H, lo, hi, n,
+               n ? median : 0, largest[3], largest[4], largest[5], largest[6],
+               largest[7], largest[8]);
+        tak_free(comp); tak_free(size);
+        tak_free(grid); tak_free(xs); tak_free(zs);
+        TNT_Close(&tnt);
+    }
+    int distinct = 0;
+    for (int m = 0; m < npaths; m++) {
+        const char *b = strrchr(paths[m], '/');
+        int seen = 0;
+        for (int k = 0; k < m && !seen; k++) {
+            const char *c = strrchr(paths[k], '/');
+            seen = tak_stricmp(c ? c + 1 : paths[k], b ? b + 1 : paths[m]) == 0;
+        }
+        distinct += !seen;
+    }
+    printf("\n    %d maps (%d skirmish, %d distinct names), %d loaded, %d with burnable "
+           "trees, %ld trees", npaths, skirmish, distinct, loaded, with_trees, trees_all);
+    for (int g = 0; g < Features_GetCount(); g++) {
+        if (!fire_burnable(g)) continue;
+        const FeatureDef *fd = Features_GetByIndex(g);
+        int burnt = Features_FindByName(fd->feature_burnt);
+        printf("\n    burnable %-20s chance %3d spark %3d burn %3d front %3d back %3d burnt %s%s",
+               fd->name, fd->spread_chance, fd->spark_time, Features_SequenceFrames(g, 1),
+               Features_SequenceFrames(g, 2), Features_SequenceFrames(g, 3),
+               fd->feature_burnt, burnt >= 0 && fire_burnable(burnt) ? " (burns again)" : "");
+    }
+    printf("\n    max wind <1000 %d, <2000 %d, =2000 %d, <4000 %d, more %d",
+           wind_hist[0], wind_hist[1], wind_hist[2], wind_hist[3], wind_hist[4]);
+    printf("\n    nearest burnable neighbour, square cells (gap: trees, cumulative %%):");
+    long acc = 0;
+    for (int d = 1; d <= FIRE_GAP_MAX + 1; d++) {
+        acc += cheb[d];
+        printf("\n      %2d%s %6ld %5.1f", d, d > FIRE_GAP_MAX ? "+" : " ", cheb[d],
+               trees_all ? 100.0 * (double)acc / (double)trees_all : 0.0);
+    }
+    printf("\n    nearest burnable neighbour, round cells:");
+    acc = 0;
+    for (int d = 1; d <= FIRE_GAP_MAX + 1; d++) {
+        acc += eucl[d];
+        printf("\n      %2d%s %6ld %5.1f", d, d > FIRE_GAP_MAX ? "+" : " ", eucl[d],
+               trees_all ? 100.0 * (double)acc / (double)trees_all : 0.0);
+    }
+    for (int r = 3; r <= 8; r++)
+        printf("\n    reach %d: %5.1f%% of trees in a group of 10 or more, %5.1f%% in 5 or more, "
+               "%d maps with a group of 10 or more",
+               r, trees_all ? 100.0 * (double)in_ten[r] / (double)trees_all : 0.0,
+               trees_all ? 100.0 * (double)in_five[r] / (double)trees_all : 0.0, maps_ten[r]);
+    printf("\n    ");
+    tak_free(paths);
+    Features_FreeAll();
+    VFS_Shutdown();
+    ASSERT(loaded > 0);
+}
+
+/* What a probe fire lit: the frame, the cell and the wind of each. */
+#define FIRE_PROBE_MAX 16384
+typedef struct FireLit { uint32_t frame; int x, z; int32_t wx, wz; } FireLit;
+static FireLit g_fire_lit[FIRE_PROBE_MAX];
+static int g_fire_lit_n;
+
+static void fire_probe_hook(const struct GameWorld *w, const FeatureEvent *e) {
+    if (e->kind != FEATURE_EVENT_BURNING || g_fire_lit_n >= FIRE_PROBE_MAX) return;
+    FireLit *l = &g_fire_lit[g_fire_lit_n++];
+    l->frame = w->feat_frame;
+    l->x = w->features[e->idx].tile_x;
+    l->z = w->features[e->idx].tile_z;
+    l->wx = w->wind_x;
+    l->wz = w->wind_z;
+}
+
+typedef struct FireRun {
+    int forest, lit, lit_forest;
+    int frames_out, f50, f90;
+    int peak_frame;          /* most features lit in one frame */
+    double down, up;         /* farthest lit along and against the wind, cells */
+    double front_px_s;       /* fastest average from the start to a tree 10 cells off */
+    double down_px_s, up_px_s; /* mean pace of the trees 3 or more cells down and up wind */
+} FireRun;
+
+/* The shipped map at `path` built as the loader builds it, under the
+ * remastered rules or not, the wind in the map's range or none. The tree
+ * nearest the middle of its largest forest at `reach` is lit and the
+ * fire runs until it is out. */
+static int fire_run_map(const char *path, int remastered, int wind, uint32_t seed,
+                        int reach, FireRun *r) {
+    static uint32_t rgba[256];
+    memset(r, 0, sizeof *r);
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    cfg.remastered = remastered;
+    if (World_BeginLoad(NULL, &cfg, "synthetic", "aramon") != 0) return -1;
+    GameWorld *w = World_Get();
+    if (!w || TNT_Load(&w->tnt, path, rgba) != 0) { World_End(NULL); return -1; }
+    World_SeedRand(seed);
+    int W = w->tnt.width_tiles, H = w->tnt.height_tiles;
+    w->map_pixels_w = W * 16;
+    w->map_pixels_h = H * 16;
+    const uint16_t *fl = w->tnt.feature_layer;
+    int n = 0;
+    for (int c = 0; fl && c < W * H; c++) n += fl[c] < 0xFFF0u;
+    w->features = (struct MapFeature *)tak_calloc((size_t)(n ? n : 1), sizeof(*w->features));
+    for (int c = 0, k = 0; fl && c < W * H; c++) {
+        uint16_t v = fl[c];
+        if (v >= 0xFFF0u) continue;
+        struct MapFeature *f = &w->features[k++];
+        int g = v < (uint16_t)w->tnt.num_feature_names && w->tnt.feature_names[v]
+                    ? Features_FindByName(w->tnt.feature_names[v]) : -1;
+        const FeatureDef *fd = Features_GetByIndex(g);
+        int fx = fd && fd->footprint_x > 0 ? fd->footprint_x : 1;
+        int fz = fd && fd->footprint_z > 0 ? fd->footprint_z : 1;
+        f->feat_id = v;
+        f->tile_x = (uint16_t)(c % W);
+        f->tile_z = (uint16_t)(c / W);
+        f->global_idx = g;
+        f->world_x = (int32_t)(c % W) * 16 + fx * 8;
+        f->world_y = (int32_t)(c / W) * 16 + fz * 8;
+        f->color_idx = -1;
+        f->decompose_ticks = -1;
+    }
+    w->feature_count = n;
+    w->feature_cap = n ? n : 1;
+    Features_NoteListReplaced();
+    Features_MarkChanged(w);
+    int lo = 0, hi = 0;
+    if (wind) fire_map_wind(path, &lo, &hi);
+    Features_WindBegin(w, lo, hi);
+
+    int *grid, *xs, *zs;
+    int trees = fire_trees(&w->tnt, &grid, &xs, &zs);
+    int *comp = (int *)tak_malloc((size_t)(trees ? trees : 1) * sizeof(int));
+    int *size = (int *)tak_malloc((size_t)(trees ? trees : 1) * sizeof(int));
+    r->forest = fire_groups(W, H, grid, xs, zs, trees, reach, comp, size);
+    int root = -1;
+    for (int i = 0; i < trees && root < 0; i++) if (size[comp[i]] == r->forest) root = comp[i];
+    double cx = 0, cz = 0;
+    for (int i = 0; i < trees; i++) if (comp[i] == root) { cx += xs[i]; cz += zs[i]; }
+    if (r->forest) { cx /= r->forest; cz /= r->forest; }
+    int start = -1;
+    double best = 1e30;
+    for (int i = 0; i < trees; i++) {
+        if (comp[i] != root) continue;
+        double d = (xs[i] - cx) * (xs[i] - cx) + (zs[i] - cz) * (zs[i] - cz);
+        if (d < best) { best = d; start = i; }
+    }
+    int idx = -1;
+    for (int i = 0; start >= 0 && i < w->feature_count; i++)
+        if (w->features[i].tile_x == xs[start] && w->features[i].tile_z == zs[start]) idx = i;
+    g_fire_lit_n = 0;
+    Features_SetEventHook(fire_probe_hook);
+    if (idx >= 0) Features_DebugHit(w, idx, 50, 1);
+    int frame0 = (int)w->feat_frame, down_n = 0, up_n = 0;
+    for (int f = 0; f < 30 * 900 && idx >= 0; f++) {
+        int before = g_fire_lit_n;
+        Features_TickFrame(w);
+        if (g_fire_lit_n - before > r->peak_frame) r->peak_frame = g_fire_lit_n - before;
+        int burning = 0;
+        for (int i = 0; i < w->feature_count && !burning; i++)
+            burning = w->features[i].fx == FEATURE_FX_BURNING;
+        if (!burning) { r->frames_out = f + 1; break; }
+    }
+    Features_SetEventHook(NULL);
+    r->lit = g_fire_lit_n;
+    for (int k = 0; k < g_fire_lit_n; k++) {
+        const FireLit *l = &g_fire_lit[k];
+        int t = l->x >= 0 && l->x < W && l->z >= 0 && l->z < H ? grid[l->z * W + l->x] : -1;
+        if (t >= 0 && comp[t] == root) r->lit_forest++;
+        if (r->f50 == 0 && (k + 1) * 2 >= g_fire_lit_n) r->f50 = (int)l->frame - frame0;
+        if (r->f90 == 0 && (k + 1) * 10 >= g_fire_lit_n * 9) r->f90 = (int)l->frame - frame0;
+        if (start < 0 || l->frame == (uint32_t)frame0) continue;
+        double dx = l->x - xs[start], dz = l->z - zs[start];
+        double reach_px = sqrt(dx * dx + dz * dz) * 16.0;
+        double rate = reach_px * 30.0 / (double)((int)l->frame - frame0);
+        if (rate > r->front_px_s && reach_px >= 160.0) r->front_px_s = rate;
+        double wl = sqrt((double)l->wx * l->wx + (double)l->wz * l->wz);
+        if (wl > 0) {
+            double along = (dx * l->wx + dz * l->wz) / wl;
+            if (along > r->down) r->down = along;
+            if (-along > r->up) r->up = -along;
+            double pace = fabs(along) * 16.0 * 30.0 / (double)((int)l->frame - frame0);
+            if (along >= 3.0) { r->down_px_s += pace; down_n++; }
+            if (along <= -3.0) { r->up_px_s += pace; up_n++; }
+        }
+    }
+    if (down_n) r->down_px_s /= down_n;
+    if (up_n) r->up_px_s /= up_n;
+    tak_free(comp); tak_free(size);
+    tak_free(grid); tak_free(xs); tak_free(zs);
+    World_End(NULL);
+    return idx >= 0 ? 0 : -1;
+}
+
+/* A square of `tree` every `gap` cells 80 cells across, its middle lit
+ * under a steady east wind of `speed`. How far east, west, north and
+ * south the fire gets in a minute, and the frames each took. */
+static void fire_run_square(int tree, int gap, int speed, uint32_t seed, double out[8]) {
+    memset(out, 0, 8 * sizeof(double));
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    cfg.remastered = 1;
+    if (World_BeginLoad(NULL, &cfg, "synthetic", "aramon") != 0) return;
+    GameWorld *w = World_Get();
+    World_SeedRand(seed);
+    w->map_pixels_w = w->map_pixels_h = 128 * 16;
+    Features_WindBegin(w, speed, speed + 1);
+    Features_DebugSetWind(w, speed, 0x4000);
+    w->wind_next_frame = 0xFFFFFF00u;
+    int side = 40 / gap, mid = -1;
+    for (int z = -side; z <= side; z++)
+        for (int x = -side; x <= side; x++) {
+            int cx = 64 + gap * x, cz = 64 + gap * z;
+            int f = Features_AddInstance(w, tree, cx, cz, cx * 16 + 8, cz * 16 + 8, 0, -1);
+            if (x == 0 && z == 0) mid = f;
+        }
+    g_fire_lit_n = 0;
+    Features_SetEventHook(fire_probe_hook);
+    if (mid >= 0) Features_DebugHit(w, mid, 50, 1);
+    uint32_t f0 = w->feat_frame;
+    for (int f = 0; f < 30 * 60; f++) Features_TickFrame(w);
+    Features_SetEventHook(NULL);
+    for (int q = 0; q < g_fire_lit_n; q++) {
+        int dx = g_fire_lit[q].x - 64, dz = g_fire_lit[q].z - 64;
+        double t = (double)(g_fire_lit[q].frame - f0);
+        if (dx > out[0]) { out[0] = dx; out[1] = t; }
+        if (-dx > out[2]) { out[2] = -dx; out[3] = t; }
+        if (-dz > out[4]) { out[4] = -dz; out[5] = t; }
+        if (dz > out[6]) { out[6] = dz; out[7] = t; }
+    }
+    World_End(NULL);
+}
+
+/* A fire lit in the largest forest of a few shipped maps, with the wind
+ * on and off, under the remastered rules and the original's, and in a
+ * square of trees under a steady wind. A measuring tool (TAK_FIRE_PROBE)
+ * for the numbers in D-036. */
+TEST(fire_on_the_shipped_maps) {
+    if (mount_iron_plague() != 0) SKIP("no game dir");
+    Features_LoadAll();
+    static const char *const want[] = { "lake ferrix_jm.tnt", "new hindigal.tnt",
+                                        "thorn boscage.tnt", "two castles.tnt",
+                                        "riverfork wood.tnt", "black heart jungle.tnt" };
+    int seeds = getenv("TAK_FIRE_SEEDS") ? atoi(getenv("TAK_FIRE_SEEDS")) : 5;
+    char (*paths)[256] = NULL;
+    int skirmish = 0;
+    int npaths = all_map_tnts(&paths, &skirmish);
+    int ran = 0;
+    int tree = Features_FindByName("AraTree01");
+    static const int gaps[] = { 1, 2, 5 };
+    static const int speeds[] = { 0, 300, 2000 };
+    for (int gi = 0; gi < 3 && tree >= 0; gi++)
+        for (int si = 0; si < 3; si++) {
+            double sum[8] = { 0 };
+            for (int k = 0; k < 4; k++) {
+                double o[8];
+                fire_run_square(tree, gaps[gi], speeds[si], 31u + 17u * (uint32_t)k, o);
+                for (int q = 0; q < 8; q++) sum[q] += o[q] / 4.0;
+            }
+            printf("\n    square gap %d wind %4d: in a minute east %4.1f cells (%4.1f px/s), "
+                   "west %4.1f (%4.1f px/s), north %4.1f (%4.1f px/s), south %4.1f (%4.1f px/s)",
+                   gaps[gi], speeds[si], sum[0], sum[1] > 0 ? sum[0] * 480.0 / sum[1] : 0.0,
+                   sum[2], sum[3] > 0 ? sum[2] * 480.0 / sum[3] : 0.0, sum[4],
+                   sum[5] > 0 ? sum[4] * 480.0 / sum[5] : 0.0, sum[6],
+                   sum[7] > 0 ? sum[6] * 480.0 / sum[7] : 0.0);
+        }
+    for (size_t m = 0; m < sizeof(want) / sizeof(want[0]); m++) {
+        int p = -1;
+        for (int i = 0; i < npaths && p < 0; i++) {
+            const char *b = strrchr(paths[i], '/');
+            if (tak_stricmp(b ? b + 1 : paths[i], want[m]) == 0) p = i;
+        }
+        if (p < 0) { printf("\n    %s: not installed", want[m]); continue; }
+        for (int mode = 0; mode < 3; mode++) {
+            int remastered = mode > 0, wind = mode != 1;
+            int nseeds = remastered ? seeds : 1, runs = 0, peak = 0;
+            int lit_min = 1 << 30, lit_max = 0, forest = 0;
+            double lit = 0, f90 = 0, out = 0, down = 0, up = 0, front = 0;
+            double down_pace = 0, up_pace = 0;
+            for (int s = 1; s <= nseeds; s++) {
+                FireRun r;
+                if (fire_run_map(paths[p], remastered, wind, 7919u * (uint32_t)s,
+                                 FEATURE_SPARK_REACH, &r) != 0) continue;
+                ran++;
+                runs++;
+                forest = r.forest;
+                lit += r.lit_forest;
+                if (r.lit_forest < lit_min) lit_min = r.lit_forest;
+                if (r.lit_forest > lit_max) lit_max = r.lit_forest;
+                f90 += r.f90 / 30.0;
+                out += r.frames_out / 30.0;
+                down += r.down;
+                up += r.up;
+                down_pace += r.down_px_s;
+                up_pace += r.up_px_s;
+                if (r.front_px_s > front) front = r.front_px_s;
+                if (r.peak_frame > peak) peak = r.peak_frame;
+            }
+            if (!runs) continue;
+            printf("\n    %-24s %-8s forest %3d: lit %5.1f (%d to %d), 90%% by %5.1f s, out "
+                   "after %5.1f s, front up to %4.1f px/s, downwind %4.1f cells at %4.1f px/s, "
+                   "upwind %4.1f at %4.1f, peak %d a frame", want[m],
+                   !remastered ? "classic" : wind ? "wind" : "calm",
+                   forest, lit / runs, lit_min, lit_max, f90 / runs, out / runs, front,
+                   down / runs, down_pace / runs, up / runs, up_pace / runs, peak);
+        }
+    }
+    printf("\n    ");
+    tak_free(paths);
+    Features_FreeAll();
+    VFS_Shutdown();
+    ASSERT(ran > 0);
+}
+
 /* A burning tree draws its burn picture with both flames in the classic
  * view, where an idle one drew only itself (legacy:211228-211240). */
 TEST(the_classic_view_draws_a_burning_tree) {
@@ -12188,46 +12699,8 @@ TEST(every_feature_a_map_names_resolves) {
     Features_LoadAll();
     static uint32_t rgba[256];
     char (*paths)[256] = NULL;
-    int npaths = 0, cap = 0;
-    TAK_MapEntry *maps = NULL;
-    int nmaps = 0;
-    if (TAK_Maps_Scan(&maps, &nmaps) == 0) {
-        for (int i = 0; i < nmaps; i++) {
-            if (npaths == cap) {
-                cap = cap ? cap * 2 : 512;
-                paths = tak_realloc(paths, (size_t)cap * sizeof(*paths));
-            }
-            if (TAK_Maps_FindFile(maps[i].key, "tnt", paths[npaths], sizeof(paths[0])) == 0)
-                npaths++;
-        }
-    }
-    TAK_Maps_Free(maps);
-    int skirmish = npaths;
-    static const char *const campaign[] = { "missions/*.tnt", "missions/missions/*.tnt" };
-    for (size_t c = 0; c < sizeof(campaign) / sizeof(campaign[0]); c++) {
-        char **files = NULL;
-        int n = 0;
-        if (VFS_ListFiles(campaign[c], &files, &n) != 0) n = 0;
-        for (int i = 0; i < n; i++) {
-            /* The loose tree and the archive can both list one map. */
-            const char *base = strrchr(files[i], '/');
-            base = base ? base + 1 : files[i];
-            int seen = 0;
-            for (int k = skirmish; k < npaths && !seen; k++) {
-                const char *b = strrchr(paths[k], '/');
-                seen = tak_stricmp(b ? b + 1 : paths[k], base) == 0;
-            }
-            if (!seen) {
-                if (npaths == cap) {
-                    cap = cap ? cap * 2 : 512;
-                    paths = tak_realloc(paths, (size_t)cap * sizeof(*paths));
-                }
-                snprintf(paths[npaths++], sizeof(paths[0]), "%s", files[i]);
-            }
-            tak_free(files[i]);
-        }
-        tak_free(files);
-    }
+    int skirmish = 0;
+    int npaths = all_map_tnts(&paths, &skirmish);
 
     int loaded = 0, names = 0, unresolved = 0, lost = 0;
     for (int m = 0; m < npaths; m++) {
@@ -13326,6 +13799,90 @@ TEST(an_archer_against_a_swordsman_ends_as_the_originals_rules_give) {
     ASSERT_EQ_INT(1, f.alive[1]);
     ASSERT(f.hp[1] >= 1250 && f.hp[1] <= 1520);
     ASSERT(f.ticks >= 60 * 15 && f.ticks <= 60 * 19);
+}
+
+/* ── The Harpy's mind control ───────────────────────────────────────
+ * docs/notes/2026-09-19-the-harpy-takes-units-over.md, The shot's flight. */
+
+#define MC_DUEL_TICKS 900
+#define MC_DUEL_SLOTS 512
+
+/* A Harpy gap px west of an ARASWORD, still or walking across. The tick it
+ * came over, -1 for never, -2 when unset. *shots counts the Harpy's shots. */
+static int mc_duel(GameWorld *world, int32_t cx, int32_t cy, int gap, int walking,
+                   uint32_t seed, int *shots) {
+    *shots = 0;
+    int hdef = Units_FindDefByName("ZONHARP"), pdef = Units_FindDefByName("ARASWORD");
+    if (hdef < 0 || pdef < 0) return -2;
+    int harpy = Units_Spawn(hdef, 1, 0, cx - gap, cy);
+    int prey = Units_Spawn(pdef, 2, 1, cx, walking ? cy - 200 : cy);
+    if (harpy < 0 || prey < 0) return -2;
+    Units_DebugSetAggro(prey, UNIT_AGGRO_PASSIVE);
+    ad_tick(world, 2);
+    float cur = 0.0f, max = 0.0f;
+    if (Units_GetMana(harpy, &cur, &max)) Units_DebugSetMana(harpy, max);
+    World_SeedRand(seed);
+    uint32_t prey_id = Units_GetStableId(prey);
+    if (walking) Units_OrderMove(prey, cx, cy + 400);
+    Units_OrderAttack(harpy, prey);
+    static uint8_t live[MC_DUEL_SLOTS];
+    memset(live, 0, sizeof(live));
+    int took = -1;
+    for (int t = 0; t < MC_DUEL_TICKS && took < 0; t++) {
+        ad_tick(world, 1);
+        int n = 0;
+        const Projectile *p = Units_GetProjectiles(&n);
+        for (int i = 0; i < n && i < MC_DUEL_SLOTS; i++) {
+            uint8_t now = p[i].alive && p[i].mind_control && p[i].shooter == harpy;
+            if (now && !live[i]) (*shots)++;
+            live[i] = now;
+        }
+        for (int i = n; i < MC_DUEL_SLOTS; i++) live[i] = 0;
+        if (Units_FindByStableId(prey_id) < 0) took = t;
+    }
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    for (int i = 0; i < n; i++)
+        if (u[i].alive == UNIT_ALIVE_ACTIVE && (int)u[i].def_idx == pdef)
+            Units_DebugRemove(i);
+    Units_DebugRemove(harpy);
+    ad_tick(world, 30);
+    return took;
+}
+
+TEST(a_harpy_takes_a_swordsman_standing_or_walking_across) {
+    TAK_Platform platform;
+    int rc = ad_boot(&platform, 0);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    GameWorld *world = World_Get();
+    int32_t cx = 0, cy = 0;
+    int ok = ad_arena(world, 900, 700, &cx, &cy);
+    int still = 0, walking = 0, still_shots = 0, walking_shots = 0, set = 1;
+    for (int k = 0; ok && k < 4; k++) {
+        uint32_t seed = 1000u + (uint32_t)k * 7919u;
+        int shots = 0;
+        int took = mc_duel(world, cx, cy, 220, 0, seed, &shots);
+        if (took < -1) set = 0;
+        if (took >= 0) still++;
+        still_shots += shots;
+        printf("\n    still, seed %u: %d shots, taken at %d", (unsigned)seed, shots, took);
+        took = mc_duel(world, cx, cy, 220, 1, seed, &shots);
+        if (took < -1) set = 0;
+        if (took >= 0) walking++;
+        walking_shots += shots;
+        printf("\n    walking, seed %u: %d shots, taken at %d", (unsigned)seed, shots, took);
+    }
+    printf("\n    ");
+    corpse_shutdown(&platform);
+    ASSERT(ok);
+    ASSERT(set);
+    /* Pinned. A shot lands slower than the Harpy reloads, so a second is
+     * often in the air when the first takes its target. */
+    ASSERT_EQ_INT(4, still);
+    ASSERT_EQ_INT(9, still_shots);
+    ASSERT_EQ_INT(4, walking);
+    ASSERT_EQ_INT(10, walking_shots);
 }
 
 /* Use Crusades Units loads the Crusades balance set, unitscb/ in place
@@ -17919,6 +18476,90 @@ done:
     VFS_Shutdown();
 }
 
+/* Real Harpies with their own scripts, ordered onto one point of open
+ * ground. The original keeps airborne flyers off each other's cells and
+ * lands one only on clear ground (legacy:236040-236113,
+ * legacy:24297-24399), so none ends on another. */
+TEST(harpies_sent_to_one_place_do_not_stack) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+    int harpy = Units_FindDefByName("ZONHARP");
+    if (harpy < 0) { SKIP_MARK("no ZONHARP"); goto done; }
+    {
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(sword_def >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t rx = 0, ry = 0;
+    if (gates_find_site(world, sword_def, units[0].world_x, units[0].world_y,
+                        320, 1, 0, &rx, &ry) != 0) {
+        SKIP_MARK("no open ground");
+        goto done;
+    }
+    #define FLOCK_N 12
+    int h[FLOCK_N];
+    for (int i = 0; i < FLOCK_N; i++) {
+        h[i] = Units_Spawn(harpy, 1, 0, rx - 480 + (i % 4) * 64, ry - 96 + (i / 4) * 64);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    for (int i = 0; i < FLOCK_N; i++) Units_OrderMove(h[i], rx, ry);
+    int worst_air = 0;
+    for (int t = 0; t < 4200; t++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+        int up = 0, air = 0;
+        for (int i = 0; i < FLOCK_N; i++) up += units[h[i]].flying ? 1 : 0;
+        for (int i = 0; i < FLOCK_N && up == FLOCK_N; i++)
+            for (int j = i + 1; j < FLOCK_N; j++)
+                if (abs(Occ_TileOf(units[h[i]].world_x - 16) - Occ_TileOf(units[h[j]].world_x - 16)) < 2 &&
+                    abs(Occ_TileOf(units[h[i]].world_y - 16) - Occ_TileOf(units[h[j]].world_y - 16)) < 2)
+                    air++;
+        if (air > worst_air) worst_air = air;
+    }
+    units = Units_GetActive(&unit_count);
+    int shared = 0;
+    int64_t far2 = 0, near2 = INT64_MAX;
+    for (int i = 0; i < FLOCK_N; i++) {
+        ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)units[h[i]].alive);
+        int64_t dx = (int64_t)units[h[i]].world_x - rx;
+        int64_t dy = (int64_t)units[h[i]].world_y - ry;
+        if (dx * dx + dy * dy > far2) far2 = dx * dx + dy * dy;
+        for (int j = i + 1; j < FLOCK_N; j++) {
+            int64_t ex = (int64_t)units[h[i]].world_x - units[h[j]].world_x;
+            int64_t ey = (int64_t)units[h[i]].world_y - units[h[j]].world_y;
+            if (ex * ex + ey * ey < near2) near2 = ex * ex + ey * ey;
+            if (abs(Occ_TileOf(units[h[i]].world_x - 16) - Occ_TileOf(units[h[j]].world_x - 16)) < 2 &&
+                abs(Occ_TileOf(units[h[i]].world_y - 16) - Occ_TileOf(units[h[j]].world_y - 16)) < 2)
+                shared++;
+        }
+    }
+    printf("(%d of 66 pairs overlap in the air, %d at rest, closest %d px, "
+           "spread %d px) ", worst_air, shared, (int)sqrt((double)near2),
+           (int)sqrt((double)far2));
+    ASSERT_EQ_INT(0, shared);
+    ASSERT(far2 <= (int64_t)512 * 512);
+    InGame_Shutdown();
+    #undef FLOCK_N
+    }
+done:
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* User report: "when i build a ship in the water, it can come up on to
  * land". The move class water window (legacy:219155-219157) is the
  * rule; the Taros ghost ship crosses land only because tarship.fbi sets
@@ -19136,6 +19777,338 @@ TEST(flyer_takes_off_flaps_and_lands) {
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
+}
+
+/* A flyer over water on Two Castles. The original lands one only where
+ * every footprint corner stands at or above sea level
+ * (legacy:220103-220109, legacy:220164-220166), hunts for dry ground
+ * within 240 px, and else circles where it stopped (legacy:24331-24381). */
+static int fw_lowest_corner(const GameWorld *w, int32_t x, int32_t y, int fx, int fz) {
+    int tx = (x - fx * 8 + 8) >> 4, tz = (y - fz * 8 + 8) >> 4;
+    const TNTFile *t = &w->tnt;
+    int low = 255;
+    for (int z = tz; z <= tz + fz; z++)
+        for (int c = tx; c <= tx + fx; c++) {
+            if (c < 0 || z < 0 || c >= t->height_w || z >= t->height_h) return -1;
+            int h = t->heightmap[z * t->height_w + c];
+            if (h < low) low = h;
+        }
+    return low;
+}
+
+/* Every corner within r px of (x, y) under sea level. */
+static int fw_all_wet(const GameWorld *w, int32_t x, int32_t y, int32_t r) {
+    const TNTFile *t = &w->tnt;
+    for (int32_t py = y - r; py <= y + r; py += 16)
+        for (int32_t px = x - r; px <= x + r; px += 16) {
+            int c = px >> 4, z = py >> 4;
+            if (px < 0 || py < 0 || c >= t->height_w || z >= t->height_h) return 0;
+            if (t->heightmap[z * t->height_w + c] >= w->water_height) return 0;
+        }
+    return 1;
+}
+
+/* The corner farthest from dry ground and from the map's edge, by steps
+ * of 16 px in any of eight directions. Returns that distance in px. */
+static int32_t fw_open_middle(const GameWorld *w, int32_t *ox, int32_t *oy) {
+    const TNTFile *t = &w->tnt;
+    int cw = t->height_w, ch = t->height_h;
+    int *d = (int *)malloc(sizeof(int) * (size_t)cw * (size_t)ch);
+    if (!d) return -1;
+    for (int z = 0; z < ch; z++)
+        for (int x = 0; x < cw; x++) {
+            int e = x < z ? x : z;
+            if (cw - 1 - x < e) e = cw - 1 - x;
+            if (ch - 1 - z < e) e = ch - 1 - z;
+            d[z * cw + x] = t->heightmap[z * cw + x] >= w->water_height ? 0 : e;
+        }
+    for (int pass = 0; pass < 2; pass++)
+        for (int k = 0; k < cw * ch; k++) {
+            int i = pass ? cw * ch - 1 - k : k, x = i % cw, z = i / cw;
+            for (int dz = -1; dz <= 1; dz++)
+                for (int dx = -1; dx <= 1; dx++) {
+                    int nx = x + dx, nz = z + dz;
+                    if (nx < 0 || nz < 0 || nx >= cw || nz >= ch) continue;
+                    if (d[nz * cw + nx] + 1 < d[i]) d[i] = d[nz * cw + nx] + 1;
+                }
+        }
+    int best = 0, at = 0;
+    for (int i = 0; i < cw * ch; i++)
+        if (d[i] > best) { best = d[i]; at = i; }
+    free(d);
+    *ox = (at % cw) * 16;
+    *oy = (at / cw) * 16;
+    return best * 16;
+}
+
+typedef struct FwSea {
+    GameWorld *world;
+    int drag, drag_def;
+    int32_t open_x, open_y;     /* the open water's middle */
+    int32_t open_clear;         /* how far dry ground is from it */
+    int32_t shore_x, shore_y;   /* wet under it, dry within 128 px */
+    Timer timer;
+} FwSea;
+
+static void fw_tick(TAK_Platform *p, FwSea *s, int n) {
+    for (int i = 0; i < n; i++) {
+        s->timer.accumulator = s->timer.sim_dt;
+        InGame_Tick(p, &s->timer);
+    }
+}
+
+/* Two Castles with a passive Aramon dragon on dry ground. */
+static int fw_setup(TAK_Platform *platform, FwSea *s) {
+    memset(s, 0, sizeof(*s));
+    if (gates_setup_world(platform, &s->world) != 0) return -1;
+    GameWorld *w = s->world;
+    if (w->water_height <= 0) return -1;
+    s->drag_def = Units_FindDefByName("ARADRAG");
+    if (s->drag_def < 0) return -1;
+    const UnitDef *dd = Units_GetDef(s->drag_def);
+    int32_t half = dd->footprint_x * 8;
+    s->open_x = s->open_y = s->shore_x = s->shore_y = -1;
+    s->open_clear = fw_open_middle(w, &s->open_x, &s->open_y);
+    for (int32_t y = 256; y < w->map_pixels_h - 256; y += 32)
+        for (int32_t x = 256; x < w->map_pixels_w - 256; x += 32) {
+            if (s->shore_x < 0 && fw_all_wet(w, x, y, half + 16) &&
+                !fw_all_wet(w, x, y, half + 128)) {
+                s->shore_x = x;
+                s->shore_y = y;
+            }
+        }
+    if (s->open_clear < half + 240 + 16 || s->shore_x < 0) return -1;
+    /* Start on dry ground near the open sea. */
+    int32_t lx = -1, ly = -1;
+    for (int32_t r = 128; r < 4000 && lx < 0; r += 64)
+        for (int k = 0; k < 16 && lx < 0; k++) {
+            float a = (float)k * 6.2831853f / 16.0f;
+            int32_t x = s->open_x + (int32_t)((float)r * cosf(a));
+            int32_t y = s->open_y + (int32_t)((float)r * sinf(a));
+            if (x < 64 || y < 64 || x > w->map_pixels_w - 64 ||
+                y > w->map_pixels_h - 64) continue;
+            if (fw_lowest_corner(w, x, y, dd->footprint_x, dd->footprint_z) >
+                w->water_height && Units_IsBuildSiteClear(s->drag_def, x, y)) {
+                lx = x;
+                ly = y;
+            }
+        }
+    if (lx < 0) return -1;
+    s->drag = Units_Spawn(s->drag_def, 1, 0, lx, ly);
+    if (s->drag < 0) return -1;
+    Units_DebugSetAggro(s->drag, UNIT_AGGRO_PASSIVE);
+    if (InGame_Init(platform) != 0) return -1;
+    Timer_Init(&s->timer);
+    fw_tick(platform, s, 5);
+    return 0;
+}
+
+static void fw_teardown(TAK_Platform *platform) {
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(platform);
+    UI_Shutdown();
+    teardown_platform(platform);
+    VFS_Shutdown();
+}
+
+/* Left idle over the open water's middle, a dragon finds no dry ground
+ * in its first search and circles on, a flyer at its cruise height over
+ * the sea (legacy:24331-24381). It never comes down in the water: when
+ * the circling brings dry ground into reach it lands there, once. */
+TEST(flyer_left_over_open_sea_never_lands_in_it) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    FwSea s;
+    ASSERT_EQ_INT(0, fw_setup(&platform, &s));
+    GameWorld *w = s.world;
+    const UnitDef *dd = Units_GetDef(s.drag_def);
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    /* A move ends 80 to 144 px short of its point (legacy:25066-25110),
+     * so the dragon is sent 112 px past the middle. */
+    float vx = (float)(s.open_x - u[s.drag].world_x);
+    float vy = (float)(s.open_y - u[s.drag].world_y);
+    float vl = sqrtf(vx * vx + vy * vy);
+    Units_SelectSingle(s.drag);
+    Units_CommandMoveSelected(s.open_x + (int32_t)(vx / vl * 112.0f),
+                              s.open_y + (int32_t)(vy / vl * 112.0f));
+    Units_SelectSingle(-1);
+    int arrived = 0, flew = 0;
+    for (int i = 0; i < 6000 && !arrived; i++) {
+        fw_tick(&platform, &s, 1);
+        u = Units_GetActive(&n);
+        if (u[s.drag].flying) flew = 1;
+        arrived = flew && u[s.drag].cmd_kind == UNIT_CMD_NONE;
+    }
+    ASSERT(arrived);
+    int32_t ax = u[s.drag].world_x, ay = u[s.drag].world_y;
+    int landed_at = -1, circled = 0, waded = 0, low_over_sea = 0, landings = 0;
+    float drawn_low = 1e9f;
+    for (int i = 0; i < 1200; i++) {
+        fw_tick(&platform, &s, 1);
+        u = Units_GetActive(&n);
+        const Unit *d = &u[s.drag];
+        int g = Terrain_SampleHeight(w, d->world_x, d->world_y);
+        if (d->air_mode == UNIT_AIR_CIRCLE) circled = 1;
+        if (d->sfx_occupy == 4) waded = 1;
+        if (!d->flying && landed_at < 0) landed_at = i;
+        if (d->flying && g < w->water_height) {
+            if (d->flight_alt < (float)dd->cruise_alt) low_over_sea = 1;
+            float drawn = (float)g + Units_DrawnAlt(w, d);
+            if (drawn < drawn_low) drawn_low = drawn;
+        }
+    }
+    u = Units_GetActive(&n);
+    landings = Units_DebugScriptEventCount(s.drag, UNIT_SCRIPT_EV_BEGIN_LANDING);
+    int low = fw_lowest_corner(w, u[s.drag].world_x, u[s.drag].world_y,
+                               dd->footprint_x, dd->footprint_z);
+    printf("(sea at %d,%d, dry ground %d px off, idle at %d,%d, %s at tick %d, "
+           "lowest corner %d, sea %d, drawn no lower than %.0f over it) ",
+           (int)s.open_x, (int)s.open_y, (int)s.open_clear, (int)ax, (int)ay,
+           landed_at < 0 ? "still up" : "down", landed_at, low,
+           w->water_height, (double)drawn_low);
+    ASSERT(circled);
+    ASSERT_EQ_INT(0, waded);
+    ASSERT_EQ_INT(0, low_over_sea);
+    ASSERT(drawn_low >= (float)(w->water_height + dd->cruise_alt));
+    if (landed_at < 0) {
+        ASSERT_EQ_INT(1, (int)u[s.drag].flying);
+        ASSERT_EQ_INT(5, (int)u[s.drag].sfx_occupy);
+        ASSERT_EQ_INT(0, landings);
+    } else {
+        ASSERT_EQ_INT(1, landings);
+        ASSERT(low >= w->water_height);
+    }
+    fw_teardown(&platform);
+}
+
+/* Stopped over the water by the shore, a dragon lands once, on ground
+ * where no corner under it is below sea level. Scenery it has seen
+ * refuses it as the original's test does (legacy:220115-220140). */
+TEST(flyer_stopped_by_the_shore_lands_on_dry_ground) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    FwSea s;
+    ASSERT_EQ_INT(0, fw_setup(&platform, &s));
+    GameWorld *w = s.world;
+    const UnitDef *dd = Units_GetDef(s.drag_def);
+    int n = 0, stopped = 0;
+    const Unit *u = Units_GetActive(&n);
+    /* Sent 112 px past the point, so it flies over the point before its
+     * move ends on the ring short of it (legacy:25066-25110). */
+    float vx = (float)(s.shore_x - u[s.drag].world_x);
+    float vy = (float)(s.shore_y - u[s.drag].world_y);
+    float vl = sqrtf(vx * vx + vy * vy);
+    Units_SelectSingle(s.drag);
+    Units_CommandMoveSelected(s.shore_x + (int32_t)(vx / vl * 112.0f),
+                              s.shore_y + (int32_t)(vy / vl * 112.0f));
+    Units_SelectSingle(-1);
+    for (int i = 0; i < 6000 && !stopped; i++) {
+        fw_tick(&platform, &s, 1);
+        u = Units_GetActive(&n);
+        int64_t dx = u[s.drag].world_x - s.shore_x, dy = u[s.drag].world_y - s.shore_y;
+        if (u[s.drag].flying && u[s.drag].flight_alt >= (float)dd->cruise_alt &&
+            dx * dx + dy * dy <= 48 * 48) {
+            Units_SelectSingle(s.drag);
+            Units_CommandStopSelected();
+            Units_SelectSingle(-1);
+            stopped = 1;
+        }
+    }
+    ASSERT(stopped);
+    int landed_at = -1;
+    for (int i = 0; i < 3600 && landed_at < 0; i++) {
+        fw_tick(&platform, &s, 1);
+        u = Units_GetActive(&n);
+        if (!u[s.drag].flying) landed_at = i;
+    }
+    fw_tick(&platform, &s, 600);
+    u = Units_GetActive(&n);
+    int low = fw_lowest_corner(w, u[s.drag].world_x, u[s.drag].world_y,
+                               dd->footprint_x, dd->footprint_z);
+    printf("(shore at %d,%d, down after %d ticks at %d,%d, lowest corner %d, "
+           "sea %d) ", (int)s.shore_x, (int)s.shore_y, landed_at,
+           (int)u[s.drag].world_x, (int)u[s.drag].world_y, low, w->water_height);
+    ASSERT(landed_at >= 0);
+    ASSERT_EQ_INT(0, (int)u[s.drag].flying);
+    ASSERT(u[s.drag].flight_alt <= 0.0f);
+    ASSERT(low >= w->water_height);
+    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(s.drag, UNIT_SCRIPT_EV_BEGIN_LANDING));
+
+    /* A blocking piece of scenery on seen, dry, clear ground. */
+    int checked = 0;
+    for (int f = 0; f < w->feature_count && !checked; f++) {
+        if (!Features_InstanceBlocks(w, f)) continue;
+        int32_t x = w->features[f].tile_x * 16 + 8, y = w->features[f].tile_z * 16 + 8;
+        if (fw_lowest_corner(w, x, y, dd->footprint_x, dd->footprint_z) < w->water_height)
+            continue;
+        /* The fog cell the test reads, from the footprint's origin. */
+        int ftx = (x - dd->footprint_x * 8 + 8) >> 4;
+        int ftz = (y - dd->footprint_z * 8 + 8) >> 4;
+        if (Fog_StateAtForPlayer(w, 1, ((ftx >> 1) + (dd->footprint_x >> 2)) * 32,
+                                 ((ftz >> 1) + (dd->footprint_z >> 2)) * 32) ==
+            TAK_FOG_UNEXPLORED)
+            continue;
+        int near = 0;
+        for (int k = 0; k < n; k++) {
+            int64_t dx = u[k].world_x - x, dy = u[k].world_y - y;
+            if (u[k].alive && dx * dx + dy * dy < 128 * 128) near = 1;
+        }
+        if (near) continue;
+        printf("(scenery at %d,%d) ", (int)x, (int)y);
+        ASSERT_EQ_INT(0, Units_DebugCanLandAt(s.drag, x, y));
+        checked = 1;
+    }
+    if (!checked) printf("(no seen scenery to try) ");
+    fw_teardown(&platform);
+}
+
+/* Over the sea on Two Castles a dragon cruises 150 over the water, not
+ * over the sea floor, and the ghost ship hovers 50 over it
+ * (legacy:190499-190507). */
+TEST(flyers_cruise_over_the_sea_not_the_sea_floor) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    FwSea s;
+    ASSERT_EQ_INT(0, fw_setup(&platform, &s));
+    GameWorld *w = s.world;
+    const UnitDef *dd = Units_GetDef(s.drag_def);
+    Units_SelectSingle(s.drag);
+    Units_CommandMoveSelected(s.open_x, s.open_y);
+    Units_SelectSingle(-1);
+    int n = 0, cruising = 0;
+    const Unit *u = NULL;
+    for (int i = 0; i < 6000 && !cruising; i++) {
+        fw_tick(&platform, &s, 1);
+        u = Units_GetActive(&n);
+        int g = Terrain_SampleHeight(w, u[s.drag].world_x, u[s.drag].world_y);
+        cruising = u[s.drag].flying && u[s.drag].cmd_kind == UNIT_CMD_NONE &&
+                   g < w->water_height;
+    }
+    ASSERT(cruising);
+    float stands = Units_DebugStandHeight(s.drag);
+    float drawn = (float)Terrain_SampleHeight(w, u[s.drag].world_x, u[s.drag].world_y) +
+                  Units_DrawnAlt(w, &u[s.drag]);
+    int ghost_def = Units_FindDefByName("TARSHIP");
+    ASSERT(ghost_def >= 0);
+    int ghost = Units_Spawn(ghost_def, 1, 0, s.open_x, s.open_y + 200);
+    ASSERT(ghost >= 0);
+    fw_tick(&platform, &s, 120);
+    u = Units_GetActive(&n);
+    float ghost_at = Units_DebugStandHeight(ghost);
+    printf("(sea %d, dragon stands at %.0f and is drawn at %.0f, ghost ship at "
+           "%.0f) ", w->water_height, (double)stands, (double)drawn, (double)ghost_at);
+    ASSERT(stands >= (float)(w->water_height + dd->cruise_alt));
+    ASSERT(drawn >= (float)(w->water_height + dd->cruise_alt));
+    ASSERT(ghost_at >= (float)(w->water_height + 50));
+    fw_teardown(&platform);
 }
 
 /* Damage bars follow the Visual Options setting (#23): off by default,
@@ -26744,6 +27717,259 @@ TEST(escape_with_no_command_armed_clears_the_selection) {
     igm_teardown(&platform);
 }
 
+/* Where the view lands when the minimap is pressed at a window point:
+ * the point centred, kept on the map. */
+static void mmc_expect(const GameWorld *w, const SDL_Rect *r, int mx, int my,
+                       int32_t *cx, int32_t *cy) {
+    int32_t x = (mx - r->x) * w->map_pixels_w / r->w - w->viewport_w / 2;
+    int32_t y = (my - r->y) * w->map_pixels_h / r->h - w->viewport_h / 2;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x > w->map_pixels_w - w->viewport_w) x = w->map_pixels_w - w->viewport_w;
+    if (y > w->map_pixels_h - w->viewport_h) y = w->map_pixels_h - w->viewport_h;
+    *cx = x;
+    *cy = y;
+}
+
+static int mmc_frame(TAK_Platform *platform, Timer *timer) {
+    timer->accumulator = 0.0;
+    return InGame_Tick(platform, timer);
+}
+
+/* The map point under a minimap pixel, and the ground an order given
+ * there lands on. */
+static void mmc_point(const GameWorld *w, const SDL_Rect *r, int mx, int my,
+                      int32_t *x, int32_t *y) {
+    *x = (int32_t)((int64_t)(mx - r->x) * w->map_pixels_w / r->w);
+    *y = (int32_t)((int64_t)(my - r->y) * w->map_pixels_h / r->h);
+}
+static void mmc_ground(const GameWorld *w, const SDL_Rect *r, int mx, int my,
+                       int32_t *gx, int32_t *gy) {
+    int32_t x, y;
+    mmc_point(w, r, mx, my, &x, &y);
+    Units_GroundUnderPoint(x, y, gx, gy);
+}
+
+/* A minimap pixel near a unit's dot over walkable ground and no unit. */
+static int mmc_open_pixel_near(const GameWorld *w, const SDL_Rect *r, int handle,
+                               int *out_x, int *out_y) {
+    static const int dir[8][2] = {
+        { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 },
+        { 1, 1 }, { -1, 1 }, { 1, -1 }, { -1, -1 }
+    };
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int ux = r->x + (int)((int64_t)units[handle].world_x * r->w / w->map_pixels_w);
+    int uy = r->y + (int)((int64_t)units[handle].world_y * r->h / w->map_pixels_h);
+    for (int d = 4; d <= 16; d++) {
+        for (int k = 0; k < 8; k++) {
+            int x = ux + dir[k][0] * d, y = uy + dir[k][1] * d;
+            if (x < r->x || y < r->y || x >= r->x + r->w || y >= r->y + r->h) continue;
+            int32_t px, py, gx, gy;
+            mmc_point(w, r, x, y, &px, &py);
+            mmc_ground(w, r, x, y, &gx, &gy);
+            if (!Terrain_IsWalkable(w, gx, gy, 255)) continue;
+            if (Units_PickAt(px, py, 0) >= 0) continue;
+            *out_x = x;
+            *out_y = y;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Boots King of the Hill with the local monarch selected and the pointer
+ * resting on the minimap. */
+static int mmc_boot(TAK_Platform *platform, Timer *timer, SDL_Rect *r, int *mine) {
+    BattleConfig cfg;
+    if (UI_Init() != 0 || igm_boot(platform, &cfg) != 0) return -1;
+    Timer_Init(timer);
+    if (!Minimap_DebugMapRect(platform, r)) return -1;
+    *mine = igm_own_unit();
+    if (*mine < 0) return -1;
+    Units_SelectSingle(*mine);
+    InGame_DebugMouse(1, r->x + 1, r->y + 1, 0);
+    return mmc_frame(platform, timer) == GAMESTATE_IN_GAME ? 0 : -1;
+}
+
+/* Under the left click interface the right button finds a place on the
+ * minimap whatever is selected: the press centres the view there, a
+ * drag keeps it under the pointer even past the edge, and the selection
+ * stays (legacy:243703-243716, legacy:120800-120815). Any other press
+ * ends the look and goes no further (legacy:243774-243783). */
+TEST(minimap_right_button_looks_with_a_selection) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    Timer timer;
+    SDL_Rect r;
+    int mine = -1;
+    ASSERT_EQ_INT(0, mmc_boot(&platform, &timer, &r, &mine));
+    GameWorld *w = World_Get();
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int kind0 = units[mine].cmd_kind;
+
+    const int px[3] = { r.x + r.w / 4, r.x + 3 * r.w / 4, r.x - 40 };
+    const int py[3] = { r.y + r.h / 4, r.y + 3 * r.h / 4, r.y + r.h + 40 };
+    for (int step = 0; step < 3; step++) {
+        int hx = px[step] < r.x ? r.x : px[step];
+        int hy = py[step] >= r.y + r.h ? r.y + r.h - 1 : py[step];
+        int32_t cx, cy;
+        mmc_expect(w, &r, hx, hy, &cx, &cy);
+        InGame_DebugMouse(1, px[step], py[step], SDL_BUTTON(SDL_BUTTON_RIGHT));
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+        printf("(step %d at %d,%d: view %d,%d, want %d,%d) ", step, px[step],
+               py[step], (int)w->cam_x, (int)w->cam_y, (int)cx, (int)cy);
+        ASSERT_EQ_INT((int)cx, (int)w->cam_x);
+        ASSERT_EQ_INT((int)cy, (int)w->cam_y);
+    }
+    ASSERT_EQ_INT(1, igm_selection_count());
+
+    int32_t held_x = w->cam_x, held_y = w->cam_y;
+    int mx = r.x + r.w / 2, my = r.y + r.h / 2;
+    InGame_DebugMouse(1, mx, my,
+                      SDL_BUTTON(SDL_BUTTON_RIGHT) | SDL_BUTTON(SDL_BUTTON_LEFT));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    InGame_DebugMouse(1, r.x + r.w / 4, r.y + r.h / 4, SDL_BUTTON(SDL_BUTTON_RIGHT));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    ASSERT_EQ_INT((int)held_x, (int)w->cam_x);
+    ASSERT_EQ_INT((int)held_y, (int)w->cam_y);
+    InGame_DebugMouse(1, mx, my, 0);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    TAK_CmdQueue_Run();
+    units = Units_GetActive(&n);
+    ASSERT_EQ_INT(kind0, units[mine].cmd_kind);
+    InGame_DebugMouse(0, 0, 0, 0);
+    igm_teardown(&platform);
+}
+
+/* With a command armed the right button only disarms it, as it does on
+ * the field, and the selection stays (legacy:243709-243710). */
+TEST(minimap_right_button_disarms_an_armed_command) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    Timer timer;
+    SDL_Rect r;
+    int mine = -1;
+    ASSERT_EQ_INT(0, mmc_boot(&platform, &timer, &r, &mine));
+    GameWorld *w = World_Get();
+    HUD_SetCommandMode(HUD_CMD_ATTACK);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    ASSERT_EQ_INT(HUD_CMD_ATTACK, HUD_GetCommandMode());
+
+    int mx = r.x + r.w / 4, my = r.y + r.h / 4;
+    int32_t before_x = w->cam_x, before_y = w->cam_y;
+    InGame_DebugMouse(1, mx, my, SDL_BUTTON(SDL_BUTTON_RIGHT));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+    ASSERT_EQ_INT(1, igm_selection_count());
+    ASSERT_EQ_INT((int)before_x, (int)w->cam_x);
+    ASSERT_EQ_INT((int)before_y, (int)w->cam_y);
+
+    /* The next press looks. */
+    InGame_DebugMouse(1, mx, my, 0);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    int32_t cx, cy;
+    mmc_expect(w, &r, mx, my, &cx, &cy);
+    InGame_DebugMouse(1, mx, my, SDL_BUTTON(SDL_BUTTON_RIGHT));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    ASSERT_EQ_INT((int)cx, (int)w->cam_x);
+    ASSERT_EQ_INT((int)cy, (int)w->cam_y);
+    InGame_DebugMouse(0, 0, 0, 0);
+    igm_teardown(&platform);
+}
+
+/* The left button sends a selection there as a Move and leaves the
+ * view, and with nothing selected it looks (legacy:243645-243647,
+ * D-037). */
+TEST(minimap_left_button_orders_a_selection_and_looks_without_one) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    Timer timer;
+    SDL_Rect r;
+    int mine = -1;
+    ASSERT_EQ_INT(0, mmc_boot(&platform, &timer, &r, &mine));
+    GameWorld *w = World_Get();
+
+    int mx = 0, my = 0;
+    ASSERT(mmc_open_pixel_near(w, &r, mine, &mx, &my));
+    int32_t gx, gy;
+    mmc_ground(w, &r, mx, my, &gx, &gy);
+    int32_t before_x = w->cam_x, before_y = w->cam_y;
+    InGame_DebugMouse(1, mx, my, SDL_BUTTON(SDL_BUTTON_LEFT));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    printf("(left with a selection: view %d,%d -> %d,%d) ", (int)before_x,
+           (int)before_y, (int)w->cam_x, (int)w->cam_y);
+    ASSERT_EQ_INT((int)before_x, (int)w->cam_x);
+    ASSERT_EQ_INT((int)before_y, (int)w->cam_y);
+    InGame_DebugMouse(1, mx, my, 0);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    TAK_CmdQueue_Run();
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, units[mine].cmd_kind);
+    printf("(move to %d,%d, want %d,%d) ", (int)units[mine].cmd_x,
+           (int)units[mine].cmd_y, (int)gx, (int)gy);
+    ASSERT(abs(units[mine].cmd_x - gx) <= 32 && abs(units[mine].cmd_y - gy) <= 32);
+
+    Units_SelectSingle(-1);
+    int32_t cx, cy;
+    mmc_expect(w, &r, mx, my, &cx, &cy);
+    InGame_DebugMouse(1, mx, my, SDL_BUTTON(SDL_BUTTON_LEFT));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    ASSERT_EQ_INT((int)cx, (int)w->cam_x);
+    ASSERT_EQ_INT((int)cy, (int)w->cam_y);
+    InGame_DebugMouse(0, 0, 0, 0);
+    igm_teardown(&platform);
+}
+
+/* The left button carries out an armed command at the point as a click
+ * on the field would, and the view stays (legacy:243645-243647). */
+TEST(minimap_left_button_carries_out_the_armed_command) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    Timer timer;
+    SDL_Rect r;
+    int mine = -1;
+    ASSERT_EQ_INT(0, mmc_boot(&platform, &timer, &r, &mine));
+    GameWorld *w = World_Get();
+    int mx = 0, my = 0;
+    ASSERT(mmc_open_pixel_near(w, &r, mine, &mx, &my));
+    int32_t gx, gy;
+    mmc_ground(w, &r, mx, my, &gx, &gy);
+
+    static const int modes[2] = { HUD_CMD_ATTACK, HUD_CMD_PATROL };
+    static const int kinds[2] = { UNIT_CMD_ATTACK_GROUND, UNIT_CMD_PATROL };
+    for (int i = 0; i < 2; i++) {
+        HUD_SetCommandMode(modes[i]);
+        InGame_DebugMouse(1, mx, my, 0);
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+        int32_t before_x = w->cam_x, before_y = w->cam_y;
+        InGame_DebugMouse(1, mx, my, SDL_BUTTON(SDL_BUTTON_LEFT));
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+        InGame_DebugMouse(1, mx, my, 0);
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+        TAK_CmdQueue_Run();
+        ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+        int n = 0;
+        const Unit *units = Units_GetActive(&n);
+        printf("(mode %d: order %d at %d,%d, want %d at %d,%d) ", modes[i],
+               (int)units[mine].cmd_kind, (int)units[mine].cmd_x,
+               (int)units[mine].cmd_y, kinds[i], (int)gx, (int)gy);
+        ASSERT_EQ_INT(kinds[i], units[mine].cmd_kind);
+        ASSERT_EQ_INT((int)gx, (int)units[mine].cmd_x);
+        ASSERT_EQ_INT((int)gy, (int)units[mine].cmd_y);
+        ASSERT_EQ_INT((int)before_x, (int)w->cam_x);
+        ASSERT_EQ_INT((int)before_y, (int)w->cam_y);
+    }
+    InGame_DebugMouse(0, 0, 0, 0);
+    igm_teardown(&platform);
+}
+
 /* The key acts on the press, not on the hold: a held Escape that
  * cancelled a command does not go on to clear the selection. */
 TEST(escape_is_edge_triggered) {
@@ -29555,6 +30781,10 @@ static void ui_run_cases(void) {
     if (getenv("TAK_SPIKE_PROBE")) {
         RUN_UI_TEST(sim_spike_probe);
     }
+    if (getenv("TAK_FIRE_PROBE")) {
+        RUN_UI_TEST(fire_census_of_the_shipped_maps);
+        RUN_UI_TEST(fire_on_the_shipped_maps);
+    }
     /* The same for a real mod: the mod is no part of any install. */
     if (getenv("TAK_TEST_MOD_ROOT")) {
         RUN_UI_TEST(tak_enhanced_plays_a_skirmish);
@@ -29614,6 +30844,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_caster_pays_for_a_spell_as_it_leaves);
     RUN_UI_TEST(a_blow_the_target_steps_out_of_is_spent);
     RUN_UI_TEST(an_archer_against_a_swordsman_ends_as_the_originals_rules_give);
+    RUN_UI_TEST(a_harpy_takes_a_swordsman_standing_or_walking_across);
     RUN_UI_TEST(crusades_units_load_the_crusades_balance_set);
     RUN_UI_TEST(eight_idle_swordsmen_beat_eight_archers);
     RUN_UI_TEST(a_lodestone_death_whites_out_and_fades);
@@ -29680,6 +30911,9 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(sound_transport_plays_once_per_rider);
     RUN_UI_TEST(cob_entry_points_fire_once);
     RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
+    RUN_UI_TEST(flyer_left_over_open_sea_never_lands_in_it);
+    RUN_UI_TEST(flyer_stopped_by_the_shore_lands_on_dry_ground);
+    RUN_UI_TEST(flyers_cruise_over_the_sea_not_the_sea_floor);
     RUN_UI_TEST(tower_aim_faces_target);
     RUN_UI_TEST(war_galley_attacks_shore_target);
     RUN_UI_TEST(monarch_attacks_large_structure);
@@ -29742,6 +30976,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(own_unit_walks_through_its_gate_and_gate_opens);
     RUN_UI_TEST(completed_wall_blocks_units);
     RUN_UI_TEST(units_do_not_stack_on_one_another);
+    RUN_UI_TEST(harpies_sent_to_one_place_do_not_stack);
     RUN_UI_TEST(boats_stay_in_water_ghost_ships_do_not);
     RUN_UI_TEST(ship_hulls_come_from_their_models);
     RUN_UI_TEST(a_ship_that_dies_leaves_its_wreck);
@@ -29756,6 +30991,10 @@ static void ui_run_cases(void) {
     TEST_SUITE("In game menu");
     RUN_UI_TEST(escape_cancels_the_armed_command_and_stays_in_the_battle);
     RUN_UI_TEST(escape_with_no_command_armed_clears_the_selection);
+    RUN_UI_TEST(minimap_right_button_looks_with_a_selection);
+    RUN_UI_TEST(minimap_right_button_disarms_an_armed_command);
+    RUN_UI_TEST(minimap_left_button_orders_a_selection_and_looks_without_one);
+    RUN_UI_TEST(minimap_left_button_carries_out_the_armed_command);
     RUN_UI_TEST(escape_is_edge_triggered);
     RUN_UI_TEST(f1_opens_the_in_game_menu_with_the_shipped_buttons);
     RUN_UI_TEST(escape_in_the_menu_resumes_the_battle);

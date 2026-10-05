@@ -433,8 +433,8 @@ static int ms_step_run(MsProgram *p, int handle, const Unit *u) {
             return 1;
         }
         if (!p->started) {
-            if (Units_BeginBuildingForUnit(handle, s->ref, s->b * MS_CELL,
-                                           s->c * MS_CELL) < 0) return 1;
+            if (!Units_OrderBuild(handle, s->ref, s->b * MS_CELL,
+                                  s->c * MS_CELL, 0, 0)) return 1;
             p->started = 1;
             return 0;
         }

@@ -700,10 +700,12 @@ Format per entry:
   above building an army, attacking and expanding. And every unit of the
   seat that can walk asks its footing before anything else, a task
   network of its own: when a burning feature's centre is within 32 px of
-  the unit's model, the reach its burn hurts by, the unit walks to the
-  nearest point clear of every fire, trying eight ways at steps of 24 px
-  out to six steps and taking the way that passes the fewest fires,
-  unless it is already walking somewhere clear. With the rules off
+  the unit's model, the reach its burn hurts by, the unit walks to a
+  point clear of every fire, trying eight ways at steps of 24 px out to
+  six steps. Each way weighs four for every fire it passes, one for
+  every step and one for every 24 px it gives up toward where the unit
+  is bound, its order's point or else home, and the lightest is taken,
+  unless the unit is already walking somewhere clear. With the rules off
   neither happens and the classic computer plays as before. The tactic
   bits `TAK_AI_TACTIC_SWEEP` and `TAK_AI_TACTIC_FIRE` let the duel
   measure each, and the code is `ai_find_rubble`, `ai_try_sweep` and
@@ -716,15 +718,20 @@ Format per entry:
 - Measured: on Two Castles a Taros troop of the computer's walled in by
   the rubble of eight AraWall01 near its monarch walks out after 70
   seconds, its seat having ordered two sweeps, and without the sweep it
-  is still inside after two minutes. Six of its troops caught beside
-  burning trees lose 218 hit points to the fire with the footing and 511
-  without. In the duel on Two Castles, Taros against Taros under the
-  rules, four seeds each played twice with the seats swapped, the seat
-  with both behaviours killed 409 and lost 390 and the one without
-  killed 357 and lost 426, with three wins each and two draws. No rubble
-  arose in those games, so the sweep never ran there, and the footing
-  stepped units out of fire 80 times. Four classic duels with the rules
-  off play out as before, kill for kill.
+  is still inside after two minutes. Six of its troops caught in a
+  burning grove lose 236 hit points to the fire with the footing and 511
+  without. While a tree burned only until its first spark the footing
+  took the nearest way out and they lost 218. Once trees burned through
+  four sparks (D-036) that way lost 1,193, because a troop stepped out
+  on the far side and the seat's next order walked it back through the
+  fire, so the footing now leans toward where the unit is bound. In the
+  duel on Two Castles, measured before that change, Taros against Taros
+  under the rules, four seeds each played twice with the seats swapped,
+  the seat with both behaviours killed 409 and lost 390 and the one
+  without killed 357 and lost 426, with three wins each and two draws.
+  No rubble arose in those games, so the sweep never ran there, and the
+  footing stepped units out of fire 80 times. Four classic duels with
+  the rules off play out as before, kill for kill.
 - Citation: the manual describes no rule for either. D-036 makes the
   conditions they answer.
 
@@ -1209,6 +1216,43 @@ Format per entry:
 - Citation: the manual's walkthrough in section III sends a second
   builder to assist with a click on the frame, which still works. The
   original's rule is in docs/notes/2026-10-04-a-summons-without-end.md.
+
+## M-014: Flyers in the air count each other in pairs
+
+- Change: once a frame each airborne flyer counts the airborne flyers
+  whose footprints share a cell with its own, up to seven, and its
+  crowd score moves by that count. The original keeps one flyer per
+  cell of an air layer. A second flyer over the cell goes on the
+  holder's list and the holder on its, and the cell passes to one of
+  them at random, so a third sees the holder and those on its list that
+  cover the cell (legacy:218336-218512). The five units with `canfly`
+  and no BeginFlight in their scripts, the ghost ship, the two Taros
+  priests, the Veruna ball and the bird, take no part. They hover as
+  surface units here, as before, and hold no ground cells.
+- Why: the pairs give the original's count for a pair and for a flock
+  without an air layer in the world or a draw from the generator for
+  every shared cell. The five hoverers stay as the engine already had
+  them, which keeps their place as targets for weapons that cannot hit
+  the air. The original's missions switch them to air movement too
+  (legacy:24117-24134).
+- Citation: the manual describes no rule for it. The original's rules
+  are in docs/notes/2026-10-04-air-traffic.md.
+
+## M-015: A summons waits for units on its spot in silence
+
+- Change: a summons ordered onto a spot that only units hold is taken
+  and held with no frame. The builder walks to the site and looks again
+  every 20 ticks. The frame goes up as soon as no unit stands on the
+  spot, wherever the builder is, and the order ends after 30 looks made
+  within reach. The waiting and the giving up are silent.
+- Why: the original looks only once the builder is in reach, and it
+  says it is waiting at the sixth look and that the target is blocked
+  when it gives up (legacy:12088-12116). Here a frame goes up before
+  its builder gets there (M-009), so a spot that clears while the
+  builder walks gets its frame at once. The chatter has no counterpart
+  in the engine yet.
+- Citation: the manual describes no rule for this. The original's rule
+  is in docs/notes/2026-10-04-summons-placement.md.
 
 ## D-006: Chat messages expire on the wall clock
 
@@ -1884,16 +1928,40 @@ Format per entry:
   so its fire hurts nobody (legacy:127389-127401). These numbers are
   ours. A fire spreads. In the shipped data a feature's spark comes 75
   to 149 frames after it catches and its flames end 44 to 72 frames in,
-  so the original's fires never spread. Under the rules a burning
-  feature's flames start over until its spark is thrown, and the spark
-  spreads the fire the original's way: every flamable feature within
-  three cells catches at its spreadchance, 40 percent for most trees,
-  and one more at each of five steps downwind (legacy:128021-128088). A
-  tree then burns 2.5 to 7 seconds. Lit along one edge, a grove of the
-  shipped AraTree01 burns 28 cells (448 px) across in 28 seconds with a
-  tree on every cell, about 16 px a second, and in 46 to 51 seconds with
-  one on every other cell, about 9 px a second. The dense grove burns
-  whole and the sparse one 92 to 98 percent. Infantry walks 33 to 45 px
+  so the original's fires never spread. Its spark would reach three
+  cells, and the scenery that burns stands farther apart than that. Of
+  the 50,524 flammable features on the 310 shipped maps, skirmish and
+  campaign, 28 percent have another within three cells, 58 percent
+  within five, 69 percent within six and 82 percent within eight. Under
+  the rules a burning feature throws four sparks, each 125 percent of
+  the original's spark time after the last, 93 to 186 frames for a tree,
+  and its flames start over until the last, so a tree burns 12 to 27
+  seconds. A spark reaches every flammable feature within three cells, or
+  out to the nearest ring that holds one, at most six, which puts a
+  quarter of the shipped scenery that burns in a group of ten or more a
+  fire can cross, against 5 percent at three. The wind stretches the
+  reach downwind by five steps of twice its parts in 1/4096 of a cell,
+  at most two cells along each axis, and a spark with nothing within six
+  cells can still light a feature up to eight cells downwind. A feature
+  catches at twice its spreadchance, 80 percent for most trees, and
+  upwind at a quarter of that. No more than four features catch from
+  sparks in one frame, and a spark due past that waits for the next.
+  Each spark starts its cells from another corner, so the cap favours no
+  side. Measured with no units on the field, one tree lit near the
+  middle of each map's largest group, five seeds: calm, Lake Ferrix_JM
+  burns all of its 78 in 48 seconds, New Hindigal all 63 in 67,
+  Riverfork Wood all 88 in 117, Two Castles 13 of 14 in 57, Thorn
+  Boscage 48 of 58 in 119 and Black Heart Jungle 9 of 10 in 50. Under
+  each map's own wind the fire runs downwind at 5 to 11 px a second on
+  average and creeps upwind at 1 to 6, so less of a forest burns: 77,
+  60, 57, 5, 42 and 6 of them. In a square of AraTree01 under a steady
+  wind it crosses 20 to 24 px a second downwind and 8 to 13 upwind, and
+  11 to 21 calm. Its front, from the first tree to one 10 cells off,
+  never averaged more than 22 px a second but in one windy Thorn Boscage
+  run at 33, and no frame lit more than four. Lit along one edge, a
+  grove of AraTree01 28 cells (448 px) across burns through in 18 to 33
+  seconds with a tree on every cell or on every other. With the rules
+  off each map burns the one tree and stops. Infantry walks 33 to 45 px
   a second, so it outruns a fire. And the rubble a wall, a model wall or
   a building leaves blocks until it is swept, which pays its mana as
   clearing anything does (D-021). The original's wall rubble and the
@@ -1909,10 +1977,71 @@ Format per entry:
   keeps a build without the rules out of it. The game list marks a room
   that plays them.
 - Where it is: `remaster_breakable_hp`, `remaster_leaves_rubble`,
-  `Features_InstanceBlocks` and the burn in `Features_TickFrame` in
-  `src/game/features.c`, `blast_scenery`
+  `Features_InstanceBlocks`, the burn in `Features_TickFrame` and the
+  spark in `feat_spark_remastered` in `src/game/features.c`,
+  `blast_scenery`
   and `Units_ScorchAt` in `src/render/units.c`, the rows from
   `GUIDialog_AddOptionRow` in `src/ui/gui_loader.c`.
+
+## D-037: The minimap's left button looks when nothing of yours is selected
+
+- Change: under the left click interface, the only one the engine has, a
+  left press on the minimap with none of your own units selected centres
+  the view there and follows a drag while the button is held, the way the
+  right button does with any selection. With your units selected the left
+  button orders them as the original's does, and the right button looks
+  or disarms an armed command as the original's does.
+- Why: the engine has looked on that press from the start, and keeping
+  it takes nothing from the original's controls. There that press gives
+  an order to nobody and does nothing (legacy:243645-243647). Taking it
+  away would leave a minimap that seems dead to a player who has not yet
+  found the right button.
+- Citation: manual p.69 says the left click interface uses the right
+  button to find a location within the Mini-Map.
+- Where it is: `ig_minimap` in `src/ui/ingame.c`.
+
+## D-038: Every shot but mind control reaches its target and aims where it stands
+
+- Change: a shot fired at a unit strikes that unit when it passes
+  within 24 px of the unit's body, leaves for where the unit stands
+  when it is fired, and crosses the ground at its full weaponvelocity
+  however steep its line. A mind control shot now flies by the
+  original's rules instead. It leaves for where its target will be,
+  four fifths of the way through its flight, and strikes only a unit in
+  its own 16 px cell whose selection quad, turned with the unit, holds
+  it and whose model span holds its height. It flies at its
+  weaponvelocity along its line rather than across the ground, it is
+  gone after its range at its speed across the ground, and it ends the
+  frame its caster is seen dead or dying.
+- Why: every other weapon's hit rate rests on the reach and the
+  missing lead, so moving them all is a balance change of its own that
+  needs checking against the original weapon by weapon. Mind control
+  went first because the owner found the Harpy too sure, and its shot
+  flies slowly enough that the reach turned near misses into captures.
+  The capture roll itself was always the original's.
+- Citation: the lead by 0.8 of the flight time (legacy:234031-234060,
+  the multiply at legacy:234049), the cell test (legacy:245376-245476),
+  the span and selection quad test (legacy:236974-237027), the line's
+  speed (legacy:246885-246892), the life (legacy:246919-246922) and the
+  caster check (legacy:247710-247713). The manual is silent.
+  docs/notes/2026-09-19-the-harpy-takes-units-over.md has the detail.
+
+## D-039: A hovering attacker does not hold off at its hoverattackdistance
+
+- Change: `hoverattack` and `hoverattackdistance` are not read. A Harpy
+  closes to its weapon's reach, 300 px, and fires from wherever it is
+  inside that, as close as it happens to be. A unit walking straight
+  away from it is therefore shot at from the edge of that reach. The
+  shot leads the unit by four fifths of its flight and lives only its
+  range across the ground (D-038), so it ends short of where it aims,
+  and the Harpy follows and misses again until its mana runs out. From
+  the original's standoff of 200 px the same shot lands.
+- Why: not built yet. The standoff belongs with the work on how flyers
+  keep apart, which is where the Harpies piling into one stack is
+  handled.
+- Citation: the unit keys are read at legacy:163005-163007. The Harpy
+  sets `hoverattack = 1` and `hoverattackdistance = 200`. The manual is
+  silent.
 
 ## R-008: A reel's soundtrack goes through the game's mixer
 

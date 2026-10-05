@@ -419,6 +419,27 @@ static int test_every_subsystem_contributes(void) {
     POKE("summons looks", g_units[0].build_tries = 3, g_units[0].build_tries = 0);
     POKE("summons wait", g_units[0].build_wait = 20, g_units[0].build_wait = 0);
     g_units[0].build_endless = 0;
+    POKE("air crowd score", g_units[0].air_crowd = 5, g_units[0].air_crowd = 0);
+    POKE("air leg", g_units[0].air_mode = UNIT_AIR_STEP,
+         g_units[0].air_mode = 0);
+    POKE("move ring", g_units[0].air_band = 6, g_units[0].air_band = 0);
+    POKE("frames held", g_units[0].air_hold = 3, g_units[0].air_hold = 0);
+    g_units[0].air_mode = UNIT_AIR_SPOT;
+    POKE("air leg reach", g_units[0].air_reach = 8, g_units[0].air_reach = 0);
+    POKE("air leg point", g_units[0].air_x = 77, g_units[0].air_x = 0);
+    POKE("circles flown", g_units[0].air_circles = 2,
+         g_units[0].air_circles = 0);
+    POKE("circle bearing", g_units[0].air_bearing = 0x1234,
+         g_units[0].air_bearing = 0);
+    POKE("circle centre", g_units[0].air_oy = 99, g_units[0].air_oy = 0);
+    g_units[0].air_mode = 0;
+    POKE("summons held for units on its spot",
+         g_units[0].build_held = 1, g_units[0].build_held = 0);
+    g_units[0].build_held = 1;
+    POKE("held summons def", g_units[0].build_def = 6, g_units[0].build_def = 0);
+    POKE("held summons looks", g_units[0].build_tries = 3,
+         g_units[0].build_tries = 0);
+    g_units[0].build_held = 0;
     POKE("unit production retry wait",
          g_units[0].prod_wait = 5,
          g_units[0].prod_wait = 0);
