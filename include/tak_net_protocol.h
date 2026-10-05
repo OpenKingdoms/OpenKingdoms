@@ -107,8 +107,11 @@
  * 33: a mind control shot leads its target by four fifths of its
  * flight, strikes only a unit holding its cell and inside that unit's
  * selection quad, flies its speed along its line, lives its range and
- * ends with its caster. */
-#define TAK_ENGINE_BUILD_ID           33
+ * ends with its caster. 34: under the remastered rules a burning
+ * feature throws four sparks that reach six cells and lean with the
+ * wind, at most four catching a frame, and the computer's footing leans
+ * toward where a unit is bound. */
+#define TAK_ENGINE_BUILD_ID           34
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
