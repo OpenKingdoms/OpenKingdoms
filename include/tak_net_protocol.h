@@ -114,8 +114,9 @@
  * 35: the landing test takes the original's depth window, amphibious
  * and unexplored ground, a stopped flyer flies on before it looks for
  * ground, and a flyer over water flies, hovers, shoots and is shot at
- * over the sea, not over the sea floor. */
-#define TAK_ENGINE_BUILD_ID           35
+ * over the sea, not over the sea floor. 36: a flyer in the air stands
+ * on no build site. */
+#define TAK_ENGINE_BUILD_ID           36
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

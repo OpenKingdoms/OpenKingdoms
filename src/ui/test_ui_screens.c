@@ -27970,6 +27970,83 @@ TEST(minimap_left_button_carries_out_the_armed_command) {
     igm_teardown(&platform);
 }
 
+/* A minimap pixel whose map point picks this unit, near its dot. */
+static int mmc_pixel_on(const GameWorld *w, const SDL_Rect *r, int handle,
+                        int *out_x, int *out_y) {
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int ux = r->x + (int)((int64_t)units[handle].world_x * r->w / w->map_pixels_w);
+    int uy = r->y + (int)((int64_t)units[handle].world_y * r->h / w->map_pixels_h);
+    for (int dy = -8; dy <= 8; dy++) {
+        for (int dx = -8; dx <= 8; dx++) {
+            int x = ux + dx, y = uy + dy;
+            if (x < r->x || y < r->y || x >= r->x + r->w || y >= r->y + r->h) continue;
+            int32_t px, py;
+            mmc_point(w, r, x, y, &px, &py);
+            if (Units_PickAt(px, py, 0) != handle) continue;
+            *out_x = x;
+            *out_y = y;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* With nothing armed the left button gives the order a field click
+ * would over what stands there: an enemy is attacked and a unit of
+ * your own is selected (legacy:243640-243648, legacy:186540-186606,
+ * legacy:237934-237950). */
+TEST(minimap_left_button_gives_the_field_order_over_a_unit) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    Timer timer;
+    SDL_Rect r;
+    int mine = -1;
+    ASSERT_EQ_INT(0, mmc_boot(&platform, &timer, &r, &mine));
+    GameWorld *w = World_Get();
+    Fog_SetSeeAll(1);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int32_t ax = units[mine].world_x, ay = units[mine].world_y;
+    int foe = Units_DebugSpawnEnemy(ax + 160, ay);
+    int pal = Units_Spawn(units[mine].def_idx, 1, 0, ax - 160, ay);
+    ASSERT(foe >= 0 && pal >= 0);
+    Units_DebugSetAggro(mine, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetAggro(foe, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetAggro(pal, UNIT_AGGRO_PASSIVE);
+    Units_SelectSingle(mine);
+
+    int fx = 0, fy = 0, ox = 0, oy = 0;
+    ASSERT(mmc_pixel_on(w, &r, foe, &fx, &fy));
+    ASSERT(mmc_pixel_on(w, &r, pal, &ox, &oy));
+    int32_t before_x = w->cam_x, before_y = w->cam_y;
+    InGame_DebugMouse(1, fx, fy, SDL_BUTTON(SDL_BUTTON_LEFT));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    InGame_DebugMouse(1, fx, fy, 0);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    TAK_CmdQueue_Run();
+    units = Units_GetActive(&n);
+    printf("(on the foe: order %d at unit %d, want %d at %d) ",
+           (int)units[mine].cmd_kind, units[mine].target, UNIT_CMD_ATTACK, foe);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, units[mine].cmd_kind);
+    ASSERT_EQ_INT(foe, units[mine].target);
+    ASSERT_EQ_INT((int)before_x, (int)w->cam_x);
+    ASSERT_EQ_INT((int)before_y, (int)w->cam_y);
+
+    InGame_DebugMouse(1, ox, oy, SDL_BUTTON(SDL_BUTTON_LEFT));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    InGame_DebugMouse(1, ox, oy, 0);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    int sel_n = 0;
+    const int *sel = Units_GetSelection(&sel_n);
+    ASSERT_EQ_INT(1, sel_n);
+    ASSERT_EQ_INT(pal, sel[0]);
+    Fog_SetSeeAll(0);
+    InGame_DebugMouse(0, 0, 0, 0);
+    igm_teardown(&platform);
+}
+
 /* The key acts on the press, not on the hold: a held Escape that
  * cancelled a command does not go on to clear the selection. */
 TEST(escape_is_edge_triggered) {
@@ -30995,6 +31072,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(minimap_right_button_disarms_an_armed_command);
     RUN_UI_TEST(minimap_left_button_orders_a_selection_and_looks_without_one);
     RUN_UI_TEST(minimap_left_button_carries_out_the_armed_command);
+    RUN_UI_TEST(minimap_left_button_gives_the_field_order_over_a_unit);
     RUN_UI_TEST(escape_is_edge_triggered);
     RUN_UI_TEST(f1_opens_the_in_game_menu_with_the_shipped_buttons);
     RUN_UI_TEST(escape_in_the_menu_resumes_the_battle);
