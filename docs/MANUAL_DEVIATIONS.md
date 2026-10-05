@@ -1998,7 +1998,12 @@ Format per entry:
 
 - Change: `hoverattack` and `hoverattackdistance` are not read. A Harpy
   closes to its weapon's reach, 300 px, and fires from wherever it is
-  inside that, as close as it happens to be.
+  inside that, as close as it happens to be. A unit walking straight
+  away from it is therefore shot at from the edge of that reach. The
+  shot leads the unit by four fifths of its flight and lives only its
+  range across the ground (D-038), so it ends short of where it aims,
+  and the Harpy follows and misses again until its mana runs out. From
+  the original's standoff of 200 px the same shot lands.
 - Why: not built yet. The standoff belongs with the work on how flyers
   keep apart, which is where the Harpies piling into one stack is
   handled.
