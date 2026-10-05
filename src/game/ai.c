@@ -2638,7 +2638,7 @@ static int32_t ai_octile(int32_t dx, int32_t dy) {
 
 /* 1 when the unit's footing took its think: it is stepping out of a
  * fire, or already walking somewhere clear of every one. */
-static int ai_step_out_of_fire(const GameWorld *world, const Unit *units,
+static int ai_step_out_of_fire(const GameWorld *world, const Unit *units, int unit_count,
                                int i, const UnitDef *def, int p) {
     if (g_ai_fire_n <= 0) return 0;
     const Unit *u = &units[i];
@@ -2649,11 +2649,16 @@ static int ai_step_out_of_fire(const GameWorld *world, const Unit *units,
     if (AI_Htn_FootingTask(&fs) != AI_TASK_EVADE) return 0;
     int32_t keep = body + AI_FIRE_CLEAR;
     if (u->cmd_kind == UNIT_CMD_MOVE && ai_fires_at(u->cmd_x, u->cmd_y, keep) == 0) return 1;
-    /* Where the unit is bound: its order's point, or else home. */
+    /* Where the unit is bound: the unit it attacks, its order's point,
+     * or else home. */
     int bound = 0;
     int32_t gx = 0, gy = 0;
-    if (u->cmd_kind == UNIT_CMD_MOVE || u->cmd_kind == UNIT_CMD_ATTACK ||
-        u->cmd_kind == UNIT_CMD_PATROL) {
+    if (u->cmd_kind == UNIT_CMD_ATTACK && u->target >= 0 && u->target < unit_count &&
+        units[u->target].alive == UNIT_ALIVE_ACTIVE) {
+        bound = 1;
+        gx = units[u->target].world_x;
+        gy = units[u->target].world_y;
+    } else if (u->cmd_kind == UNIT_CMD_MOVE || u->cmd_kind == UNIT_CMD_PATROL) {
         bound = 1;
         gx = u->cmd_x;
         gy = u->cmd_y;
@@ -3326,7 +3331,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
         if (!ai_unit_can_fight_or_move(u, def)) continue;
         AI_MARK(ai_cat);
         ai_cat = (def->cap_flags & UNIT_CAP_BUILDER) ? 5 : 6;
-        if (ai_step_out_of_fire(world, units, i, def, p)) continue;
+        if (ai_step_out_of_fire(world, units, unit_count, i, def, p)) continue;
         if ((def->cap_flags & UNIT_CAP_BUILDER) && def->max_velocity > 0.0f &&
             ai_builder_retreats(units, i, p, def)) {
             continue;
