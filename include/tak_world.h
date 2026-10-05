@@ -233,6 +233,9 @@ typedef struct GameWorld {
         /* A wall's or a building's rubble that blocks until swept, under
          * the remastered rules (D-036). */
         uint8_t  rubble;
+        /* Sparks a burning feature throws after the one spark counts
+         * down to, under the remastered rules (D-036). */
+        uint8_t  sparks;
     } *features;
     int        feature_count;
     int        feature_cap;   /* allocated entries; >= feature_count */

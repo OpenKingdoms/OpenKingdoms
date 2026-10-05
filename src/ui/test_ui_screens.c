@@ -83,6 +83,7 @@
 #include "tak_terrain.h"
 #include "tak_perf_probe.h"
 #include "tak_sim_rand.h"
+#include "tak_tdf.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12133,6 +12134,516 @@ TEST(a_remastered_forest_fire_crosses_a_grove_in_tens_of_seconds) {
     ASSERT_EQ_INT(8, plain_burnt);
 }
 
+/* ── Fire on the shipped maps ─────────────────────────────────────── */
+
+/* Every map TNT the install holds, the skirmish maps then the campaign's,
+ * each file once. Returns the count and the skirmish share. */
+static int all_map_tnts(char (**out)[256], int *skirmish_out) {
+    char (*paths)[256] = NULL;
+    int npaths = 0, cap = 0;
+    TAK_MapEntry *maps = NULL;
+    int nmaps = 0;
+    if (TAK_Maps_Scan(&maps, &nmaps) == 0) {
+        for (int i = 0; i < nmaps; i++) {
+            if (npaths == cap) {
+                cap = cap ? cap * 2 : 512;
+                paths = tak_realloc(paths, (size_t)cap * sizeof(*paths));
+            }
+            if (TAK_Maps_FindFile(maps[i].key, "tnt", paths[npaths], sizeof(paths[0])) == 0)
+                npaths++;
+        }
+    }
+    TAK_Maps_Free(maps);
+    int skirmish = npaths;
+    static const char *const campaign[] = { "missions/*.tnt", "missions/missions/*.tnt" };
+    for (size_t c = 0; c < sizeof(campaign) / sizeof(campaign[0]); c++) {
+        char **files = NULL;
+        int n = 0;
+        if (VFS_ListFiles(campaign[c], &files, &n) != 0) n = 0;
+        for (int i = 0; i < n; i++) {
+            /* The loose tree and the archive can both list one map. */
+            const char *base = strrchr(files[i], '/');
+            base = base ? base + 1 : files[i];
+            int seen = 0;
+            for (int k = skirmish; k < npaths && !seen; k++) {
+                const char *b = strrchr(paths[k], '/');
+                seen = tak_stricmp(b ? b + 1 : paths[k], base) == 0;
+            }
+            if (!seen) {
+                if (npaths == cap) {
+                    cap = cap ? cap * 2 : 512;
+                    paths = tak_realloc(paths, (size_t)cap * sizeof(*paths));
+                }
+                snprintf(paths[npaths++], sizeof(paths[0]), "%s", files[i]);
+            }
+            tak_free(files[i]);
+        }
+        tak_free(files);
+    }
+    *out = paths;
+    *skirmish_out = skirmish;
+    return npaths;
+}
+
+/* A feature a fire can reach: flamable, drawn from a GAF, with a burn. */
+static int fire_burnable(int g) {
+    const FeatureDef *fd = Features_GetByIndex(g);
+    return fd && fd->flamable && !fd->object[0] && Features_SequenceFrames(g, 1) > 0;
+}
+
+/* The cells of map `t` that hold a burnable feature's top-left, as a
+ * W*H grid of tree numbers or -1, with their cells listed. */
+static int fire_trees(const TNTFile *t, int **grid_out, int **xs_out, int **zs_out) {
+    int W = t->width_tiles, H = t->height_tiles;
+    *grid_out = NULL; *xs_out = *zs_out = NULL;
+    if (!t->feature_layer || W <= 0 || H <= 0) return 0;
+    int names = t->num_feature_names;
+    int8_t *burn = (int8_t *)tak_calloc((size_t)(names > 0 ? names : 1), 1);
+    for (int q = 0; q < names; q++)
+        burn[q] = (int8_t)(t->feature_names[q] &&
+                           fire_burnable(Features_FindByName(t->feature_names[q])));
+    int *grid = (int *)tak_malloc((size_t)W * (size_t)H * sizeof(int));
+    int n = 0;
+    for (int c = 0; c < W * H; c++) {
+        uint16_t v = t->feature_layer[c];
+        grid[c] = (v < 0xFFF0u && v < (uint16_t)names && burn[v]) ? n++ : -1;
+    }
+    int *xs = (int *)tak_malloc((size_t)(n ? n : 1) * sizeof(int));
+    int *zs = (int *)tak_malloc((size_t)(n ? n : 1) * sizeof(int));
+    for (int c = 0; c < W * H; c++)
+        if (grid[c] >= 0) { xs[grid[c]] = c % W; zs[grid[c]] = c / W; }
+    tak_free(burn);
+    *grid_out = grid; *xs_out = xs; *zs_out = zs;
+    return n;
+}
+
+static int fire_uf_find(int *p, int i) {
+    while (p[i] != i) { p[i] = p[p[i]]; i = p[i]; }
+    return i;
+}
+
+/* Groups of trees each within `reach` cells (the square a spark covers)
+ * of another. comp[i] is tree i's group root, the return the largest. */
+static int fire_groups(int W, int H, const int *grid, const int *xs, const int *zs,
+                       int n, int reach, int *comp, int *size) {
+    for (int i = 0; i < n; i++) { comp[i] = i; size[i] = 0; }
+    for (int i = 0; i < n; i++)
+        for (int dz = -reach; dz <= reach; dz++)
+            for (int dx = -reach; dx <= reach; dx++) {
+                int x = xs[i] + dx, z = zs[i] + dz;
+                if (x < 0 || z < 0 || x >= W || z >= H) continue;
+                int j = grid[z * W + x];
+                if (j <= i) continue;
+                int a = fire_uf_find(comp, i), b = fire_uf_find(comp, j);
+                if (a != b) comp[a] = b;
+            }
+    int best = 0;
+    for (int i = 0; i < n; i++) {
+        comp[i] = fire_uf_find(comp, i);
+        if (++size[comp[i]] > best) best = size[comp[i]];
+    }
+    return best;
+}
+
+/* A map's OTA wind range, the loader's defaults when it names none. */
+static void fire_map_wind(const char *tnt_path, int *lo, int *hi) {
+    *lo = 100; *hi = 2000;
+    char ota[256];
+    snprintf(ota, sizeof ota, "%s", tnt_path);
+    size_t len = strlen(ota);
+    if (len < 4) return;
+    int upper = ota[len - 1] == 'T';
+    memcpy(ota + len - 3, upper ? "OTA" : "ota", 3);
+    TDFFile *t = TDF_Open(ota);
+    if (!t) return;
+    if (TDF_Load(t) == 0 && TDF_PushSection(t, "GlobalHeader") == 0) {
+        *lo = TDF_ReadInt(t, "minwindspeed", 100);
+        *hi = TDF_ReadInt(t, "maxwindspeed", 2000);
+        TDF_PopSection(t);
+    }
+    TDF_Close(t);
+}
+
+#define FIRE_GAP_MAX 16
+
+/* The gaps between the trees on every shipped map: each burnable tree's
+ * nearest burnable neighbour, and the largest group each spark reach
+ * from 3 to 8 cells joins. A measuring tool (TAK_FIRE_PROBE). */
+TEST(fire_census_of_the_shipped_maps) {
+    if (mount_iron_plague() != 0) SKIP("no game dir");
+    Features_LoadAll();
+    static uint32_t rgba[256];
+    char (*paths)[256] = NULL;
+    int skirmish = 0;
+    int npaths = all_map_tnts(&paths, &skirmish);
+    long cheb[FIRE_GAP_MAX + 2] = { 0 }, eucl[FIRE_GAP_MAX + 2] = { 0 };
+    long trees_all = 0, in_ten[9] = { 0 }, in_five[9] = { 0 };
+    int loaded = 0, with_trees = 0, wind_hist[8] = { 0 }, maps_ten[9] = { 0 };
+    for (int m = 0; m < npaths; m++) {
+        TNTFile tnt;
+        if (TNT_Load(&tnt, paths[m], rgba) != 0) continue;
+        loaded++;
+        int lo, hi;
+        fire_map_wind(paths[m], &lo, &hi);
+        wind_hist[hi < 1000 ? 0 : hi < 2000 ? 1 : hi == 2000 ? 2 : hi < 4000 ? 3 : 4]++;
+        int *grid, *xs, *zs;
+        int n = fire_trees(&tnt, &grid, &xs, &zs);
+        int W = tnt.width_tiles, H = tnt.height_tiles;
+        if (n > 0) with_trees++;
+        trees_all += n;
+        int gap_n[FIRE_GAP_MAX + 2] = { 0 };
+        for (int i = 0; i < n; i++) {
+            int best_c = FIRE_GAP_MAX + 1, best_e2 = 1 << 30;
+            for (int d = 1; d <= FIRE_GAP_MAX; d++) {
+                for (int dz = -d; dz <= d; dz++)
+                    for (int dx = -d; dx <= d; dx++) {
+                        if (dx > -d && dx < d && dz > -d && dz < d) continue;
+                        int x = xs[i] + dx, z = zs[i] + dz;
+                        if (x < 0 || z < 0 || x >= W || z >= H || grid[z * W + x] < 0) continue;
+                        if (d < best_c) best_c = d;
+                        if (dx * dx + dz * dz < best_e2) best_e2 = dx * dx + dz * dz;
+                    }
+                if (best_e2 <= d * d) break;
+            }
+            int e = FIRE_GAP_MAX + 1;
+            if (best_e2 < (1 << 30)) {
+                e = (int)ceil(sqrt((double)best_e2));
+                if (e > FIRE_GAP_MAX) e = FIRE_GAP_MAX + 1;
+            }
+            cheb[best_c]++;
+            eucl[e]++;
+            gap_n[best_c]++;
+        }
+        int median = 0;
+        for (int acc = 0; median <= FIRE_GAP_MAX + 1; median++)
+            if ((acc += gap_n[median]) * 2 >= n) break;
+        int largest[9] = { 0 };
+        int *comp = (int *)tak_malloc((size_t)(n ? n : 1) * sizeof(int));
+        int *size = (int *)tak_malloc((size_t)(n ? n : 1) * sizeof(int));
+        for (int r = 3; r <= 8; r++) {
+            largest[r] = fire_groups(W, H, grid, xs, zs, n, r, comp, size);
+            maps_ten[r] += largest[r] >= 10;
+            for (int i = 0; i < n; i++) {
+                if (size[comp[i]] >= 10) in_ten[r]++;
+                if (size[comp[i]] >= 5) in_five[r]++;
+            }
+        }
+        const char *base = strrchr(paths[m], '/');
+        printf("\n    %-34s %3dx%-3d wind %4d-%-5d trees %5d  median gap %2d  "
+               "largest at 3..8: %4d %4d %4d %4d %4d %4d",
+               base ? base + 1 : paths[m], W, H, lo, hi, n,
+               n ? median : 0, largest[3], largest[4], largest[5], largest[6],
+               largest[7], largest[8]);
+        tak_free(comp); tak_free(size);
+        tak_free(grid); tak_free(xs); tak_free(zs);
+        TNT_Close(&tnt);
+    }
+    int distinct = 0;
+    for (int m = 0; m < npaths; m++) {
+        const char *b = strrchr(paths[m], '/');
+        int seen = 0;
+        for (int k = 0; k < m && !seen; k++) {
+            const char *c = strrchr(paths[k], '/');
+            seen = tak_stricmp(c ? c + 1 : paths[k], b ? b + 1 : paths[m]) == 0;
+        }
+        distinct += !seen;
+    }
+    printf("\n    %d maps (%d skirmish, %d distinct names), %d loaded, %d with burnable "
+           "trees, %ld trees", npaths, skirmish, distinct, loaded, with_trees, trees_all);
+    for (int g = 0; g < Features_GetCount(); g++) {
+        if (!fire_burnable(g)) continue;
+        const FeatureDef *fd = Features_GetByIndex(g);
+        int burnt = Features_FindByName(fd->feature_burnt);
+        printf("\n    burnable %-20s chance %3d spark %3d burn %3d front %3d back %3d burnt %s%s",
+               fd->name, fd->spread_chance, fd->spark_time, Features_SequenceFrames(g, 1),
+               Features_SequenceFrames(g, 2), Features_SequenceFrames(g, 3),
+               fd->feature_burnt, burnt >= 0 && fire_burnable(burnt) ? " (burns again)" : "");
+    }
+    printf("\n    max wind <1000 %d, <2000 %d, =2000 %d, <4000 %d, more %d",
+           wind_hist[0], wind_hist[1], wind_hist[2], wind_hist[3], wind_hist[4]);
+    printf("\n    nearest burnable neighbour, square cells (gap: trees, cumulative %%):");
+    long acc = 0;
+    for (int d = 1; d <= FIRE_GAP_MAX + 1; d++) {
+        acc += cheb[d];
+        printf("\n      %2d%s %6ld %5.1f", d, d > FIRE_GAP_MAX ? "+" : " ", cheb[d],
+               trees_all ? 100.0 * (double)acc / (double)trees_all : 0.0);
+    }
+    printf("\n    nearest burnable neighbour, round cells:");
+    acc = 0;
+    for (int d = 1; d <= FIRE_GAP_MAX + 1; d++) {
+        acc += eucl[d];
+        printf("\n      %2d%s %6ld %5.1f", d, d > FIRE_GAP_MAX ? "+" : " ", eucl[d],
+               trees_all ? 100.0 * (double)acc / (double)trees_all : 0.0);
+    }
+    for (int r = 3; r <= 8; r++)
+        printf("\n    reach %d: %5.1f%% of trees in a group of 10 or more, %5.1f%% in 5 or more, "
+               "%d maps with a group of 10 or more",
+               r, trees_all ? 100.0 * (double)in_ten[r] / (double)trees_all : 0.0,
+               trees_all ? 100.0 * (double)in_five[r] / (double)trees_all : 0.0, maps_ten[r]);
+    printf("\n    ");
+    tak_free(paths);
+    Features_FreeAll();
+    VFS_Shutdown();
+    ASSERT(loaded > 0);
+}
+
+/* What a probe fire lit: the frame, the cell and the wind of each. */
+#define FIRE_PROBE_MAX 16384
+typedef struct FireLit { uint32_t frame; int x, z; int32_t wx, wz; } FireLit;
+static FireLit g_fire_lit[FIRE_PROBE_MAX];
+static int g_fire_lit_n;
+
+static void fire_probe_hook(const struct GameWorld *w, const FeatureEvent *e) {
+    if (e->kind != FEATURE_EVENT_BURNING || g_fire_lit_n >= FIRE_PROBE_MAX) return;
+    FireLit *l = &g_fire_lit[g_fire_lit_n++];
+    l->frame = w->feat_frame;
+    l->x = w->features[e->idx].tile_x;
+    l->z = w->features[e->idx].tile_z;
+    l->wx = w->wind_x;
+    l->wz = w->wind_z;
+}
+
+typedef struct FireRun {
+    int forest, lit, lit_forest;
+    int frames_out, f50, f90;
+    int peak_frame;          /* most features lit in one frame */
+    double down, up;         /* farthest lit along and against the wind, cells */
+    double front_px_s;       /* fastest average from the start to a tree 10 cells off */
+    double down_px_s, up_px_s; /* mean pace of the trees 3 or more cells down and up wind */
+} FireRun;
+
+/* The shipped map at `path` built as the loader builds it, under the
+ * remastered rules or not, the wind in the map's range or none. The tree
+ * nearest the middle of its largest forest at `reach` is lit and the
+ * fire runs until it is out. */
+static int fire_run_map(const char *path, int remastered, int wind, uint32_t seed,
+                        int reach, FireRun *r) {
+    static uint32_t rgba[256];
+    memset(r, 0, sizeof *r);
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    cfg.remastered = remastered;
+    if (World_BeginLoad(NULL, &cfg, "synthetic", "aramon") != 0) return -1;
+    GameWorld *w = World_Get();
+    if (!w || TNT_Load(&w->tnt, path, rgba) != 0) { World_End(NULL); return -1; }
+    World_SeedRand(seed);
+    int W = w->tnt.width_tiles, H = w->tnt.height_tiles;
+    w->map_pixels_w = W * 16;
+    w->map_pixels_h = H * 16;
+    const uint16_t *fl = w->tnt.feature_layer;
+    int n = 0;
+    for (int c = 0; fl && c < W * H; c++) n += fl[c] < 0xFFF0u;
+    w->features = (struct MapFeature *)tak_calloc((size_t)(n ? n : 1), sizeof(*w->features));
+    for (int c = 0, k = 0; fl && c < W * H; c++) {
+        uint16_t v = fl[c];
+        if (v >= 0xFFF0u) continue;
+        struct MapFeature *f = &w->features[k++];
+        int g = v < (uint16_t)w->tnt.num_feature_names && w->tnt.feature_names[v]
+                    ? Features_FindByName(w->tnt.feature_names[v]) : -1;
+        const FeatureDef *fd = Features_GetByIndex(g);
+        int fx = fd && fd->footprint_x > 0 ? fd->footprint_x : 1;
+        int fz = fd && fd->footprint_z > 0 ? fd->footprint_z : 1;
+        f->feat_id = v;
+        f->tile_x = (uint16_t)(c % W);
+        f->tile_z = (uint16_t)(c / W);
+        f->global_idx = g;
+        f->world_x = (int32_t)(c % W) * 16 + fx * 8;
+        f->world_y = (int32_t)(c / W) * 16 + fz * 8;
+        f->color_idx = -1;
+        f->decompose_ticks = -1;
+    }
+    w->feature_count = n;
+    w->feature_cap = n ? n : 1;
+    Features_NoteListReplaced();
+    Features_MarkChanged(w);
+    int lo = 0, hi = 0;
+    if (wind) fire_map_wind(path, &lo, &hi);
+    Features_WindBegin(w, lo, hi);
+
+    int *grid, *xs, *zs;
+    int trees = fire_trees(&w->tnt, &grid, &xs, &zs);
+    int *comp = (int *)tak_malloc((size_t)(trees ? trees : 1) * sizeof(int));
+    int *size = (int *)tak_malloc((size_t)(trees ? trees : 1) * sizeof(int));
+    r->forest = fire_groups(W, H, grid, xs, zs, trees, reach, comp, size);
+    int root = -1;
+    for (int i = 0; i < trees && root < 0; i++) if (size[comp[i]] == r->forest) root = comp[i];
+    double cx = 0, cz = 0;
+    for (int i = 0; i < trees; i++) if (comp[i] == root) { cx += xs[i]; cz += zs[i]; }
+    if (r->forest) { cx /= r->forest; cz /= r->forest; }
+    int start = -1;
+    double best = 1e30;
+    for (int i = 0; i < trees; i++) {
+        if (comp[i] != root) continue;
+        double d = (xs[i] - cx) * (xs[i] - cx) + (zs[i] - cz) * (zs[i] - cz);
+        if (d < best) { best = d; start = i; }
+    }
+    int idx = -1;
+    for (int i = 0; start >= 0 && i < w->feature_count; i++)
+        if (w->features[i].tile_x == xs[start] && w->features[i].tile_z == zs[start]) idx = i;
+    g_fire_lit_n = 0;
+    Features_SetEventHook(fire_probe_hook);
+    if (idx >= 0) Features_DebugHit(w, idx, 50, 1);
+    int frame0 = (int)w->feat_frame, down_n = 0, up_n = 0;
+    for (int f = 0; f < 30 * 900 && idx >= 0; f++) {
+        int before = g_fire_lit_n;
+        Features_TickFrame(w);
+        if (g_fire_lit_n - before > r->peak_frame) r->peak_frame = g_fire_lit_n - before;
+        int burning = 0;
+        for (int i = 0; i < w->feature_count && !burning; i++)
+            burning = w->features[i].fx == FEATURE_FX_BURNING;
+        if (!burning) { r->frames_out = f + 1; break; }
+    }
+    Features_SetEventHook(NULL);
+    r->lit = g_fire_lit_n;
+    for (int k = 0; k < g_fire_lit_n; k++) {
+        const FireLit *l = &g_fire_lit[k];
+        int t = l->x >= 0 && l->x < W && l->z >= 0 && l->z < H ? grid[l->z * W + l->x] : -1;
+        if (t >= 0 && comp[t] == root) r->lit_forest++;
+        if (r->f50 == 0 && (k + 1) * 2 >= g_fire_lit_n) r->f50 = (int)l->frame - frame0;
+        if (r->f90 == 0 && (k + 1) * 10 >= g_fire_lit_n * 9) r->f90 = (int)l->frame - frame0;
+        if (start < 0 || l->frame == (uint32_t)frame0) continue;
+        double dx = l->x - xs[start], dz = l->z - zs[start];
+        double reach_px = sqrt(dx * dx + dz * dz) * 16.0;
+        double rate = reach_px * 30.0 / (double)((int)l->frame - frame0);
+        if (rate > r->front_px_s && reach_px >= 160.0) r->front_px_s = rate;
+        double wl = sqrt((double)l->wx * l->wx + (double)l->wz * l->wz);
+        if (wl > 0) {
+            double along = (dx * l->wx + dz * l->wz) / wl;
+            if (along > r->down) r->down = along;
+            if (-along > r->up) r->up = -along;
+            double pace = fabs(along) * 16.0 * 30.0 / (double)((int)l->frame - frame0);
+            if (along >= 3.0) { r->down_px_s += pace; down_n++; }
+            if (along <= -3.0) { r->up_px_s += pace; up_n++; }
+        }
+    }
+    if (down_n) r->down_px_s /= down_n;
+    if (up_n) r->up_px_s /= up_n;
+    tak_free(comp); tak_free(size);
+    tak_free(grid); tak_free(xs); tak_free(zs);
+    World_End(NULL);
+    return idx >= 0 ? 0 : -1;
+}
+
+/* A square of `tree` every `gap` cells 80 cells across, its middle lit
+ * under a steady east wind of `speed`. How far east, west, north and
+ * south the fire gets in a minute, and the frames each took. */
+static void fire_run_square(int tree, int gap, int speed, uint32_t seed, double out[8]) {
+    memset(out, 0, 8 * sizeof(double));
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    cfg.remastered = 1;
+    if (World_BeginLoad(NULL, &cfg, "synthetic", "aramon") != 0) return;
+    GameWorld *w = World_Get();
+    World_SeedRand(seed);
+    w->map_pixels_w = w->map_pixels_h = 128 * 16;
+    Features_WindBegin(w, speed, speed + 1);
+    Features_DebugSetWind(w, speed, 0x4000);
+    w->wind_next_frame = 0xFFFFFF00u;
+    int side = 40 / gap, mid = -1;
+    for (int z = -side; z <= side; z++)
+        for (int x = -side; x <= side; x++) {
+            int cx = 64 + gap * x, cz = 64 + gap * z;
+            int f = Features_AddInstance(w, tree, cx, cz, cx * 16 + 8, cz * 16 + 8, 0, -1);
+            if (x == 0 && z == 0) mid = f;
+        }
+    g_fire_lit_n = 0;
+    Features_SetEventHook(fire_probe_hook);
+    if (mid >= 0) Features_DebugHit(w, mid, 50, 1);
+    uint32_t f0 = w->feat_frame;
+    for (int f = 0; f < 30 * 60; f++) Features_TickFrame(w);
+    Features_SetEventHook(NULL);
+    for (int q = 0; q < g_fire_lit_n; q++) {
+        int dx = g_fire_lit[q].x - 64, dz = g_fire_lit[q].z - 64;
+        double t = (double)(g_fire_lit[q].frame - f0);
+        if (dx > out[0]) { out[0] = dx; out[1] = t; }
+        if (-dx > out[2]) { out[2] = -dx; out[3] = t; }
+        if (-dz > out[4]) { out[4] = -dz; out[5] = t; }
+        if (dz > out[6]) { out[6] = dz; out[7] = t; }
+    }
+    World_End(NULL);
+}
+
+/* A fire lit in the largest forest of a few shipped maps, with the wind
+ * on and off, under the remastered rules and the original's, and in a
+ * square of trees under a steady wind. A measuring tool (TAK_FIRE_PROBE)
+ * for the numbers in D-036. */
+TEST(fire_on_the_shipped_maps) {
+    if (mount_iron_plague() != 0) SKIP("no game dir");
+    Features_LoadAll();
+    static const char *const want[] = { "lake ferrix_jm.tnt", "new hindigal.tnt",
+                                        "thorn boscage.tnt", "two castles.tnt",
+                                        "riverfork wood.tnt", "black heart jungle.tnt" };
+    int seeds = getenv("TAK_FIRE_SEEDS") ? atoi(getenv("TAK_FIRE_SEEDS")) : 5;
+    char (*paths)[256] = NULL;
+    int skirmish = 0;
+    int npaths = all_map_tnts(&paths, &skirmish);
+    int ran = 0;
+    int tree = Features_FindByName("AraTree01");
+    static const int gaps[] = { 1, 2, 5 };
+    static const int speeds[] = { 0, 300, 2000 };
+    for (int gi = 0; gi < 3 && tree >= 0; gi++)
+        for (int si = 0; si < 3; si++) {
+            double sum[8] = { 0 };
+            for (int k = 0; k < 4; k++) {
+                double o[8];
+                fire_run_square(tree, gaps[gi], speeds[si], 31u + 17u * (uint32_t)k, o);
+                for (int q = 0; q < 8; q++) sum[q] += o[q] / 4.0;
+            }
+            printf("\n    square gap %d wind %4d: in a minute east %4.1f cells (%4.1f px/s), "
+                   "west %4.1f (%4.1f px/s), north %4.1f (%4.1f px/s), south %4.1f (%4.1f px/s)",
+                   gaps[gi], speeds[si], sum[0], sum[1] > 0 ? sum[0] * 480.0 / sum[1] : 0.0,
+                   sum[2], sum[3] > 0 ? sum[2] * 480.0 / sum[3] : 0.0, sum[4],
+                   sum[5] > 0 ? sum[4] * 480.0 / sum[5] : 0.0, sum[6],
+                   sum[7] > 0 ? sum[6] * 480.0 / sum[7] : 0.0);
+        }
+    for (size_t m = 0; m < sizeof(want) / sizeof(want[0]); m++) {
+        int p = -1;
+        for (int i = 0; i < npaths && p < 0; i++) {
+            const char *b = strrchr(paths[i], '/');
+            if (tak_stricmp(b ? b + 1 : paths[i], want[m]) == 0) p = i;
+        }
+        if (p < 0) { printf("\n    %s: not installed", want[m]); continue; }
+        for (int mode = 0; mode < 3; mode++) {
+            int remastered = mode > 0, wind = mode != 1;
+            int nseeds = remastered ? seeds : 1, runs = 0, peak = 0;
+            int lit_min = 1 << 30, lit_max = 0, forest = 0;
+            double lit = 0, f90 = 0, out = 0, down = 0, up = 0, front = 0;
+            double down_pace = 0, up_pace = 0;
+            for (int s = 1; s <= nseeds; s++) {
+                FireRun r;
+                if (fire_run_map(paths[p], remastered, wind, 7919u * (uint32_t)s,
+                                 FEATURE_SPARK_REACH, &r) != 0) continue;
+                ran++;
+                runs++;
+                forest = r.forest;
+                lit += r.lit_forest;
+                if (r.lit_forest < lit_min) lit_min = r.lit_forest;
+                if (r.lit_forest > lit_max) lit_max = r.lit_forest;
+                f90 += r.f90 / 30.0;
+                out += r.frames_out / 30.0;
+                down += r.down;
+                up += r.up;
+                down_pace += r.down_px_s;
+                up_pace += r.up_px_s;
+                if (r.front_px_s > front) front = r.front_px_s;
+                if (r.peak_frame > peak) peak = r.peak_frame;
+            }
+            if (!runs) continue;
+            printf("\n    %-24s %-8s forest %3d: lit %5.1f (%d to %d), 90%% by %5.1f s, out "
+                   "after %5.1f s, front up to %4.1f px/s, downwind %4.1f cells at %4.1f px/s, "
+                   "upwind %4.1f at %4.1f, peak %d a frame", want[m],
+                   !remastered ? "classic" : wind ? "wind" : "calm",
+                   forest, lit / runs, lit_min, lit_max, f90 / runs, out / runs, front,
+                   down / runs, down_pace / runs, up / runs, up_pace / runs, peak);
+        }
+    }
+    printf("\n    ");
+    tak_free(paths);
+    Features_FreeAll();
+    VFS_Shutdown();
+    ASSERT(ran > 0);
+}
+
 /* A burning tree draws its burn picture with both flames in the classic
  * view, where an idle one drew only itself (legacy:211228-211240). */
 TEST(the_classic_view_draws_a_burning_tree) {
@@ -12188,46 +12699,8 @@ TEST(every_feature_a_map_names_resolves) {
     Features_LoadAll();
     static uint32_t rgba[256];
     char (*paths)[256] = NULL;
-    int npaths = 0, cap = 0;
-    TAK_MapEntry *maps = NULL;
-    int nmaps = 0;
-    if (TAK_Maps_Scan(&maps, &nmaps) == 0) {
-        for (int i = 0; i < nmaps; i++) {
-            if (npaths == cap) {
-                cap = cap ? cap * 2 : 512;
-                paths = tak_realloc(paths, (size_t)cap * sizeof(*paths));
-            }
-            if (TAK_Maps_FindFile(maps[i].key, "tnt", paths[npaths], sizeof(paths[0])) == 0)
-                npaths++;
-        }
-    }
-    TAK_Maps_Free(maps);
-    int skirmish = npaths;
-    static const char *const campaign[] = { "missions/*.tnt", "missions/missions/*.tnt" };
-    for (size_t c = 0; c < sizeof(campaign) / sizeof(campaign[0]); c++) {
-        char **files = NULL;
-        int n = 0;
-        if (VFS_ListFiles(campaign[c], &files, &n) != 0) n = 0;
-        for (int i = 0; i < n; i++) {
-            /* The loose tree and the archive can both list one map. */
-            const char *base = strrchr(files[i], '/');
-            base = base ? base + 1 : files[i];
-            int seen = 0;
-            for (int k = skirmish; k < npaths && !seen; k++) {
-                const char *b = strrchr(paths[k], '/');
-                seen = tak_stricmp(b ? b + 1 : paths[k], base) == 0;
-            }
-            if (!seen) {
-                if (npaths == cap) {
-                    cap = cap ? cap * 2 : 512;
-                    paths = tak_realloc(paths, (size_t)cap * sizeof(*paths));
-                }
-                snprintf(paths[npaths++], sizeof(paths[0]), "%s", files[i]);
-            }
-            tak_free(files[i]);
-        }
-        tak_free(files);
-    }
+    int skirmish = 0;
+    int npaths = all_map_tnts(&paths, &skirmish);
 
     int loaded = 0, names = 0, unresolved = 0, lost = 0;
     for (int m = 0; m < npaths; m++) {
@@ -29975,6 +30448,10 @@ static void ui_run_cases(void) {
     }
     if (getenv("TAK_SPIKE_PROBE")) {
         RUN_UI_TEST(sim_spike_probe);
+    }
+    if (getenv("TAK_FIRE_PROBE")) {
+        RUN_UI_TEST(fire_census_of_the_shipped_maps);
+        RUN_UI_TEST(fire_on_the_shipped_maps);
     }
     /* The same for a real mod: the mod is no part of any install. */
     if (getenv("TAK_TEST_MOD_ROOT")) {
