@@ -459,6 +459,7 @@ _Static_assert(P_END == TAK_PROJ_RECORD_BYTES, "PROJ layout and width disagree")
 #define F_BACK_WAIT  48u
 #define F_FX_SERIAL  50u
 #define F_RUBBLE     54u
+#define F_SPARKS     55u   /* 0 in an older record */
 #define F_END        56u
 _Static_assert(F_END == TAK_FEAT_RECORD_BYTES, "FEAT layout and width disagree");
 
@@ -2035,6 +2036,7 @@ static void encode_feature(uint8_t *r, const struct MapFeature *f,
     tak_put_u16(r + F_BACK_WAIT, f->back_wait);
     tak_put_u32(r + F_FX_SERIAL, f->fx_serial);
     tak_put_u8(r + F_RUBBLE, f->rubble);
+    tak_put_u8(r + F_SPARKS, f->sparks);
 }
 
 static void decode_feature(struct MapFeature *f, const uint8_t *r,
@@ -2069,6 +2071,7 @@ static void decode_feature(struct MapFeature *f, const uint8_t *r,
     f->back_wait = tak_get_u16(r + F_BACK_WAIT);
     f->fx_serial = tak_get_u32(r + F_FX_SERIAL);
     f->rubble = tak_get_u8(r + F_RUBBLE) & 1u;
+    f->sparks = tak_get_u8(r + F_SPARKS);
 }
 
 /* ── fog ──────────────────────────────────────────────────────────── */

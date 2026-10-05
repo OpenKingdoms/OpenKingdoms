@@ -86,8 +86,9 @@ In the shipped data that spread never comes. Every burning feature's
 flames last 44 to 72 frames and its spark is 75 frames away at the
 soonest, so a burn is over first. A fire burns what the flame reached
 and stops. A mod whose burn outlasts its spark spreads, and so does
-every fire under the remastered rules, which keep a burn going until
-its spark (D-036).
+every fire under the remastered rules, which keep a burn going through
+four sparks that reach as far as six cells and lean with the wind
+(D-036).
 
 The data names `burnweapon = TreeBurn` as a key, but the loader reads
 only a `[BurnWeapon]` section (legacy:127389-127401), and no feature

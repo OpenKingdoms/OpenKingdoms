@@ -1039,6 +1039,7 @@ static void fx_clear(struct MapFeature *mf) {
     mf->damage_taken = 0;
     mf->fx = FEATURE_FX_NONE;
     mf->spark = 0;
+    mf->sparks = 0;
     mf->anim_on = mf->front_on = mf->back_on = 0;
     mf->anim_frame = mf->anim_wait = 0;
     mf->front_frame = mf->front_wait = 0;
@@ -1119,6 +1120,16 @@ static void feat_replace(struct GameWorld *w, int idx, int next, int kind) {
 
 static int fx_is_sprite(const FeatureDef *fd) { return fd && !fd->object[0]; }
 
+/* A spark's countdown, the original's half to whole of sparktime, and
+ * under the remastered rules FEATURE_SPARK_DELAY percent of that. */
+static uint8_t spark_delay(const FeatureDef *fd, int remastered) {
+    uint32_t half = fd ? (uint32_t)(fd->spark_time & 0xffff) >> 1 : 0;
+    uint32_t d = World_Rand(half) + half;
+    if (!remastered) return (uint8_t)d;
+    d = d * FEATURE_SPARK_DELAY / 100u;
+    return (uint8_t)(d > 255 ? 255 : d);
+}
+
 /* Set burning, the original's MapGrid cell update for a fire: only a
  * feature drawn from a GAF, standing idle, with a burn sequence
  * (legacy:127772-127835). Its spark comes half way through sparktime
@@ -1132,8 +1143,8 @@ static void feat_ignite(struct GameWorld *w, int idx) {
     mf->fx = FEATURE_FX_BURNING;
     mf->fx_serial = ++w->feat_fx_serial;
     mf->damage_taken = 0;
-    uint32_t half = (uint32_t)(fd->spark_time & 0xffff) >> 1;
-    mf->spark = (uint8_t)(World_Rand(half) + half);
+    mf->spark = spark_delay(fd, w->cfg.remastered);
+    mf->sparks = (uint8_t)(w->cfg.remastered ? FEATURE_SPARKS - 1 : 0);
     anim_start(x->seq[FSEQ_BURN], &mf->anim_on, &mf->anim_frame, &mf->anim_wait);
     anim_start(x->seq[FSEQ_FRONT], &mf->front_on, &mf->front_frame, &mf->front_wait);
     anim_start(x->seq[FSEQ_BACK], &mf->back_on, &mf->back_frame, &mf->back_wait);
@@ -1360,6 +1371,91 @@ static void feat_spread(struct GameWorld *w, int sx, int sz) {
     }
 }
 
+/* Features the frame's sparks have lit, under the remastered rules. */
+static int g_spark_catches;
+
+/* An idle flamable GAF feature with a burn and a spreadchance, one a
+ * spark can light. */
+static int spark_can_catch(const struct GameWorld *w, int j) {
+    if (j < 0) return 0;
+    const struct MapFeature *mf = &w->features[j];
+    const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+    const FeatFxDef *x = fx_def(mf->global_idx);
+    return fx_is_sprite(fd) && mf->fx == FEATURE_FX_NONE && fd->flamable && x &&
+           x->seq[FSEQ_BURN] >= 0 && (fd->spread_chance & 0xff) != 0;
+}
+
+/* Five downwind steps of the wind's part `v` in whole cells, each
+ * 2*v/2^FEATURE_SPARK_WIND_SHIFT of a cell, rounded alike either way and
+ * held to FEATURE_SPARK_CARRY. */
+static int spark_carry(int32_t v) {
+    int64_t t = (int64_t)v * 10;
+    int64_t half = (int64_t)1 << (FEATURE_SPARK_WIND_SHIFT - 1);
+    int c = t >= 0 ? (int)((t + half) >> FEATURE_SPARK_WIND_SHIFT)
+                   : -(int)((-t + half) >> FEATURE_SPARK_WIND_SHIFT);
+    if (c > FEATURE_SPARK_CARRY) return FEATURE_SPARK_CARRY;
+    return c < -FEATURE_SPARK_CARRY ? -FEATURE_SPARK_CARRY : c;
+}
+
+/* A spark under the remastered rules (D-036). It reaches every cell
+ * within three, or out to the nearest ring holding a feature that can
+ * catch, and the wind stretches that reach downwind by its carry. A
+ * feature upwind catches at FEATURE_SPARK_UPWIND percent of the chance.
+ * Cells go row by row from the corner `turn` names (bit 0 east first,
+ * bit 1 south first), and the spark stops once the frame has lit its cap. */
+static void feat_spark_remastered(struct GameWorld *w, int sx, int sz, int turn) {
+    enum { WIN = FEATURE_SPARK_REACH + FEATURE_SPARK_CARRY, SPAN = 2 * WIN + 1 };
+    int cells[SPAN * SPAN];
+    for (int k = 0; k < SPAN * SPAN; k++) cells[k] = -1;
+    for (int i = 0; i < w->feature_count; i++) {
+        int dx = (int)w->features[i].tile_x - sx, dz = (int)w->features[i].tile_z - sz;
+        if (dx < -WIN || dx > WIN || dz < -WIN || dz > WIN) continue;
+        cells[(dz + WIN) * SPAN + dx + WIN] = i;
+    }
+    int lx = spark_carry(w->wind_x), lz = spark_carry(w->wind_z);
+    int bx0 = lx < 0 ? lx : 0, bx1 = lx > 0 ? lx : 0;
+    int bz0 = lz < 0 ? lz : 0, bz1 = lz > 0 ? lz : 0;
+    /* The nearest ring around the spark's cell, or with nothing there,
+     * around the cells the wind carries it over. */
+    int ring = -1, carried = -1;
+    for (int dz = -WIN; dz <= WIN; dz++)
+        for (int dx = -WIN; dx <= WIN; dx++) {
+            if (!spark_can_catch(w, cells[(dz + WIN) * SPAN + dx + WIN])) continue;
+            int ax = dx < 0 ? -dx : dx, az = dz < 0 ? -dz : dz;
+            int d = ax > az ? ax : az;
+            if (d <= FEATURE_SPARK_REACH) {
+                if (ring < 0 || d < ring) ring = d;
+                continue;
+            }
+            int ex = dx < bx0 ? bx0 - dx : dx > bx1 ? dx - bx1 : 0;
+            int ez = dz < bz0 ? bz0 - dz : dz > bz1 ? dz - bz1 : 0;
+            d = ex > ez ? ex : ez;
+            if (d <= FEATURE_SPARK_REACH && (carried < 0 || d < carried)) carried = d;
+        }
+    if (ring < 0) ring = carried;
+    if (ring < 0) return;
+    if (ring < 3) ring = 3;
+    int x0 = bx0 - ring, x1 = bx1 + ring, z0 = bz0 - ring, z1 = bz1 + ring;
+    int mw = w->map_pixels_w / 16, mh = w->map_pixels_h / 16;
+    for (int a = 0; a <= z1 - z0; a++)
+        for (int b = 0; b <= x1 - x0; b++) {
+            int dz = (turn & 2) ? z1 - a : z0 + a;
+            int dx = (turn & 1) ? x1 - b : x0 + b;
+            int x = sx + dx, z = sz + dz;
+            if (x < 0 || z < 0 || x >= mw || z >= mh) continue;
+            int j = cells[(dz + WIN) * SPAN + dx + WIN];
+            if (!spark_can_catch(w, j)) continue;
+            if (g_spark_catches >= FEATURE_SPARK_CATCH_CAP) return;
+            const FeatureDef *fd = Features_GetByIndex(w->features[j].global_idx);
+            int pct = (fd->spread_chance & 0xff) * FEATURE_SPARK_CHANCE / 100;
+            if (dx * lx + dz * lz < 0) pct = pct * FEATURE_SPARK_UPWIND / 100;
+            if ((int)World_Rand(100) < pct) {
+                feat_ignite(w, j);
+                g_spark_catches++;
+            }
+        }
+}
+
 /* ── The wind ─────────────────────────────────────────────────────── */
 
 /* The original's sine, a quarter of a turn in 129 steps of 1/8192
@@ -1448,6 +1544,7 @@ void Features_DebugSetWind(struct GameWorld *w, int speed, uint16_t heading) {
 void Features_TickFrame(struct GameWorld *w) {
     if (!w || g_hold) return;
     w->feat_frame++;
+    g_spark_catches = 0;
     int *work = NULL, work_n = 0, cap = 0;
     for (int i = 0; i < w->feature_count; i++)
         if (w->features[i].fx != FEATURE_FX_NONE &&
@@ -1503,9 +1600,26 @@ void Features_TickFrame(struct GameWorld *w) {
             if (Features_InstanceCentre(w, i, &bx, &by) == 0)
                 Units_ScorchAt(bx, by, FEATURE_BURN_REACH, FEATURE_BURN_DAMAGE);
         }
-        if (mf->spark != 0 && --mf->spark == 0) {
-            int sx = mf->tile_x, sz = mf->tile_z;
-            feat_spread(w, sx, sz);
+        if (!w->cfg.remastered) {
+            if (mf->spark != 0 && --mf->spark == 0) {
+                int sx = mf->tile_x, sz = mf->tile_z;
+                feat_spread(w, sx, sz);
+            }
+            continue;
+        }
+        /* A spark due once the frame has lit its cap waits for the next. */
+        if (mf->spark == 0 || (mf->spark == 1 && g_spark_catches >= FEATURE_SPARK_CATCH_CAP))
+            continue;
+        /* Each spark starts its cells from another corner, by the fire's
+         * serial and the sparks it has left. */
+        if (--mf->spark == 0) {
+            feat_spark_remastered(w, mf->tile_x, mf->tile_z,
+                                  (int)((mf->fx_serial + mf->sparks) & 3u));
+            mf = &w->features[i];
+            if (mf->sparks != 0) {
+                mf->sparks--;
+                mf->spark = spark_delay(Features_GetByIndex(mf->global_idx), 1);
+            }
         }
     }
     g_hold = NULL;
