@@ -20111,6 +20111,152 @@ TEST(flyers_cruise_over_the_sea_not_the_sea_floor) {
     fw_teardown(&platform);
 }
 
+/* What a flyer must never do near water: stand or be drawn under the
+ * sea, or come down with a corner of its footprint under it. */
+typedef struct FwaTally {
+    int under_sea, drawn_under, wet_landed;
+} FwaTally;
+
+static void fwa_watch(GameWorld *w, int h, const UnitDef *d, FwaTally *t) {
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    if (h < 0 || h >= n) return;
+    const Unit *v = &u[h];
+    int sea = w->water_height;
+    int g = Terrain_SampleHeight(w, v->world_x, v->world_y);
+    if (Units_DebugStandHeight(h) < (float)sea) t->under_sea++;
+    if ((float)g + Units_DrawnAlt(w, v) < (float)sea) t->drawn_under++;
+    if (d->script_flies && !v->flying &&
+        (g < sea || fw_lowest_corner(w, v->world_x, v->world_y, d->footprint_x,
+                                     d->footprint_z) < sea))
+        t->wet_landed++;
+}
+
+static void fwa_run(FwSea *s, int h, const UnitDef *d, FwaTally *t, int ticks) {
+    for (int i = 0; i < ticks; i++) {
+        InGame_DebugRunSimTicks(1);
+        fwa_watch(s->world, h, d, t);
+    }
+}
+
+/* Sent past (x, y) and stopped within 48 px of it at its cruise height. */
+static int fwa_stop_over(FwSea *s, int h, const UnitDef *d, FwaTally *t,
+                         int32_t x, int32_t y) {
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    float vx = (float)(x - u[h].world_x), vy = (float)(y - u[h].world_y);
+    float vl = sqrtf(vx * vx + vy * vy);
+    if (vl < 1.0f) vl = 1.0f;
+    Units_OrderMove(h, x + (int32_t)(vx / vl * 112.0f), y + (int32_t)(vy / vl * 112.0f));
+    for (int i = 0; i < 9000; i++) {
+        InGame_DebugRunSimTicks(1);
+        fwa_watch(s->world, h, d, t);
+        u = Units_GetActive(&n);
+        int64_t dx = u[h].world_x - x, dy = u[h].world_y - y;
+        int up = !d->script_flies ||
+                 (u[h].flying && u[h].flight_alt >= (float)d->cruise_alt);
+        if (up && dx * dx + dy * dy <= 48 * 48) {
+            Units_OrderStop(h);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Every unit with canfly on Two Castles, left idle over the open sea,
+ * stopped by the shore, stopped over the shallows and stopped after a
+ * patrol over the sea, lands only on dry ground and never stands or is
+ * drawn under the water. A hoverer stays cruisealt over the sea. */
+TEST(every_flyer_kind_keeps_off_the_water) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    FwSea s;
+    ASSERT_EQ_INT(0, fw_setup(&platform, &s));
+    GameWorld *w = s.world;
+    int sea = w->water_height;
+    Units_DebugRemove(s.drag);
+    /* No computer, so nothing ends the battle under the sweep. */
+    for (int p = 1; p < TAK_MAX_PLAYERS; p++)
+        if (w->cfg.players[p].kind == TAK_SLOT_AI) w->cfg.players[p].kind = TAK_SLOT_HUMAN;
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    for (int k = 0; k < n; k++)
+        if (u[k].alive && u[k].player_id != 1) Units_DebugSetAggro(k, UNIT_AGGRO_PASSIVE);
+    /* Shallows: no more than 12 under the sea for 24 px round. */
+    int32_t sh_x = -1, sh_y = -1;
+    const TNTFile *tt = &w->tnt;
+    for (int32_t y = 256; y < w->map_pixels_h - 256 && sh_x < 0; y += 16)
+        for (int32_t x = 256; x < w->map_pixels_w - 256 && sh_x < 0; x += 16) {
+            int ok = 1;
+            for (int32_t py = y - 24; py <= y + 24 && ok; py += 16)
+                for (int32_t px = x - 24; px <= x + 24 && ok; px += 16) {
+                    int hh = tt->heightmap[(py >> 4) * tt->height_w + (px >> 4)];
+                    if (hh >= sea || hh < sea - 12) ok = 0;
+                }
+            if (ok) { sh_x = x; sh_y = y; }
+        }
+    ASSERT(sh_x >= 0);
+    int kinds = 0, bad = 0;
+    for (int di = 0; di < Units_GetDefCount(); di++) {
+        const UnitDef *d = Units_GetDef(di);
+        if (!d || !d->can_fly) continue;
+        int32_t lx = -1, ly = -1;
+        for (int32_t r = 128; r < 4000 && lx < 0; r += 64)
+            for (int k = 0; k < 16 && lx < 0; k++) {
+                float a = (float)k * 6.2831853f / 16.0f;
+                int32_t x = s.open_x + (int32_t)((float)r * cosf(a));
+                int32_t y = s.open_y + (int32_t)((float)r * sinf(a));
+                if (x < 128 || y < 128 || x > w->map_pixels_w - 128 ||
+                    y > w->map_pixels_h - 128) continue;
+                if (fw_lowest_corner(w, x, y, d->footprint_x + 1, d->footprint_z + 1) > sea &&
+                    Units_IsBuildSiteFree(di, x, y)) { lx = x; ly = y; }
+            }
+        int h = lx >= 0 ? Units_Spawn(di, 1, 0, lx, ly) : -1;
+        if (h < 0) { printf("[%s not placed] ", d->unitname); bad++; continue; }
+        Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+        FwaTally t;
+        memset(&t, 0, sizeof(t));
+        int reached = fwa_stop_over(&s, h, d, &t, s.open_x, s.open_y);
+        fwa_run(&s, h, d, &t, 1500);
+        float open_at = Units_DebugStandHeight(h);
+        reached &= fwa_stop_over(&s, h, d, &t, s.shore_x, s.shore_y);
+        fwa_run(&s, h, d, &t, 3600);
+        reached &= fwa_stop_over(&s, h, d, &t, sh_x, sh_y);
+        fwa_run(&s, h, d, &t, 2400);
+        Units_OrderMove(h, s.open_x - 160, s.open_y);
+        fwa_run(&s, h, d, &t, 1200);
+        Units_OrderPatrol(h, s.open_x + 160, s.open_y);
+        fwa_run(&s, h, d, &t, 900);
+        Units_OrderStop(h);
+        fwa_run(&s, h, d, &t, 1500);
+        u = Units_GetActive(&n);
+        int alive = u[h].alive == UNIT_ALIVE_ACTIVE;
+        int landings = Units_DebugScriptEventCount(h, UNIT_SCRIPT_EV_BEGIN_LANDING);
+        int hover_low = !d->script_flies &&
+                        open_at < (float)(sea + d->cruise_alt);
+        if (!reached || !alive || hover_low || t.under_sea || t.drawn_under ||
+            t.wet_landed) {
+            printf("[%s reached %d alive %d over the sea at %.0f under %d drawn "
+                   "under %d down wet %d] ", d->unitname, reached, alive,
+                   (double)open_at, t.under_sea, t.drawn_under, t.wet_landed);
+            bad++;
+        }
+        if (d->script_flies && landings == 0) {
+            printf("[%s never landed] ", d->unitname);
+            bad++;
+        }
+        kinds++;
+        Units_DebugRemove(h);
+        InGame_DebugRunSimTicks(2);
+    }
+    printf("(%d kinds with canfly, %d at fault) ", kinds, bad);
+    ASSERT(kinds >= 20);
+    ASSERT_EQ_INT(0, bad);
+    fw_teardown(&platform);
+}
+
 /* Damage bars follow the Visual Options setting (#23): off by default,
  * the Show Damage checkbox flips DisplayDamageBars and keeps it, the
  * bar draws only for the local player unless cheat codes are allowed,
@@ -30991,6 +31137,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(flyer_left_over_open_sea_never_lands_in_it);
     RUN_UI_TEST(flyer_stopped_by_the_shore_lands_on_dry_ground);
     RUN_UI_TEST(flyers_cruise_over_the_sea_not_the_sea_floor);
+    RUN_UI_TEST(every_flyer_kind_keeps_off_the_water);
     RUN_UI_TEST(tower_aim_faces_target);
     RUN_UI_TEST(war_galley_attacks_shore_target);
     RUN_UI_TEST(monarch_attacks_large_structure);

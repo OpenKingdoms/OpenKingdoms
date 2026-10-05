@@ -121,8 +121,6 @@ it lands and lifted when it takes off.
   at its target stays close. Of twelve Harpies on one attack ground
   order on Two Castles, each had on average six others within 50 px,
   against all eleven before the air traffic rules.
-- The landing test passes every cell the flyer's side cannot see
-  (legacy:220094-220101). The engine tests every cell (M-014).
 - A saturated air cell, 0xffff, passes the landing test in the original.
   The engine has no air cells, so it never comes up.
 - The original snaps a move's point to its footprint's cell lattice

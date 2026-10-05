@@ -1946,6 +1946,50 @@ TEST(the_landing_search_repeats_exactly) {
     ASSERT_EQ_INT((int)rand_state[0], (int)rand_state[1]);
 }
 
+/* A search may make for sea its side has never explored, which passes
+ * untested (legacy:220095-220102), but the flyer looks again where it
+ * arrives, ground its own sight has explored, and never lands in water. */
+TEST(a_flyer_never_lands_on_sea_it_had_not_explored) {
+    GameWorld *w = mv_island();
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ_INT(0, Fog_Init(w));
+    ((UnitDef *)Units_GetDef(MV_FLY_DRAG))->sight_distance = 230;
+    int h = Units_Spawn(MV_FLY_DRAG, 1, 0, 2600, 1500);
+    ASSERT(h >= 0);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    Units_OrderMove(h, 800, 1500);
+    int flew = 0, unseen_wet = 0, landings = 0, wet = 0;
+    int32_t sx = -1, sy = -1;
+    for (int t = 0; t < 7200; t++) {
+        Units_TickEngines();
+        /* The battle loop stamps a seat's sight every 12 ticks. */
+        if ((t + 1) % 12 == 0) Fog_Update(w, 1);
+        const Unit *u = mv_unit(h);
+        if (u->flying) flew = 1;
+        if (u->air_mode == UNIT_AIR_SPOT && (u->air_x != sx || u->air_y != sy)) {
+            sx = u->air_x;
+            sy = u->air_y;
+            int tx = (sx - 32 + 8) >> 4, ty = (sy - 32 + 8) >> 4;
+            if (sx < MV_SHORE_TX * 16 - 64 &&
+                Fog_StateAtForPlayer(w, 1, ((tx >> 1) + 1) * TAK_FOG_CELL_PX,
+                                     ((ty >> 1) + 1) * TAK_FOG_CELL_PX) ==
+                    TAK_FOG_UNEXPLORED)
+                unseen_wet++;
+        }
+        if (flew && !u->flying) {
+            landings++;
+            if (mv_lowest_corner(w, u) < MV_WATER) wet++;
+            flew = 0;
+        }
+    }
+    printf("(%d searches made for unexplored sea, %d landings) ", unseen_wet,
+           landings);
+    ASSERT(unseen_wet > 0);
+    ASSERT_EQ_INT(0, wet);
+    ASSERT_EQ_INT(landings, Units_DebugScriptEventCount(h, UNIT_SCRIPT_EV_BEGIN_LANDING));
+    mv_end();
+}
+
 /* Over the sea a flyer cruises cruisealt over the water, not over the
  * sea floor, and one that hovers hovers over the surface
  * (legacy:190499-190507). Over land nothing changes. */
@@ -2016,6 +2060,7 @@ int main(int argc, char **argv) {
     RUN(a_flyer_stopped_over_land_lands_where_it_is);
     RUN(the_landing_search_repeats_exactly);
     RUN(a_flyer_cruises_over_the_sea_not_the_sea_floor);
+    RUN(a_flyer_never_lands_on_sea_it_had_not_explored);
     TEST_SUITE("State hash");
     RUN(a_repeated_run_hashes_the_same);
     RUN(a_cold_planner_hashes_the_same);
