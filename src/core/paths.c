@@ -81,6 +81,19 @@ static void make_dirs(const char *path) {
 
 const char *Paths_PrefDir(void) {
     if (s_pref[0]) return s_pref;
+    const char *env = getenv("TAK_CONFIG_DIR");
+    if (env && env[0]) {
+        snprintf(s_pref, sizeof(s_pref), "%s", env);
+        ensure_trailing_sep(s_pref, sizeof(s_pref));
+        make_dirs(s_pref);
+        return s_pref;
+    }
+#ifdef TAK_TEST_BUILD
+    /* The platform's answer is the player's own options.cfg, so a test
+     * binary never asks for it. */
+    snprintf(s_pref, sizeof(s_pref), "test_prefs/");
+    make_dirs(s_pref);
+#else
     char *pref = SDL_GetPrefPath("OpenKingdoms", "OpenKingdoms");
     if (pref) {
         snprintf(s_pref, sizeof(s_pref), "%s", pref);
@@ -89,6 +102,7 @@ const char *Paths_PrefDir(void) {
         snprintf(s_pref, sizeof(s_pref), "./");
     }
     ensure_trailing_sep(s_pref, sizeof(s_pref));
+#endif
     return s_pref;
 }
 
