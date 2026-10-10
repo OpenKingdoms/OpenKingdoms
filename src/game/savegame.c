@@ -377,7 +377,16 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 #define U_AIR_OY        (U_AIR_CROWD + 18u)
 #define U_AIR_BAND      (U_AIR_CROWD + 22u)
 #define U_AIR_HOLD      (U_AIR_CROWD + 23u)
-#define U_END           (U_AIR_CROWD + 24u)
+/* Version 12 on: a hover attack's stage, the frames before it looks
+ * again, its step outs, what it heard and its point. An older record
+ * reads back in no hover attack, which starts afresh. */
+#define U_HOVER_STATE   (U_AIR_CROWD + 24u)
+#define U_HOVER_WAIT    (U_HOVER_STATE + 1u)
+#define U_HOVER_STEPS   (U_HOVER_STATE + 2u)
+#define U_HOVER_EVENTS  (U_HOVER_STATE + 3u)
+#define U_HOVER_X       (U_HOVER_STATE + 4u)
+#define U_HOVER_Y       (U_HOVER_STATE + 8u)
+#define U_END           (U_HOVER_STATE + 12u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -594,7 +603,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 11
+#define VER_UNIT 12
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 4
@@ -1191,6 +1200,12 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_i32(r + U_AIR_OY, u->air_oy);
     tak_put_u8(r + U_AIR_BAND, u->air_band);
     tak_put_u8(r + U_AIR_HOLD, u->air_hold);
+    tak_put_u8(r + U_HOVER_STATE, u->hover_state);
+    tak_put_u8(r + U_HOVER_WAIT, u->hover_wait);
+    tak_put_u8(r + U_HOVER_STEPS, u->hover_steps);
+    tak_put_u8(r + U_HOVER_EVENTS, u->hover_events);
+    tak_put_i32(r + U_HOVER_X, u->hover_x);
+    tak_put_i32(r + U_HOVER_Y, u->hover_y);
     tak_put_u8(r + U_BUILD_ENDLESS, (uint8_t)((u->build_endless ? 1u : 0u) |
                                               (u->build_held ? 2u : 0u)));
     tak_put_u8(r + U_BUILD_TRIES, u->build_tries);
@@ -1442,6 +1457,12 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->air_oy = tak_get_i32(r + U_AIR_OY);
     u->air_band = tak_get_u8(r + U_AIR_BAND);
     u->air_hold = tak_get_u8(r + U_AIR_HOLD);
+    u->hover_state = tak_get_u8(r + U_HOVER_STATE);
+    u->hover_wait = tak_get_u8(r + U_HOVER_WAIT);
+    u->hover_steps = tak_get_u8(r + U_HOVER_STEPS);
+    u->hover_events = tak_get_u8(r + U_HOVER_EVENTS);
+    u->hover_x = tak_get_i32(r + U_HOVER_X);
+    u->hover_y = tak_get_i32(r + U_HOVER_Y);
     uint8_t summons = tak_get_u8(r + U_BUILD_ENDLESS);
     u->build_endless = (summons & 1u) ? 1 : 0;
     u->build_held = (summons & 2u) ? 1 : 0;

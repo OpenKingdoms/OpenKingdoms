@@ -766,6 +766,13 @@ static int setup(const char *map_name) {
     g_units[1].air_oy = 2111;
     g_units[1].air_band = 7;
     g_units[1].air_hold = 9;
+    /* And holds a hover attack's point off its target. */
+    g_units[1].hover_state = UNIT_HOVER_WAIT;
+    g_units[1].hover_wait = 21;
+    g_units[1].hover_steps = 2;
+    g_units[1].hover_events = UNIT_HOVER_ARMED | UNIT_HOVER_GOING;
+    g_units[1].hover_x = -141;
+    g_units[1].hover_y = 2222;
     /* The bowman holds a summons of TARNECRO for a unit on its spot. */
     g_units[1].build_held = 1;
     g_units[1].build_def = 3;
@@ -1693,8 +1700,8 @@ static uint32_t rec_u32(const uint8_t *r, int at) {
  * the production runs' lengths come last. Version 6 adds each weapon's
  * drawn shot at 974, version 7 a builder's walk goal at 983,
  * version 8 the attack handler's wait at 991, version 9 the death blast
- * at 992, version 10 a summons without end at 993 and version 11 a
- * flyer's air traffic at 1000. */
+ * at 992, version 10 a summons without end at 993, version 11 a
+ * flyer's air traffic at 1000 and version 12 a hover attack at 1024. */
 TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
@@ -1706,8 +1713,8 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
-    ASSERT_EQ_INT(11, (int)version);
-    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24,
+    ASSERT_EQ_INT(12, (int)version);
+    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24 + 12,
                   (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;
     /* The bowman's formation group at 487 and its second leg at 520. */
@@ -1763,6 +1770,15 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     ASSERT_EQ_INT(7, r1[1022]);
     ASSERT_EQ_INT(9, r1[1023]);
     ASSERT_EQ_INT(0, r0[1000]);
+    /* The hover attack's stage, timer, step outs and events at 1024 and
+     * its point at 1028. */
+    ASSERT_EQ_INT(UNIT_HOVER_WAIT, r1[1024]);
+    ASSERT_EQ_INT(21, r1[1025]);
+    ASSERT_EQ_INT(2, r1[1026]);
+    ASSERT_EQ_INT(UNIT_HOVER_ARMED | UNIT_HOVER_GOING, r1[1027]);
+    ASSERT_EQ_INT(-141, (int)rec_u32(r1, 1028));
+    ASSERT_EQ_INT(2222, (int)rec_u32(r1, 1032));
+    ASSERT_EQ_INT(0, r0[1024]);
     Save_Close(r);
 }
 

@@ -2023,6 +2023,240 @@ TEST(a_flyer_cruises_over_the_sea_not_the_sea_floor) {
     mv_end();
 }
 
+/* ── Hover attack ────────────────────────────────────────────────────── */
+
+enum { MV_HOVER_HARPY = MV_DEF_COUNT, MV_HOVER_POST, MV_HOVER_COUNT };
+
+/* The Harpy with its hoverattack keys, hoverattack = 1 and
+ * hoverattackdistance = 200 from units/zonharp.fbi, and a weapon of its
+ * 300 px reach that fires a slow shot every two seconds. Also a post with
+ * health enough to outlast a flock's shots. */
+static int mv_add_hover_harpy(void) {
+    UnitDef defs[MV_HOVER_COUNT];
+    for (int i = 0; i < MV_DEF_COUNT; i++) defs[i] = *Units_GetDef(i);
+    UnitDef *d = &defs[MV_HOVER_HARPY];
+    mv_fill_def(d, "TESTHARPY", "", 3.5f, 913);
+    strncpy(d->category, "TEST FLY", sizeof(d->category) - 1);
+    d->acceleration = 0.25f;
+    d->brake_rate = 0.25f;
+    d->turn_rate = 300.0f;
+    d->footprint_x = 2;
+    d->footprint_z = 2;
+    d->can_fly = 1;
+    d->cruise_alt = 200;
+    d->max_water_depth = 0;
+    d->min_water_depth = -10000;
+    d->hover_attack = 1;
+    d->hover_attack_dist = 200;
+    d->hover_attack_alt = 200;
+    d->num_weapons = 1;
+    strncpy(d->weapons[0].name, "TESTSPIT", sizeof(d->weapons[0].name) - 1);
+    d->weapons[0].range = 300;
+    d->weapons[0].damage = 1;
+    d->weapons[0].reload_ticks = 120;
+    d->weapons[0].velocity_pps = 300;
+    mv_fill_def(&defs[MV_HOVER_POST], "TESTPOST", "TESTBIG", 1.4f, 1000000);
+    if (Units_DebugSetDefs(defs, MV_HOVER_COUNT) != MV_HOVER_COUNT) return -1;
+    static const uint32_t ret[] = { 0x10065000u };
+    static const char *const names[] = { "BeginFlight", "BeginLanding" };
+    static const uint32_t offsets[] = { 0, 0 };
+    if (Units_DebugSetDefScript(MV_HOVER_HARPY, ret, 1, names, offsets, 2) != 0)
+        return -1;
+    return MV_HOVER_HARPY;
+}
+
+/* Others of the flock within r px of unit h[i]. */
+static int mv_near_count(const int *h, int n, int i, int r) {
+    int c = 0;
+    for (int j = 0; j < n; j++) {
+        if (j == i) continue;
+        const Unit *b = mv_unit(h[j]);
+        if (mv_dist2(mv_unit(h[i]), b->world_x, b->world_y) <= (int64_t)r * r)
+            c++;
+    }
+    return c;
+}
+
+/* Twelve Harpies sent onto one still enemy. Each closes to 360 px, then
+ * holds its own bearing 200 px out and, after a shot of its lands, one
+ * time in two flies to a bearing drawn at random (legacy:30188-30455),
+ * so the flock spreads round the target rather than stacking at the
+ * edge of its reach. */
+TEST(a_hover_flock_spreads_round_a_still_target) {
+    ASSERT_NOT_NULL(mv_world());
+    int harpy = mv_add_hover_harpy();
+    ASSERT(harpy >= 0);
+    int post = Units_Spawn(MV_HOVER_POST, 0, 0, 1900, 1600);
+    ASSERT(post >= 0);
+    Units_DebugSetAggro(post, UNIT_AGGRO_PASSIVE);
+    #define MV_HOVER_N 12
+    int h[MV_HOVER_N];
+    for (int i = 0; i < MV_HOVER_N; i++) {
+        h[i] = Units_Spawn(harpy, 1, 0, 1000 + (i % 4) * 64, 1500 + (i / 4) * 64);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    for (int i = 0; i < MV_HOVER_N; i++) ASSERT(Units_OrderAttack(h[i], post));
+    int64_t near_sum = 0, samples = 0, on_ring = 0, attacking = 0;
+    for (int t = 0; t < 5400; t++) {
+        Units_TickEngines();
+        if (t < 1800 || t % 30 != 0) continue;
+        const Unit *p = mv_unit(post);
+        for (int i = 0; i < MV_HOVER_N; i++) {
+            const Unit *a = mv_unit(h[i]);
+            near_sum += mv_near_count(h, MV_HOVER_N, i, 50);
+            samples++;
+            if (a->target != post) continue;
+            attacking++;
+            int64_t d2 = mv_dist2(a, p->world_x, p->world_y);
+            if (d2 >= 170 * 170 && d2 <= 240 * 240) on_ring++;
+        }
+    }
+    int octant[8] = { 0 }, still = 0, sectors = 0;
+    const Unit *p = mv_unit(post);
+    for (int i = 0; i < MV_HOVER_N; i++) {
+        const Unit *a = mv_unit(h[i]);
+        if (a->target != post) continue;
+        still++;
+        float ang = atan2f((float)(a->world_y - p->world_y),
+                           (float)(a->world_x - p->world_x));
+        int k = (int)floorf((ang + 3.14159265f) / 0.78539816f) & 7;
+        octant[k]++;
+    }
+    for (int k = 0; k < 8; k++) sectors += octant[k] ? 1 : 0;
+    double near_avg = samples ? (double)near_sum / (double)samples : 0.0;
+    printf("(%.2f others within 50 px on average, %.0f%% of attacking "
+           "samples 170 to 240 px out, %d still attacking over %d of 8 "
+           "octants) ", near_avg,
+           attacking ? 100.0 * (double)on_ring / (double)attacking : 0.0,
+           still, sectors);
+    ASSERT(attacking > 0);
+    ASSERT(on_ring * 4 >= attacking * 3);
+    ASSERT(near_avg < 1.0);
+    ASSERT(still >= 6);
+    ASSERT(sectors >= 5);
+    #undef MV_HOVER_N
+    mv_end();
+}
+
+/* A Harpy sent to attack a point on the ground from 600 px east holds
+ * its bearing at its hoverattackdistance, 200 px plus rand(8) - 3, not
+ * at its weapon's 300 px reach, and fires from there
+ * (legacy:30254-30293). */
+TEST(a_hover_attacker_holds_its_bearing_off_a_ground_point) {
+    ASSERT_NOT_NULL(mv_world());
+    int harpy = mv_add_hover_harpy();
+    ASSERT(harpy >= 0);
+    int h = Units_Spawn(harpy, 1, 0, 2100, 1500);
+    ASSERT(h >= 0);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    ASSERT(Units_OrderAttackGround(h, 1500, 1500));
+    int shots = 0, held = 0, samples = 0;
+    int64_t far2 = 0, near2 = INT64_MAX;
+    for (int t = 0; t < 2400; t++) {
+        Units_TickEngines();
+        const Unit *u = mv_unit(h);
+        if (u->weapon_state[0].cooldown_ticks == 120) shots++;
+        if (t < 900) continue;
+        int64_t d2 = mv_dist2(u, 1500, 1500);
+        if (d2 > far2) far2 = d2;
+        if (d2 < near2) near2 = d2;
+        samples++;
+        if (u->world_x > 1500 && abs(u->world_y - 1500) < 70) held++;
+    }
+    printf("(%d shots, %.0f to %.0f px from the point, east of it %d of %d "
+           "ticks) ", shots, sqrt((double)near2), sqrt((double)far2), held,
+           samples);
+    ASSERT(shots >= 5);
+    ASSERT(near2 >= 185 * 185);
+    ASSERT(far2 <= 212 * 212);
+    ASSERT_EQ_INT(samples, held);
+    mv_end();
+}
+
+/* A Harpy on a walker that walks away fires as it follows, since the
+ * hover attack sets its weapons on the target and moves the flyer by
+ * its own script (legacy:30214-30240, legacy:30295-30352). */
+TEST(a_hover_attacker_fires_as_it_flies) {
+    ASSERT_NOT_NULL(mv_world());
+    int harpy = mv_add_hover_harpy();
+    ASSERT(harpy >= 0);
+    int post = Units_Spawn(MV_HOVER_POST, 0, 0, 1300, 1500);
+    ASSERT(post >= 0);
+    Units_DebugSetAggro(post, UNIT_AGGRO_PASSIVE);
+    int h = Units_Spawn(harpy, 1, 0, 1000, 1500);
+    ASSERT(h >= 0);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    ASSERT(Units_OrderAttack(h, post));
+    ASSERT(Units_OrderMove(post, 2800, 1500));
+    int shots = 0, on_the_move = 0;
+    for (int t = 0; t < 2400; t++) {
+        Units_TickEngines();
+        const Unit *u = mv_unit(h);
+        if (u->weapon_state[0].cooldown_ticks != 120) continue;
+        shots++;
+        if (u->anim_state == UNIT_ANIM_MOVING && u->cur_speed_ppt > 0.0f)
+            on_the_move++;
+    }
+    printf("(%d shots, %d of them on the move) ", shots, on_the_move);
+    ASSERT(shots >= 6);
+    ASSERT(on_the_move * 2 >= shots);
+    mv_end();
+}
+
+/* Crowded at its point, a hover attacker steps out
+ * (rand(10) + rand(10) + rand(10) + footprint) * 16 px, further than the
+ * (rand(15) + footprint) * 16 of other missions, and gives the attack up
+ * once rand(5) + 1 + rand(5) is under its step outs
+ * (legacy:30636-30705). Eight Harpies far apart are held crowded
+ * while they hold their points. */
+TEST(a_crowded_hover_attacker_steps_out_far_and_gives_up) {
+    ASSERT_NOT_NULL(mv_world());
+    int harpy = mv_add_hover_harpy();
+    ASSERT(harpy >= 0);
+    #define MV_CROWD_N 8
+    int h[MV_CROWD_N], legs[MV_CROWD_N] = { 0 }, ended_at[MV_CROWD_N];
+    for (int i = 0; i < MV_CROWD_N; i++) {
+        h[i] = Units_Spawn(harpy, 1, 0, 400 + (i % 4) * 700, 700 + (i / 4) * 1200);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+        ASSERT(Units_OrderAttackGround(h[i], mv_unit(h[i])->world_x + 300,
+                                                 mv_unit(h[i])->world_y));
+        ended_at[i] = -1;
+    }
+    double len_sum = 0.0;
+    int len_n = 0, len_max = 0;
+    for (int t = 0; t < 12000; t++) {
+        for (int i = 0; i < MV_CROWD_N; i++) {
+            Unit *u = (Unit *)mv_unit(h[i]);   /* test-only mutation */
+            if (u->hover_state == UNIT_HOVER_WAIT) u->air_crowd = 10;
+        }
+        Units_TickEngines();
+        for (int i = 0; i < MV_CROWD_N; i++) {
+            const Unit *u = mv_unit(h[i]);
+            if (u->air_mode == UNIT_AIR_STEP && !legs[i]) {
+                double len = sqrt((double)mv_dist2(u, u->air_x, u->air_y));
+                len_sum += len;
+                len_n++;
+                if ((int)len > len_max) len_max = (int)len;
+            }
+            legs[i] = u->air_mode == UNIT_AIR_STEP;
+            if (ended_at[i] < 0 && u->cmd_kind != UNIT_CMD_ATTACK_GROUND)
+                ended_at[i] = t;
+        }
+    }
+    int ended = 0;
+    for (int i = 0; i < MV_CROWD_N; i++) ended += ended_at[i] >= 0;
+    printf("(%d step outs, %.0f px on average, longest %d px, %d of %d "
+           "attacks given up) ", len_n, len_n ? len_sum / len_n : 0.0,
+           len_max, ended, MV_CROWD_N);
+    ASSERT(len_n >= 2 * MV_CROWD_N);
+    ASSERT(len_sum / len_n > 200.0);
+    ASSERT_EQ_INT(MV_CROWD_N, ended);
+    #undef MV_CROWD_N
+    mv_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("Movement without game data");
@@ -2061,6 +2295,11 @@ int main(int argc, char **argv) {
     RUN(the_landing_search_repeats_exactly);
     RUN(a_flyer_cruises_over_the_sea_not_the_sea_floor);
     RUN(a_flyer_never_lands_on_sea_it_had_not_explored);
+    TEST_SUITE("Hover attack");
+    RUN(a_hover_flock_spreads_round_a_still_target);
+    RUN(a_hover_attacker_holds_its_bearing_off_a_ground_point);
+    RUN(a_hover_attacker_fires_as_it_flies);
+    RUN(a_crowded_hover_attacker_steps_out_far_and_gives_up);
     TEST_SUITE("State hash");
     RUN(a_repeated_run_hashes_the_same);
     RUN(a_cold_planner_hashes_the_same);

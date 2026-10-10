@@ -115,12 +115,11 @@ it lands and lifted when it takes off.
   `hoverattackdistance = 200`. Such a flyer holds its own bearing from
   its target at that distance plus rand(8) - 3, picked again every 15 to
   29 frames, with a 1 percent chance of a nudge of up to rand(2048)
-  (legacy:30139-30370, keys parsed at legacy:163005-163017). The engine
-  does not read the keys yet (#401). Attacking flyers that share cells
-  still step apart, but each comes back to the same approach, so a flock
-  at its target stays close. Of twelve Harpies on one attack ground
-  order on Two Castles, each had on average six others within 50 px,
-  against all eleven before the air traffic rules.
+  (legacy:30139-30370, keys parsed at legacy:163005-163017). It was left
+  for #401 and is now built (2026-10-10-hover-attack.md). Before it, of
+  twelve Harpies on one attack ground order on Two Castles, each had on
+  average six others within 50 px, against all eleven before the air
+  traffic rules.
 - A saturated air cell, 0xffff, passes the landing test in the original.
   The engine has no air cells, so it never comes up.
 - The original snaps a move's point to its footprint's cell lattice

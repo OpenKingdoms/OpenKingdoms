@@ -433,6 +433,18 @@ static int test_every_subsystem_contributes(void) {
          g_units[0].air_bearing = 0);
     POKE("circle centre", g_units[0].air_oy = 99, g_units[0].air_oy = 0);
     g_units[0].air_mode = 0;
+    POKE("hover attack stage", g_units[0].hover_state = UNIT_HOVER_CLOSE,
+         g_units[0].hover_state = 0);
+    g_units[0].hover_state = UNIT_HOVER_WAIT;
+    POKE("hover look timer", g_units[0].hover_wait = 15,
+         g_units[0].hover_wait = 0);
+    POKE("hover step outs", g_units[0].hover_steps = 2,
+         g_units[0].hover_steps = 0);
+    POKE("hover events", g_units[0].hover_events = UNIT_HOVER_EV_LANDED,
+         g_units[0].hover_events = 0);
+    POKE("hover point", g_units[0].hover_x = -200, g_units[0].hover_x = 0);
+    POKE("hover point y", g_units[0].hover_y = 31, g_units[0].hover_y = 0);
+    g_units[0].hover_state = 0;
     POKE("summons held for units on its spot",
          g_units[0].build_held = 1, g_units[0].build_held = 0);
     g_units[0].build_held = 1;

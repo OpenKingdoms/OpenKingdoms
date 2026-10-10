@@ -120,8 +120,10 @@
  * footing leans toward the unit a unit attacks. 38: a Wandering
  * weapon's shot plays its start art, wanders for its duration turning
  * every variationtime and bursts on each frame of it, then plays its
- * end art and is gone. */
-#define TAK_ENGINE_BUILD_ID           38
+ * end art and is gone. 39: a flyer with hoverattack holds its own
+ * bearing round its target at its hoverattackdistance, fires as it
+ * flies and steps out and gives up by the hover attack's own rule. */
+#define TAK_ENGINE_BUILD_ID           39
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

@@ -1747,7 +1747,10 @@ Format per entry:
   attack. We could not tie that stage to its height, so the engine
   ties it to reaching cruise.
 - Citation: BeginFlight turns off all three weapons (legacy:24120) and
-  the air attack turns them on again (legacy:25797). A shot at or under
+  the air attack turns them on again (legacy:25797), the hover attack at
+  its second stage (legacy:30223-30253). A hover attacker climbs to its
+  `hoverattackaltitude` while it holds a point and holds its fire until
+  it is there. A shot at or under
   the floor of its cell bursts there (legacy:245470-245476). The manual
   is silent.
 
@@ -2052,22 +2055,26 @@ Format per entry:
   caster check (legacy:247710-247713). The manual is silent.
   docs/notes/2026-09-19-the-harpy-takes-units-over.md has the detail.
 
-## D-039: A hovering attacker does not hold off at its hoverattackdistance
+## D-039: Where a hover attack stops closing in by the common rule
 
-- Change: `hoverattack` and `hoverattackdistance` are not read. A Harpy
-  closes to its weapon's reach, 300 px, and fires from wherever it is
-  inside that, as close as it happens to be. A unit walking straight
-  away from it is therefore shot at from the edge of that reach. The
-  shot leads the unit by four fifths of its flight and lives only its
-  range across the ground (D-038), so it ends short of where it aims,
-  and the Harpy follows and misses again until its mana runs out. From
-  the original's standoff of 200 px the same shot lands.
-- Why: not built yet. The standoff belongs with the work on how flyers
-  keep apart, which is where the Harpies piling into one stack is
-  handled.
-- Citation: the unit keys are read at legacy:163005-163007. The Harpy
-  sets `hoverattack = 1` and `hoverattackdistance = 200`. The manual is
-  silent.
+- Change: a flyer with `hoverattack` closes on its target and then holds
+  its own bearing at its `hoverattackdistance` as the original's does
+  (docs/notes/2026-10-10-hover-attack.md). While it is still further
+  than that distance plus 160 px it steps out of a crowd by the other
+  missions' rule, and from there on by the hover attack's own. Every
+  shot of its that lands wakes the attack's next look.
+- Why: the original sends a target that fails a reach test on the
+  unit's path to a formation move, which steps out by the common rule,
+  and flies the rest with a plain move that does not. That test was not
+  traced, so the engine draws the line where the attack turns its
+  weapons on. A shot that hurt its own side more than twice what it did
+  to the enemy raises another event in the original, which the attack
+  does not wake on. The engine does not add up a shot's damage by side,
+  and such shots are rare.
+- Citation: the far test and the formation move (legacy:30139,
+  legacy:30467-30502, legacy:235678-235762), the hover attack's step out
+  (legacy:30636-30705) and the shot events (legacy:15038-15060). The
+  manual is silent.
 
 ## R-008: A reel's soundtrack goes through the game's mixer
 

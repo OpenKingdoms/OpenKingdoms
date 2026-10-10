@@ -1963,6 +1963,11 @@ static void projectile_detonate_at(Projectile *p, int idx) {
         }
     }
     projectile_impact_fx(p, struck >= 0 ? &g_units[struck] : NULL, (uint32_t)idx);
+    /* Its shooter hears of it, which a hover attack looks again on
+     * (legacy:245317, legacy:245370, legacy:15038-15060). */
+    if (p->shooter >= 0 && p->shooter < g_unit_count &&
+        g_units[p->shooter].hover_state != UNIT_HOVER_NONE)
+        g_units[p->shooter].hover_events |= UNIT_HOVER_EV_LANDED;
     if (p->area_of_effect >= BLAST_DIRECT_BELOW || struck < 0) {
         apply_projectile_area_damage(p);
     } else if (p->mind_control) {
@@ -3700,6 +3705,12 @@ static void order_fresh(Unit *u) {
     u->move_group = 0;
     u->move_paced = 0;
     u->face_mode = UNIT_FACE_NONE;
+    u->hover_state = UNIT_HOVER_NONE;
+    u->hover_wait = 0;
+    u->hover_steps = 0;
+    u->hover_events = 0;
+    u->hover_x = 0;
+    u->hover_y = 0;
 }
 
 /* The walk to (x, y) without touching the legs, which a leg taken off
@@ -6735,6 +6746,11 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->radar_distance = TDF_ReadInt(tdf, "radardistance", 0);
     out->can_fly        = TDF_ReadInt(tdf, "canfly", 0);
     out->cruise_alt     = TDF_ReadInt(tdf, "cruisealt", 0);
+    out->hover_attack   = (uint8_t)(TDF_ReadInt(tdf, "hoverattack", 0) & 1);
+    out->hover_attack_dist =
+        (int16_t)TDF_ReadInt(tdf, "hoverattackdistance", 0);
+    out->hover_attack_alt =
+        (int16_t)TDF_ReadInt(tdf, "hoverattackaltitude", out->cruise_alt);
     out->floater        = TDF_ReadInt(tdf, "floater", 0);
     out->amphibious     = (uint8_t)(TDF_ReadInt(tdf, "amphibious", 0) & 1);
     out->leash_length   = TDF_ReadInt(tdf, "maneuverleashlength", 0) & 0xffff;
@@ -6964,6 +6980,11 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         w->gravity_adjust = TDF_ReadFloat(tdf, "gravityadjustment", 1.0f);
         if (!(w->gravity_adjust > 0.0f)) w->gravity_adjust = 1.0f;
         w->lob_preferred  = TDF_ReadInt(tdf, "lobpreferred", 0) ? 1 : 0;
+        w->hover_attack_dist =
+            (int16_t)TDF_ReadInt(tdf, "hoverattackdistance", 0);
+        w->hover_attack_alt =
+            (int16_t)TDF_ReadInt(tdf, "hoverattackaltitude", 0);
+        w->drop_key = (uint8_t)(TDF_ReadInt(tdf, "dropped", 0) & 1);
         w->dropped        = ascii_contains_ci(w->subtype, "dropped") ? 1 : 0;
         w->mind_control   = ascii_contains_ci(w->subtype, "mindcontrol") ? 1 : 0;
         /* Only `type = Ballistic` gets the gravity behaviour; Guided,
@@ -9557,7 +9578,8 @@ static void enter_state(Unit *u, UnitAnimState new_state) {
             Cob_StopThread(u->cob, u->walk_thread_slot);
         u->walk_thread_slot = -1;
     }
-    if (u->anim_state == UNIT_ANIM_ATTACKING && new_state != UNIT_ANIM_ATTACKING) {
+    if (u->anim_state == UNIT_ANIM_ATTACKING && new_state != UNIT_ANIM_ATTACKING &&
+        !(new_state == UNIT_ANIM_MOVING && u->hover_state != UNIT_HOVER_NONE)) {
         for (int wi = 0; wi < 3; wi++) {
             u->weapon_state[wi].aim_thread_slot = -1;
             u->weapon_state[wi].aim_target = -1;
@@ -12189,9 +12211,18 @@ static int unit_def_has_flight(const UnitDef *def) {
  * cruise height. The original turns them off at BeginFlight
  * (legacy:24120) and on again at a later stage of its air attack
  * (legacy:25797). */
+static int hover_attack_alt(const Unit *u, const UnitDef *def);
+
+/* The height a flyer in the air makes for: its cruise height, or its
+ * hover attack's while it holds a point (legacy:30367, 30443). */
+static float flyer_height(const Unit *u, const UnitDef *def) {
+    return u->hover_state >= UNIT_HOVER_PICK ? (float)hover_attack_alt(u, def)
+                                             : (float)def->cruise_alt;
+}
+
 static int unit_climbing(const Unit *u, const UnitDef *def) {
     return def && def->can_fly && u->flying &&
-           u->flight_alt < (float)def->cruise_alt;
+           u->flight_alt < flyer_height(u, def);
 }
 
 static void flight_tick(Unit *u, const UnitDef *def, const GameWorld *w) {
@@ -12215,7 +12246,7 @@ static void flight_tick(Unit *u, const UnitDef *def, const GameWorld *w) {
             unit_start_script(u, "BeginFlight", NULL, 0);
             occ_sync_mobile((int)(u - g_units));   /* leaves its cells */
         }
-        target = u->flying ? (float)def->cruise_alt : 0.0f;
+        target = u->flying ? flyer_height(u, def) : 0.0f;
     }
     int occ = unit_sfx_occupy_state(u, def, w);
     if (u->sfx_occupy != occ) {
@@ -12370,14 +12401,12 @@ static void air_leg(Unit *u, int mode, int32_t x, int32_t y, int reach) {
  * each costing rand(80) plus 0 at 45 degrees, 100 ahead and abeam, 200
  * at 135 and 300 behind, and 100 more for each sharer within 90 degrees
  * of it (legacy:29973-30000). The cheapest, turned up to 22.5 degrees
- * either way, is flown d give or take a quarter, d being
- * (rand(15) + footprint) * 16 px as the mission draws it, until within
- * (rand(5) + 5) * 16 px. */
-static void flyer_step_out(Unit *u, int h) {
+ * either way, is flown d give or take a quarter, until within
+ * (rand(5) + 5) * 16 px. The mission that sends it draws d. */
+static void flyer_step_out(Unit *u, int h, int d) {
     static const int base[8] = { 100, 0, 100, 200, 300, 200, 100, 0 };
     int fx, fz, tx, ty;
     unit_fp_cells(u, u->world_x, u->world_y, &tx, &ty, &fx, &fz);
-    int d = ((int)World_Rand(15) + fx) * 16;
     int cost[8];
     for (int k = 0; k < 8; k++) cost[k] = (int)World_Rand(80) + base[k];
     uint16_t hd = Units_TurnFromHeading(u->heading);
@@ -12610,8 +12639,14 @@ static int flyer_air_tick(Unit *u, int h, const UnitDef *def,
         int idle = *desired == UNIT_ANIM_IDLE &&
                    u->cmd_kind == UNIT_CMD_NONE && u->target < 0;
         int limit = flyer_crowd_limit(u);
-        if (limit >= 0 && u->air_crowd > limit) {
-            flyer_step_out(u, h);
+        /* A hover attack steps out by its own rule once it is near
+         * (legacy:30636-30705, D-039). */
+        if (limit >= 0 && u->air_crowd > limit &&
+            (u->hover_state == UNIT_HOVER_NONE ||
+             (u->hover_events & UNIT_HOVER_FAR))) {
+            int fx, fz;
+            unit_occ_fp(u, &fx, &fz);
+            flyer_step_out(u, h, ((int)World_Rand(15) + fx) * 16);
         } else if (idle && !u->air_hold && u->air_mode == UNIT_AIR_NONE &&
                    flyer_fast(u, def)) {
             /* Still fast, as after a stop: fly on first
@@ -12629,6 +12664,370 @@ static int flyer_air_tick(Unit *u, int h, const UnitDef *def,
     *goal_x = u->air_x;
     *goal_y = u->air_y;
     return 1;
+}
+
+/* ── Hover attack ─────────────────────────────────────────────────────
+ *
+ * A flyer with hoverattack closes only to its hoverattackdistance plus
+ * 160 px. It then sets its weapons on the target and holds its own
+ * bearing from it at that distance, picking its point again whenever it
+ * fires, a shot of its lands, it reaches the point or 15 to 29 frames go
+ * by, and fires as it flies (legacy:30139-30449). Crowded, it steps out
+ * further than other flyers and gives the attack up after a few step
+ * outs (legacy:30616-30705). */
+
+static int hover_slot(const Unit *u, const UnitDef *def) {
+    int slot = u->weapon_slot;
+    return (slot < 0 || slot >= def->num_weapons) ? 0 : slot;
+}
+
+/* The weapon in hand's standoff, else the unit's (legacy:30150-30156). */
+static int hover_attack_dist(const Unit *u, const UnitDef *def) {
+    int d = def->weapons[hover_slot(u, def)].hover_attack_dist;
+    return d ? d : def->hover_attack_dist;
+}
+
+/* The height it hovers at while it holds its point, the weapon's, else
+ * the unit's (legacy:30158-30163, legacy:30367). */
+static int hover_attack_alt(const Unit *u, const UnitDef *def) {
+    if (def->num_weapons <= 0) return def->hover_attack_alt;
+    int a = def->weapons[hover_slot(u, def)].hover_attack_alt;
+    return a ? a : def->hover_attack_alt;
+}
+
+/* A flyer with hoverattack attacks this way unless the weapon in hand
+ * is `dropped` (legacy:30040-30052). One with the flight pair does once
+ * it is up. A unit target must be one it can shoot at. */
+static int hover_attacks(const Unit *u, const UnitDef *def, const Unit *t) {
+    if (!def->can_fly || !def->hover_attack || def->num_weapons <= 0)
+        return 0;
+    const UnitWeapon *wp = &def->weapons[hover_slot(u, def)];
+    if (wp->drop_key) return 0;
+    if (t && !weapon_can_target_unit(wp, t)) return 0;
+    return u->flying || !unit_def_has_flight(def);
+}
+
+static void hover_reset(Unit *u) {
+    u->hover_state = UNIT_HOVER_NONE;
+    u->hover_wait = 0;
+    u->hover_steps = 0;
+    u->hover_events = 0;
+    u->hover_x = 0;
+    u->hover_y = 0;
+}
+
+/* Its point on the map: off the target unit, which it follows, or on
+ * the ground. */
+static void hover_point(const Unit *u, const Unit *t,
+                        int32_t *x, int32_t *y) {
+    *x = u->hover_x + (t ? t->world_x : 0);
+    *y = u->hover_y + (t ? t->world_y : 0);
+    const GameWorld *w = World_Get();
+    if (w && w->map_pixels_w > 64 && w->map_pixels_h > 64) {
+        if (*x < 32) *x = 32;
+        if (*y < 32) *y = 32;
+        if (*x > w->map_pixels_w - 32) *x = w->map_pixels_w - 32;
+        if (*y > w->map_pixels_h - 32) *y = w->map_pixels_h - 32;
+    }
+}
+
+static void hover_set_point(Unit *u, const Unit *t, int32_t tx, int32_t ty,
+                            uint16_t bearing, int r) {
+    float ax, ay;
+    air_dir(bearing, &ax, &ay);
+    u->hover_x = tx + (int32_t)(ax * (float)r) - (t ? t->world_x : 0);
+    u->hover_y = ty + (int32_t)(ay * (float)r) - (t ? t->world_y : 0);
+    u->hover_events |= UNIT_HOVER_GOING;
+    u->hover_events &= (uint8_t)~UNIT_HOVER_EV_ARRIVED;
+}
+
+/* Stage 3: the bearing it holds from the target, one time in a hundred
+ * turned by up to rand(2048) either way, and its distance, kept while
+ * within 16 px of the standoff, else the standoff plus rand(8) - 3,
+ * one time in a hundred redrawn all the same (legacy:30254-30315). It
+ * looks again in 15 + rand(15) frames (legacy:30364-30378). */
+static void hover_pick(Unit *u, const UnitDef *def, const Unit *t,
+                       int32_t tx, int32_t ty) {
+    int hd = hover_attack_dist(u, def);
+    float dx = (float)(u->world_x - tx), dy = (float)(u->world_y - ty);
+    uint16_t bearing = Units_TurnFromHeading(tak_atan2f(dx, -dy));
+    if (World_Rand(100) == 0u) {
+        int left = World_Rand(2) == 0u;
+        int turn = (int)World_Rand(0x800);
+        bearing = (uint16_t)(bearing + (left ? turn : -turn));
+    }
+    int d = (int)sqrtf(dx * dx + dy * dy);
+    int r = d;
+    if (abs(d - hd) >= 17 || World_Rand(100) == 0u) {
+        r = (int)World_Rand(8) - 3 + hd;
+        if (r < 0) r = -r;
+    }
+    hover_set_point(u, t, tx, ty, bearing, r);
+    u->hover_state = UNIT_HOVER_WAIT;
+    u->hover_wait = (uint8_t)(15u + World_Rand(15));
+}
+
+/* Crowded at a look: the step out count goes up. One that took its own
+ * target may turn on another enemy, one time in two. Otherwise it steps
+ * out (rand(10) + rand(10) + rand(10) + footprint) * 16 px and, once
+ * rand(5) + 1 + rand(5) is under its step outs, gives the attack up,
+ * else closes again a frame later (legacy:30636-30705). */
+static void hover_crowded(Unit *u, int h, const UnitDef *def) {
+    if (u->hover_steps < 255) u->hover_steps++;
+    if (!u->attack_explicit && u->aggro_mode == UNIT_AGGRO_OFFENSIVE &&
+        u->cmd_kind != UNIT_CMD_ATTACK_GROUND && World_Rand(2) == 0u) {
+        int64_t radius = unit_search_radius(u, def);
+        int pick = ugrid_nearest_enemy(u, h, radius,
+                                       &def->weapons[hover_slot(u, def)]);
+        if (pick >= 0 && pick != u->target) {
+            u->target = (int16_t)pick;
+            hover_reset(u);
+            return;
+        }
+    }
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    int d = (int)World_Rand(10);
+    d += (int)World_Rand(10);
+    d += (int)World_Rand(10);
+    flyer_step_out(u, h, (d + fx) * 16);
+    int give = (int)World_Rand(5) + 1;
+    give += (int)World_Rand(5);
+    if (give < u->hover_steps) {
+        hover_reset(u);
+        u->target = -1;
+        if (u->cmd_kind == UNIT_CMD_ATTACK ||
+            u->cmd_kind == UNIT_CMD_ATTACK_GROUND)
+            u->cmd_kind = UNIT_CMD_NONE;
+        u->attack_explicit = 0;
+        unit_clear_path(u);
+        return;
+    }
+    u->hover_state = UNIT_HOVER_CLOSE;
+    u->hover_wait = 1;
+}
+
+/* The mission's decisions, once a frame. Waits out a step out leg. */
+static void hover_frame(Unit *u, int h, const UnitDef *def, const Unit *t,
+                        int32_t tx, int32_t ty) {
+    if (u->air_mode == UNIT_AIR_STEP) return;
+    if (u->hover_wait) u->hover_wait--;
+    int hd = hover_attack_dist(u, def);
+    if (u->hover_events & UNIT_HOVER_GOING) {
+        int32_t px, py;
+        hover_point(u, t, &px, &py);
+        int64_t ex = (int64_t)px - u->world_x, ey = (int64_t)py - u->world_y;
+        if (ex * ex + ey * ey <= 4 * 4)
+            u->hover_events = (uint8_t)((u->hover_events & ~UNIT_HOVER_GOING) |
+                                        UNIT_HOVER_EV_ARRIVED);
+    }
+    switch (u->hover_state) {
+    case UNIT_HOVER_CLOSE: {
+        /* Stage 1: weapons off, then on again within the standoff plus
+         * 160 px, else on toward it, looking again in 15 frames or once
+         * within the standoff plus 144 (legacy:30185-30222). */
+        int64_t dx = (int64_t)tx - u->world_x, dy = (int64_t)ty - u->world_y;
+        int64_t d2 = dx * dx + dy * dy;
+        int64_t arrive = hd + 144;
+        if (u->hover_wait && d2 > arrive * arrive) break;
+        u->hover_events &= (uint8_t)~(UNIT_HOVER_ARMED | UNIT_HOVER_FAR);
+        int64_t within = hd + 160;
+        if (d2 > within * within) {
+            u->hover_events |= UNIT_HOVER_FAR;
+            u->hover_wait = 15;
+            break;
+        }
+        /* Stage 2 sets the weapons on the target (legacy:30223-30253). */
+        u->hover_events |= UNIT_HOVER_ARMED;
+        hover_pick(u, def, t, tx, ty);
+    } break;
+    case UNIT_HOVER_PICK:
+        if (!u->hover_wait) hover_pick(u, def, t, tx, ty);
+        break;
+    case UNIT_HOVER_WAIT: {
+        uint8_t ev = u->hover_events & (UNIT_HOVER_EV_FIRED |
+                                        UNIT_HOVER_EV_LANDED |
+                                        UNIT_HOVER_EV_ARRIVED);
+        if (u->hover_wait && !ev) break;
+        u->hover_events &= (uint8_t)~ev;
+        /* Stage 4 (legacy:30616-30635): when a shot of its has landed
+         * and the target stands still, one time in two a bearing at
+         * random, else the same one again, a frame later. */
+        if (u->air_crowd >= 5) {
+            hover_crowded(u, h, def);
+        } else if ((ev & UNIT_HOVER_EV_LANDED) && World_Rand(2) == 0u &&
+                   t && t->cur_speed_ppt <= 0.0f) {
+            u->hover_state = UNIT_HOVER_RANDOM;
+            u->hover_wait = 1;
+        } else {
+            u->hover_state = UNIT_HOVER_PICK;
+            u->hover_wait = 1;
+        }
+    } break;
+    case UNIT_HOVER_RANDOM:
+        /* Stage 5: a point at the standoff plus rand(8) - 3 on a bearing
+         * drawn at random, then the next look once it is reached
+         * (legacy:30381-30449). */
+        if (!u->hover_wait) {
+            int r = (int)World_Rand(8) - 3 + hd;
+            if (r < 0) r = -r;
+            uint16_t bearing = (uint16_t)World_Rand(0x10000);
+            hover_set_point(u, t, tx, ty, bearing, r);
+            u->hover_state = UNIT_HOVER_ROUND;
+        }
+        break;
+    case UNIT_HOVER_ROUND:
+        if (u->hover_events & UNIT_HOVER_EV_ARRIVED) {
+            u->hover_events &= (uint8_t)~UNIT_HOVER_EV_ARRIVED;
+            hover_pick(u, def, t, tx, ty);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+/* The hover attack on unit t, or on the ground at (tx, ty) when t is
+ * NULL: where the flyer makes for, and whether it is at its point and
+ * its weapons are on a target in reach. */
+static void hover_attack_tick(Unit *u, int h, const UnitDef *def,
+                              const Unit *t, int32_t tx, int32_t ty,
+                              UnitAnimState *desired,
+                              int32_t *goal_x, int32_t *goal_y,
+                              int *in_range) {
+    if (u->hover_state == UNIT_HOVER_NONE) {
+        /* Stage 0: a new attack counts no step outs (legacy:30164-30184). */
+        hover_reset(u);
+        u->hover_state = UNIT_HOVER_CLOSE;
+    }
+    if ((g_sim_tick & 1u) == 0) hover_frame(u, h, def, t, tx, ty);
+    if (u->hover_state == UNIT_HOVER_NONE) {
+        /* Given up, or turned on another target, this frame. */
+        *desired = UNIT_ANIM_IDLE;
+        return;
+    }
+    int64_t dx = (int64_t)tx - u->world_x, dy = (int64_t)ty - u->world_y;
+    if (u->hover_events & UNIT_HOVER_ARMED) {
+        const UnitWeapon *wp = &def->weapons[hover_slot(u, def)];
+        int64_t range = weapon_effective_range(wp);
+        int64_t min_range = weapon_min_range(wp);
+        int64_t d2 = t ? unit_reach_d2(u, t) : dx * dx + dy * dy;
+        *in_range = range > 0 && d2 <= range * range &&
+                    (min_range <= 0 || d2 >= min_range * min_range);
+    }
+    if (u->hover_state == UNIT_HOVER_CLOSE) {
+        int64_t arrive = hover_attack_dist(u, def) + 144;
+        *desired = UNIT_ANIM_MOVING;
+        if (dx * dx + dy * dy > arrive * arrive) {
+            *goal_x = tx;
+            *goal_y = ty;
+        }
+        return;
+    }
+    int32_t px, py;
+    hover_point(u, t, &px, &py);
+    int64_t ex = (int64_t)px - u->world_x, ey = (int64_t)py - u->world_y;
+    if (ex * ex + ey * ey > 4 * 4) {
+        *desired = UNIT_ANIM_MOVING;
+        *goal_x = px;
+        *goal_y = py;
+        return;
+    }
+    /* At its point it faces the target and holds there. */
+    *desired = UNIT_ANIM_ATTACKING;
+    if (dx != 0 || dy != 0)
+        u->heading = tak_atan2f((float)dx, -(float)dy);
+}
+
+/* A shot from the weapon in hand at the unit's target or its ground
+ * point, once its reload, its aim and its mana allow. */
+static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
+    if (def->num_weapons <= 0) return;
+    /* Fire whichever weapon the user picked via the
+     * Primary/Secondary/Special button row. Slot is
+     * clamped to [0, num_weapons) so a unit with only
+     * one weapon still works regardless of weapon_slot. */
+    int slot = u->weapon_slot;
+    if (slot < 0 || slot >= def->num_weapons) slot = 0;
+    UnitWeaponState *ws = &u->weapon_state[slot];
+    int ground = (u->cmd_kind == UNIT_CMD_ATTACK_GROUND);
+    /* Attack-ground aims at the clicked point the same
+     * way a unit target is aimed at. */
+    int aim_key = ground ? -2 : u->target;
+    int32_t aim_x = u->world_x, aim_y = u->world_y;
+    if (ground) {
+        aim_x = u->cmd_x; aim_y = u->cmd_y;
+    } else if (u->target >= 0 && u->target < g_unit_count) {
+        aim_x = g_units[u->target].world_x;
+        aim_y = g_units[u->target].world_y;
+    }
+    if (ws->cooldown_ticks == 0 && !unit_climbing(u, def) &&
+        (ground || u->target < 0 || u->target >= g_unit_count ||
+         weapon_can_target_unit(&def->weapons[slot],
+                                &g_units[u->target])) &&
+        weapon_aim_ready(u, slot, aim_key, aim_x, aim_y, ws)) {
+        const UnitWeapon *wp = &def->weapons[slot];
+
+        /* A mana-costing shot draws from the caster's
+         * own reserve and waits while it is short
+         * (legacy:17214, legacy:245908). Every shipped
+         * unit with such a weapon carries maxmana; one
+         * without falls back to the player pool. A
+         * drawn shot pays when it leaves
+         * (legacy:249341-249342, legacy:249460-249461). */
+        int draws = def->script_launches && u->cob &&
+                    !ground && u->target >= 0;
+        int may_fire = 1;
+        if (wp->mana_per_shot > 0) {
+            if (def->max_mana > 0) {
+                if (u->mana < (float)wp->mana_per_shot) may_fire = 0;
+                else if (!draws) u->mana -= (float)wp->mana_per_shot;
+            } else {
+                GameWorld *w = World_Get();
+                if (!w) {
+                    may_fire = 0;
+                } else if (draws) {
+                    if (Economy_GetMana(&w->economy, u->player_id) <
+                        wp->mana_per_shot) may_fire = 0;
+                } else if (!Economy_TrySpend(&w->economy,
+                                             u->player_id,
+                                             wp->mana_per_shot)) {
+                    may_fire = 0;
+                }
+            }
+        }
+
+        if (may_fire) {
+            ws->cooldown_ticks = wp->reload_ticks;
+            if (u->hover_state != UNIT_HOVER_NONE)
+                u->hover_events |= UNIT_HOVER_EV_FIRED;
+            if (ground) {
+                fire_ground_shot(u, i, slot, wp);
+                return;
+            }
+            /* A script that releases its own shot draws
+             * now and lets go at port 23. */
+            if (draws) {
+                start_fire_script(u, slot);
+                ws->draw = UNIT_DRAW_DRAWN;
+                ws->draw_target = u->target;
+                return;
+            }
+            fire_weapon_shot(u, i, slot, wp, u->target, 0, 1);
+            int burst_count = wp->burst > 1 ? wp->burst : 1;
+            if (burst_count > 1 && u->target >= 0) {
+                ws->burst_remaining = (int16_t)(burst_count - 1);
+                ws->burst_target = u->target;
+                ws->burst_ticks = wp->burst_rate_ticks > 0
+                                ? wp->burst_rate_ticks : 1;
+            }
+        } else {
+            /* Short even for the primary, so there is
+             * nothing cheaper to step down to. Retry in
+             * half a second rather than every tick. */
+            ws->cooldown_ticks = 30;
+        }
+    }
 }
 
 /* A caster's reserve: a {value, max} pair the original tops up by
@@ -13419,6 +13818,7 @@ static void Units_TickCombat(void) {
         UnitAnimState desired = UNIT_ANIM_IDLE;
         int32_t  goal_x = u->world_x, goal_y = u->world_y;
         int      target_in_range = 0;
+        int      hovering = 0;
         int64_t  target_d2 = 0;
         float    heading_at_entry = u->heading;
         /* A summons without end or one held belongs to the build order
@@ -13548,6 +13948,12 @@ static void Units_TickCombat(void) {
             if (desired != UNIT_ANIM_MOVING && (dx != 0 || dy != 0) &&
                 def->max_velocity > 0.0f)
                 u->heading = tak_atan2f((float)dx, -(float)dy);
+        } else if (u->target >= 0 &&
+                   hover_attacks(u, def, &g_units[u->target])) {
+            const Unit *t = &g_units[u->target];
+            hovering = 1;
+            hover_attack_tick(u, i, def, t, t->world_x, t->world_y,
+                              &desired, &goal_x, &goal_y, &target_in_range);
         } else if (u->target >= 0) {
             Unit *t = &g_units[u->target];
             int64_t dx = (int64_t)(t->world_x - u->world_x);
@@ -13589,6 +13995,11 @@ static void Units_TickCombat(void) {
             if (target_in_range && (dx != 0 || dy != 0) &&
                 def->max_velocity > 0.0f)
                 u->heading = tak_atan2f((float)dx, -(float)dy);
+        } else if (u->cmd_kind == UNIT_CMD_ATTACK_GROUND &&
+                   def->num_weapons > 0 && hover_attacks(u, def, NULL)) {
+            hovering = 1;
+            hover_attack_tick(u, i, def, NULL, u->cmd_x, u->cmd_y,
+                              &desired, &goal_x, &goal_y, &target_in_range);
         } else if (u->cmd_kind == UNIT_CMD_ATTACK_GROUND &&
                    def->num_weapons > 0) {
             /* Fire at a map point until a new order (legacy attack-
@@ -13725,6 +14136,8 @@ static void Units_TickCombat(void) {
             }
         }
 
+        if (!hovering && u->hover_state != UNIT_HOVER_NONE) hover_reset(u);
+
         int air_leg_on = def->can_fly
             ? flyer_air_tick(u, i, def, &desired, &goal_x, &goal_y) : 0;
 
@@ -13738,6 +14151,9 @@ static void Units_TickCombat(void) {
                  * RETURN; restart while still moving. */
                 ensure_thread(u, "walk", &u->walk_thread_slot, NULL, 0);
                 int arrived = walk_tick(u, def, goal_x, goal_y);
+                /* A hover attacker's weapons stay on its target as it
+                 * flies (legacy:30223-30253). */
+                if (hovering && target_in_range) unit_fire_tick(u, i, def);
                 if (arrived) {
                     u->velocity = 0; u->cur_speed_ppt = 0.0f;
                     if (air_leg_on) {
@@ -14050,91 +14466,7 @@ static void Units_TickCombat(void) {
                  * own cooldown is ready. For now we only have target
                  * info for slot 0 (range tracking); future Phase G
                  * extends per-weapon target acquisition. */
-                if (target_in_range && def->num_weapons > 0) {
-                    /* Fire whichever weapon the user picked via the
-                     * Primary/Secondary/Special button row. Slot is
-                     * clamped to [0, num_weapons) so a unit with only
-                     * one weapon still works regardless of weapon_slot. */
-                    int slot = u->weapon_slot;
-                    if (slot < 0 || slot >= def->num_weapons) slot = 0;
-                    UnitWeaponState *ws = &u->weapon_state[slot];
-                    int ground = (u->cmd_kind == UNIT_CMD_ATTACK_GROUND);
-                    /* Attack-ground aims at the clicked point the same
-                     * way a unit target is aimed at. */
-                    int aim_key = ground ? -2 : u->target;
-                    int32_t aim_x = u->world_x, aim_y = u->world_y;
-                    if (ground) {
-                        aim_x = u->cmd_x; aim_y = u->cmd_y;
-                    } else if (u->target >= 0 && u->target < g_unit_count) {
-                        aim_x = g_units[u->target].world_x;
-                        aim_y = g_units[u->target].world_y;
-                    }
-                    if (ws->cooldown_ticks == 0 && !unit_climbing(u, def) &&
-                        (ground || u->target < 0 || u->target >= g_unit_count ||
-                         weapon_can_target_unit(&def->weapons[slot],
-                                                &g_units[u->target])) &&
-                        weapon_aim_ready(u, slot, aim_key, aim_x, aim_y, ws)) {
-                        const UnitWeapon *wp = &def->weapons[slot];
-
-                        /* A mana-costing shot draws from the caster's
-                         * own reserve and waits while it is short
-                         * (legacy:17214, legacy:245908). Every shipped
-                         * unit with such a weapon carries maxmana; one
-                         * without falls back to the player pool. A
-                         * drawn shot pays when it leaves
-                         * (legacy:249341-249342, legacy:249460-249461). */
-                        int draws = def->script_launches && u->cob &&
-                                    !ground && u->target >= 0;
-                        int may_fire = 1;
-                        if (wp->mana_per_shot > 0) {
-                            if (def->max_mana > 0) {
-                                if (u->mana < (float)wp->mana_per_shot) may_fire = 0;
-                                else if (!draws) u->mana -= (float)wp->mana_per_shot;
-                            } else {
-                                GameWorld *w = World_Get();
-                                if (!w) {
-                                    may_fire = 0;
-                                } else if (draws) {
-                                    if (Economy_GetMana(&w->economy, u->player_id) <
-                                        wp->mana_per_shot) may_fire = 0;
-                                } else if (!Economy_TrySpend(&w->economy,
-                                                             u->player_id,
-                                                             wp->mana_per_shot)) {
-                                    may_fire = 0;
-                                }
-                            }
-                        }
-
-                        if (may_fire) {
-                            ws->cooldown_ticks = wp->reload_ticks;
-                            if (ground) {
-                                fire_ground_shot(u, i, slot, wp);
-                                break;
-                            }
-                            /* A script that releases its own shot draws
-                             * now and lets go at port 23. */
-                            if (draws) {
-                                start_fire_script(u, slot);
-                                ws->draw = UNIT_DRAW_DRAWN;
-                                ws->draw_target = u->target;
-                                break;
-                            }
-                            fire_weapon_shot(u, i, slot, wp, u->target, 0, 1);
-                            int burst_count = wp->burst > 1 ? wp->burst : 1;
-                            if (burst_count > 1 && u->target >= 0) {
-                                ws->burst_remaining = (int16_t)(burst_count - 1);
-                                ws->burst_target = u->target;
-                                ws->burst_ticks = wp->burst_rate_ticks > 0
-                                                ? wp->burst_rate_ticks : 1;
-                            }
-                        } else {
-                            /* Short even for the primary, so there is
-                             * nothing cheaper to step down to. Retry in
-                             * half a second rather than every tick. */
-                            ws->cooldown_ticks = 30;
-                        }
-                    }
-                }
+                if (target_in_range) unit_fire_tick(u, i, def);
             } break;
 
             case UNIT_ANIM_IDLE:
