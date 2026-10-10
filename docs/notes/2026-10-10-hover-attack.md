@@ -45,18 +45,19 @@ waits on comes in (legacy:182119-182192).
   to that point off the target, at its hover height, and stage 4 waits
   15 + rand(15) frames (legacy:30254-30378).
 - Stage 4 wakes when the delay is up, when the flyer fires, when a shot
-  of its lands, or when it reaches its point. With a crowd score under
-  5 it goes back to stage 3 a frame later, except that after a landed
-  shot, one time in two, with a unit target that stands still, it goes
-  to stage 5 (legacy:30616-30635).
+  of its lands without hurting the other side, or when it reaches its
+  point. With a crowd score under 5 it goes back to stage 3 a frame
+  later, except that after such a shot, one time in two, with a unit
+  target that stands still, it goes to stage 5 (legacy:30616-30635).
 - Stage 5 draws a bearing at random and flies to the hover distance
   plus rand(8) - 3 along it, and stage 3 runs again once it gets there
   (legacy:30381-30449).
 
 A flyer holding its point reaches it again each frame it is picked, so it
 picks again every other frame, and the one in a hundred turns walk it
-slowly round the target. A target that stands still sees the flock
-scatter round it as their shots land.
+slowly round the target. A flyer whose shot misses a target that
+stands still, is stopped short or does it no harm flies round it to a
+bearing drawn at random one time in two.
 
 ## Crowded
 
@@ -72,13 +73,17 @@ grows to 15 in 25 by the sixth.
 ## Events
 
 Shots fired raise 0x10000, 0x20000 or 0x40000 on the shooter by weapon
-kind (legacy:249395-249414). A shot that lands raises 0x200000, 0x400000
-or 0x800000 by what it struck, or 0x1000000 when it hurt the shooter's
-side more than twice what it did to the enemy
-(legacy:15038-15060, called from legacy:245317 and legacy:245370). A
+kind (legacy:249395-249414). A shot that lands adds up the harm it did
+to other players' units and to its own player's, and raises 0x1000000
+when the first is more than twice the second, else one of 0x200000,
+0x400000 or 0x800000 (legacy:15038-15060, called from legacy:245317 and
+legacy:245370). A mind control hit on a unit it may take counts as harm
+whether the roll takes it or not (legacy:247761-247798). A
 move ending raises 0x100 on the mission (legacy:191274). Stage 3
 waits on 0xe70768 and stage 5 and stage 1 on 0x768, which takes in the
-move's end and leaves out shots.
+move's end and leaves out shots. So a shot that hurts the enemy never
+wakes stage 4, and one that hits the ground, is stopped by the
+shooter's own side or does no harm does.
 
 ## What the engine does
 
@@ -92,13 +97,16 @@ attack this way at once.
 - Stage 1 drives the flyer at the target and, once it is within the hover
   distance plus 160 px, sets its weapons on and picks a point.
 - The point is kept as an offset from a unit target, so the flyer
-  follows it as the original's move does. It is reached within 4 px.
+  follows it as the original's move does. It is reached within 8 px,
+  where the walk stops for it, not the original's 4 (D-039).
   Between points the flyer is moving, and at its point it holds, faces
   the target and attacks.
 - The weapon in hand fires whenever it is ready, its aim is done and the
   target is in reach, on the move as well as at the point.
-- Firing, a shot landing and reaching the point are kept as bits in
-  `hover_events`, which stage 4 and stage 5 read and clear.
+- Firing, a shot landing without hurting the other side more than
+  twice its own and reaching the point are kept as bits in
+  `hover_events`, which stage 4 and stage 5 read and clear. Each shot's
+  harm is added up by side as it lands, beams included.
 - Stage 4's step out uses the hover attack's own distance and its give
   up. While the flyer is still beyond the hover distance plus 160 px the
   other missions' step out applies as before.
@@ -141,9 +149,6 @@ a walker fires 15 of its 20 shots on the move.
   the common rule (legacy:30139, legacy:30467-30502,
   legacy:235678-235762). The engine
   takes the hover distance plus 160 px as that line (D-039).
-- A landed shot that hurt the shooter's side more than the enemy raises
-  another event, which stage 4 does not wake on. The engine counts every
-  landed shot (D-039).
 - A flyer near the map's edge is sent 800 px back in by every VTOL
   mission (legacy:30054-30117). The engine keeps flyers on the map by
   clamping their points, as it does for the other air legs.

@@ -13879,11 +13879,12 @@ TEST(a_harpy_takes_a_swordsman_standing_or_walking_across) {
     ASSERT(set);
     /* Pinned. A shot lands slower than the Harpy reloads, so a second is
      * in the air when the first takes a still target. A walking one is
-     * taken by the first, fired from the hover attack's 200 px. */
+     * taken by the first, fired from the hover attack's 200 px, in all
+     * but one seed, where the second shot takes it. */
     ASSERT_EQ_INT(4, still);
     ASSERT_EQ_INT(8, still_shots);
     ASSERT_EQ_INT(4, walking);
-    ASSERT_EQ_INT(4, walking_shots);
+    ASSERT_EQ_INT(5, walking_shots);
 }
 
 /* Use Crusades Units loads the Crusades balance set, unitscb/ in place

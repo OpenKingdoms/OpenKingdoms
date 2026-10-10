@@ -1720,6 +1720,42 @@ int Units_Capture(int handle, int player_id) {
     return made;
 }
 
+/* The harm the shot in hand does to other players' units and to its own
+ * player's. A hover attacker hears of a landed shot unless the first is
+ * more than twice the second (legacy:15038-15060, legacy:245317,
+ * legacy:245370). */
+typedef struct ShotTally {
+    uint8_t on, landed;
+    int16_t shooter;
+    int64_t other, own;
+} ShotTally;
+static ShotTally g_shot_tally;
+
+static void shot_tally_begin(int shooter) {
+    g_shot_tally.on = shooter >= 0 && shooter < g_unit_count &&
+                      g_units[shooter].hover_state != UNIT_HOVER_NONE;
+    g_shot_tally.landed = 0;
+    g_shot_tally.shooter = (int16_t)shooter;
+    g_shot_tally.other = 0;
+    g_shot_tally.own = 0;
+}
+
+static void shot_tally_harm(int shooter, int own, int64_t harm) {
+    if (!g_shot_tally.on || shooter != g_shot_tally.shooter) return;
+    if (own) g_shot_tally.own += harm;
+    else g_shot_tally.other += harm;
+}
+
+static void shot_tally_end(void) {
+    if (g_shot_tally.on && g_shot_tally.landed &&
+        g_shot_tally.other <= 2 * g_shot_tally.own) {
+        Unit *s = &g_units[g_shot_tally.shooter];
+        if (s->alive == UNIT_ALIVE_ACTIVE && s->hover_state != UNIT_HOVER_NONE)
+            s->hover_events |= UNIT_HOVER_EV_LANDED;
+    }
+    g_shot_tally.on = 0;
+}
+
 /* A mind control hit (legacy:247761-247798). It never wounds. It rolls
  * 0..99 against the victim's rank threshold, scaled like splash, and a
  * roll under it brings the unit over to the shot's owner. */
@@ -1734,6 +1770,8 @@ static void mind_control_strike(const Projectile *p, int victim_idx,
     if (v->under_construction) return;                   /* legacy:247779 */
     if (v->carried_by >= 0) return;                      /* legacy:247782 */
     if (vd->cant_be_captured) return;                    /* legacy:247785 */
+    /* A roll counts as harm to the other side, taken or not. */
+    shot_tally_harm(p->shooter, 0, 1);
     int threshold = Units_CaptureThreshold(Units_GetVeteranLevel(victim_idx));
     threshold = threshold * scale_pct / 100;
     /* The roll is drawn for every eligible hit, taken or not. */
@@ -1914,6 +1952,8 @@ void Units_SetBlastHook(UnitsBlastHook hook) { g_blast_hook = hook; }
  * (legacy:245025). */
 static void projectile_impact_fx(const Projectile *p, const Unit *victim,
                                  uint32_t seed) {
+    if (g_shot_tally.on && p->shooter == g_shot_tally.shooter)
+        g_shot_tally.landed = 1;
     projectile_note_blast(p, victim);
     play_projectile_hit_sound(p, victim);
     projectile_impact_shake(p);
@@ -1963,11 +2003,6 @@ static void projectile_detonate_at(Projectile *p, int idx) {
         }
     }
     projectile_impact_fx(p, struck >= 0 ? &g_units[struck] : NULL, (uint32_t)idx);
-    /* Its shooter hears of it, which a hover attack looks again on
-     * (legacy:245317, legacy:245370, legacy:15038-15060). */
-    if (p->shooter >= 0 && p->shooter < g_unit_count &&
-        g_units[p->shooter].hover_state != UNIT_HOVER_NONE)
-        g_units[p->shooter].hover_events |= UNIT_HOVER_EV_LANDED;
     if (p->area_of_effect >= BLAST_DIRECT_BELOW || struck < 0) {
         apply_projectile_area_damage(p);
     } else if (p->mind_control) {
@@ -2826,8 +2861,11 @@ static void tick_projectiles(void) {
     }
 
     for (int i = 0; i < g_projectile_count; i++) {
+        /* The last shot's harm, for its shooter's hover attack. */
+        shot_tally_end();
         Projectile *p = &g_projectiles[i];
         if (!p->alive) continue;
+        shot_tally_begin(p->shooter);
         /* A wandering shot keeps the original's frames and its own end. */
         if (p->wander) {
             if ((g_sim_tick & 1u) == 0) wander_frame(p);
@@ -2957,6 +2995,7 @@ static void tick_projectiles(void) {
             }
         }
     }
+    shot_tally_end();
     /* Compact tail of fully-dead projectiles. */
     while (g_projectile_count > 0 &&
            !g_projectiles[g_projectile_count - 1].alive) {
@@ -9046,6 +9085,8 @@ static int32_t unit_scaled_damage(int shooter, const Unit *victim, int32_t damag
  * lose, which is all a hit can take off. */
 static void unit_take_hit(Unit *victim, int shooter, int shooter_player, int32_t damage) {
     int32_t hit = unit_scaled_damage(shooter, victim, damage);
+    if (hit > 0)
+        shot_tally_harm(shooter, victim->player_id == shooter_player, hit);
     if (hit > 0 && victim->health > 0)
         BattleRecord_Hit(shooter_player, victim->player_id,
                          hit < victim->health ? hit : victim->health);
@@ -11737,9 +11778,9 @@ static void mind_control_lead(const GameWorld *w, const Unit *u, const Unit *t,
     *ty += (int32_t)floorf(-tak_cosf(t->heading) * ahead + 0.5f);
 }
 
-static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
-                             const UnitWeapon *wp, int target_handle,
-                             int burst_ordinal, int run_fire_script) {
+static void fire_weapon_shot_now(Unit *u, int shooter_idx, int slot,
+                                 const UnitWeapon *wp, int target_handle,
+                                 int burst_ordinal, int run_fire_script) {
     if (!u || !wp) return;
     if (u->alive != UNIT_ALIVE_ACTIVE) return;
     if (target_handle < 0 || target_handle >= g_unit_count) return;
@@ -12018,8 +12059,8 @@ static void flame_particle(const Projectile *p, int idx) {
     e->loops = 1;
 }
 
-static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
-                             const UnitWeapon *wp) {
+static void fire_ground_shot_now(Unit *u, int shooter_idx, int slot,
+                                 const UnitWeapon *wp) {
     if (!u || !wp) return;
     if (wp->mana_per_shot > 0) BattleRecord_Cast(u->player_id);
     start_fire_script(u, slot);
@@ -12078,6 +12119,27 @@ static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
                          (uint32_t)slot_idx);
     if (b->area_of_effect > 0) apply_projectile_area_damage(b);
     blast_scenery(b, -1);
+}
+
+/* A beam lands as it is fired, so its harm is added up here too. */
+static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
+                             const UnitWeapon *wp, int target_handle,
+                             int burst_ordinal, int run_fire_script) {
+    ShotTally outer = g_shot_tally;
+    shot_tally_begin(shooter_idx);
+    fire_weapon_shot_now(u, shooter_idx, slot, wp, target_handle,
+                         burst_ordinal, run_fire_script);
+    shot_tally_end();
+    g_shot_tally = outer;
+}
+
+static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
+                             const UnitWeapon *wp) {
+    ShotTally outer = g_shot_tally;
+    shot_tally_begin(shooter_idx);
+    fire_ground_shot_now(u, shooter_idx, slot, wp);
+    shot_tally_end();
+    g_shot_tally = outer;
 }
 
 static void tick_weapon_burst(Unit *u, int shooter_idx, int slot,
@@ -12671,10 +12733,15 @@ static int flyer_air_tick(Unit *u, int h, const UnitDef *def,
  * A flyer with hoverattack closes only to its hoverattackdistance plus
  * 160 px. It then sets its weapons on the target and holds its own
  * bearing from it at that distance, picking its point again whenever it
- * fires, a shot of its lands, it reaches the point or 15 to 29 frames go
- * by, and fires as it flies (legacy:30139-30449). Crowded, it steps out
- * further than other flyers and gives the attack up after a few step
- * outs (legacy:30616-30705). */
+ * fires, a shot of its lands without hurting the other side, it reaches
+ * the point or 15 to 29 frames go by, and fires as it flies
+ * (legacy:30139-30449). Crowded, it steps out further than other flyers
+ * and gives the attack up after a few step outs (legacy:30616-30705). */
+
+/* A point is reached where the walk stops for it, within 8 px. The
+ * original's move stops within 4 (legacy:30362-30364), but a point the walk
+ * calls reached and this did not would hold the flyer there for good. */
+#define HOVER_REACH_PX 8
 
 static int hover_slot(const Unit *u, const UnitDef *def) {
     int slot = u->weapon_slot;
@@ -12817,7 +12884,7 @@ static void hover_frame(Unit *u, int h, const UnitDef *def, const Unit *t,
         int32_t px, py;
         hover_point(u, t, &px, &py);
         int64_t ex = (int64_t)px - u->world_x, ey = (int64_t)py - u->world_y;
-        if (ex * ex + ey * ey <= 4 * 4)
+        if (ex * ex + ey * ey < HOVER_REACH_PX * HOVER_REACH_PX)
             u->hover_events = (uint8_t)((u->hover_events & ~UNIT_HOVER_GOING) |
                                         UNIT_HOVER_EV_ARRIVED);
     }
@@ -12851,7 +12918,7 @@ static void hover_frame(Unit *u, int h, const UnitDef *def, const Unit *t,
         if (u->hover_wait && !ev) break;
         u->hover_events &= (uint8_t)~ev;
         /* Stage 4 (legacy:30616-30635): when a shot of its has landed
-         * and the target stands still, one time in two a bearing at
+         * without hurting the other side and the target stands still, one time in two a bearing at
          * random, else the same one again, a frame later. */
         if (u->air_crowd >= 5) {
             hover_crowded(u, h, def);
@@ -12927,7 +12994,7 @@ static void hover_attack_tick(Unit *u, int h, const UnitDef *def,
     int32_t px, py;
     hover_point(u, t, &px, &py);
     int64_t ex = (int64_t)px - u->world_x, ey = (int64_t)py - u->world_y;
-    if (ex * ex + ey * ey > 4 * 4) {
+    if (ex * ex + ey * ey >= HOVER_REACH_PX * HOVER_REACH_PX) {
         *desired = UNIT_ANIM_MOVING;
         *goal_x = px;
         *goal_y = py;
