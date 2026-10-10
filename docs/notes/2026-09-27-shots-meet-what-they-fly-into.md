@@ -172,11 +172,12 @@ target it had no way to shoot for as long as that target lived.
   of its own that falls from the carrier (legacy:246794), which the
   engine does not fly yet.
 - Remote Effect spells (17 of them, Earthquake, Hail Shower, Firestorm,
-  Ring of Fire, Tsunami and the Wind and Fire Waves among them) and
-  Wandering shots (the Tornado and the vortexes) still land behind
-  ridges and walls, as in the original. So does the Mind Mage's
-  Individual Mind Control, which is `unitsonly`. The Harpy's is a
-  straight shot without it and stops on them.
+  Ring of Fire, Tsunami and the Wind and Fire Waves among them) still
+  land behind ridges and walls, as in the original. So does the Mind
+  Mage's Individual Mind Control, which is `unitsonly`. The Harpy's is
+  a straight shot without it and stops on them. Wandering shots (the
+  Tornado and the vortexes) pass over ridges and walls, bursting as
+  they go (2026-10-10-wandering-shots.md).
 - The flyer test walks every flyer on every step of a shot. Flyers are
   few, and the unit grid would serve if they are not.
 

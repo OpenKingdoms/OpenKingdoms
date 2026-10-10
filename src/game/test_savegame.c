@@ -228,6 +228,21 @@ Projectile *Units_LoadProjectiles(int count) {
 
 void Units_LoadFinish(void) { /* no occupancy layer in this fixture */ }
 
+/* The sprite art a wandering shot names, as slots in first ask order. */
+static char g_stub_art[8][40];
+static int g_stub_art_count;
+const char *Units_SpriteArtFile(int idx) {
+    return idx >= 0 && idx < g_stub_art_count ? g_stub_art[idx] : NULL;
+}
+int Units_SpriteArtSlot(const char *file) {
+    if (!file || !*file) return -1;
+    for (int i = 0; i < g_stub_art_count; i++)
+        if (strcmp(g_stub_art[i], file) == 0) return i;
+    if (g_stub_art_count >= 8) return -1;
+    snprintf(g_stub_art[g_stub_art_count], sizeof(g_stub_art[0]), "%s", file);
+    return g_stub_art_count++;
+}
+
 /* ── the orders in hand, as the loader sees them ──────────────────
  *
  * The real ones live in src/net/command_queue.c. Here the fixture owns
@@ -829,6 +844,28 @@ static int setup(const char *map_name) {
         snprintf(p->damage_scales[1].category,
                  sizeof(p->damage_scales[1].category), "FLESH");
         p->damage_scales[1].scale = 1.75f;
+        if (i == 2) {
+            /* A Tornado part way through its run. */
+            p->wander = UNIT_WANDER_LOOP;
+            p->wander_steps = 1;
+            p->wander_hold = 1;
+            p->wander_pic = 7;
+            p->wander_x_fp = (3026 << 16) | 0x8123;
+            p->wander_y_fp = (3134 << 16) | 0x0456;
+            p->wander_vx_fp = 98304;
+            p->wander_vy_fp = -201327;
+            p->wander_base_vx = 98304;
+            p->wander_base_vy = 0;
+            p->wander_amp_x = 0.0f;
+            p->wander_amp_y = 5.0f;
+            p->wander_seed = 0x2a0b1c3du;
+            p->wander_left = 211;
+            p->wander_turn = 13;
+            p->wander_every = 60;
+            p->wander_art[0] = (int16_t)Units_SpriteArtSlot("tornadostart");
+            p->wander_art[1] = (int16_t)Units_SpriteArtSlot("tornadoloop");
+            p->wander_art[2] = (int16_t)Units_SpriteArtSlot("tornadoend");
+        }
     }
 
     World_SeedRand(0x4d2);
@@ -1492,6 +1529,47 @@ TEST(handles_still_point_at_the_same_units) {
     ASSERT_EQ_STR("ARMOURED", g_projectiles[0].damage_scales[0].category);
 }
 
+/* A wandering shot comes back part way through its run, its art by
+ * name, since the art slots are numbered in first use order. */
+TEST(a_wandering_shot_survives_a_save) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    ASSERT_EQ_INT(0, setup(NULL));
+    uint32_t before = TAK_SimHash();
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+    empty_the_battle();
+    g_stub_art_count = 0;
+    ASSERT_EQ_INT(0, Units_SpriteArtSlot("somethingelse"));
+
+    TAK_SaveGame *sg = Save_Read(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(0, Save_Apply(sg, err, sizeof(err)));
+    Save_ReadClose(sg);
+
+    const Projectile *p = &g_projectiles[2];
+    ASSERT_EQ_INT(UNIT_WANDER_LOOP, (int)p->wander);
+    ASSERT_EQ_INT(1, (int)p->wander_steps);
+    ASSERT_EQ_INT(1, (int)p->wander_hold);
+    ASSERT_EQ_INT(7, (int)p->wander_pic);
+    ASSERT_EQ_INT((3026 << 16) | 0x8123, p->wander_x_fp);
+    ASSERT_EQ_INT((3134 << 16) | 0x0456, p->wander_y_fp);
+    ASSERT_EQ_INT(-201327, p->wander_vy_fp);
+    ASSERT_EQ_INT(98304, p->wander_base_vx);
+    ASSERT(p->wander_amp_y == 5.0f);
+    ASSERT_EQ_INT((int)0x2a0b1c3du, (int)p->wander_seed);
+    ASSERT_EQ_INT(211, p->wander_left);
+    ASSERT_EQ_INT(13, p->wander_turn);
+    ASSERT_EQ_INT(60, p->wander_every);
+    ASSERT_EQ_STR("tornadostart", Units_SpriteArtFile(p->wander_art[0]));
+    ASSERT_EQ_STR("tornadoloop", Units_SpriteArtFile(p->wander_art[1]));
+    ASSERT_EQ_STR("tornadoend", Units_SpriteArtFile(p->wander_art[2]));
+    /* It draws the loop art again. */
+    ASSERT_EQ_INT(UNIT_WEAPON_ART_SPRITE, (int)p->art_kind);
+    ASSERT_EQ_INT(p->wander_art[1], p->art_idx);
+    /* The arrows carry none. */
+    ASSERT_EQ_INT(0, (int)g_projectiles[0].wander);
+    ASSERT_EQ_INT((int)before, (int)TAK_SimHash());
+}
+
 /* A production queue holds definition indices, and those do not
  * travel: a different installation orders its registry differently.
  * The file carries names, so the queue has to come back naming the
@@ -1855,6 +1933,7 @@ int main(int argc, char **argv) {
     RUN(the_orders_still_waiting_come_back);
     RUN(handles_still_point_at_the_same_units);
     RUN(a_build_queue_survives_a_reordered_registry);
+    RUN(a_wandering_shot_survives_a_save);
     RUN(a_refusal_says_whether_the_world_is_still_usable);
     RUN(the_sections_are_the_width_the_format_says);
     RUN(a_unit_record_puts_the_skip_after_the_formation_legs);

@@ -429,7 +429,25 @@ _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree")
  * stopped on its way, which is how every shot flew then. */
 #define P_PATH_FLAGS    (P_MIND_CONTROL + 1u)
 #define P_BLAST_FLAGS   (P_PATH_FLAGS + 1u)   /* version 3 on */
-#define P_END           (P_BLAST_FLAGS + 1u)
+/* A wandering shot, version 4 on. Its art goes by name. */
+#define P_WANDER        (P_BLAST_FLAGS + 1u)
+#define P_WANDER_STEPS  (P_WANDER + 1u)
+#define P_WANDER_HOLD   (P_WANDER + 2u)
+#define P_WANDER_PIC    (P_WANDER + 4u)
+#define P_WANDER_X      (P_WANDER + 6u)
+#define P_WANDER_Y      (P_WANDER + 10u)
+#define P_WANDER_VX     (P_WANDER + 14u)
+#define P_WANDER_VY     (P_WANDER + 18u)
+#define P_WANDER_BVX    (P_WANDER + 22u)
+#define P_WANDER_BVY    (P_WANDER + 26u)
+#define P_WANDER_AMP_X  (P_WANDER + 30u)
+#define P_WANDER_AMP_Y  (P_WANDER + 34u)
+#define P_WANDER_SEED   (P_WANDER + 38u)
+#define P_WANDER_LEFT   (P_WANDER + 42u)
+#define P_WANDER_TURN   (P_WANDER + 46u)
+#define P_WANDER_EVERY  (P_WANDER + 50u)
+#define P_WANDER_ART    (P_WANDER + 54u)   /* three string indices */
+#define P_END           (P_WANDER + 60u)
 _Static_assert(P_END == TAK_PROJ_RECORD_BYTES, "PROJ layout and width disagree");
 
 /* FEAT, one record per placed feature, corpses included. */
@@ -579,7 +597,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_UNIT 11
 #define VER_UPTH 1
 #define VER_UCOB 1
-#define VER_PROJ 3
+#define VER_PROJ 4
 #define VER_FEAT 3
 #define VER_FOGV 1
 #define VER_ECON 1
@@ -1919,6 +1937,27 @@ static int encode_projectiles(uint8_t *recs, const Projectile *pool, int count,
         tak_put_u8(r + P_MIND_CONTROL, p->mind_control);
         tak_put_u8(r + P_PATH_FLAGS, p->path_flags);
         tak_put_u8(r + P_BLAST_FLAGS, p->blast_flags);
+        tak_put_u8(r + P_WANDER, p->wander);
+        tak_put_u8(r + P_WANDER_STEPS, p->wander_steps);
+        tak_put_u16(r + P_WANDER_HOLD, p->wander_hold);
+        tak_put_u16(r + P_WANDER_PIC, p->wander_pic);
+        tak_put_i32(r + P_WANDER_X, p->wander_x_fp);
+        tak_put_i32(r + P_WANDER_Y, p->wander_y_fp);
+        tak_put_i32(r + P_WANDER_VX, p->wander_vx_fp);
+        tak_put_i32(r + P_WANDER_VY, p->wander_vy_fp);
+        tak_put_i32(r + P_WANDER_BVX, p->wander_base_vx);
+        tak_put_i32(r + P_WANDER_BVY, p->wander_base_vy);
+        tak_put_f32(r + P_WANDER_AMP_X, p->wander_amp_x);
+        tak_put_f32(r + P_WANDER_AMP_Y, p->wander_amp_y);
+        tak_put_u32(r + P_WANDER_SEED, p->wander_seed);
+        tak_put_i32(r + P_WANDER_LEFT, p->wander_left);
+        tak_put_i32(r + P_WANDER_TURN, p->wander_turn);
+        tak_put_i32(r + P_WANDER_EVERY, p->wander_every);
+        for (int k = 0; k < 3; k++) {
+            const char *art = p->wander ? Units_SpriteArtFile(p->wander_art[k]) : NULL;
+            tak_put_u16(r + P_WANDER_ART + 2u * (unsigned)k,
+                        intern_or_none(strings, art, &fail));
+        }
         int scales = p->damage_scale_count;
         if (scales < 0) scales = 0;
         if (scales > TAK_DAMAGE_CATEGORY_MAX) scales = TAK_DAMAGE_CATEGORY_MAX;
@@ -1980,6 +2019,26 @@ static void decode_projectile(Projectile *p, const uint8_t *r,
     p->mind_control = tak_get_u8(r + P_MIND_CONTROL);
     p->path_flags = tak_get_u8(r + P_PATH_FLAGS);
     p->blast_flags = tak_get_u8(r + P_BLAST_FLAGS);
+    p->wander = tak_get_u8(r + P_WANDER);
+    p->wander_steps = tak_get_u8(r + P_WANDER_STEPS);
+    p->wander_hold = tak_get_u16(r + P_WANDER_HOLD);
+    p->wander_pic = tak_get_u16(r + P_WANDER_PIC);
+    p->wander_x_fp = tak_get_i32(r + P_WANDER_X);
+    p->wander_y_fp = tak_get_i32(r + P_WANDER_Y);
+    p->wander_vx_fp = tak_get_i32(r + P_WANDER_VX);
+    p->wander_vy_fp = tak_get_i32(r + P_WANDER_VY);
+    p->wander_base_vx = tak_get_i32(r + P_WANDER_BVX);
+    p->wander_base_vy = tak_get_i32(r + P_WANDER_BVY);
+    p->wander_amp_x = tak_get_f32(r + P_WANDER_AMP_X);
+    p->wander_amp_y = tak_get_f32(r + P_WANDER_AMP_Y);
+    p->wander_seed = tak_get_u32(r + P_WANDER_SEED);
+    p->wander_left = tak_get_i32(r + P_WANDER_LEFT);
+    p->wander_turn = tak_get_i32(r + P_WANDER_TURN);
+    p->wander_every = tak_get_i32(r + P_WANDER_EVERY);
+    for (int k = 0; k < 3; k++) {
+        const char *art = string_or_empty(t, tak_get_u16(r + P_WANDER_ART + 2u * (unsigned)k));
+        p->wander_art[k] = (int16_t)(p->wander && art ? Units_SpriteArtSlot(art) : -1);
+    }
     int scales = (int)tak_get_u8(r + P_SCALE_COUNT);
     if (scales > TAK_DAMAGE_CATEGORY_MAX) scales = TAK_DAMAGE_CATEGORY_MAX;
     p->damage_scale_count = scales;
@@ -2002,6 +2061,13 @@ static void decode_projectile(Projectile *p, const uint8_t *r,
     p->art_idx = -1;
     p->explosion_idx = -1;
     p->shadow_idx = -1;
+    /* A wandering shot shows the art of its phase. */
+    if (p->wander >= UNIT_WANDER_START && p->wander <= UNIT_WANDER_END) {
+        p->art_kind = UNIT_WEAPON_ART_SPRITE;
+        p->art_idx = p->wander_art[p->wander - UNIT_WANDER_START];
+    } else if (p->wander) {
+        p->art_kind = UNIT_WEAPON_ART_SPRITE;
+    }
 }
 
 /* ── features and corpses ─────────────────────────────────────────── */

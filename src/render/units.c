@@ -803,6 +803,11 @@ typedef struct ProjSpriteArt {
     uint8_t       tried;        /* 1 once a decode was attempted     */
     uint8_t       fx_palette;   /* paletted art takes fx.pcx         */
     int           probe_frames; /* header frame count, -1 for none   */
+    /* What a wandering shot's timing reads: the sequence's picture
+     * count and the frames each picture holds, from the file. */
+    uint8_t       timing_read;
+    int           seq_pics;
+    uint16_t      hold[64];
 } ProjSpriteArt;
 /* A destroyed renderer takes its textures with it, and the next one can
  * land on the same address, so the pointer alone cannot say whether a
@@ -980,6 +985,39 @@ static int proj_sprite_frames(int idx) {
         }
     }
     return ps->probe_frames > 0 ? ps->probe_frames : 0;
+}
+
+/* The pictures of a sprite's sequence and the frames each holds, the
+ * second word of its frame table entry (legacy:255756-255795, read
+ * through legacy:249011-249033). 0 pictures when there is no art. */
+static int proj_sprite_pics(int idx) {
+    if (idx < 0 || idx >= g_proj_sprite_count) return 0;
+    ProjSpriteArt *ps = &g_proj_sprites[idx];
+    if (!ps->timing_read) {
+        ps->timing_read = 1;
+        ps->seq_pics = 0;
+        GAFFile *gaf = NULL;
+        int is_taf = 0;
+        int seq_off = proj_sprite_open(ps, &gaf, &is_taf);
+        if (seq_off >= 0) {
+            uint32_t off = (uint32_t)seq_off;
+            int nf = off + 2u <= gaf->data_size
+                   ? *(const uint16_t *)(gaf->data + off) : 0;
+            for (int k = 0; k < nf && k < 64; k++) {
+                uint32_t at = off + 40u + (uint32_t)k * 8u + 4u;
+                ps->hold[k] = at + 2u <= gaf->data_size
+                            ? *(const uint16_t *)(gaf->data + at) : 2;
+            }
+            ps->seq_pics = nf;
+            GAF_Close(gaf);
+        }
+    }
+    return ps->seq_pics;
+}
+
+static int proj_sprite_hold(int idx, int pic) {
+    if (proj_sprite_pics(idx) <= 0 || pic < 0) return 0xffff;
+    return g_proj_sprites[idx].hold[pic < 64 ? pic : 63];
 }
 
 /* A cleared slot, so nothing of the effect that last used it carries
@@ -1211,6 +1249,17 @@ static int spawn_projectile(int32_t x, int32_t y,
     p->visual_kind = visual_kind;
     p->target = (int16_t)target_handle;
     p->hidden = 0;
+    /* Not a wandering shot until wander_launch says so. */
+    p->wander = 0;
+    p->wander_steps = 0;
+    p->wander_hold = p->wander_pic = 0;
+    p->wander_x_fp = p->wander_y_fp = 0;
+    p->wander_vx_fp = p->wander_vy_fp = 0;
+    p->wander_base_vx = p->wander_base_vy = 0;
+    p->wander_amp_x = p->wander_amp_y = 0.0f;
+    p->wander_seed = 0;
+    p->wander_left = p->wander_turn = p->wander_every = 0;
+    for (int k = 0; k < 3; k++) p->wander_art[k] = -1;
     p->path_flags = weapon_path_flags(source_weapon);
     p->blast_flags = 0;
     if (source_weapon && source_weapon->units_only) p->blast_flags |= UNIT_BLAST_UNITS_ONLY;
@@ -2516,6 +2565,227 @@ static int shot_caster_stands(const Projectile *p) {
     return a == UNIT_ALIVE_ACTIVE || a == UNIT_ALIVE_TRANSPORTED;
 }
 
+/* ── Wandering shots ──────────────────────────────────────────────── */
+
+/* The stream a wandering shot turns by: the minimal standard step kept
+ * unsigned, scaled to [0, f) (legacy:248985-248996). */
+static double wander_rand(uint32_t *seed, float f) {
+    uint32_t s = *seed;
+    uint32_t v = s * 16807u + (s / 127773u) * 0x80000001u;
+    if (v == 0) v = 0x7fffffffu;
+    *seed = v;
+    return (double)v * (1.0 / 2147483648.0) * (double)f;
+}
+
+/* The way and pace the shot moves, for the blast hook and the views. */
+static void wander_note_heading(Projectile *p) {
+    float vx = (float)p->wander_vx_fp, vy = (float)p->wander_vy_fp;
+    float len = sqrtf(vx * vx + vy * vy);
+    if (len > 0.0f) {
+        p->dir_x = vx / len;
+        p->dir_y = vy / len;
+    }
+    p->speed_ppt = len * (float)p->wander_steps / (65536.0f * 2.0f);
+}
+
+/* A turn: the velocity it set out with plus a draw from each spread, x
+ * first (legacy:248972-248980, legacy:249148-249156). */
+static void wander_turn(Projectile *p) {
+    double rx = wander_rand(&p->wander_seed, p->wander_amp_x + p->wander_amp_x);
+    p->wander_vx_fp = p->wander_base_vx +
+                      (int32_t)((rx - (double)p->wander_amp_x) * 65536.0);
+    double ry = wander_rand(&p->wander_seed, p->wander_amp_y + p->wander_amp_y);
+    p->wander_vy_fp = p->wander_base_vy +
+                      (int32_t)((ry - (double)p->wander_amp_y) * 65536.0);
+    wander_note_heading(p);
+}
+
+/* Art k on show from its first picture (legacy:255756-255768). 0 when
+ * the weapon has none. The views take the picture from age_ticks. */
+static int wander_show(Projectile *p, int k) {
+    int art = p->wander_art[k];
+    if (proj_sprite_pics(art) <= 0) {
+        p->art_idx = -1;
+        return 0;
+    }
+    p->wander_pic = 0;
+    p->wander_hold = (uint16_t)proj_sprite_hold(art, 0);
+    p->art_kind = UNIT_WEAPON_ART_SPRITE;
+    p->art_idx = (int16_t)art;
+    p->age_ticks = 0;
+    return 1;
+}
+
+/* A frame of the art on show: each picture holds its frames, then the
+ * loop art starts over and the others end (legacy:255772-255795). 0
+ * once it has ended. */
+static int wander_play(Projectile *p, int k) {
+    int art = p->wander_art[k];
+    int pics = proj_sprite_pics(art);
+    if (pics <= 0) return 0;
+    if (p->wander_hold >= 2) {
+        p->wander_hold--;
+        return 1;
+    }
+    if (++p->wander_pic >= pics) {
+        if (k != 1) {
+            p->art_idx = -1;
+            return 0;
+        }
+        p->wander_pic = 0;
+    }
+    p->wander_hold = (uint16_t)proj_sprite_hold(art, p->wander_pic);
+    p->age_ticks = (uint16_t)(p->wander_pic * 2u);
+    return 1;
+}
+
+/* Each substep adds the velocity, so a shot of more than one moves by
+ * their square (legacy:249128-249134, legacy:249141-249147). */
+static void wander_move(Projectile *p) {
+    for (int s = 0; s < p->wander_steps; s++) {
+        p->wander_x_fp = (int32_t)((uint32_t)p->wander_x_fp + (uint32_t)p->wander_vx_fp);
+        p->wander_y_fp = (int32_t)((uint32_t)p->wander_y_fp + (uint32_t)p->wander_vy_fp);
+    }
+    p->world_x = p->wander_x_fp >> 16;
+    p->world_y = p->wander_y_fp >> 16;
+}
+
+/* The run begins: the loop art, and the first turn drawn. Its length
+ * and the frames to the next turn were set at launch and count from
+ * here (legacy:248966-248981). */
+static void wander_run(Projectile *p) {
+    p->wander = UNIT_WANDER_LOOP;
+    wander_show(p, 1);
+    wander_turn(p);
+}
+
+/* On every frame of its run the shot bursts where it is, with no unit
+ * struck and no explosion art: its hit sound, the splash and the
+ * scenery, and the blast hook hears it (legacy:249158, the blast at
+ * legacy:244963-245050). Where the map lets shots through the sea it
+ * does nothing over the sea bed (legacy:244975-244984). */
+static void wander_burst(Projectile *p) {
+    GameWorld *gw = World_Get();
+    int bed = 0;
+    if (gw && gw->no_sea_level_trigger &&
+        ShotPath_CellFloor(gw, p->world_x, p->world_y, &bed) &&
+        bed < gw->water_height)
+        return;
+    projectile_note_blast(p, NULL);
+    play_projectile_hit_sound(p, NULL);
+    int slot = slot_of_projectile(p);
+    blast_shake_at(p->world_x, p->world_y, g_proj_shake_mag[slot],
+                   g_proj_shake_sec[slot]);
+    apply_projectile_area_damage(p);
+    blast_scenery(p, -1);
+}
+
+/* One of the original's frames of a wandering shot
+ * (legacy:249099-249174). */
+static void wander_frame(Projectile *p) {
+    switch (p->wander) {
+    case UNIT_WANDER_WAIT:
+        /* Before its first frame it waits on its caster and goes with
+         * it (legacy:249103-249111). */
+        if (p->wander_hold > 1) {
+            p->wander_hold--;
+            if (!shot_caster_stands(p)) p->alive = 0;
+            return;
+        }
+        if (wander_show(p, 0)) {
+            p->wander = UNIT_WANDER_START;
+            return;
+        }
+        wander_run(p);
+        return;
+    case UNIT_WANDER_START:
+        if (!wander_play(p, 0)) wander_run(p);
+        return;
+    case UNIT_WANDER_LOOP:
+        wander_play(p, 1);
+        wander_move(p);
+        if (--p->wander_turn <= 0) {
+            wander_turn(p);
+            p->wander_turn += p->wander_every;
+        }
+        wander_burst(p);
+        if (--p->wander_left > 0) return;
+        if (wander_show(p, 2)) {
+            p->wander = UNIT_WANDER_END;
+            return;
+        }
+        p->alive = 0;
+        return;
+    case UNIT_WANDER_END:
+        if (!wander_play(p, 2)) {
+            p->alive = 0;
+            return;
+        }
+        wander_move(p);
+        return;
+    default:
+        p->alive = 0;
+        return;
+    }
+}
+
+/* A Wandering weapon's shot sets out (legacy:249059-249094): 32 px from
+ * its caster toward the aim point, on the ground there, set to move at
+ * weaponvelocity that way, with spreads of maxvariation times each
+ * part of the way crossed onto the other axis. Its stream is seeded
+ * from the frame (legacy:249049-249055) and it starts on the next. */
+static void wander_launch(int slot, const UnitWeapon *wp, const Unit *u,
+                          int32_t tx, int32_t ty) {
+    if (slot < 0 || slot >= g_projectile_count || !wp || !wp->is_wandering || !u)
+        return;
+    Projectile *p = &g_projectiles[slot];
+    const GameWorld *w = World_Get();
+    int32_t dx = tx - u->world_x, dz = ty - u->world_y;
+    double dist = sqrt((double)dx * (double)dx + (double)dz * (double)dz);
+    float ux = 0.0f;
+    double uz = 0.0;
+    if (dist > 0.0) {
+        ux = (float)((double)dx / dist);
+        uz = (double)dz / dist;
+    }
+    double v = (double)(uint32_t)((uint32_t)wp->wander_steps * (uint32_t)wp->wander_step_fp);
+    p->wander = UNIT_WANDER_WAIT;
+    /* The frames to wait: the rest of this one when it is a frame tick
+     * and the projectiles still run in it, then the next. */
+    p->wander_hold = (g_sim_tick & 1u) ? 1 : 2;
+    p->wander_pic = 0;
+    p->wander_steps = wp->wander_steps;
+    p->wander_base_vx = (int32_t)(v * (double)ux);
+    p->wander_base_vy = (int32_t)(v * uz);
+    p->wander_vx_fp = p->wander_base_vx;
+    p->wander_vy_fp = p->wander_base_vy;
+    p->wander_amp_x = (float)((double)wp->wander_max_variation * uz);
+    p->wander_amp_y = (float)((double)wp->wander_max_variation * (double)ux);
+    p->wander_x_fp = (int32_t)((uint32_t)u->world_x << 16) +
+                     (int32_t)((double)ux * 32.0 * 65536.0);
+    p->wander_y_fp = (int32_t)((uint32_t)u->world_y << 16) +
+                     (int32_t)(uz * 32.0 * 65536.0);
+    uint32_t frame = g_sim_tick >> 1;
+    p->wander_seed = ((frame & 0xff00u) << 16) | ((frame & 0xffu) << 8);
+    p->wander_left = wp->wander_duration;
+    p->wander_every = wp->wander_every;
+    p->wander_turn = wp->wander_every;
+    for (int k = 0; k < 3; k++) p->wander_art[k] = wp->wander_art[k];
+    p->world_x = p->wander_x_fp >> 16;
+    p->world_y = p->wander_y_fp >> 16;
+    p->sub_x = p->sub_y = 0.0f;
+    p->height = w ? (float)Terrain_SampleHeight(w, p->world_x, p->world_y) : 0.0f;
+    p->muzzle_height = p->height;
+    p->from_piece = 0;
+    p->vel_up_ppt = 0.0f;
+    p->gravity_ppt2 = 0.0f;
+    p->pitch = 0.0f;
+    p->art_kind = UNIT_WEAPON_ART_SPRITE;
+    p->art_idx = -1;
+    p->age_ticks = 0;
+    wander_note_heading(p);
+}
+
 /* Per-tick: advance projectiles, hit-test against target, apply damage. */
 static void tick_projectiles(void) {
     /* Effects are visuals only. One with a life ends at that age, a
@@ -2553,6 +2823,11 @@ static void tick_projectiles(void) {
     for (int i = 0; i < g_projectile_count; i++) {
         Projectile *p = &g_projectiles[i];
         if (!p->alive) continue;
+        /* A wandering shot keeps the original's frames and its own end. */
+        if (p->wander) {
+            if ((g_sim_tick & 1u) == 0) wander_frame(p);
+            continue;
+        }
         if (--p->ttl_ticks <= 0) { p->alive = 0; continue; }
         /* A mind control shot whose caster is dead or dying takes this
          * step and is gone (legacy:247710-247713). */
@@ -6766,6 +7041,39 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         w->ground_bounce  = (uint8_t)(TDF_ReadInt(tdf, "groundbounce", 0) & 1);
         w->path_free      = (ascii_contains_ci(w->type, "remote") ||
                              ascii_contains_ci(w->type, "wandering")) ? 1 : 0;
+        /* A Wandering weapon's own keys (legacy:249000-249044). Times
+         * are seconds times 30, and weaponvelocity goes to 1/65536 px a
+         * frame in substeps of at most 16 px (legacy:249987-249989,
+         * legacy:250426-250433). */
+        w->is_wandering = ascii_contains_ci(w->type, "wandering") ? 1 : 0;
+        w->wander_steps = 0;
+        w->wander_step_fp = 0;
+        for (int k = 0; k < 3; k++) w->wander_art[k] = -1;
+        w->wander_duration = w->wander_every = w->wander_max_variation = 0;
+        if (w->is_wandering) {
+            static const char *wa[3] = { "wanderstartart", "wanderloopart",
+                                         "wanderendart" };
+            for (int k = 0; k < 3; k++) {
+                char art[40];
+                lowercase_into(art, sizeof(art), TDF_ReadString(tdf, wa[k], ""));
+                if (art[0]) w->wander_art[k] = (int16_t)proj_sprite_index(art, art);
+            }
+            w->wander_duration = (int32_t)((double)TDF_ReadFloat(tdf, "duration", 0.0f) * 30.0);
+            w->wander_every = (int32_t)((double)TDF_ReadFloat(tdf, "variationtime", 0.0f) * 30.0);
+            w->wander_max_variation = TDF_ReadInt(tdf, "maxvariation", 0);
+            uint32_t fp = (uint32_t)(int32_t)((double)TDF_ReadFloat(tdf, "weaponvelocity", 0.0f) *
+                                              (65536.0 / 30.0));
+            if (fp == 0) {
+                w->wander_steps = 1;
+                w->wander_step_fp = 1;
+            } else {
+                uint32_t steps = (uint16_t)((fp + 0xfffffu) >> 20);
+                if (steps < 1) steps = 1;
+                if (steps > 255) steps = 255;
+                w->wander_steps = (uint8_t)steps;
+                w->wander_step_fp = (int32_t)(fp / steps);
+            }
+        }
         w->to_air_weapon  = TDF_ReadInt(tdf, "toairweapon", 0);
         w->no_air_weapon  = TDF_ReadInt(tdf, "noairweapon", 0);
         w->no_radar       = TDF_ReadInt(tdf, "noradar", 0);
@@ -11144,6 +11452,8 @@ int Units_ComputeWeaponDamageForCategory(const UnitWeapon *wp,
 static uint8_t weapon_visual_kind(const UnitWeapon *wp) {
     if (!wp) return UNIT_PROJECTILE_VIS_GENERIC;
     if (ascii_contains_ci(wp->type, "remote")) return UNIT_PROJECTILE_VIS_REMOTE;
+    /* A wandering shot is only its art, never the bright dot. */
+    if (wp->is_wandering) return UNIT_PROJECTILE_VIS_REMOTE;
     if (wp->mana_per_shot > 0 ||
         ascii_contains_ci(wp->type, "line of sight") ||
         ascii_contains_ci(wp->damage_type, "paralyzer") ||
@@ -11591,6 +11901,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
                       shooter_idx,
                       u->player_id, u->team_color_idx);
     spell_effects_at(wp, shot, tx, ty, u->stable_id);
+    wander_launch(shot, wp, u, tx, ty);
 }
 
 /* Ground shot: projectile flies to (cmd_x, cmd_y) with no unit target
@@ -11702,6 +12013,7 @@ static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
                                     weapon_visual_kind(wp), -1, shooter_idx,
                                     u->player_id, u->team_color_idx);
     spell_effects_at(wp, slot_idx, u->cmd_x, u->cmd_y, u->stable_id);
+    wander_launch(slot_idx, wp, u, u->cmd_x, u->cmd_y);
     if (slot_idx < 0 || (wp->los_kind != 1 && wp->los_kind != 2)) return;
     /* LOS ground shot: the ray goes off where it stops, at once, and
      * the beam holds. */
@@ -17813,6 +18125,20 @@ int Units_FindSpriteArt(const char *name) {
         if (tak_stricmp(g_proj_sprites[i].file, name) == 0) return i;
     }
     return -1;
+}
+
+const char *Units_SpriteArtFile(int idx) {
+    if (idx < 0 || idx >= g_proj_sprite_count) return NULL;
+    return g_proj_sprites[idx].file;
+}
+
+int Units_SpriteArtPictures(int idx) { return proj_sprite_pics(idx); }
+
+int Units_SpriteArtSlot(const char *file) {
+    if (!file || !*file) return -1;
+    char lc[40];
+    lowercase_into(lc, sizeof(lc), file);
+    return proj_sprite_index(lc, lc);
 }
 
 int Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y) {
