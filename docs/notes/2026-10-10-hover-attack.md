@@ -125,22 +125,24 @@ ground, counted every half second from 20 s to 60 s
 
 | | before | after |
 |---|---|---|
-| others within 50 px of a Harpy, on average | 7.46 | 0.96 |
-| attacking Harpies' distance from the spot, on average | 50 px | 192 px |
+| others within 50 px of a Harpy, on average | 7.46 | 0.49 |
+| attacking Harpies' distance from the spot, on average | 50 px | 194 px |
 | most Harpies one Water Ball takes (50 px) | 10 | 3 |
 | most Harpies one Water Blast takes (250 px) | 12 | 12 |
-| still attacking at 60 s | 12 | 10 |
+| still attacking at 60 s | 12 | 12 |
 
 Before, ten of the twelve ended within a pixel of the spot, flying step
-out legs they never finished. After, two had given the attack up. A Water
+out legs they never finished. After, all twelve still attacked at 60 s. A Water
 Blast reaches 250 px, so one cast on the spot still takes a ring 200 px
 out, as it would in the original.
 
 The data free cases in `test_movement` give twelve Harpies on a still
-enemy 0.35 others within 50 px on average, 94% of the samples 170 to 240
+enemy 0.11 others within 50 px on average, 98% of the samples 170 to 240
 px from it, over six of the eight octants round it. A Harpy on a ground
-point from 600 px east holds 190 to 201 px east of it, and one following
-a walker fires 15 of its 20 shots on the move.
+point from 600 px east holds 194 to 203 px east of it, and one following
+a walker fires 16 of its 20 shots on the move. A Harpy whose shots do a
+still post no harm flies round it 11 times in a minute of 29 shots, and
+one whose shots hurt it never does.
 
 ## Left out
 
