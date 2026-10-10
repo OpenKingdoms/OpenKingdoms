@@ -16,7 +16,11 @@
  * module appends reuses whichever separator the directory already
  * carries and a composed path never mixes the two. */
 
-/* The preference directory, always with a trailing separator. */
+/* The preference directory, always with a trailing separator. An
+ * override wins, then TAK_CONFIG_DIR in the environment, then the
+ * platform's directory. A test build (TAK_TEST_BUILD, which CMake gives
+ * every test binary) never takes the platform's and uses test_prefs/
+ * under the working directory instead. */
 const char *Paths_PrefDir(void);
 
 /* The saved game directory under it, created on first use. */

@@ -17,6 +17,15 @@ bash scripts/run-suite.sh <build tree> [Release] [6]
 That is the gate before a merge: both layouts, on the final rebased head,
 under the test lock.
 
+No test touches your own options. Every test binary is a test build that
+never asks the platform where `options.cfg` lives, and ctest gives every test
+a `TAK_CONFIG_DIR` of its own under `<build tree>/src/testrun/<test>/prefs`.
+A test binary run by hand with no `TAK_CONFIG_DIR` keeps its options in
+`test_prefs` under the folder it runs in. `test_prefs_guard` fails if a test
+is registered without its own folder, if a program other than the game
+compiles the paths module without being a test build, or if any source but
+`src/core/paths.c` reaches for the platform's per-user folders.
+
 ## Pick tests by what they run
 
 `scripts/test-coverage.json` records which source files every ctest test

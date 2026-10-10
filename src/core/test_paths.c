@@ -7,6 +7,7 @@
 #include "tak_settings.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -170,6 +171,71 @@ static int test_platform_default_restored(void) {
     return 0;
 }
 
+/* Set or clear TAK_CONFIG_DIR through the C runtime, which is what
+ * getenv reads. */
+static void set_config_env(const char *value) {
+#ifdef _WIN32
+    _putenv_s("TAK_CONFIG_DIR", value ? value : "");
+#else
+    if (value) setenv("TAK_CONFIG_DIR", value, 1);
+    else unsetenv("TAK_CONFIG_DIR");
+#endif
+}
+
+static char s_env_was[1024];
+static int  s_env_had;
+
+static void save_config_env(void) {
+    const char *v = getenv("TAK_CONFIG_DIR");
+    s_env_had = v != NULL;
+    snprintf(s_env_was, sizeof(s_env_was), "%s", v ? v : "");
+}
+
+static void restore_config_env(void) {
+    set_config_env(s_env_had ? s_env_was : NULL);
+    Settings_SetDirectory(NULL);
+}
+
+static int is_absolute(const char *p) {
+    if (p[0] == '/' || p[0] == '\\') return 1;
+    return p[0] && p[1] == ':';
+}
+
+/* TAK_CONFIG_DIR names the preference directory when nothing in the
+ * process has overridden it, and the directory is made if missing. */
+static int test_config_dir_from_environment(void) {
+    save_config_env();
+    set_config_env("test_paths_scratch/envprefs");
+    Settings_SetDirectory(NULL);
+    ASSERT_STR("test_paths_scratch/envprefs/", Paths_PrefDir());
+    ASSERT(is_dir("test_paths_scratch/envprefs"));
+    ASSERT_STR("test_paths_scratch/envprefs/options.cfg", Settings_FilePath());
+    ASSERT_STR("test_paths_scratch/envprefs/saves/", Paths_SaveDir());
+
+    /* An override set by the process still wins over the environment. */
+    Settings_SetDirectory("test_paths_scratch/cfg");
+    ASSERT_STR("test_paths_scratch/cfg/options.cfg", Settings_FilePath());
+    restore_config_env();
+    return 0;
+}
+
+/* A test binary never resolves the player's own preference directory,
+ * not even with nothing in the environment, because that is the real
+ * options.cfg a test would rewrite. It falls back to a folder under the
+ * directory it runs in. */
+static int test_test_build_never_reaches_player_prefs(void) {
+    save_config_env();
+    set_config_env(NULL);
+    Settings_SetDirectory(NULL);
+    const char *pref = Paths_PrefDir();
+    ASSERT(!is_absolute(pref));
+    ASSERT_STR("test_prefs/", pref);
+    ASSERT(is_dir("test_prefs"));
+    ASSERT_STR("test_prefs/options.cfg", Settings_FilePath());
+    restore_config_env();
+    return 0;
+}
+
 /* The game directory a shipped binary has to find at run time. */
 static int scratch_mkdir(const char *path) {
 #ifdef _WIN32
@@ -224,6 +290,8 @@ int main(void) {
         { "settings_override_still_works", test_settings_override_still_works },
         { "settings_hold_text",           test_settings_hold_text_as_well_as_numbers },
         { "platform_default_restored",    test_platform_default_restored },
+        { "config_dir_from_environment",  test_config_dir_from_environment },
+        { "test_build_keeps_off_prefs",   test_test_build_never_reaches_player_prefs },
         { "game_dir_search",              test_game_dir_search },
     };
     int failed = 0;
