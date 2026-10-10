@@ -16,6 +16,10 @@
 # The manifest is written at configure time by src/CMakeLists.txt, after
 # every test and target in that directory exists.
 
+# A script run with -P starts with every policy unset, which CMake 3
+# reads as the old behaviour.
+cmake_minimum_required(VERSION 3.20)
+
 foreach(v MANIFEST ROOT BUILD)
     if(NOT DEFINED ${v})
         message(FATAL_ERROR "prefs guard: pass -D${v}=...")
@@ -47,7 +51,8 @@ foreach(row IN LISTS rows)
             if(NOT at EQUAL 0)
                 list(APPEND bad "test ${name} keeps its options outside the build tree: ${val}")
             endif()
-            if(val IN_LIST seen_dirs)
+            list(FIND seen_dirs "${val}" dup)
+            if(NOT dup EQUAL -1)
                 list(APPEND bad "test ${name} shares its options folder: ${val}")
             endif()
             list(APPEND seen_dirs "${val}")
