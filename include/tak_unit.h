@@ -188,6 +188,17 @@ typedef struct UnitWeapon {
     /* Remote Effect and Wandering shots are never stopped on the way
      * (legacy:249842-249950, :249099-249160). */
     uint8_t path_free;
+    /* type = Wandering (legacy:249968-249979): the start, loop and end
+     * art as sprite slots (-1 none), duration and variationtime in the
+     * original's frames, maxvariation, and weaponvelocity in 1/65536 px
+     * a frame cut into substeps (legacy:249000-249044, 250426-250433). */
+    uint8_t is_wandering;
+    uint8_t wander_steps;
+    int16_t wander_art[3];
+    int32_t wander_duration;
+    int32_t wander_every;
+    int32_t wander_max_variation;
+    int32_t wander_step_fp;
     int32_t to_air_weapon;    /* toairweapon targeting flag */
     int32_t no_air_weapon;    /* noairweapon targeting flag */
     int32_t no_radar;         /* noradar projectile/minimap flag */
@@ -306,7 +317,31 @@ typedef struct Projectile {
     uint8_t  path_flags;
     /* UNIT_BLAST_*: what the shot's blast does to scenery. */
     uint8_t  blast_flags;
+    /* A Wandering shot (legacy:249059-249174), stepped once a frame:
+     * its UNIT_WANDER_* phase, the picture and hold of the art it
+     * shows, its 16.16 position and velocity, the velocity it set out
+     * with, the two spreads its turns draw from and their stream, the
+     * frames left of its run and to its next turn, and the frames
+     * between turns. wander is 0 for every other shot. */
+    uint8_t  wander;
+    uint8_t  wander_steps;
+    uint16_t wander_hold;
+    uint16_t wander_pic;
+    int32_t  wander_x_fp, wander_y_fp;
+    int32_t  wander_vx_fp, wander_vy_fp;
+    int32_t  wander_base_vx, wander_base_vy;
+    float    wander_amp_x, wander_amp_y;
+    uint32_t wander_seed;
+    int32_t  wander_left, wander_turn, wander_every;
+    int16_t  wander_art[3];       /* start, loop, end sprite slots      */
 } Projectile;
+
+/* The phases of a Wandering shot: one frame waiting on its caster, its
+ * start art, the run that bursts every frame, its end art. */
+#define UNIT_WANDER_WAIT  1
+#define UNIT_WANDER_START 2
+#define UNIT_WANDER_LOOP  3
+#define UNIT_WANDER_END   4
 
 /* The weapon is unitsonly, so its blast leaves scenery alone
  * (legacy:245240), and the weapon is a fire starter (legacy:250028). */
@@ -1475,6 +1510,13 @@ int         Units_ProjectileVisible(const struct GameWorld *world, const Project
 const char *Units_ProjectileModelName(int art_idx);
 /* The art slot a sequence name resolved to, -1 when never seen. */
 int         Units_FindSpriteArt(const char *name);
+/* The anims file a sprite slot reads, NULL for none, and the slot for
+ * a file, added on first ask. A save names a wandering shot's art. */
+const char *Units_SpriteArtFile(int idx);
+int         Units_SpriteArtSlot(const char *file);
+/* The pictures in a sprite slot's sequence, read from the file, 0 for
+ * none: what a wandering shot's phases are timed by. */
+int         Units_SpriteArtPictures(int idx);
 /* Fires weapon `slot` of a unit at the ground, for tests. 1 when it fired. */
 int         Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y);
 /* Weapon `slot` of unit `handle` goes off on the ground at (x, y), as a

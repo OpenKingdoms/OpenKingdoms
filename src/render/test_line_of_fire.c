@@ -39,7 +39,7 @@ enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_SPLASH, LF_POST, LF_BONE, LF_STAFF, LF_BOWBLADE, LF_VETERAN,
        LF_HOLDER, LF_ROVER, LF_PICKER, LF_SEEKER, LF_SEEKFAR, LF_ROAMER,
        LF_FLYPICK, LF_BLADEPICK, LF_BROAD, LF_SWIRL, LF_CANNON, LF_TORCH,
-       LF_SWEEPER, LF_BOMBER, LF_STURDY,
+       LF_SWEEPER, LF_BOMBER, LF_STURDY, LF_TWISTER, LF_TORNADO,
        LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
@@ -327,6 +327,22 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     defs[LF_BOMBER].death_weapon_set = 1;
     defs[LF_BOMBER].num_weapons = 0;
     lf_fill(&defs[LF_STURDY], "TESTSTURDY", 1.2f, 100000);
+    /* The Tornado's numbers: weaponvelocity 45, a run of 9 seconds that
+     * turns every 2, areaofeffect 30, no art. The twister never turns,
+     * the tornado turns by up to 5 px a frame. */
+    for (int k = LF_TWISTER; k <= LF_TORNADO; k++) {
+        lf_fill(&defs[k], k == LF_TWISTER ? "TESTTWISTER" : "TESTTORNADO", 1.2f, 300);
+        wp = lf_weapon(&defs[k], "TESTWANDER", "Wandering", 45, 150, 200);
+        wp->area_of_effect = 30;
+        wp->path_free = 1;
+        wp->is_wandering = 1;
+        wp->wander_steps = 1;
+        wp->wander_step_fp = 98304;
+        wp->wander_duration = 270;
+        wp->wander_every = 60;
+        wp->wander_max_variation = k == LF_TWISTER ? 0 : 5;
+        for (int a = 0; a < 3; a++) wp->wander_art[a] = -1;
+    }
 
     FeatureDef fdefs[FD_COUNT];
     memset(fdefs, 0, sizeof fdefs);
@@ -3000,6 +3016,197 @@ TEST(the_feature_hook_leaves_a_fire_as_it_was) {
     ASSERT_EQ_INT((int)a, (int)b);
 }
 
+/* ── wandering shots ──────────────────────────────────────────────── */
+
+#define LW_MAX 400
+static int g_lw_blasts;
+static int32_t g_lw_x[LW_MAX], g_lw_y[LW_MAX];
+static UnitsBlast g_lw_last;
+static void lw_note(const UnitsBlast *b) {
+    if (g_lw_blasts < LW_MAX) {
+        g_lw_x[g_lw_blasts] = b->x;
+        g_lw_y[g_lw_blasts] = b->y;
+    }
+    g_lw_blasts++;
+    g_lw_last = *b;
+}
+
+static const Projectile *lw_shot(void) {
+    int n = 0;
+    const Projectile *p = Units_GetProjectiles(&n);
+    for (int i = 0; p && i < n; i++)
+        if (p[i].alive && p[i].wander) return &p[i];
+    return NULL;
+}
+
+/* The shot sets out 32 px from its caster toward its aim and moves
+ * weaponvelocity, 1.5 px, a frame. On every frame of its 270 it bursts
+ * where it is, no unit struck, and a unit it passes takes the falloff
+ * of each burst that reaches it. Then it is gone (legacy:249059-249174,
+ * 244963-245050). */
+TEST(a_wandering_shot_bursts_on_every_frame_of_its_run) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int s = lf_spawn(LF_TWISTER, 1, LF_SX, LF_ROW);
+    int v = lf_spawn(LF_STURDY, 2, LF_SX + 100, LF_ROW);
+    int aim = lf_spawn(LF_TARGET, 2, LF_SX + 600, LF_ROW);
+    ASSERT(s >= 0 && v >= 0 && aim >= 0);
+    lf_ticks(4);
+    int hp = lf_unit(v)->health;
+    g_lw_blasts = 0;
+    Units_SetBlastHook(lw_note);
+    ASSERT(Units_DebugFireAt(s, 0, aim));
+    ASSERT_NOT_NULL(lw_shot());
+    lf_ticks(700);
+    Units_SetBlastHook(NULL);
+    ASSERT_EQ_INT(270, g_lw_blasts);
+    ASSERT(lw_shot() == NULL);
+    int want = 0;
+    for (int i = 0; i < 270; i++) {
+        ASSERT_EQ_INT(LF_SX + 32 + (3 * (i + 1)) / 2, g_lw_x[i]);
+        ASSERT_EQ_INT(LF_ROW, g_lw_y[i]);
+        int d = g_lw_x[i] - (LF_SX + 100);
+        want += Units_ComputeSplashDamage(200, 30, 0.0f, d < 0 ? -d : d);
+    }
+    ASSERT_EQ_INT(-1, g_lw_last.struck);
+    ASSERT_EQ_INT(LF_TWISTER, g_lw_last.def);
+    ASSERT_EQ_INT(0, g_lw_last.slot);
+    ASSERT_EQ_INT(s, g_lw_last.shooter);
+    printf("(%d hurt) ", want);
+    ASSERT(want > 0);
+    ASSERT_EQ_INT(want, hp - lf_unit(v)->health);
+    lf_end();
+}
+
+/* Every variationtime the shot turns: the velocity it set out with plus
+ * a draw from maxvariation times each part of its way, crossed onto the
+ * other axis. Fired due east it keeps 1.5 px a frame east and drifts up
+ * to 5 px a frame north or south, a new drift every 60 frames
+ * (legacy:248966-248996, 249148-249156). */
+TEST(a_wandering_shot_turns_every_variationtime) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int s = lf_spawn(LF_TORNADO, 1, 1500, 1500);
+    int aim = lf_spawn(LF_TARGET, 2, 2100, 1500);
+    ASSERT(s >= 0 && aim >= 0);
+    lf_ticks(4);
+    ASSERT(Units_DebugFireAt(s, 0, aim));
+    int32_t vy[300];
+    int n = 0, bad = 0, turns = 0;
+    for (int t = 0; t < 700; t++) {
+        lf_ticks(1);
+        if (Units_SimTick() & 1u) continue;
+        const Projectile *p = lw_shot();
+        if (!p || p->wander != UNIT_WANDER_LOOP || n >= 300) continue;
+        if (p->wander_vx_fp != 98304) bad++;
+        if (p->wander_vy_fp < -5 * 65536 || p->wander_vy_fp > 5 * 65536) bad++;
+        vy[n] = p->wander_vy_fp;
+        if (n > 0 && vy[n] != vy[n - 1]) {
+            turns++;
+            if (n % 60 != 0) bad++;
+        }
+        n++;
+    }
+    printf("(%d frames, %d turns) ", n, turns);
+    ASSERT_EQ_INT(270, n);
+    ASSERT_EQ_INT(0, bad);
+    ASSERT(turns >= 3);
+    lf_end();
+}
+
+/* Before its first frame the shot waits on its caster, and a caster
+ * gone by then takes it along (legacy:249103-249111). Once it has
+ * started it runs on without one. */
+TEST(a_wandering_shot_goes_with_a_caster_gone_before_it_starts) {
+    int blasts[2] = { -1, -1 };
+    for (int later = 0; later < 2; later++) {
+        GameWorld *w = lf_world(0, 0);
+        ASSERT_NOT_NULL(w);
+        int s = lf_spawn(LF_TWISTER, 1, LF_SX, LF_ROW);
+        int aim = lf_spawn(LF_TARGET, 2, LF_SX + 600, LF_ROW);
+        ASSERT(s >= 0 && aim >= 0);
+        lf_ticks(4);
+        if (Units_SimTick() & 1u) lf_ticks(1);
+        g_lw_blasts = 0;
+        Units_SetBlastHook(lw_note);
+        ASSERT(Units_DebugFireAt(s, 0, aim));
+        if (later) lf_ticks(6);
+        ASSERT_EQ_INT(0, Units_DebugRemove(s));
+        lf_ticks(700);
+        Units_SetBlastHook(NULL);
+        blasts[later] = g_lw_blasts;
+        ASSERT(lw_shot() == NULL);
+        lf_end();
+    }
+    ASSERT_EQ_INT(0, blasts[0]);
+    ASSERT_EQ_INT(270, blasts[1]);
+}
+
+/* The bursts wound the scenery the shot passes as any blast does: the
+ * tree in its way falls, and the rock the original cannot break breaks
+ * only under the remastered rules (legacy:245236-245302, D-036). */
+TEST(a_wandering_shot_wounds_the_scenery_it_passes) {
+    int rock_hurt[2] = { -1, -1 }, rocks[2] = { -1, -1 }, tree_left[2] = { -1, -1 };
+    for (int rules = 0; rules < 2; rules++) {
+        GameWorld *w = lf_world(0, 0);
+        ASSERT_NOT_NULL(w);
+        w->cfg.remastered = rules;
+        int s = lf_spawn(LF_TWISTER, 1, LF_SX, LF_ROW);
+        int aim = lf_spawn(LF_TARGET, 2, LF_SX + 600, LF_ROW);
+        int r = lf_place(w, FD_ROCK, 60, 99);
+        int t = lf_place(w, FD_TREE, 70, 100);
+        ASSERT(s >= 0 && aim >= 0 && r >= 0 && t >= 0);
+        lf_ticks(4);
+        ASSERT(Units_DebugFireAt(s, 0, aim));
+        lf_ticks(700);
+        ASSERT(lw_shot() == NULL);
+        rocks[rules] = tree_left[rules] = rock_hurt[rules] = 0;
+        for (int i = 0; i < w->feature_count; i++) {
+            if (w->features[i].global_idx == FD_TREE) tree_left[rules]++;
+            if (w->features[i].global_idx != FD_ROCK) continue;
+            rocks[rules]++;
+            rock_hurt[rules] += w->features[i].damage_taken;
+        }
+        lf_end();
+    }
+    ASSERT_EQ_INT(1, rocks[0]);
+    ASSERT_EQ_INT(0, rock_hurt[0]);
+    ASSERT_EQ_INT(0, rocks[1]);
+    ASSERT_EQ_INT(0, tree_left[0]);
+    ASSERT_EQ_INT(0, tree_left[1]);
+}
+
+/* A shot part way through its run comes back from a save and runs on
+ * the same: where it is, its next turn and the stream it draws from. */
+TEST(a_wandering_shot_runs_on_the_same_after_a_load) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int s = lf_spawn(LF_TORNADO, 1, 1500, 1500);
+    int aim = lf_spawn(LF_TARGET, 2, 2100, 1500);
+    int v = lf_spawn(LF_STURDY, 2, 1560, 1520);
+    ASSERT(s >= 0 && aim >= 0 && v >= 0);
+    lf_ticks(4);
+    ASSERT(Units_DebugFireAt(s, 0, aim));
+    lf_ticks(201);
+    ASSERT_NOT_NULL(lw_shot());
+    char err[256] = { 0 };
+    const char *path = "lf_wander_save.oksave";
+    remove(path);
+    ASSERT_EQ_INT(0, Save_Write(path, err, sizeof err));
+    uint32_t at_save = TAK_SimHash();
+    lf_ticks(300);
+    uint32_t want = TAK_SimHash();
+    TAK_SaveGame *sg = Save_Read(path, err, sizeof err);
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(0, Save_Apply(sg, err, sizeof err));
+    Save_ReadClose(sg);
+    ASSERT_EQ_INT((int)at_save, (int)TAK_SimHash());
+    lf_ticks(300);
+    ASSERT_EQ_INT((int)want, (int)TAK_SimHash());
+    remove(path);
+    lf_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("What the feature hook hears");
@@ -3008,6 +3215,12 @@ int main(int argc, char **argv) {
     RUN(a_fire_tells_the_hook_where_it_caught_and_burnt_out);
     RUN(placing_sweeping_and_removing_tell_the_hook);
     RUN(the_feature_hook_leaves_a_fire_as_it_was);
+    TEST_SUITE("Wandering shots");
+    RUN(a_wandering_shot_bursts_on_every_frame_of_its_run);
+    RUN(a_wandering_shot_turns_every_variationtime);
+    RUN(a_wandering_shot_goes_with_a_caster_gone_before_it_starts);
+    RUN(a_wandering_shot_wounds_the_scenery_it_passes);
+    RUN(a_wandering_shot_runs_on_the_same_after_a_load);
     TEST_SUITE("What the blast hook hears");
     RUN(a_rock_on_the_ground_tells_the_hook_where_and_whose);
     RUN(an_arrow_tells_the_hook_the_unit_it_struck);
