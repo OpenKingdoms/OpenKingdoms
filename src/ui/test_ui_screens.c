@@ -13878,11 +13878,12 @@ TEST(a_harpy_takes_a_swordsman_standing_or_walking_across) {
     ASSERT(ok);
     ASSERT(set);
     /* Pinned. A shot lands slower than the Harpy reloads, so a second is
-     * often in the air when the first takes its target. */
+     * in the air when the first takes a still target. A walking one is
+     * taken by the first, fired from the hover attack's 200 px. */
     ASSERT_EQ_INT(4, still);
-    ASSERT_EQ_INT(9, still_shots);
+    ASSERT_EQ_INT(8, still_shots);
     ASSERT_EQ_INT(4, walking);
-    ASSERT_EQ_INT(10, walking_shots);
+    ASSERT_EQ_INT(4, walking_shots);
 }
 
 /* Use Crusades Units loads the Crusades balance set, unitscb/ in place
@@ -18643,6 +18644,106 @@ TEST(harpies_sent_to_one_place_do_not_stack) {
            (int)sqrt((double)far2));
     ASSERT_EQ_INT(0, shared);
     ASSERT(far2 <= (int64_t)512 * 512);
+    InGame_Shutdown();
+    #undef FLOCK_N
+    }
+done:
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Twelve real Harpies, hoverattack = 1 and hoverattackdistance = 200,
+ * sent to attack one spot of open ground. The original holds each one
+ * on its own bearing 200 px out (legacy:30139-30370), so the flock fans
+ * out round the spot instead of stopping in a bunch at the 300 px edge
+ * of its reach. Counted while they attack: the others within 50 px of
+ * each, the most one Water Ball (Kirenna's, areaofeffect 100) could take
+ * and the most one Water Blast (areaofeffect 500) could take. */
+static int ui_flock_within(const Unit *units, const int *h, int n,
+                           int32_t x, int32_t y, int r) {
+    int c = 0;
+    for (int i = 0; i < n; i++) {
+        int64_t dx = (int64_t)units[h[i]].world_x - x;
+        int64_t dy = (int64_t)units[h[i]].world_y - y;
+        if (dx * dx + dy * dy <= (int64_t)r * r) c++;
+    }
+    return c;
+}
+
+TEST(harpies_attacking_one_spot_spread_round_it) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+    int harpy = Units_FindDefByName("ZONHARP");
+    if (harpy < 0) { SKIP_MARK("no ZONHARP"); goto done; }
+    {
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(sword_def >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t rx = 0, ry = 0;
+    if (gates_find_site(world, sword_def, units[0].world_x, units[0].world_y,
+                        320, 1, 0, &rx, &ry) != 0) {
+        SKIP_MARK("no open ground");
+        goto done;
+    }
+    #define FLOCK_N 12
+    int h[FLOCK_N];
+    for (int i = 0; i < FLOCK_N; i++) {
+        h[i] = Units_Spawn(harpy, 1, 0, rx - 480 + (i % 4) * 64, ry - 96 + (i / 4) * 64);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    for (int i = 0; i < FLOCK_N; i++) ASSERT(Units_OrderAttackGround(h[i], rx, ry));
+    int64_t near_sum = 0, near_n = 0, dist_sum = 0, dist_n = 0;
+    int ball = 0, blast = 0, attacking_end = 0;
+    for (int t = 0; t < 3600; t++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        if (t < 1200 || t % 30 != 0) continue;
+        units = Units_GetActive(&unit_count);
+        int all[FLOCK_N], n = 0, on = 0;
+        for (int i = 0; i < FLOCK_N; i++)
+            if (units[h[i]].alive == UNIT_ALIVE_ACTIVE) all[n++] = h[i];
+        for (int i = 0; i < n; i++) {
+            const Unit *a = &units[all[i]];
+            near_sum += ui_flock_within(units, all, n, a->world_x, a->world_y, 50) - 1;
+            near_n++;
+            int b = ui_flock_within(units, all, n, a->world_x, a->world_y, 50);
+            if (b > ball) ball = b;
+            int w = ui_flock_within(units, all, n, a->world_x, a->world_y, 250);
+            if (w > blast) blast = w;
+            if (a->cmd_kind != UNIT_CMD_ATTACK_GROUND) continue;
+            on++;
+            int64_t dx = (int64_t)a->world_x - rx, dy = (int64_t)a->world_y - ry;
+            dist_sum += (int64_t)sqrt((double)(dx * dx + dy * dy));
+            dist_n++;
+        }
+        int w = ui_flock_within(units, all, n, rx, ry, 250);
+        if (w > blast) blast = w;
+        attacking_end = on;
+    }
+    double near_avg = near_n ? (double)near_sum / (double)near_n : 0.0;
+    double dist_avg = dist_n ? (double)dist_sum / (double)dist_n : 0.0;
+    printf("(%.2f others within 50 px on average, attackers %.0f px from "
+           "the spot on average, one Water Ball takes up to %d, one Water "
+           "Blast up to %d, %d of %d still attacking at the end) ", near_avg, dist_avg,
+           ball, blast, attacking_end, FLOCK_N);
+    ASSERT(near_n > 0);
+    ASSERT(near_avg < 2.0);
+    ASSERT(dist_avg >= 180.0 && dist_avg <= 230.0);
+    ASSERT(ball <= 4);
     InGame_Shutdown();
     #undef FLOCK_N
     }
@@ -31296,6 +31397,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(completed_wall_blocks_units);
     RUN_UI_TEST(units_do_not_stack_on_one_another);
     RUN_UI_TEST(harpies_sent_to_one_place_do_not_stack);
+    RUN_UI_TEST(harpies_attacking_one_spot_spread_round_it);
     RUN_UI_TEST(boats_stay_in_water_ghost_ships_do_not);
     RUN_UI_TEST(ship_hulls_come_from_their_models);
     RUN_UI_TEST(a_ship_that_dies_leaves_its_wreck);

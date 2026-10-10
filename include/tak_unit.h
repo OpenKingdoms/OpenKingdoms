@@ -248,6 +248,12 @@ typedef struct UnitWeapon {
     /* subtype = mindcontrol: the hit rolls to take the unit over and
      * deals no damage (legacy:249801, legacy:247761). */
     uint8_t mind_control;
+    /* A hover attacker's standoff and height with this weapon, 0 to take
+     * the unit's (legacy:250022-250024), and the `dropped` key, which
+     * sends the attack another way (legacy:250054-250055, 30051). */
+    int16_t hover_attack_dist;
+    int16_t hover_attack_alt;
+    uint8_t drop_key;
     /* Button icon JPEG names (no extension, no path) — resolve to
      * `data/anims/weaponpic/<lowercased>.jpg`. The legacy engine reads
      * these `buttonimage*` fields from the inline [WEAPONn] section
@@ -449,6 +455,11 @@ typedef struct UnitDef {
     int32_t  radar_distance;   /* radardistance; radar-only detection radius */
     int32_t  can_fly;          /* canfly; needed for air target filters */
     int32_t  cruise_alt;       /* cruisealt: flight height above ground (legacy:162970) */
+    /* hoverattack, hoverattackdistance and hoverattackaltitude, the last
+     * cruisealt when unset (legacy:163005-163011). */
+    uint8_t  hover_attack;
+    int16_t  hover_attack_dist;
+    int16_t  hover_attack_alt;
     /* activatewhenbuilt — legacy activates the unit the moment it
      * finishes (sets ACTIVATION and runs the COB Activate script;
      * lodestones raise their crystal through this). */
@@ -810,6 +821,26 @@ typedef struct UnitMoveLeg {
  * under it straight away, with no glide (legacy:24296-24382). */
 #define UNIT_AIR_LOOK    5
 
+/* Unit.hover_state, the hover attack's stages (legacy:30164-30449):
+ * closing to within its distance plus 160 px, a point to pick next
+ * frame, holding it until a look, a random bearing to pick next frame,
+ * and flying round to that bearing's point. */
+#define UNIT_HOVER_NONE   0
+#define UNIT_HOVER_CLOSE  1
+#define UNIT_HOVER_PICK   2
+#define UNIT_HOVER_WAIT   3
+#define UNIT_HOVER_RANDOM 4
+#define UNIT_HOVER_ROUND  5
+/* Unit.hover_events: a shot fired, a shot landed, the point reached,
+ * closing from further than its distance plus 160 px, the weapons set
+ * on the target, and the point still to reach. */
+#define UNIT_HOVER_EV_FIRED   0x01u
+#define UNIT_HOVER_EV_LANDED  0x02u
+#define UNIT_HOVER_EV_ARRIVED 0x04u
+#define UNIT_HOVER_FAR        0x20u
+#define UNIT_HOVER_ARMED      0x40u
+#define UNIT_HOVER_GOING      0x80u
+
 /* Unit.face_mode: no heading asked for, one to take on arrival, or one
  * reached and held until the next order. */
 #define UNIT_FACE_NONE    0
@@ -932,6 +963,16 @@ typedef struct Unit {
     uint16_t   air_bearing;
     int32_t    air_x, air_y;
     int32_t    air_ox, air_oy;
+    /* Hover attack (legacy:30139-30705): hover_state a UNIT_HOVER_*
+     * stage, hover_wait the frames before it looks again, hover_steps
+     * the step outs this attack, hover_events the UNIT_HOVER_EV_* bits
+     * raised since it last looked, and (hover_x, hover_y) its point, off
+     * the target unit or on the ground. */
+    uint8_t    hover_state;
+    uint8_t    hover_wait;
+    uint8_t    hover_steps;
+    uint8_t    hover_events;
+    int32_t    hover_x, hover_y;
     /* An attack order, not a target it took itself: UNIT_ATTACK_ORDER,
      * or UNIT_ATTACK_HELD for a mission script's, which D-025 never
      * lets go. */

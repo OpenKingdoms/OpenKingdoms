@@ -194,6 +194,15 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
         h = TAK_HashI32(h, u->air_ox);
         h = TAK_HashI32(h, u->air_oy);
     }
+    /* Only a hover attacker at work adds to the hash. */
+    if (u->hover_state) {
+        h = TAK_HashI32(h, 0x800 | u->hover_state);
+        h = TAK_HashI32(h, u->hover_wait);
+        h = TAK_HashI32(h, u->hover_steps);
+        h = TAK_HashI32(h, u->hover_events);
+        h = TAK_HashI32(h, u->hover_x);
+        h = TAK_HashI32(h, u->hover_y);
+    }
     h = TAK_HashI32(h, u->attack_explicit);
     /* The target its shots were found not to reach, and where it and
      * that target stood then. */
