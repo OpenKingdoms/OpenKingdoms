@@ -14140,6 +14140,100 @@ TEST(a_kamikaze_rat_bursts_as_its_death_ends) {
     ASSERT_EQ_INT(FEATURE_FX_DYING, tree_fx);
 }
 
+static int g_wander_blasts, g_wander_bad, g_wander_def, g_wander_slot;
+/* The archer's arrows when it answers are not the shot's. */
+static void wander_note_blast(const UnitsBlast *b) {
+    if (b->def != g_wander_def || b->slot != g_wander_slot) return;
+    g_wander_blasts++;
+    if (b->struck != -1) g_wander_bad++;
+}
+
+/* The live wandering shot, or NULL. */
+static const Projectile *wander_shot(void) {
+    int n = 0;
+    const Projectile *p = Units_GetProjectiles(&n);
+    for (int i = 0; p && i < n; i++)
+        if (p[i].alive && p[i].wander) return &p[i];
+    return NULL;
+}
+
+/* Every weapon the data marks Wandering, the Weather Witch's Tornado and
+ * the gods' vortexes and Hurricane, plays its start art, bursts on each
+ * frame of its duration as it wanders, plays its end art and is gone,
+ * and the archer it was cast at 40 px off is hurt (legacy:249099-249174,
+ * 244963-245050). Each picture holds two of the original's frames. */
+TEST(every_wandering_weapon_wanders_bursts_and_ends) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    int arch_def = Units_FindDefByName("ARAARCH");
+    int found = 0, witch = 0, bad = 0;
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = 0, cy = 0;
+    int ground = world && unit_count > 0 && arch_def >= 0 &&
+                 corpse_find_clear_ground(world, units[0].world_x + 256,
+                                          units[0].world_y, 96, &cx, &cy);
+    for (int d = 0; ground && d < Units_GetDefCount(); d++) {
+        const UnitDef *ud = Units_GetDef(d);
+        for (int s = 0; ud && s < ud->num_weapons; s++) {
+            const UnitWeapon *wp = &ud->weapons[s];
+            if (!wp->is_wandering) continue;
+            found++;
+            if (strcmp(ud->unitname, "TARWITCH") == 0) witch = 1;
+            int pics[3];
+            for (int k = 0; k < 3; k++) pics[k] = Units_SpriteArtPictures(wp->wander_art[k]);
+            int caster = Units_Spawn(d, 1, 0, cx, cy);
+            int foe = Units_Spawn(arch_def, 2, 1, cx + 40, cy);
+            if (caster < 0 || foe < 0) { bad++; continue; }
+            Units_DebugSetAggro(caster, UNIT_AGGRO_PASSIVE);
+            Units_DebugSetAggro(foe, UNIT_AGGRO_PASSIVE);
+            for (int t = 0; t < 4; t++) Units_TickEngines();
+            units = Units_GetActive(&unit_count);
+            int foe_hp = units[foe].health;
+            g_wander_blasts = g_wander_bad = 0;
+            g_wander_def = d;
+            g_wander_slot = s;
+            Units_SetBlastHook(wander_note_blast);
+            int fired = Units_DebugFireAt(caster, s, foe);
+            int frames[5] = { 0, 0, 0, 0, 0 };
+            int seen = 0;
+            for (int t = 0; fired && t < 3000; t++) {
+                Units_TickEngines();
+                if (Units_SimTick() & 1u) continue;
+                const Projectile *p = wander_shot();
+                if (!p) { if (seen) break; continue; }
+                seen = 1;
+                if (p->wander <= UNIT_WANDER_END) frames[p->wander]++;
+            }
+            Units_SetBlastHook(NULL);
+            units = Units_GetActive(&unit_count);
+            int hurt = units[foe].alive != UNIT_ALIVE_ACTIVE || units[foe].health < foe_hp;
+            printf("[%s %s: pictures %d/%d/%d, frames %d/%d/%d, %d blasts, hurt %d] ",
+                   ud->unitname, wp->name, pics[0], pics[1], pics[2],
+                   frames[UNIT_WANDER_START], frames[UNIT_WANDER_LOOP],
+                   frames[UNIT_WANDER_END], g_wander_blasts, hurt);
+            if (!fired || !seen || wander_shot() || pics[0] <= 0 || pics[1] <= 0 ||
+                pics[2] <= 0 || wp->wander_duration <= 0 ||
+                frames[UNIT_WANDER_START] != 2 * pics[0] ||
+                frames[UNIT_WANDER_LOOP] != wp->wander_duration ||
+                frames[UNIT_WANDER_END] != 2 * pics[2] ||
+                g_wander_blasts != wp->wander_duration || g_wander_bad != 0 || !hurt)
+                bad++;
+            Units_DebugRemove(caster);
+            if (units[foe].alive != UNIT_ALIVE_DEAD) Units_DebugRemove(foe);
+            for (int t = 0; t < 4; t++) Units_TickEngines();
+        }
+    }
+    corpse_shutdown(&platform);
+    ASSERT(ground);
+    ASSERT(found >= 4);
+    ASSERT(witch);
+    ASSERT_EQ_INT(0, bad);
+}
+
 /* Count near-white pixels inside a screen rect. The whiteout death
  * rasterises the unit's own silhouette as one solid block of the
  * palette's white (legacy:197033-197035), so the measurement is a
@@ -31058,6 +31152,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(reclaim_clears_feature_and_pays_mana);
     RUN_UI_TEST(a_dead_unit_leaves_its_corpse_when_the_death_finishes);
     RUN_UI_TEST(a_kamikaze_rat_bursts_as_its_death_ends);
+    RUN_UI_TEST(every_wandering_weapon_wanders_bursts_and_ends);
     TEST_SUITE("Archers against melee");
     RUN_UI_TEST(a_swordsman_closes_on_the_archer_behind_and_wins);
     RUN_UI_TEST(an_idle_swordsman_looks_as_far_as_its_weapon_reaches);

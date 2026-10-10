@@ -517,6 +517,29 @@ static int test_every_subsystem_contributes(void) {
     POKE("projectile mind control",
          g_projectiles[0].mind_control = 1,
          g_projectiles[0].mind_control = 0);
+    /* A wandering shot's run: its phase, where it is to the 1/65536,
+     * its next turn and the stream that turn draws from. */
+    POKE("wandering shot phase",
+         g_projectiles[0].wander = UNIT_WANDER_LOOP,
+         g_projectiles[0].wander = 0);
+    g_projectiles[2].wander = UNIT_WANDER_LOOP;
+    POKE("wandering shot sub-pixel position",
+         g_projectiles[2].wander_x_fp += 1,
+         g_projectiles[2].wander_x_fp -= 1);
+    POKE("wandering shot frames to its turn",
+         g_projectiles[2].wander_turn += 1,
+         g_projectiles[2].wander_turn -= 1);
+    POKE("wandering shot stream",
+         g_projectiles[2].wander_seed += 1,
+         g_projectiles[2].wander_seed -= 1);
+    POKE("wandering shot picture hold",
+         g_projectiles[2].wander_hold += 1,
+         g_projectiles[2].wander_hold -= 1);
+    /* Its art slots are a cache numbered in first use order. */
+    POKE_IGNORED("wandering shot art slot",
+                 g_projectiles[2].wander_art[1] = 5,
+                 g_projectiles[2].wander_art[1] = 0);
+    g_projectiles[2].wander = 0;
 
     POKE("feature decompose counter",
          g_world->features[1].decompose_ticks -= 1,

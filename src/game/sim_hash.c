@@ -417,6 +417,26 @@ static uint32_t hash_projectiles(uint32_t h) {
         h = TAK_HashStr(h, p[i].hit_sound_class);
         h = TAK_HashStr(h, p[i].hit_sound);
         h = TAK_HashStr(h, p[i].water_sound);
+        /* A wandering shot's run. Its art slots are a cache in first
+         * use order, so only the picture and hold it is at go in. */
+        if (p[i].wander) {
+            h = TAK_HashI32(h, 0x300 | p[i].wander);
+            h = TAK_HashI32(h, p[i].wander_steps);
+            h = TAK_HashI32(h, p[i].wander_hold);
+            h = TAK_HashI32(h, p[i].wander_pic);
+            h = TAK_HashI32(h, p[i].wander_x_fp);
+            h = TAK_HashI32(h, p[i].wander_y_fp);
+            h = TAK_HashI32(h, p[i].wander_vx_fp);
+            h = TAK_HashI32(h, p[i].wander_vy_fp);
+            h = TAK_HashI32(h, p[i].wander_base_vx);
+            h = TAK_HashI32(h, p[i].wander_base_vy);
+            h = TAK_HashF32(h, p[i].wander_amp_x);
+            h = TAK_HashF32(h, p[i].wander_amp_y);
+            h = TAK_HashU32(h, p[i].wander_seed);
+            h = TAK_HashI32(h, p[i].wander_left);
+            h = TAK_HashI32(h, p[i].wander_turn);
+            h = TAK_HashI32(h, p[i].wander_every);
+        }
     }
     return h;
 }
