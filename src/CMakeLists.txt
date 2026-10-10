@@ -2704,54 +2704,6 @@ if(BUILD_TESTING)
             WORKING_DIRECTORY "${_tak_test_wd}")
     endforeach()
 
-    # A test run used to rewrite the player's own options.cfg: a new
-    # device token, the volumes at zero, a rejoin forgotten. Every test
-    # binary now compiles the paths module as a test build, which never
-    # asks the platform where that file lives, and every test runs with
-    # TAK_CONFIG_DIR naming a folder of its own. This is deferred to the
-    # end of the directory so a test or target added anywhere below is
-    # covered too, and it writes what it did for test_prefs_guard to check.
-    function(tak_isolate_prefs)
-        get_property(_names DIRECTORY PROPERTY TESTS)
-        get_property(_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
-        foreach(_t IN LISTS _targets)
-            get_target_property(_type ${_t} TYPE)
-            if(_type STREQUAL "EXECUTABLE" AND _t MATCHES "^test_")
-                target_compile_definitions(${_t} PRIVATE TAK_TEST_BUILD=1)
-            endif()
-        endforeach()
-        foreach(_t IN LISTS _names)
-            set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
-                "TAK_CONFIG_DIR=${CMAKE_CURRENT_BINARY_DIR}/testrun/${_t}/prefs")
-        endforeach()
-        set(_manifest "")
-        foreach(_t IN LISTS _names)
-            get_test_property(${_t} ENVIRONMENT _env)
-            set(_dir "")
-            foreach(_kv IN LISTS _env)
-                if(_kv MATCHES "^TAK_CONFIG_DIR=(.*)$")
-                    set(_dir "${CMAKE_MATCH_1}")
-                endif()
-            endforeach()
-            string(APPEND _manifest "test|${_t}|${_dir}\n")
-        endforeach()
-        foreach(_t IN LISTS _targets)
-            get_target_property(_type ${_t} TYPE)
-            get_target_property(_srcs ${_t} SOURCES)
-            if(NOT _type STREQUAL "EXECUTABLE" OR NOT _srcs MATCHES "(^|;|/)core/paths\\.c(;|$)")
-                continue()
-            endif()
-            get_target_property(_defs ${_t} COMPILE_DEFINITIONS)
-            set(_iso 0)
-            if(_defs MATCHES "(^|;)TAK_TEST_BUILD(=|;|$)")
-                set(_iso 1)
-            endif()
-            string(APPEND _manifest "binary|${_t}|${_iso}\n")
-        endforeach()
-        file(WRITE "${CMAKE_BINARY_DIR}/prefs_guard_manifest.txt" "${_manifest}")
-    endfunction()
-    cmake_language(DEFER CALL tak_isolate_prefs)
-
     # No real windows, so the suite runs at ctest -j. A desktop window per
     # test process is the per session resource Windows ran out of when
     # tests overlapped. Every test draws into a software surface, and one
@@ -2789,3 +2741,52 @@ if(BUILD_TESTING)
         test_unit_stall test_render_cache test_view3d
         PROPERTIES LABELS "needs-data")
 endif()
+
+# A test run used to rewrite the player's own options.cfg: a new
+# device token, the volumes at zero, a rejoin forgotten. Every test
+# binary now compiles the paths module as a test build, which never
+# asks the platform where that file lives, and every test runs with
+# TAK_CONFIG_DIR naming a folder of its own. It runs whether or not
+# tests are enabled, deferred to the end of the directory so a test or
+# target added anywhere in this file is covered, and it writes what it
+# did for test_prefs_guard to check.
+function(tak_isolate_prefs)
+    get_property(_names DIRECTORY PROPERTY TESTS)
+    get_property(_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(_t IN LISTS _targets)
+        get_target_property(_type ${_t} TYPE)
+        if(_type STREQUAL "EXECUTABLE" AND _t MATCHES "^test_")
+            target_compile_definitions(${_t} PRIVATE TAK_TEST_BUILD=1)
+        endif()
+    endforeach()
+    foreach(_t IN LISTS _names)
+        set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
+            "TAK_CONFIG_DIR=${CMAKE_CURRENT_BINARY_DIR}/testrun/${_t}/prefs")
+    endforeach()
+    set(_manifest "")
+    foreach(_t IN LISTS _names)
+        get_test_property(${_t} ENVIRONMENT _env)
+        set(_dir "")
+        foreach(_kv IN LISTS _env)
+            if(_kv MATCHES "^TAK_CONFIG_DIR=(.*)$")
+                set(_dir "${CMAKE_MATCH_1}")
+            endif()
+        endforeach()
+        string(APPEND _manifest "test|${_t}|${_dir}\n")
+    endforeach()
+    foreach(_t IN LISTS _targets)
+        get_target_property(_type ${_t} TYPE)
+        get_target_property(_srcs ${_t} SOURCES)
+        if(NOT _type STREQUAL "EXECUTABLE" OR NOT _srcs MATCHES "(^|;|/)core/paths\\.c(;|$)")
+            continue()
+        endif()
+        get_target_property(_defs ${_t} COMPILE_DEFINITIONS)
+        set(_iso 0)
+        if(_defs MATCHES "(^|;)TAK_TEST_BUILD(=|;|$)")
+            set(_iso 1)
+        endif()
+        string(APPEND _manifest "binary|${_t}|${_iso}\n")
+    endforeach()
+    file(WRITE "${CMAKE_BINARY_DIR}/prefs_guard_manifest.txt" "${_manifest}")
+endfunction()
+cmake_language(DEFER CALL tak_isolate_prefs)
