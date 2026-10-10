@@ -2257,6 +2257,50 @@ TEST(a_crowded_hover_attacker_steps_out_far_and_gives_up) {
     mv_end();
 }
 
+/* One Harpy on a still post for a minute: the flights it makes to a
+ * bearing drawn at random, and the shots it fires. */
+static int mv_hover_round_flights(int damage, int *shots) {
+    if (!mv_world()) return -1;
+    int harpy = mv_add_hover_harpy();
+    if (harpy < 0) { mv_end(); return -1; }
+    ((UnitDef *)Units_GetDef(harpy))->weapons[0].damage = damage;  /* test-only */
+    int post = Units_Spawn(MV_HOVER_POST, 0, 0, 1900, 1600);
+    int h = Units_Spawn(harpy, 1, 0, 1400, 1500);
+    if (post < 0 || h < 0) { mv_end(); return -1; }
+    Units_DebugSetAggro(post, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    if (!Units_OrderAttack(h, post)) { mv_end(); return -1; }
+    int flights = 0, was = 0;
+    *shots = 0;
+    for (int t = 0; t < 3600; t++) {
+        Units_TickEngines();
+        const Unit *u = mv_unit(h);
+        if (u->weapon_state[0].cooldown_ticks == 120) (*shots)++;
+        int round = u->hover_state == UNIT_HOVER_ROUND;
+        if (round && !was) flights++;
+        was = round;
+    }
+    mv_end();
+    return flights;
+}
+
+/* A shot that lands without hurting the other side wakes the attack, and
+ * one time in two the flyer then flies round a still target. A shot
+ * that hurts the other side more than twice its own raises another
+ * event, which the attack does not wake on (legacy:15038-15060,
+ * legacy:30616-30635). */
+TEST(a_hover_attacker_flies_round_a_target_its_shots_do_not_hurt) {
+    int harmless_shots = 0, harmful_shots = 0;
+    int harmless = mv_hover_round_flights(0, &harmless_shots);
+    int harmful = mv_hover_round_flights(1, &harmful_shots);
+    printf("(%d flights round it in %d harmless shots, %d in %d that "
+           "hurt) ", harmless, harmless_shots, harmful, harmful_shots);
+    ASSERT(harmless_shots >= 10);
+    ASSERT(harmful_shots >= 10);
+    ASSERT(harmless >= 3);
+    ASSERT_EQ_INT(0, harmful);
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("Movement without game data");
@@ -2300,6 +2344,7 @@ int main(int argc, char **argv) {
     RUN(a_hover_attacker_holds_its_bearing_off_a_ground_point);
     RUN(a_hover_attacker_fires_as_it_flies);
     RUN(a_crowded_hover_attacker_steps_out_far_and_gives_up);
+    RUN(a_hover_attacker_flies_round_a_target_its_shots_do_not_hurt);
     TEST_SUITE("State hash");
     RUN(a_repeated_run_hashes_the_same);
     RUN(a_cold_planner_hashes_the_same);

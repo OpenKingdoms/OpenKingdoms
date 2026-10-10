@@ -122,8 +122,11 @@
  * every variationtime and bursts on each frame of it, then plays its
  * end art and is gone. 39: a flyer with hoverattack holds its own
  * bearing round its target at its hoverattackdistance, fires as it
- * flies and steps out and gives up by the hover attack's own rule. */
-#define TAK_ENGINE_BUILD_ID           39
+ * flies and steps out and gives up by the hover attack's own rule.
+ * 40: a hover attacker wakes on a landed shot only when it did not hurt
+ * the other side more than twice its own, and counts its point reached
+ * where the walk stops. */
+#define TAK_ENGINE_BUILD_ID           40
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

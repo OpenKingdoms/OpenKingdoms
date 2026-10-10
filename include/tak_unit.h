@@ -831,9 +831,10 @@ typedef struct UnitMoveLeg {
 #define UNIT_HOVER_WAIT   3
 #define UNIT_HOVER_RANDOM 4
 #define UNIT_HOVER_ROUND  5
-/* Unit.hover_events: a shot fired, a shot landed, the point reached,
- * closing from further than its distance plus 160 px, the weapons set
- * on the target, and the point still to reach. */
+/* Unit.hover_events: a shot fired, a shot landed that did not hurt the
+ * other side more than twice its own, the point reached, closing from
+ * further than its distance plus 160 px, the weapons set on the target,
+ * and the point still to reach. */
 #define UNIT_HOVER_EV_FIRED   0x01u
 #define UNIT_HOVER_EV_LANDED  0x02u
 #define UNIT_HOVER_EV_ARRIVED 0x04u
