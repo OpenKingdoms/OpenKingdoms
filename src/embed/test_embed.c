@@ -61,9 +61,15 @@ static int start_battle(int revealed) {
     return 0;
 }
 
-/* 1 when there is no game data to run against. */
+/* 1 when there is no game data to run against. A battle an earlier case
+ * decided is ended, so every case starts on one still being fought. */
 static int boot(void) {
-    if (g_booted) return 0;
+    if (g_booted && okx_outcome() == 0) return 0;
+    if (g_booted) {
+        okx_end_game();
+        g_booted = 0;
+        return start_battle(1);
+    }
     if (okx_init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) {
         SKIP_MARK("no game data: %s", okx_last_error());
         return 1;
