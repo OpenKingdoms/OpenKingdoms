@@ -36,7 +36,11 @@ same way (legacy:24341-24345). A footprint that leaves the map, or
 reaches its last row or column, is refused. Ground the unit's owner has
 never explored passes untested (legacy:220095-220102). The fog cell it
 reads is offset from the footprint's corner by a quarter of the
-footprint's width on both axes. Otherwise each footprint cell is refused
+footprint's width on both axes. The map it reads is the explored one,
+whose bits a side's sight only ever sets (legacy:167404-167409), not
+what the side sees now. So a search can make for sea out of sight, but
+the flyer only ever comes down where it hovers, ground its own sight
+has explored by then, and the look there refuses the water. Otherwise each footprint cell is refused
 for a blocking feature, a blocked cell mark, or another unit on it. It
 is also refused when its lowest corner is under the water floor, its
 highest corner is over sea level less `minwaterdepth`, or its corners

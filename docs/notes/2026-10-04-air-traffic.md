@@ -75,7 +75,11 @@ BeginLanding.
 
 A landed flyer is in ground mode, and ground mode stamps the ground word
 (legacy:218217-218250). So two landed flyers never share a cell and
-walkers go round one.
+walkers go round one. A flyer in the air stamps only the air word, and
+the test for where a building or a summons may go up reads only the
+ground word (legacy:219134-219147). So the next of a summons without
+end goes up under the flyer that has just taken off from the spot, and
+that flyer, its short step ended inside its ring, lands somewhere else.
 
 ## What the engine does
 
@@ -111,13 +115,15 @@ it lands and lifted when it takes off.
   `hoverattackdistance = 200`. Such a flyer holds its own bearing from
   its target at that distance plus rand(8) - 3, picked again every 15 to
   29 frames, with a 1 percent chance of a nudge of up to rand(2048)
-  (legacy:30139-30370, keys parsed at legacy:163005-163017). The engine
-  does not read the keys yet. Attacking flyers that share cells still
-  step apart, so a flock at its target spreads out all the same.
+  (legacy:30139-30370, keys parsed at legacy:163005-163017). It was left
+  for #401 and is now built (2026-10-10-hover-attack.md). Before it, of
+  twelve Harpies on one attack ground order on Two Castles, each had on
+  average six others within 50 px, against all eleven before the air
+  traffic rules.
 - A saturated air cell, 0xffff, passes the landing test in the original.
   The engine has no air cells, so it never comes up.
 - The original snaps a move's point to its footprint's cell lattice
   before the ring is drawn. The engine keeps the point as clicked, which
-  is at most 8 px off and inside the ring.
+  is at most 8 px off and inside the ring (M-014).
 - The five units with `canfly` and no BeginFlight in their scripts keep
   out of the air traffic (M-014).

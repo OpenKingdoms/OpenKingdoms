@@ -228,6 +228,21 @@ Projectile *Units_LoadProjectiles(int count) {
 
 void Units_LoadFinish(void) { /* no occupancy layer in this fixture */ }
 
+/* The sprite art a wandering shot names, as slots in first ask order. */
+static char g_stub_art[8][40];
+static int g_stub_art_count;
+const char *Units_SpriteArtFile(int idx) {
+    return idx >= 0 && idx < g_stub_art_count ? g_stub_art[idx] : NULL;
+}
+int Units_SpriteArtSlot(const char *file) {
+    if (!file || !*file) return -1;
+    for (int i = 0; i < g_stub_art_count; i++)
+        if (strcmp(g_stub_art[i], file) == 0) return i;
+    if (g_stub_art_count >= 8) return -1;
+    snprintf(g_stub_art[g_stub_art_count], sizeof(g_stub_art[0]), "%s", file);
+    return g_stub_art_count++;
+}
+
 /* ── the orders in hand, as the loader sees them ──────────────────
  *
  * The real ones live in src/net/command_queue.c. Here the fixture owns
@@ -751,6 +766,13 @@ static int setup(const char *map_name) {
     g_units[1].air_oy = 2111;
     g_units[1].air_band = 7;
     g_units[1].air_hold = 9;
+    /* And holds a hover attack's point off its target. */
+    g_units[1].hover_state = UNIT_HOVER_WAIT;
+    g_units[1].hover_wait = 21;
+    g_units[1].hover_steps = 2;
+    g_units[1].hover_events = UNIT_HOVER_ARMED | UNIT_HOVER_GOING;
+    g_units[1].hover_x = -141;
+    g_units[1].hover_y = 2222;
     /* The bowman holds a summons of TARNECRO for a unit on its spot. */
     g_units[1].build_held = 1;
     g_units[1].build_def = 3;
@@ -829,6 +851,28 @@ static int setup(const char *map_name) {
         snprintf(p->damage_scales[1].category,
                  sizeof(p->damage_scales[1].category), "FLESH");
         p->damage_scales[1].scale = 1.75f;
+        if (i == 2) {
+            /* A Tornado part way through its run. */
+            p->wander = UNIT_WANDER_LOOP;
+            p->wander_steps = 1;
+            p->wander_hold = 1;
+            p->wander_pic = 7;
+            p->wander_x_fp = (3026 << 16) | 0x8123;
+            p->wander_y_fp = (3134 << 16) | 0x0456;
+            p->wander_vx_fp = 98304;
+            p->wander_vy_fp = -201327;
+            p->wander_base_vx = 98304;
+            p->wander_base_vy = 0;
+            p->wander_amp_x = 0.0f;
+            p->wander_amp_y = 5.0f;
+            p->wander_seed = 0x2a0b1c3du;
+            p->wander_left = 211;
+            p->wander_turn = 13;
+            p->wander_every = 60;
+            p->wander_art[0] = (int16_t)Units_SpriteArtSlot("tornadostart");
+            p->wander_art[1] = (int16_t)Units_SpriteArtSlot("tornadoloop");
+            p->wander_art[2] = (int16_t)Units_SpriteArtSlot("tornadoend");
+        }
     }
 
     World_SeedRand(0x4d2);
@@ -1492,6 +1536,47 @@ TEST(handles_still_point_at_the_same_units) {
     ASSERT_EQ_STR("ARMOURED", g_projectiles[0].damage_scales[0].category);
 }
 
+/* A wandering shot comes back part way through its run, its art by
+ * name, since the art slots are numbered in first use order. */
+TEST(a_wandering_shot_survives_a_save) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    ASSERT_EQ_INT(0, setup(NULL));
+    uint32_t before = TAK_SimHash();
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+    empty_the_battle();
+    g_stub_art_count = 0;
+    ASSERT_EQ_INT(0, Units_SpriteArtSlot("somethingelse"));
+
+    TAK_SaveGame *sg = Save_Read(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(0, Save_Apply(sg, err, sizeof(err)));
+    Save_ReadClose(sg);
+
+    const Projectile *p = &g_projectiles[2];
+    ASSERT_EQ_INT(UNIT_WANDER_LOOP, (int)p->wander);
+    ASSERT_EQ_INT(1, (int)p->wander_steps);
+    ASSERT_EQ_INT(1, (int)p->wander_hold);
+    ASSERT_EQ_INT(7, (int)p->wander_pic);
+    ASSERT_EQ_INT((3026 << 16) | 0x8123, p->wander_x_fp);
+    ASSERT_EQ_INT((3134 << 16) | 0x0456, p->wander_y_fp);
+    ASSERT_EQ_INT(-201327, p->wander_vy_fp);
+    ASSERT_EQ_INT(98304, p->wander_base_vx);
+    ASSERT(p->wander_amp_y == 5.0f);
+    ASSERT_EQ_INT((int)0x2a0b1c3du, (int)p->wander_seed);
+    ASSERT_EQ_INT(211, p->wander_left);
+    ASSERT_EQ_INT(13, p->wander_turn);
+    ASSERT_EQ_INT(60, p->wander_every);
+    ASSERT_EQ_STR("tornadostart", Units_SpriteArtFile(p->wander_art[0]));
+    ASSERT_EQ_STR("tornadoloop", Units_SpriteArtFile(p->wander_art[1]));
+    ASSERT_EQ_STR("tornadoend", Units_SpriteArtFile(p->wander_art[2]));
+    /* It draws the loop art again. */
+    ASSERT_EQ_INT(UNIT_WEAPON_ART_SPRITE, (int)p->art_kind);
+    ASSERT_EQ_INT(p->wander_art[1], p->art_idx);
+    /* The arrows carry none. */
+    ASSERT_EQ_INT(0, (int)g_projectiles[0].wander);
+    ASSERT_EQ_INT((int)before, (int)TAK_SimHash());
+}
+
 /* A production queue holds definition indices, and those do not
  * travel: a different installation orders its registry differently.
  * The file carries names, so the queue has to come back naming the
@@ -1615,8 +1700,8 @@ static uint32_t rec_u32(const uint8_t *r, int at) {
  * the production runs' lengths come last. Version 6 adds each weapon's
  * drawn shot at 974, version 7 a builder's walk goal at 983,
  * version 8 the attack handler's wait at 991, version 9 the death blast
- * at 992, version 10 a summons without end at 993 and version 11 a
- * flyer's air traffic at 1000. */
+ * at 992, version 10 a summons without end at 993, version 11 a
+ * flyer's air traffic at 1000 and version 12 a hover attack at 1024. */
 TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
@@ -1628,8 +1713,8 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
-    ASSERT_EQ_INT(11, (int)version);
-    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24,
+    ASSERT_EQ_INT(12, (int)version);
+    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24 + 12,
                   (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;
     /* The bowman's formation group at 487 and its second leg at 520. */
@@ -1685,6 +1770,15 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     ASSERT_EQ_INT(7, r1[1022]);
     ASSERT_EQ_INT(9, r1[1023]);
     ASSERT_EQ_INT(0, r0[1000]);
+    /* The hover attack's stage, timer, step outs and events at 1024 and
+     * its point at 1028. */
+    ASSERT_EQ_INT(UNIT_HOVER_WAIT, r1[1024]);
+    ASSERT_EQ_INT(21, r1[1025]);
+    ASSERT_EQ_INT(2, r1[1026]);
+    ASSERT_EQ_INT(UNIT_HOVER_ARMED | UNIT_HOVER_GOING, r1[1027]);
+    ASSERT_EQ_INT(-141, (int)rec_u32(r1, 1028));
+    ASSERT_EQ_INT(2222, (int)rec_u32(r1, 1032));
+    ASSERT_EQ_INT(0, r0[1024]);
     Save_Close(r);
 }
 
@@ -1855,6 +1949,7 @@ int main(int argc, char **argv) {
     RUN(the_orders_still_waiting_come_back);
     RUN(handles_still_point_at_the_same_units);
     RUN(a_build_queue_survives_a_reordered_registry);
+    RUN(a_wandering_shot_survives_a_save);
     RUN(a_refusal_says_whether_the_world_is_still_usable);
     RUN(the_sections_are_the_width_the_format_says);
     RUN(a_unit_record_puts_the_skip_after_the_formation_legs);

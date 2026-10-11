@@ -115,8 +115,18 @@
  * and unexplored ground, a stopped flyer flies on before it looks for
  * ground, and a flyer over water flies, hovers, shoots and is shot at
  * over the sea, not over the sea floor. 36: a flyer in the air stands
- * on no build site. */
-#define TAK_ENGINE_BUILD_ID           36
+ * on no build site. 37: under the remastered rules a spark with nothing
+ * in its reach never waits for the frame's cap, and the computer's
+ * footing leans toward the unit a unit attacks. 38: a Wandering
+ * weapon's shot plays its start art, wanders for its duration turning
+ * every variationtime and bursts on each frame of it, then plays its
+ * end art and is gone. 39: a flyer with hoverattack holds its own
+ * bearing round its target at its hoverattackdistance, fires as it
+ * flies and steps out and gives up by the hover attack's own rule.
+ * 40: a hover attacker wakes on a landed shot only when it did not hurt
+ * the other side more than twice its own, and counts its point reached
+ * where the walk stops. */
+#define TAK_ENGINE_BUILD_ID           40
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

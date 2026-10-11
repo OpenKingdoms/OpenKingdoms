@@ -3415,6 +3415,37 @@ static int test_ai_steps_out_of_a_fire_that_hurts(void) {
     return 0;
 }
 
+/* A unit attacking out of a fire steps out toward the unit it attacks,
+ * not toward the point its last order named (A-011). */
+static int test_ai_steps_out_toward_the_unit_it_attacks(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    w.cfg.remastered = 1;
+    int t = hf_troop(2);
+    g_units[t].world_x = 202 * 16 + 8;
+    g_units[t].world_y = 10 * 16 + 8;
+    int32_t x = g_units[t].world_x;
+    memset(g_mock_feats, 0, sizeof(g_mock_feats));
+    g_mock_feats[0].tile_x = 202;
+    g_mock_feats[0].tile_z = 10;
+    g_mock_feats[0].fx = FEATURE_FX_BURNING;
+    w.features = g_mock_feats;
+    w.feature_count = 1;
+    /* The seat 1 monarch to the west, the old order's point to the east. */
+    g_units[t].cmd_kind = UNIT_CMD_ATTACK;
+    g_units[t].target = 0;
+    g_units[t].cmd_x = x + 2000;
+    g_units[t].cmd_y = g_units[t].world_y;
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[t].cmd_kind);
+    ASSERT_TRUE(g_units[t].cmd_x < x);
+    ASSERT_EQ_INT(1, TAK_AI_DebugCount(2, TAK_AI_COUNT_FIRE_STEPS));
+    w.features = NULL;
+    w.feature_count = 0;
+    return 0;
+}
+
 int main(void) {
     /* These cases step the AI at whole seconds and expect every seat. */
     TAK_AI_DebugSetStagger(0);
@@ -3496,6 +3527,7 @@ int main(void) {
     if (test_htn_footing_steps_out_of_a_fire() != 0) return 1;
     if (test_ai_sweeps_the_rubble_a_unit_is_stuck_at() != 0) return 1;
     if (test_ai_steps_out_of_a_fire_that_hurts() != 0) return 1;
+    if (test_ai_steps_out_toward_the_unit_it_attacks() != 0) return 1;
 
     puts("test_ai: ok");
     return 0;

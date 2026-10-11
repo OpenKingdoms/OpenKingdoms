@@ -399,6 +399,11 @@ point the page at the folder instead, and the files never leave your machine.
 A build you compile yourself can also bake a default in with
 `-DTAK_GAME_DIR`, which is what the development setup does.
 
+Options and saved games live in your user folder, under
+`%APPDATA%\OpenKingdoms\OpenKingdoms` on Windows. Set `TAK_CONFIG_DIR` to
+keep them somewhere else, which is handy for a scripted run that should leave
+your own settings alone.
+
 Where to get a copy if you don't have one:
 
 - GOG sells it as part of the *Total Annihilation Commander Pack*.

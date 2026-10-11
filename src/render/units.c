@@ -804,6 +804,11 @@ typedef struct ProjSpriteArt {
     uint8_t       fx_palette;   /* paletted art takes fx.pcx         */
     int           probe_frames; /* header frame count, -1 for none   */
     int           probe_time;   /* first frame's time, 30 Hz frames, -1 none */
+    /* What a wandering shot's timing reads: the sequence's picture
+     * count and the frames each picture holds, from the file. */
+    uint8_t       timing_read;
+    int           seq_pics;
+    uint16_t      hold[64];
 } ProjSpriteArt;
 /* A destroyed renderer takes its textures with it, and the next one can
  * land on the same address, so the pointer alone cannot say whether a
@@ -1076,6 +1081,39 @@ int Units_DebugNimbusCast(int handle, int sprite, int frames, int ticks_per_fram
     return 1;
 }
 
+/* The pictures of a sprite's sequence and the frames each holds, the
+ * second word of its frame table entry (legacy:255756-255795, read
+ * through legacy:249011-249033). 0 pictures when there is no art. */
+static int proj_sprite_pics(int idx) {
+    if (idx < 0 || idx >= g_proj_sprite_count) return 0;
+    ProjSpriteArt *ps = &g_proj_sprites[idx];
+    if (!ps->timing_read) {
+        ps->timing_read = 1;
+        ps->seq_pics = 0;
+        GAFFile *gaf = NULL;
+        int is_taf = 0;
+        int seq_off = proj_sprite_open(ps, &gaf, &is_taf);
+        if (seq_off >= 0) {
+            uint32_t off = (uint32_t)seq_off;
+            int nf = off + 2u <= gaf->data_size
+                   ? *(const uint16_t *)(gaf->data + off) : 0;
+            for (int k = 0; k < nf && k < 64; k++) {
+                uint32_t at = off + 40u + (uint32_t)k * 8u + 4u;
+                ps->hold[k] = at + 2u <= gaf->data_size
+                            ? *(const uint16_t *)(gaf->data + at) : 2;
+            }
+            ps->seq_pics = nf;
+            GAF_Close(gaf);
+        }
+    }
+    return ps->seq_pics;
+}
+
+static int proj_sprite_hold(int idx, int pic) {
+    if (proj_sprite_pics(idx) <= 0 || pic < 0) return 0xffff;
+    return g_proj_sprites[idx].hold[pic < 64 ? pic : 63];
+}
+
 /* A cleared slot, so nothing of the effect that last used it carries
  * over. */
 static ProjectileEffect *proj_effect_slot(void) {
@@ -1307,6 +1345,17 @@ static int spawn_projectile(int32_t x, int32_t y,
     p->visual_kind = visual_kind;
     p->target = (int16_t)target_handle;
     p->hidden = 0;
+    /* Not a wandering shot until wander_launch says so. */
+    p->wander = 0;
+    p->wander_steps = 0;
+    p->wander_hold = p->wander_pic = 0;
+    p->wander_x_fp = p->wander_y_fp = 0;
+    p->wander_vx_fp = p->wander_vy_fp = 0;
+    p->wander_base_vx = p->wander_base_vy = 0;
+    p->wander_amp_x = p->wander_amp_y = 0.0f;
+    p->wander_seed = 0;
+    p->wander_left = p->wander_turn = p->wander_every = 0;
+    for (int k = 0; k < 3; k++) p->wander_art[k] = -1;
     p->path_flags = weapon_path_flags(source_weapon);
     p->blast_flags = 0;
     if (source_weapon && source_weapon->units_only) p->blast_flags |= UNIT_BLAST_UNITS_ONLY;
@@ -1767,6 +1816,42 @@ int Units_Capture(int handle, int player_id) {
     return made;
 }
 
+/* The harm the shot in hand does to other players' units and to its own
+ * player's. A hover attacker hears of a landed shot unless the first is
+ * more than twice the second (legacy:15038-15060, legacy:245317,
+ * legacy:245370). */
+typedef struct ShotTally {
+    uint8_t on, landed;
+    int16_t shooter;
+    int64_t other, own;
+} ShotTally;
+static ShotTally g_shot_tally;
+
+static void shot_tally_begin(int shooter) {
+    g_shot_tally.on = shooter >= 0 && shooter < g_unit_count &&
+                      g_units[shooter].hover_state != UNIT_HOVER_NONE;
+    g_shot_tally.landed = 0;
+    g_shot_tally.shooter = (int16_t)shooter;
+    g_shot_tally.other = 0;
+    g_shot_tally.own = 0;
+}
+
+static void shot_tally_harm(int shooter, int own, int64_t harm) {
+    if (!g_shot_tally.on || shooter != g_shot_tally.shooter) return;
+    if (own) g_shot_tally.own += harm;
+    else g_shot_tally.other += harm;
+}
+
+static void shot_tally_end(void) {
+    if (g_shot_tally.on && g_shot_tally.landed &&
+        g_shot_tally.other <= 2 * g_shot_tally.own) {
+        Unit *s = &g_units[g_shot_tally.shooter];
+        if (s->alive == UNIT_ALIVE_ACTIVE && s->hover_state != UNIT_HOVER_NONE)
+            s->hover_events |= UNIT_HOVER_EV_LANDED;
+    }
+    g_shot_tally.on = 0;
+}
+
 /* A mind control hit (legacy:247761-247798). It never wounds. It rolls
  * 0..99 against the victim's rank threshold, scaled like splash, and a
  * roll under it brings the unit over to the shot's owner. */
@@ -1781,6 +1866,8 @@ static void mind_control_strike(const Projectile *p, int victim_idx,
     if (v->under_construction) return;                   /* legacy:247779 */
     if (v->carried_by >= 0) return;                      /* legacy:247782 */
     if (vd->cant_be_captured) return;                    /* legacy:247785 */
+    /* A roll counts as harm to the other side, taken or not. */
+    shot_tally_harm(p->shooter, 0, 1);
     int threshold = Units_CaptureThreshold(Units_GetVeteranLevel(victim_idx));
     threshold = threshold * scale_pct / 100;
     /* The roll is drawn for every eligible hit, taken or not. */
@@ -1961,6 +2048,8 @@ void Units_SetBlastHook(UnitsBlastHook hook) { g_blast_hook = hook; }
  * (legacy:245025). */
 static void projectile_impact_fx(const Projectile *p, const Unit *victim,
                                  uint32_t seed) {
+    if (g_shot_tally.on && p->shooter == g_shot_tally.shooter)
+        g_shot_tally.landed = 1;
     projectile_note_blast(p, victim);
     play_projectile_hit_sound(p, victim);
     projectile_impact_shake(p);
@@ -2614,6 +2703,227 @@ static int shot_caster_stands(const Projectile *p) {
     return a == UNIT_ALIVE_ACTIVE || a == UNIT_ALIVE_TRANSPORTED;
 }
 
+/* ── Wandering shots ──────────────────────────────────────────────── */
+
+/* The stream a wandering shot turns by: the minimal standard step kept
+ * unsigned, scaled to [0, f) (legacy:248985-248996). */
+static double wander_rand(uint32_t *seed, float f) {
+    uint32_t s = *seed;
+    uint32_t v = s * 16807u + (s / 127773u) * 0x80000001u;
+    if (v == 0) v = 0x7fffffffu;
+    *seed = v;
+    return (double)v * (1.0 / 2147483648.0) * (double)f;
+}
+
+/* The way and pace the shot moves, for the blast hook and the views. */
+static void wander_note_heading(Projectile *p) {
+    float vx = (float)p->wander_vx_fp, vy = (float)p->wander_vy_fp;
+    float len = sqrtf(vx * vx + vy * vy);
+    if (len > 0.0f) {
+        p->dir_x = vx / len;
+        p->dir_y = vy / len;
+    }
+    p->speed_ppt = len * (float)p->wander_steps / (65536.0f * 2.0f);
+}
+
+/* A turn: the velocity it set out with plus a draw from each spread, x
+ * first (legacy:248972-248980, legacy:249148-249156). */
+static void wander_turn(Projectile *p) {
+    double rx = wander_rand(&p->wander_seed, p->wander_amp_x + p->wander_amp_x);
+    p->wander_vx_fp = p->wander_base_vx +
+                      (int32_t)((rx - (double)p->wander_amp_x) * 65536.0);
+    double ry = wander_rand(&p->wander_seed, p->wander_amp_y + p->wander_amp_y);
+    p->wander_vy_fp = p->wander_base_vy +
+                      (int32_t)((ry - (double)p->wander_amp_y) * 65536.0);
+    wander_note_heading(p);
+}
+
+/* Art k on show from its first picture (legacy:255756-255768). 0 when
+ * the weapon has none. The views take the picture from age_ticks. */
+static int wander_show(Projectile *p, int k) {
+    int art = p->wander_art[k];
+    if (proj_sprite_pics(art) <= 0) {
+        p->art_idx = -1;
+        return 0;
+    }
+    p->wander_pic = 0;
+    p->wander_hold = (uint16_t)proj_sprite_hold(art, 0);
+    p->art_kind = UNIT_WEAPON_ART_SPRITE;
+    p->art_idx = (int16_t)art;
+    p->age_ticks = 0;
+    return 1;
+}
+
+/* A frame of the art on show: each picture holds its frames, then the
+ * loop art starts over and the others end (legacy:255772-255795). 0
+ * once it has ended. */
+static int wander_play(Projectile *p, int k) {
+    int art = p->wander_art[k];
+    int pics = proj_sprite_pics(art);
+    if (pics <= 0) return 0;
+    if (p->wander_hold >= 2) {
+        p->wander_hold--;
+        return 1;
+    }
+    if (++p->wander_pic >= pics) {
+        if (k != 1) {
+            p->art_idx = -1;
+            return 0;
+        }
+        p->wander_pic = 0;
+    }
+    p->wander_hold = (uint16_t)proj_sprite_hold(art, p->wander_pic);
+    p->age_ticks = (uint16_t)(p->wander_pic * 2u);
+    return 1;
+}
+
+/* Each substep adds the velocity, so a shot of more than one moves by
+ * their square (legacy:249128-249134, legacy:249141-249147). */
+static void wander_move(Projectile *p) {
+    for (int s = 0; s < p->wander_steps; s++) {
+        p->wander_x_fp = (int32_t)((uint32_t)p->wander_x_fp + (uint32_t)p->wander_vx_fp);
+        p->wander_y_fp = (int32_t)((uint32_t)p->wander_y_fp + (uint32_t)p->wander_vy_fp);
+    }
+    p->world_x = p->wander_x_fp >> 16;
+    p->world_y = p->wander_y_fp >> 16;
+}
+
+/* The run begins: the loop art, and the first turn drawn. Its length
+ * and the frames to the next turn were set at launch and count from
+ * here (legacy:248966-248981). */
+static void wander_run(Projectile *p) {
+    p->wander = UNIT_WANDER_LOOP;
+    wander_show(p, 1);
+    wander_turn(p);
+}
+
+/* On every frame of its run the shot bursts where it is, with no unit
+ * struck and no explosion art: its hit sound, the splash and the
+ * scenery, and the blast hook hears it (legacy:249158, the blast at
+ * legacy:244963-245050). Where the map lets shots through the sea it
+ * does nothing over the sea bed (legacy:244975-244984). */
+static void wander_burst(Projectile *p) {
+    GameWorld *gw = World_Get();
+    int bed = 0;
+    if (gw && gw->no_sea_level_trigger &&
+        ShotPath_CellFloor(gw, p->world_x, p->world_y, &bed) &&
+        bed < gw->water_height)
+        return;
+    projectile_note_blast(p, NULL);
+    play_projectile_hit_sound(p, NULL);
+    int slot = slot_of_projectile(p);
+    blast_shake_at(p->world_x, p->world_y, g_proj_shake_mag[slot],
+                   g_proj_shake_sec[slot]);
+    apply_projectile_area_damage(p);
+    blast_scenery(p, -1);
+}
+
+/* One of the original's frames of a wandering shot
+ * (legacy:249099-249174). */
+static void wander_frame(Projectile *p) {
+    switch (p->wander) {
+    case UNIT_WANDER_WAIT:
+        /* Before its first frame it waits on its caster and goes with
+         * it (legacy:249103-249111). */
+        if (p->wander_hold > 1) {
+            p->wander_hold--;
+            if (!shot_caster_stands(p)) p->alive = 0;
+            return;
+        }
+        if (wander_show(p, 0)) {
+            p->wander = UNIT_WANDER_START;
+            return;
+        }
+        wander_run(p);
+        return;
+    case UNIT_WANDER_START:
+        if (!wander_play(p, 0)) wander_run(p);
+        return;
+    case UNIT_WANDER_LOOP:
+        wander_play(p, 1);
+        wander_move(p);
+        if (--p->wander_turn <= 0) {
+            wander_turn(p);
+            p->wander_turn += p->wander_every;
+        }
+        wander_burst(p);
+        if (--p->wander_left > 0) return;
+        if (wander_show(p, 2)) {
+            p->wander = UNIT_WANDER_END;
+            return;
+        }
+        p->alive = 0;
+        return;
+    case UNIT_WANDER_END:
+        if (!wander_play(p, 2)) {
+            p->alive = 0;
+            return;
+        }
+        wander_move(p);
+        return;
+    default:
+        p->alive = 0;
+        return;
+    }
+}
+
+/* A Wandering weapon's shot sets out (legacy:249059-249094): 32 px from
+ * its caster toward the aim point, on the ground there, set to move at
+ * weaponvelocity that way, with spreads of maxvariation times each
+ * part of the way crossed onto the other axis. Its stream is seeded
+ * from the frame (legacy:249049-249055) and it starts on the next. */
+static void wander_launch(int slot, const UnitWeapon *wp, const Unit *u,
+                          int32_t tx, int32_t ty) {
+    if (slot < 0 || slot >= g_projectile_count || !wp || !wp->is_wandering || !u)
+        return;
+    Projectile *p = &g_projectiles[slot];
+    const GameWorld *w = World_Get();
+    int32_t dx = tx - u->world_x, dz = ty - u->world_y;
+    double dist = sqrt((double)dx * (double)dx + (double)dz * (double)dz);
+    float ux = 0.0f;
+    double uz = 0.0;
+    if (dist > 0.0) {
+        ux = (float)((double)dx / dist);
+        uz = (double)dz / dist;
+    }
+    double v = (double)(uint32_t)((uint32_t)wp->wander_steps * (uint32_t)wp->wander_step_fp);
+    p->wander = UNIT_WANDER_WAIT;
+    /* The frames to wait: the rest of this one when it is a frame tick
+     * and the projectiles still run in it, then the next. */
+    p->wander_hold = (g_sim_tick & 1u) ? 1 : 2;
+    p->wander_pic = 0;
+    p->wander_steps = wp->wander_steps;
+    p->wander_base_vx = (int32_t)(v * (double)ux);
+    p->wander_base_vy = (int32_t)(v * uz);
+    p->wander_vx_fp = p->wander_base_vx;
+    p->wander_vy_fp = p->wander_base_vy;
+    p->wander_amp_x = (float)((double)wp->wander_max_variation * uz);
+    p->wander_amp_y = (float)((double)wp->wander_max_variation * (double)ux);
+    p->wander_x_fp = (int32_t)((uint32_t)u->world_x << 16) +
+                     (int32_t)((double)ux * 32.0 * 65536.0);
+    p->wander_y_fp = (int32_t)((uint32_t)u->world_y << 16) +
+                     (int32_t)(uz * 32.0 * 65536.0);
+    uint32_t frame = g_sim_tick >> 1;
+    p->wander_seed = ((frame & 0xff00u) << 16) | ((frame & 0xffu) << 8);
+    p->wander_left = wp->wander_duration;
+    p->wander_every = wp->wander_every;
+    p->wander_turn = wp->wander_every;
+    for (int k = 0; k < 3; k++) p->wander_art[k] = wp->wander_art[k];
+    p->world_x = p->wander_x_fp >> 16;
+    p->world_y = p->wander_y_fp >> 16;
+    p->sub_x = p->sub_y = 0.0f;
+    p->height = w ? (float)Terrain_SampleHeight(w, p->world_x, p->world_y) : 0.0f;
+    p->muzzle_height = p->height;
+    p->from_piece = 0;
+    p->vel_up_ppt = 0.0f;
+    p->gravity_ppt2 = 0.0f;
+    p->pitch = 0.0f;
+    p->art_kind = UNIT_WEAPON_ART_SPRITE;
+    p->art_idx = -1;
+    p->age_ticks = 0;
+    wander_note_heading(p);
+}
+
 /* Per-tick: advance projectiles, hit-test against target, apply damage. */
 static void tick_projectiles(void) {
     /* Effects are visuals only. One with a life ends at that age, a
@@ -2653,8 +2963,16 @@ static void tick_projectiles(void) {
     }
 
     for (int i = 0; i < g_projectile_count; i++) {
+        /* The last shot's harm, for its shooter's hover attack. */
+        shot_tally_end();
         Projectile *p = &g_projectiles[i];
         if (!p->alive) continue;
+        shot_tally_begin(p->shooter);
+        /* A wandering shot keeps the original's frames and its own end. */
+        if (p->wander) {
+            if ((g_sim_tick & 1u) == 0) wander_frame(p);
+            continue;
+        }
         if (--p->ttl_ticks <= 0) { p->alive = 0; continue; }
         /* A mind control shot whose caster is dead or dying takes this
          * step and is gone (legacy:247710-247713). */
@@ -2779,6 +3097,7 @@ static void tick_projectiles(void) {
             }
         }
     }
+    shot_tally_end();
     /* Compact tail of fully-dead projectiles. */
     while (g_projectile_count > 0 &&
            !g_projectiles[g_projectile_count - 1].alive) {
@@ -3527,6 +3846,12 @@ static void order_fresh(Unit *u) {
     u->move_group = 0;
     u->move_paced = 0;
     u->face_mode = UNIT_FACE_NONE;
+    u->hover_state = UNIT_HOVER_NONE;
+    u->hover_wait = 0;
+    u->hover_steps = 0;
+    u->hover_events = 0;
+    u->hover_x = 0;
+    u->hover_y = 0;
 }
 
 /* The walk to (x, y) without touching the legs, which a leg taken off
@@ -6562,6 +6887,11 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->radar_distance = TDF_ReadInt(tdf, "radardistance", 0);
     out->can_fly        = TDF_ReadInt(tdf, "canfly", 0);
     out->cruise_alt     = TDF_ReadInt(tdf, "cruisealt", 0);
+    out->hover_attack   = (uint8_t)(TDF_ReadInt(tdf, "hoverattack", 0) & 1);
+    out->hover_attack_dist =
+        (int16_t)TDF_ReadInt(tdf, "hoverattackdistance", 0);
+    out->hover_attack_alt =
+        (int16_t)TDF_ReadInt(tdf, "hoverattackaltitude", out->cruise_alt);
     out->floater        = TDF_ReadInt(tdf, "floater", 0);
     out->amphibious     = (uint8_t)(TDF_ReadInt(tdf, "amphibious", 0) & 1);
     out->leash_length   = TDF_ReadInt(tdf, "maneuverleashlength", 0) & 0xffff;
@@ -6798,6 +7128,11 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         w->gravity_adjust = TDF_ReadFloat(tdf, "gravityadjustment", 1.0f);
         if (!(w->gravity_adjust > 0.0f)) w->gravity_adjust = 1.0f;
         w->lob_preferred  = TDF_ReadInt(tdf, "lobpreferred", 0) ? 1 : 0;
+        w->hover_attack_dist =
+            (int16_t)TDF_ReadInt(tdf, "hoverattackdistance", 0);
+        w->hover_attack_alt =
+            (int16_t)TDF_ReadInt(tdf, "hoverattackaltitude", 0);
+        w->drop_key = (uint8_t)(TDF_ReadInt(tdf, "dropped", 0) & 1);
         w->dropped        = ascii_contains_ci(w->subtype, "dropped") ? 1 : 0;
         w->mind_control   = ascii_contains_ci(w->subtype, "mindcontrol") ? 1 : 0;
         /* Only `type = Ballistic` gets the gravity behaviour; Guided,
@@ -6875,6 +7210,39 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         w->ground_bounce  = (uint8_t)(TDF_ReadInt(tdf, "groundbounce", 0) & 1);
         w->path_free      = (ascii_contains_ci(w->type, "remote") ||
                              ascii_contains_ci(w->type, "wandering")) ? 1 : 0;
+        /* A Wandering weapon's own keys (legacy:249000-249044). Times
+         * are seconds times 30, and weaponvelocity goes to 1/65536 px a
+         * frame in substeps of at most 16 px (legacy:249987-249989,
+         * legacy:250426-250433). */
+        w->is_wandering = ascii_contains_ci(w->type, "wandering") ? 1 : 0;
+        w->wander_steps = 0;
+        w->wander_step_fp = 0;
+        for (int k = 0; k < 3; k++) w->wander_art[k] = -1;
+        w->wander_duration = w->wander_every = w->wander_max_variation = 0;
+        if (w->is_wandering) {
+            static const char *wa[3] = { "wanderstartart", "wanderloopart",
+                                         "wanderendart" };
+            for (int k = 0; k < 3; k++) {
+                char art[40];
+                lowercase_into(art, sizeof(art), TDF_ReadString(tdf, wa[k], ""));
+                if (art[0]) w->wander_art[k] = (int16_t)proj_sprite_index(art, art);
+            }
+            w->wander_duration = (int32_t)((double)TDF_ReadFloat(tdf, "duration", 0.0f) * 30.0);
+            w->wander_every = (int32_t)((double)TDF_ReadFloat(tdf, "variationtime", 0.0f) * 30.0);
+            w->wander_max_variation = TDF_ReadInt(tdf, "maxvariation", 0);
+            uint32_t fp = (uint32_t)(int32_t)((double)TDF_ReadFloat(tdf, "weaponvelocity", 0.0f) *
+                                              (65536.0 / 30.0));
+            if (fp == 0) {
+                w->wander_steps = 1;
+                w->wander_step_fp = 1;
+            } else {
+                uint32_t steps = (uint16_t)((fp + 0xfffffu) >> 20);
+                if (steps < 1) steps = 1;
+                if (steps > 255) steps = 255;
+                w->wander_steps = (uint8_t)steps;
+                w->wander_step_fp = (int32_t)(fp / steps);
+            }
+        }
         w->to_air_weapon  = TDF_ReadInt(tdf, "toairweapon", 0);
         w->no_air_weapon  = TDF_ReadInt(tdf, "noairweapon", 0);
         w->no_radar       = TDF_ReadInt(tdf, "noradar", 0);
@@ -8827,6 +9195,8 @@ static int32_t unit_scaled_damage(int shooter, const Unit *victim, int32_t damag
  * lose, which is all a hit can take off. */
 static void unit_take_hit(Unit *victim, int shooter, int shooter_player, int32_t damage) {
     int32_t hit = unit_scaled_damage(shooter, victim, damage);
+    if (hit > 0)
+        shot_tally_harm(shooter, victim->player_id == shooter_player, hit);
     if (hit > 0 && victim->health > 0)
         BattleRecord_Hit(shooter_player, victim->player_id,
                          hit < victim->health ? hit : victim->health);
@@ -9359,7 +9729,8 @@ static void enter_state(Unit *u, UnitAnimState new_state) {
             Cob_StopThread(u->cob, u->walk_thread_slot);
         u->walk_thread_slot = -1;
     }
-    if (u->anim_state == UNIT_ANIM_ATTACKING && new_state != UNIT_ANIM_ATTACKING) {
+    if (u->anim_state == UNIT_ANIM_ATTACKING && new_state != UNIT_ANIM_ATTACKING &&
+        !(new_state == UNIT_ANIM_MOVING && u->hover_state != UNIT_HOVER_NONE)) {
         for (int wi = 0; wi < 3; wi++) {
             u->weapon_state[wi].aim_thread_slot = -1;
             u->weapon_state[wi].aim_target = -1;
@@ -11254,6 +11625,8 @@ int Units_ComputeWeaponDamageForCategory(const UnitWeapon *wp,
 static uint8_t weapon_visual_kind(const UnitWeapon *wp) {
     if (!wp) return UNIT_PROJECTILE_VIS_GENERIC;
     if (ascii_contains_ci(wp->type, "remote")) return UNIT_PROJECTILE_VIS_REMOTE;
+    /* A wandering shot is only its art, never the bright dot. */
+    if (wp->is_wandering) return UNIT_PROJECTILE_VIS_REMOTE;
     if (wp->mana_per_shot > 0 ||
         ascii_contains_ci(wp->type, "line of sight") ||
         ascii_contains_ci(wp->damage_type, "paralyzer") ||
@@ -11515,9 +11888,9 @@ static void mind_control_lead(const GameWorld *w, const Unit *u, const Unit *t,
     *ty += (int32_t)floorf(-tak_cosf(t->heading) * ahead + 0.5f);
 }
 
-static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
-                             const UnitWeapon *wp, int target_handle,
-                             int burst_ordinal, int run_fire_script) {
+static void fire_weapon_shot_now(Unit *u, int shooter_idx, int slot,
+                                 const UnitWeapon *wp, int target_handle,
+                                 int burst_ordinal, int run_fire_script) {
     if (!u || !wp) return;
     if (u->alive != UNIT_ALIVE_ACTIVE) return;
     if (target_handle < 0 || target_handle >= g_unit_count) return;
@@ -11702,6 +12075,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
                       shooter_idx,
                       u->player_id, u->team_color_idx);
     spell_effects_at(wp, shot, tx, ty, u->stable_id);
+    wander_launch(shot, wp, u, tx, ty);
 }
 
 /* Ground shot: projectile flies to (cmd_x, cmd_y) with no unit target
@@ -11798,8 +12172,8 @@ static void flame_particle(const Projectile *p, int idx) {
     e->loops = 1;
 }
 
-static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
-                             const UnitWeapon *wp) {
+static void fire_ground_shot_now(Unit *u, int shooter_idx, int slot,
+                                 const UnitWeapon *wp) {
     if (!u || !wp) return;
     if (wp->mana_per_shot > 0) BattleRecord_Cast(u->player_id);
     start_fire_script(u, slot);
@@ -11816,6 +12190,7 @@ static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
                                     weapon_visual_kind(wp), -1, shooter_idx,
                                     u->player_id, u->team_color_idx);
     spell_effects_at(wp, slot_idx, u->cmd_x, u->cmd_y, u->stable_id);
+    wander_launch(slot_idx, wp, u, u->cmd_x, u->cmd_y);
     if (slot_idx < 0 || (wp->los_kind != 1 && wp->los_kind != 2)) return;
     /* LOS ground shot: the ray goes off where it stops, at once, and
      * the beam holds. */
@@ -11858,6 +12233,27 @@ static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
                          (uint32_t)slot_idx);
     if (b->area_of_effect > 0) apply_projectile_area_damage(b);
     blast_scenery(b, -1);
+}
+
+/* A beam lands as it is fired, so its harm is added up here too. */
+static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
+                             const UnitWeapon *wp, int target_handle,
+                             int burst_ordinal, int run_fire_script) {
+    ShotTally outer = g_shot_tally;
+    shot_tally_begin(shooter_idx);
+    fire_weapon_shot_now(u, shooter_idx, slot, wp, target_handle,
+                         burst_ordinal, run_fire_script);
+    shot_tally_end();
+    g_shot_tally = outer;
+}
+
+static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
+                             const UnitWeapon *wp) {
+    ShotTally outer = g_shot_tally;
+    shot_tally_begin(shooter_idx);
+    fire_ground_shot_now(u, shooter_idx, slot, wp);
+    shot_tally_end();
+    g_shot_tally = outer;
 }
 
 static void tick_weapon_burst(Unit *u, int shooter_idx, int slot,
@@ -11991,9 +12387,18 @@ static int unit_def_has_flight(const UnitDef *def) {
  * cruise height. The original turns them off at BeginFlight
  * (legacy:24120) and on again at a later stage of its air attack
  * (legacy:25797). */
+static int hover_attack_alt(const Unit *u, const UnitDef *def);
+
+/* The height a flyer in the air makes for: its cruise height, or its
+ * hover attack's while it holds a point (legacy:30367, 30443). */
+static float flyer_height(const Unit *u, const UnitDef *def) {
+    return u->hover_state >= UNIT_HOVER_PICK ? (float)hover_attack_alt(u, def)
+                                             : (float)def->cruise_alt;
+}
+
 static int unit_climbing(const Unit *u, const UnitDef *def) {
     return def && def->can_fly && u->flying &&
-           u->flight_alt < (float)def->cruise_alt;
+           u->flight_alt < flyer_height(u, def);
 }
 
 static void flight_tick(Unit *u, const UnitDef *def, const GameWorld *w) {
@@ -12017,7 +12422,7 @@ static void flight_tick(Unit *u, const UnitDef *def, const GameWorld *w) {
             unit_start_script(u, "BeginFlight", NULL, 0);
             occ_sync_mobile((int)(u - g_units));   /* leaves its cells */
         }
-        target = u->flying ? (float)def->cruise_alt : 0.0f;
+        target = u->flying ? flyer_height(u, def) : 0.0f;
     }
     int occ = unit_sfx_occupy_state(u, def, w);
     if (u->sfx_occupy != occ) {
@@ -12172,14 +12577,12 @@ static void air_leg(Unit *u, int mode, int32_t x, int32_t y, int reach) {
  * each costing rand(80) plus 0 at 45 degrees, 100 ahead and abeam, 200
  * at 135 and 300 behind, and 100 more for each sharer within 90 degrees
  * of it (legacy:29973-30000). The cheapest, turned up to 22.5 degrees
- * either way, is flown d give or take a quarter, d being
- * (rand(15) + footprint) * 16 px as the mission draws it, until within
- * (rand(5) + 5) * 16 px. */
-static void flyer_step_out(Unit *u, int h) {
+ * either way, is flown d give or take a quarter, until within
+ * (rand(5) + 5) * 16 px. The mission that sends it draws d. */
+static void flyer_step_out(Unit *u, int h, int d) {
     static const int base[8] = { 100, 0, 100, 200, 300, 200, 100, 0 };
     int fx, fz, tx, ty;
     unit_fp_cells(u, u->world_x, u->world_y, &tx, &ty, &fx, &fz);
-    int d = ((int)World_Rand(15) + fx) * 16;
     int cost[8];
     for (int k = 0; k < 8; k++) cost[k] = (int)World_Rand(80) + base[k];
     uint16_t hd = Units_TurnFromHeading(u->heading);
@@ -12412,8 +12815,14 @@ static int flyer_air_tick(Unit *u, int h, const UnitDef *def,
         int idle = *desired == UNIT_ANIM_IDLE &&
                    u->cmd_kind == UNIT_CMD_NONE && u->target < 0;
         int limit = flyer_crowd_limit(u);
-        if (limit >= 0 && u->air_crowd > limit) {
-            flyer_step_out(u, h);
+        /* A hover attack steps out by its own rule once it is near
+         * (legacy:30636-30705, D-039). */
+        if (limit >= 0 && u->air_crowd > limit &&
+            (u->hover_state == UNIT_HOVER_NONE ||
+             (u->hover_events & UNIT_HOVER_FAR))) {
+            int fx, fz;
+            unit_occ_fp(u, &fx, &fz);
+            flyer_step_out(u, h, ((int)World_Rand(15) + fx) * 16);
         } else if (idle && !u->air_hold && u->air_mode == UNIT_AIR_NONE &&
                    flyer_fast(u, def)) {
             /* Still fast, as after a stop: fly on first
@@ -12431,6 +12840,375 @@ static int flyer_air_tick(Unit *u, int h, const UnitDef *def,
     *goal_x = u->air_x;
     *goal_y = u->air_y;
     return 1;
+}
+
+/* ── Hover attack ─────────────────────────────────────────────────────
+ *
+ * A flyer with hoverattack closes only to its hoverattackdistance plus
+ * 160 px. It then sets its weapons on the target and holds its own
+ * bearing from it at that distance, picking its point again whenever it
+ * fires, a shot of its lands without hurting the other side, it reaches
+ * the point or 15 to 29 frames go by, and fires as it flies
+ * (legacy:30139-30449). Crowded, it steps out further than other flyers
+ * and gives the attack up after a few step outs (legacy:30616-30705). */
+
+/* A point is reached where the walk stops for it, within 8 px. The
+ * original's move stops within 4 (legacy:30362-30364), but a point the walk
+ * calls reached and this did not would hold the flyer there for good. */
+#define HOVER_REACH_PX 8
+
+static int hover_slot(const Unit *u, const UnitDef *def) {
+    int slot = u->weapon_slot;
+    return (slot < 0 || slot >= def->num_weapons) ? 0 : slot;
+}
+
+/* The weapon in hand's standoff, else the unit's (legacy:30150-30156). */
+static int hover_attack_dist(const Unit *u, const UnitDef *def) {
+    int d = def->weapons[hover_slot(u, def)].hover_attack_dist;
+    return d ? d : def->hover_attack_dist;
+}
+
+/* The height it hovers at while it holds its point, the weapon's, else
+ * the unit's (legacy:30158-30163, legacy:30367). */
+static int hover_attack_alt(const Unit *u, const UnitDef *def) {
+    if (def->num_weapons <= 0) return def->hover_attack_alt;
+    int a = def->weapons[hover_slot(u, def)].hover_attack_alt;
+    return a ? a : def->hover_attack_alt;
+}
+
+/* A flyer with hoverattack attacks this way unless the weapon in hand
+ * is `dropped` (legacy:30040-30052). One with the flight pair does once
+ * it is up. A unit target must be one it can shoot at. */
+static int hover_attacks(const Unit *u, const UnitDef *def, const Unit *t) {
+    if (!def->can_fly || !def->hover_attack || def->num_weapons <= 0)
+        return 0;
+    const UnitWeapon *wp = &def->weapons[hover_slot(u, def)];
+    if (wp->drop_key) return 0;
+    if (t && !weapon_can_target_unit(wp, t)) return 0;
+    return u->flying || !unit_def_has_flight(def);
+}
+
+static void hover_reset(Unit *u) {
+    u->hover_state = UNIT_HOVER_NONE;
+    u->hover_wait = 0;
+    u->hover_steps = 0;
+    u->hover_events = 0;
+    u->hover_x = 0;
+    u->hover_y = 0;
+}
+
+/* Its point on the map: off the target unit, which it follows, or on
+ * the ground. */
+static void hover_point(const Unit *u, const Unit *t,
+                        int32_t *x, int32_t *y) {
+    *x = u->hover_x + (t ? t->world_x : 0);
+    *y = u->hover_y + (t ? t->world_y : 0);
+    const GameWorld *w = World_Get();
+    if (w && w->map_pixels_w > 64 && w->map_pixels_h > 64) {
+        if (*x < 32) *x = 32;
+        if (*y < 32) *y = 32;
+        if (*x > w->map_pixels_w - 32) *x = w->map_pixels_w - 32;
+        if (*y > w->map_pixels_h - 32) *y = w->map_pixels_h - 32;
+    }
+}
+
+static void hover_set_point(Unit *u, const Unit *t, int32_t tx, int32_t ty,
+                            uint16_t bearing, int r) {
+    float ax, ay;
+    air_dir(bearing, &ax, &ay);
+    u->hover_x = tx + (int32_t)(ax * (float)r) - (t ? t->world_x : 0);
+    u->hover_y = ty + (int32_t)(ay * (float)r) - (t ? t->world_y : 0);
+    u->hover_events |= UNIT_HOVER_GOING;
+    u->hover_events &= (uint8_t)~UNIT_HOVER_EV_ARRIVED;
+}
+
+/* Stage 3: the bearing it holds from the target, one time in a hundred
+ * turned by up to rand(2048) either way, and its distance, kept while
+ * within 16 px of the standoff, else the standoff plus rand(8) - 3,
+ * one time in a hundred redrawn all the same (legacy:30254-30315). It
+ * looks again in 15 + rand(15) frames (legacy:30364-30378). */
+static void hover_pick(Unit *u, const UnitDef *def, const Unit *t,
+                       int32_t tx, int32_t ty) {
+    int hd = hover_attack_dist(u, def);
+    float dx = (float)(u->world_x - tx), dy = (float)(u->world_y - ty);
+    uint16_t bearing = Units_TurnFromHeading(tak_atan2f(dx, -dy));
+    if (World_Rand(100) == 0u) {
+        int left = World_Rand(2) == 0u;
+        int turn = (int)World_Rand(0x800);
+        bearing = (uint16_t)(bearing + (left ? turn : -turn));
+    }
+    int d = (int)sqrtf(dx * dx + dy * dy);
+    int r = d;
+    if (abs(d - hd) >= 17 || World_Rand(100) == 0u) {
+        r = (int)World_Rand(8) - 3 + hd;
+        if (r < 0) r = -r;
+    }
+    hover_set_point(u, t, tx, ty, bearing, r);
+    u->hover_state = UNIT_HOVER_WAIT;
+    u->hover_wait = (uint8_t)(15u + World_Rand(15));
+}
+
+/* Crowded at a look: the step out count goes up. One that took its own
+ * target may turn on another enemy, one time in two. Otherwise it steps
+ * out (rand(10) + rand(10) + rand(10) + footprint) * 16 px and, once
+ * rand(5) + 1 + rand(5) is under its step outs, gives the attack up,
+ * else closes again a frame later (legacy:30636-30705). */
+static void hover_crowded(Unit *u, int h, const UnitDef *def) {
+    if (u->hover_steps < 255) u->hover_steps++;
+    if (!u->attack_explicit && u->aggro_mode == UNIT_AGGRO_OFFENSIVE &&
+        u->cmd_kind != UNIT_CMD_ATTACK_GROUND && World_Rand(2) == 0u) {
+        int64_t radius = unit_search_radius(u, def);
+        int pick = ugrid_nearest_enemy(u, h, radius,
+                                       &def->weapons[hover_slot(u, def)]);
+        if (pick >= 0 && pick != u->target) {
+            u->target = (int16_t)pick;
+            hover_reset(u);
+            return;
+        }
+    }
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    int d = (int)World_Rand(10);
+    d += (int)World_Rand(10);
+    d += (int)World_Rand(10);
+    flyer_step_out(u, h, (d + fx) * 16);
+    int give = (int)World_Rand(5) + 1;
+    give += (int)World_Rand(5);
+    if (give < u->hover_steps) {
+        hover_reset(u);
+        u->target = -1;
+        if (u->cmd_kind == UNIT_CMD_ATTACK ||
+            u->cmd_kind == UNIT_CMD_ATTACK_GROUND)
+            u->cmd_kind = UNIT_CMD_NONE;
+        u->attack_explicit = 0;
+        unit_clear_path(u);
+        return;
+    }
+    u->hover_state = UNIT_HOVER_CLOSE;
+    u->hover_wait = 1;
+}
+
+/* The mission's decisions, once a frame. Waits out a step out leg. */
+static void hover_frame(Unit *u, int h, const UnitDef *def, const Unit *t,
+                        int32_t tx, int32_t ty) {
+    if (u->air_mode == UNIT_AIR_STEP) return;
+    if (u->hover_wait) u->hover_wait--;
+    int hd = hover_attack_dist(u, def);
+    if (u->hover_events & UNIT_HOVER_GOING) {
+        int32_t px, py;
+        hover_point(u, t, &px, &py);
+        int64_t ex = (int64_t)px - u->world_x, ey = (int64_t)py - u->world_y;
+        if (ex * ex + ey * ey < HOVER_REACH_PX * HOVER_REACH_PX)
+            u->hover_events = (uint8_t)((u->hover_events & ~UNIT_HOVER_GOING) |
+                                        UNIT_HOVER_EV_ARRIVED);
+    }
+    switch (u->hover_state) {
+    case UNIT_HOVER_CLOSE: {
+        /* Stage 1: weapons off, then on again within the standoff plus
+         * 160 px, else on toward it, looking again in 15 frames or once
+         * within the standoff plus 144 (legacy:30185-30222). */
+        int64_t dx = (int64_t)tx - u->world_x, dy = (int64_t)ty - u->world_y;
+        int64_t d2 = dx * dx + dy * dy;
+        int64_t arrive = hd + 144;
+        if (u->hover_wait && d2 > arrive * arrive) break;
+        u->hover_events &= (uint8_t)~(UNIT_HOVER_ARMED | UNIT_HOVER_FAR);
+        int64_t within = hd + 160;
+        if (d2 > within * within) {
+            u->hover_events |= UNIT_HOVER_FAR;
+            u->hover_wait = 15;
+            break;
+        }
+        /* Stage 2 sets the weapons on the target (legacy:30223-30253). */
+        u->hover_events |= UNIT_HOVER_ARMED;
+        hover_pick(u, def, t, tx, ty);
+    } break;
+    case UNIT_HOVER_PICK:
+        if (!u->hover_wait) hover_pick(u, def, t, tx, ty);
+        break;
+    case UNIT_HOVER_WAIT: {
+        uint8_t ev = u->hover_events & (UNIT_HOVER_EV_FIRED |
+                                        UNIT_HOVER_EV_LANDED |
+                                        UNIT_HOVER_EV_ARRIVED);
+        if (u->hover_wait && !ev) break;
+        u->hover_events &= (uint8_t)~ev;
+        /* Stage 4 (legacy:30616-30635): when a shot of its has landed
+         * without hurting the other side and the target stands still, one time in two a bearing at
+         * random, else the same one again, a frame later. */
+        if (u->air_crowd >= 5) {
+            hover_crowded(u, h, def);
+        } else if ((ev & UNIT_HOVER_EV_LANDED) && World_Rand(2) == 0u &&
+                   t && t->cur_speed_ppt <= 0.0f) {
+            u->hover_state = UNIT_HOVER_RANDOM;
+            u->hover_wait = 1;
+        } else {
+            u->hover_state = UNIT_HOVER_PICK;
+            u->hover_wait = 1;
+        }
+    } break;
+    case UNIT_HOVER_RANDOM:
+        /* Stage 5: a point at the standoff plus rand(8) - 3 on a bearing
+         * drawn at random, then the next look once it is reached
+         * (legacy:30381-30449). */
+        if (!u->hover_wait) {
+            int r = (int)World_Rand(8) - 3 + hd;
+            if (r < 0) r = -r;
+            uint16_t bearing = (uint16_t)World_Rand(0x10000);
+            hover_set_point(u, t, tx, ty, bearing, r);
+            u->hover_state = UNIT_HOVER_ROUND;
+        }
+        break;
+    case UNIT_HOVER_ROUND:
+        if (u->hover_events & UNIT_HOVER_EV_ARRIVED) {
+            u->hover_events &= (uint8_t)~UNIT_HOVER_EV_ARRIVED;
+            hover_pick(u, def, t, tx, ty);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+/* The hover attack on unit t, or on the ground at (tx, ty) when t is
+ * NULL: where the flyer makes for, and whether it is at its point and
+ * its weapons are on a target in reach. */
+static void hover_attack_tick(Unit *u, int h, const UnitDef *def,
+                              const Unit *t, int32_t tx, int32_t ty,
+                              UnitAnimState *desired,
+                              int32_t *goal_x, int32_t *goal_y,
+                              int *in_range) {
+    if (u->hover_state == UNIT_HOVER_NONE) {
+        /* Stage 0: a new attack counts no step outs (legacy:30164-30184). */
+        hover_reset(u);
+        u->hover_state = UNIT_HOVER_CLOSE;
+    }
+    if ((g_sim_tick & 1u) == 0) hover_frame(u, h, def, t, tx, ty);
+    if (u->hover_state == UNIT_HOVER_NONE) {
+        /* Given up, or turned on another target, this frame. */
+        *desired = UNIT_ANIM_IDLE;
+        return;
+    }
+    int64_t dx = (int64_t)tx - u->world_x, dy = (int64_t)ty - u->world_y;
+    if (u->hover_events & UNIT_HOVER_ARMED) {
+        const UnitWeapon *wp = &def->weapons[hover_slot(u, def)];
+        int64_t range = weapon_effective_range(wp);
+        int64_t min_range = weapon_min_range(wp);
+        int64_t d2 = t ? unit_reach_d2(u, t) : dx * dx + dy * dy;
+        *in_range = range > 0 && d2 <= range * range &&
+                    (min_range <= 0 || d2 >= min_range * min_range);
+    }
+    if (u->hover_state == UNIT_HOVER_CLOSE) {
+        int64_t arrive = hover_attack_dist(u, def) + 144;
+        *desired = UNIT_ANIM_MOVING;
+        if (dx * dx + dy * dy > arrive * arrive) {
+            *goal_x = tx;
+            *goal_y = ty;
+        }
+        return;
+    }
+    int32_t px, py;
+    hover_point(u, t, &px, &py);
+    int64_t ex = (int64_t)px - u->world_x, ey = (int64_t)py - u->world_y;
+    if (ex * ex + ey * ey >= HOVER_REACH_PX * HOVER_REACH_PX) {
+        *desired = UNIT_ANIM_MOVING;
+        *goal_x = px;
+        *goal_y = py;
+        return;
+    }
+    /* At its point it faces the target and holds there. */
+    *desired = UNIT_ANIM_ATTACKING;
+    if (dx != 0 || dy != 0)
+        u->heading = tak_atan2f((float)dx, -(float)dy);
+}
+
+/* A shot from the weapon in hand at the unit's target or its ground
+ * point, once its reload, its aim and its mana allow. */
+static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
+    if (def->num_weapons <= 0) return;
+    /* Fire whichever weapon the user picked via the
+     * Primary/Secondary/Special button row. Slot is
+     * clamped to [0, num_weapons) so a unit with only
+     * one weapon still works regardless of weapon_slot. */
+    int slot = u->weapon_slot;
+    if (slot < 0 || slot >= def->num_weapons) slot = 0;
+    UnitWeaponState *ws = &u->weapon_state[slot];
+    int ground = (u->cmd_kind == UNIT_CMD_ATTACK_GROUND);
+    /* Attack-ground aims at the clicked point the same
+     * way a unit target is aimed at. */
+    int aim_key = ground ? -2 : u->target;
+    int32_t aim_x = u->world_x, aim_y = u->world_y;
+    if (ground) {
+        aim_x = u->cmd_x; aim_y = u->cmd_y;
+    } else if (u->target >= 0 && u->target < g_unit_count) {
+        aim_x = g_units[u->target].world_x;
+        aim_y = g_units[u->target].world_y;
+    }
+    if (ws->cooldown_ticks == 0 && !unit_climbing(u, def) &&
+        (ground || u->target < 0 || u->target >= g_unit_count ||
+         weapon_can_target_unit(&def->weapons[slot],
+                                &g_units[u->target])) &&
+        weapon_aim_ready(u, slot, aim_key, aim_x, aim_y, ws)) {
+        const UnitWeapon *wp = &def->weapons[slot];
+
+        /* A mana-costing shot draws from the caster's
+         * own reserve and waits while it is short
+         * (legacy:17214, legacy:245908). Every shipped
+         * unit with such a weapon carries maxmana; one
+         * without falls back to the player pool. A
+         * drawn shot pays when it leaves
+         * (legacy:249341-249342, legacy:249460-249461). */
+        int draws = def->script_launches && u->cob &&
+                    !ground && u->target >= 0;
+        int may_fire = 1;
+        if (wp->mana_per_shot > 0) {
+            if (def->max_mana > 0) {
+                if (u->mana < (float)wp->mana_per_shot) may_fire = 0;
+                else if (!draws) u->mana -= (float)wp->mana_per_shot;
+            } else {
+                GameWorld *w = World_Get();
+                if (!w) {
+                    may_fire = 0;
+                } else if (draws) {
+                    if (Economy_GetMana(&w->economy, u->player_id) <
+                        wp->mana_per_shot) may_fire = 0;
+                } else if (!Economy_TrySpend(&w->economy,
+                                             u->player_id,
+                                             wp->mana_per_shot)) {
+                    may_fire = 0;
+                }
+            }
+        }
+
+        if (may_fire) {
+            ws->cooldown_ticks = wp->reload_ticks;
+            if (u->hover_state != UNIT_HOVER_NONE)
+                u->hover_events |= UNIT_HOVER_EV_FIRED;
+            if (ground) {
+                fire_ground_shot(u, i, slot, wp);
+                return;
+            }
+            /* A script that releases its own shot draws
+             * now and lets go at port 23. */
+            if (draws) {
+                start_fire_script(u, slot);
+                ws->draw = UNIT_DRAW_DRAWN;
+                ws->draw_target = u->target;
+                return;
+            }
+            fire_weapon_shot(u, i, slot, wp, u->target, 0, 1);
+            int burst_count = wp->burst > 1 ? wp->burst : 1;
+            if (burst_count > 1 && u->target >= 0) {
+                ws->burst_remaining = (int16_t)(burst_count - 1);
+                ws->burst_target = u->target;
+                ws->burst_ticks = wp->burst_rate_ticks > 0
+                                ? wp->burst_rate_ticks : 1;
+            }
+        } else {
+            /* Short even for the primary, so there is
+             * nothing cheaper to step down to. Retry in
+             * half a second rather than every tick. */
+            ws->cooldown_ticks = 30;
+        }
+    }
 }
 
 /* A caster's reserve: a {value, max} pair the original tops up by
@@ -13221,6 +13999,7 @@ static void Units_TickCombat(void) {
         UnitAnimState desired = UNIT_ANIM_IDLE;
         int32_t  goal_x = u->world_x, goal_y = u->world_y;
         int      target_in_range = 0;
+        int      hovering = 0;
         int64_t  target_d2 = 0;
         float    heading_at_entry = u->heading;
         /* A summons without end or one held belongs to the build order
@@ -13350,6 +14129,12 @@ static void Units_TickCombat(void) {
             if (desired != UNIT_ANIM_MOVING && (dx != 0 || dy != 0) &&
                 def->max_velocity > 0.0f)
                 u->heading = tak_atan2f((float)dx, -(float)dy);
+        } else if (u->target >= 0 &&
+                   hover_attacks(u, def, &g_units[u->target])) {
+            const Unit *t = &g_units[u->target];
+            hovering = 1;
+            hover_attack_tick(u, i, def, t, t->world_x, t->world_y,
+                              &desired, &goal_x, &goal_y, &target_in_range);
         } else if (u->target >= 0) {
             Unit *t = &g_units[u->target];
             int64_t dx = (int64_t)(t->world_x - u->world_x);
@@ -13391,6 +14176,11 @@ static void Units_TickCombat(void) {
             if (target_in_range && (dx != 0 || dy != 0) &&
                 def->max_velocity > 0.0f)
                 u->heading = tak_atan2f((float)dx, -(float)dy);
+        } else if (u->cmd_kind == UNIT_CMD_ATTACK_GROUND &&
+                   def->num_weapons > 0 && hover_attacks(u, def, NULL)) {
+            hovering = 1;
+            hover_attack_tick(u, i, def, NULL, u->cmd_x, u->cmd_y,
+                              &desired, &goal_x, &goal_y, &target_in_range);
         } else if (u->cmd_kind == UNIT_CMD_ATTACK_GROUND &&
                    def->num_weapons > 0) {
             /* Fire at a map point until a new order (legacy attack-
@@ -13527,6 +14317,8 @@ static void Units_TickCombat(void) {
             }
         }
 
+        if (!hovering && u->hover_state != UNIT_HOVER_NONE) hover_reset(u);
+
         int air_leg_on = def->can_fly
             ? flyer_air_tick(u, i, def, &desired, &goal_x, &goal_y) : 0;
 
@@ -13540,6 +14332,9 @@ static void Units_TickCombat(void) {
                  * RETURN; restart while still moving. */
                 ensure_thread(u, "walk", &u->walk_thread_slot, NULL, 0);
                 int arrived = walk_tick(u, def, goal_x, goal_y);
+                /* A hover attacker's weapons stay on its target as it
+                 * flies (legacy:30223-30253). */
+                if (hovering && target_in_range) unit_fire_tick(u, i, def);
                 if (arrived) {
                     u->velocity = 0; u->cur_speed_ppt = 0.0f;
                     if (air_leg_on) {
@@ -13852,91 +14647,7 @@ static void Units_TickCombat(void) {
                  * own cooldown is ready. For now we only have target
                  * info for slot 0 (range tracking); future Phase G
                  * extends per-weapon target acquisition. */
-                if (target_in_range && def->num_weapons > 0) {
-                    /* Fire whichever weapon the user picked via the
-                     * Primary/Secondary/Special button row. Slot is
-                     * clamped to [0, num_weapons) so a unit with only
-                     * one weapon still works regardless of weapon_slot. */
-                    int slot = u->weapon_slot;
-                    if (slot < 0 || slot >= def->num_weapons) slot = 0;
-                    UnitWeaponState *ws = &u->weapon_state[slot];
-                    int ground = (u->cmd_kind == UNIT_CMD_ATTACK_GROUND);
-                    /* Attack-ground aims at the clicked point the same
-                     * way a unit target is aimed at. */
-                    int aim_key = ground ? -2 : u->target;
-                    int32_t aim_x = u->world_x, aim_y = u->world_y;
-                    if (ground) {
-                        aim_x = u->cmd_x; aim_y = u->cmd_y;
-                    } else if (u->target >= 0 && u->target < g_unit_count) {
-                        aim_x = g_units[u->target].world_x;
-                        aim_y = g_units[u->target].world_y;
-                    }
-                    if (ws->cooldown_ticks == 0 && !unit_climbing(u, def) &&
-                        (ground || u->target < 0 || u->target >= g_unit_count ||
-                         weapon_can_target_unit(&def->weapons[slot],
-                                                &g_units[u->target])) &&
-                        weapon_aim_ready(u, slot, aim_key, aim_x, aim_y, ws)) {
-                        const UnitWeapon *wp = &def->weapons[slot];
-
-                        /* A mana-costing shot draws from the caster's
-                         * own reserve and waits while it is short
-                         * (legacy:17214, legacy:245908). Every shipped
-                         * unit with such a weapon carries maxmana; one
-                         * without falls back to the player pool. A
-                         * drawn shot pays when it leaves
-                         * (legacy:249341-249342, legacy:249460-249461). */
-                        int draws = def->script_launches && u->cob &&
-                                    !ground && u->target >= 0;
-                        int may_fire = 1;
-                        if (wp->mana_per_shot > 0) {
-                            if (def->max_mana > 0) {
-                                if (u->mana < (float)wp->mana_per_shot) may_fire = 0;
-                                else if (!draws) u->mana -= (float)wp->mana_per_shot;
-                            } else {
-                                GameWorld *w = World_Get();
-                                if (!w) {
-                                    may_fire = 0;
-                                } else if (draws) {
-                                    if (Economy_GetMana(&w->economy, u->player_id) <
-                                        wp->mana_per_shot) may_fire = 0;
-                                } else if (!Economy_TrySpend(&w->economy,
-                                                             u->player_id,
-                                                             wp->mana_per_shot)) {
-                                    may_fire = 0;
-                                }
-                            }
-                        }
-
-                        if (may_fire) {
-                            ws->cooldown_ticks = wp->reload_ticks;
-                            if (ground) {
-                                fire_ground_shot(u, i, slot, wp);
-                                break;
-                            }
-                            /* A script that releases its own shot draws
-                             * now and lets go at port 23. */
-                            if (draws) {
-                                start_fire_script(u, slot);
-                                ws->draw = UNIT_DRAW_DRAWN;
-                                ws->draw_target = u->target;
-                                break;
-                            }
-                            fire_weapon_shot(u, i, slot, wp, u->target, 0, 1);
-                            int burst_count = wp->burst > 1 ? wp->burst : 1;
-                            if (burst_count > 1 && u->target >= 0) {
-                                ws->burst_remaining = (int16_t)(burst_count - 1);
-                                ws->burst_target = u->target;
-                                ws->burst_ticks = wp->burst_rate_ticks > 0
-                                                ? wp->burst_rate_ticks : 1;
-                            }
-                        } else {
-                            /* Short even for the primary, so there is
-                             * nothing cheaper to step down to. Retry in
-                             * half a second rather than every tick. */
-                            ws->cooldown_ticks = 30;
-                        }
-                    }
-                }
+                if (target_in_range) unit_fire_tick(u, i, def);
             } break;
 
             case UNIT_ANIM_IDLE:
@@ -17966,6 +18677,20 @@ int Units_FindSpriteArt(const char *name) {
         if (tak_stricmp(g_proj_sprites[i].file, name) == 0) return i;
     }
     return -1;
+}
+
+const char *Units_SpriteArtFile(int idx) {
+    if (idx < 0 || idx >= g_proj_sprite_count) return NULL;
+    return g_proj_sprites[idx].file;
+}
+
+int Units_SpriteArtPictures(int idx) { return proj_sprite_pics(idx); }
+
+int Units_SpriteArtSlot(const char *file) {
+    if (!file || !*file) return -1;
+    char lc[40];
+    lowercase_into(lc, sizeof(lc), file);
+    return proj_sprite_index(lc, lc);
 }
 
 int Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y) {

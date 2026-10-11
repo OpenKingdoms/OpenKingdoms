@@ -193,6 +193,17 @@ typedef struct UnitWeapon {
     /* Remote Effect and Wandering shots are never stopped on the way
      * (legacy:249842-249950, :249099-249160). */
     uint8_t path_free;
+    /* type = Wandering (legacy:249968-249979): the start, loop and end
+     * art as sprite slots (-1 none), duration and variationtime in the
+     * original's frames, maxvariation, and weaponvelocity in 1/65536 px
+     * a frame cut into substeps (legacy:249000-249044, 250426-250433). */
+    uint8_t is_wandering;
+    uint8_t wander_steps;
+    int16_t wander_art[3];
+    int32_t wander_duration;
+    int32_t wander_every;
+    int32_t wander_max_variation;
+    int32_t wander_step_fp;
     int32_t to_air_weapon;    /* toairweapon targeting flag */
     int32_t no_air_weapon;    /* noairweapon targeting flag */
     int32_t no_radar;         /* noradar projectile/minimap flag */
@@ -242,6 +253,12 @@ typedef struct UnitWeapon {
     /* subtype = mindcontrol: the hit rolls to take the unit over and
      * deals no damage (legacy:249801, legacy:247761). */
     uint8_t mind_control;
+    /* A hover attacker's standoff and height with this weapon, 0 to take
+     * the unit's (legacy:250022-250024), and the `dropped` key, which
+     * sends the attack another way (legacy:250054-250055, 30051). */
+    int16_t hover_attack_dist;
+    int16_t hover_attack_alt;
+    uint8_t drop_key;
     /* Button icon JPEG names (no extension, no path) — resolve to
      * `data/anims/weaponpic/<lowercased>.jpg`. The legacy engine reads
      * these `buttonimage*` fields from the inline [WEAPONn] section
@@ -312,7 +329,31 @@ typedef struct Projectile {
     uint8_t  path_flags;
     /* UNIT_BLAST_*: what the shot's blast does to scenery. */
     uint8_t  blast_flags;
+    /* A Wandering shot (legacy:249059-249174), stepped once a frame:
+     * its UNIT_WANDER_* phase, the picture and hold of the art it
+     * shows, its 16.16 position and velocity, the velocity it set out
+     * with, the two spreads its turns draw from and their stream, the
+     * frames left of its run and to its next turn, and the frames
+     * between turns. wander is 0 for every other shot. */
+    uint8_t  wander;
+    uint8_t  wander_steps;
+    uint16_t wander_hold;
+    uint16_t wander_pic;
+    int32_t  wander_x_fp, wander_y_fp;
+    int32_t  wander_vx_fp, wander_vy_fp;
+    int32_t  wander_base_vx, wander_base_vy;
+    float    wander_amp_x, wander_amp_y;
+    uint32_t wander_seed;
+    int32_t  wander_left, wander_turn, wander_every;
+    int16_t  wander_art[3];       /* start, loop, end sprite slots      */
 } Projectile;
+
+/* The phases of a Wandering shot: one frame waiting on its caster, its
+ * start art, the run that bursts every frame, its end art. */
+#define UNIT_WANDER_WAIT  1
+#define UNIT_WANDER_START 2
+#define UNIT_WANDER_LOOP  3
+#define UNIT_WANDER_END   4
 
 /* The weapon is unitsonly, so its blast leaves scenery alone
  * (legacy:245240), and the weapon is a fire starter (legacy:250028). */
@@ -421,6 +462,11 @@ typedef struct UnitDef {
     int32_t  radar_distance;   /* radardistance; radar-only detection radius */
     int32_t  can_fly;          /* canfly; needed for air target filters */
     int32_t  cruise_alt;       /* cruisealt: flight height above ground (legacy:162970) */
+    /* hoverattack, hoverattackdistance and hoverattackaltitude, the last
+     * cruisealt when unset (legacy:163005-163011). */
+    uint8_t  hover_attack;
+    int16_t  hover_attack_dist;
+    int16_t  hover_attack_alt;
     /* activatewhenbuilt — legacy activates the unit the moment it
      * finishes (sets ACTIVATION and runs the COB Activate script;
      * lodestones raise their crystal through this). */
@@ -782,6 +828,27 @@ typedef struct UnitMoveLeg {
  * under it straight away, with no glide (legacy:24296-24382). */
 #define UNIT_AIR_LOOK    5
 
+/* Unit.hover_state, the hover attack's stages (legacy:30164-30449):
+ * closing to within its distance plus 160 px, a point to pick next
+ * frame, holding it until a look, a random bearing to pick next frame,
+ * and flying round to that bearing's point. */
+#define UNIT_HOVER_NONE   0
+#define UNIT_HOVER_CLOSE  1
+#define UNIT_HOVER_PICK   2
+#define UNIT_HOVER_WAIT   3
+#define UNIT_HOVER_RANDOM 4
+#define UNIT_HOVER_ROUND  5
+/* Unit.hover_events: a shot fired, a shot landed that did not hurt the
+ * other side more than twice its own, the point reached, closing from
+ * further than its distance plus 160 px, the weapons set on the target,
+ * and the point still to reach. */
+#define UNIT_HOVER_EV_FIRED   0x01u
+#define UNIT_HOVER_EV_LANDED  0x02u
+#define UNIT_HOVER_EV_ARRIVED 0x04u
+#define UNIT_HOVER_FAR        0x20u
+#define UNIT_HOVER_ARMED      0x40u
+#define UNIT_HOVER_GOING      0x80u
+
 /* Unit.face_mode: no heading asked for, one to take on arrival, or one
  * reached and held until the next order. */
 #define UNIT_FACE_NONE    0
@@ -904,6 +971,16 @@ typedef struct Unit {
     uint16_t   air_bearing;
     int32_t    air_x, air_y;
     int32_t    air_ox, air_oy;
+    /* Hover attack (legacy:30139-30705): hover_state a UNIT_HOVER_*
+     * stage, hover_wait the frames before it looks again, hover_steps
+     * the step outs this attack, hover_events the UNIT_HOVER_EV_* bits
+     * raised since it last looked, and (hover_x, hover_y) its point, off
+     * the target unit or on the ground. */
+    uint8_t    hover_state;
+    uint8_t    hover_wait;
+    uint8_t    hover_steps;
+    uint8_t    hover_events;
+    int32_t    hover_x, hover_y;
     /* An attack order, not a target it took itself: UNIT_ATTACK_ORDER,
      * or UNIT_ATTACK_HELD for a mission script's, which D-025 never
      * lets go. */
@@ -1504,6 +1581,14 @@ const UnitNimbus *Units_GetNimbuses(int *out_count);
 /* Lights a nimbus on a unit as a cast would, with the art given, for
  * tests. 1 when it lit. */
 int Units_DebugNimbusCast(int handle, int sprite, int frames, int ticks_per_frame);
+
+/* The anims file a sprite slot reads, NULL for none, and the slot for
+ * a file, added on first ask. A save names a wandering shot's art. */
+const char *Units_SpriteArtFile(int idx);
+int         Units_SpriteArtSlot(const char *file);
+/* The pictures in a sprite slot's sequence, read from the file, 0 for
+ * none: what a wandering shot's phases are timed by. */
+int         Units_SpriteArtPictures(int idx);
 /* Fires weapon `slot` of a unit at the ground, for tests. 1 when it fired. */
 int         Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y);
 /* Weapon `slot` of unit `handle` goes off on the ground at (x, y), as a

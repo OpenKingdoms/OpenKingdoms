@@ -221,8 +221,8 @@ What read as instant is most likely the Harpies' stack. A Harpy fires
 from wherever it is inside its 300 px reach, and the stack sits close.
 At 100 px a shot used to land in under half a second. The original
 holds a hovering attacker `hoverattackdistance` off its target, 200 px
-for the Harpy (:163005-163007), which the engine does not do yet
-(D-039).
+for the Harpy (:163005-163007), which the engine did not do then. It
+does since #401 (2026-10-10-hover-attack.md).
 
 The quad is a function of the 3DO file, which the data fingerprint
 already hashes, and the fingerprint's schema moves to 4 because the

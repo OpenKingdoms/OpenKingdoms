@@ -433,6 +433,18 @@ static int test_every_subsystem_contributes(void) {
          g_units[0].air_bearing = 0);
     POKE("circle centre", g_units[0].air_oy = 99, g_units[0].air_oy = 0);
     g_units[0].air_mode = 0;
+    POKE("hover attack stage", g_units[0].hover_state = UNIT_HOVER_CLOSE,
+         g_units[0].hover_state = 0);
+    g_units[0].hover_state = UNIT_HOVER_WAIT;
+    POKE("hover look timer", g_units[0].hover_wait = 15,
+         g_units[0].hover_wait = 0);
+    POKE("hover step outs", g_units[0].hover_steps = 2,
+         g_units[0].hover_steps = 0);
+    POKE("hover events", g_units[0].hover_events = UNIT_HOVER_EV_LANDED,
+         g_units[0].hover_events = 0);
+    POKE("hover point", g_units[0].hover_x = -200, g_units[0].hover_x = 0);
+    POKE("hover point y", g_units[0].hover_y = 31, g_units[0].hover_y = 0);
+    g_units[0].hover_state = 0;
     POKE("summons held for units on its spot",
          g_units[0].build_held = 1, g_units[0].build_held = 0);
     g_units[0].build_held = 1;
@@ -517,6 +529,29 @@ static int test_every_subsystem_contributes(void) {
     POKE("projectile mind control",
          g_projectiles[0].mind_control = 1,
          g_projectiles[0].mind_control = 0);
+    /* A wandering shot's run: its phase, where it is to the 1/65536,
+     * its next turn and the stream that turn draws from. */
+    POKE("wandering shot phase",
+         g_projectiles[0].wander = UNIT_WANDER_LOOP,
+         g_projectiles[0].wander = 0);
+    g_projectiles[2].wander = UNIT_WANDER_LOOP;
+    POKE("wandering shot sub-pixel position",
+         g_projectiles[2].wander_x_fp += 1,
+         g_projectiles[2].wander_x_fp -= 1);
+    POKE("wandering shot frames to its turn",
+         g_projectiles[2].wander_turn += 1,
+         g_projectiles[2].wander_turn -= 1);
+    POKE("wandering shot stream",
+         g_projectiles[2].wander_seed += 1,
+         g_projectiles[2].wander_seed -= 1);
+    POKE("wandering shot picture hold",
+         g_projectiles[2].wander_hold += 1,
+         g_projectiles[2].wander_hold -= 1);
+    /* Its art slots are a cache numbered in first use order. */
+    POKE_IGNORED("wandering shot art slot",
+                 g_projectiles[2].wander_art[1] = 5,
+                 g_projectiles[2].wander_art[1] = 0);
+    g_projectiles[2].wander = 0;
 
     POKE("feature decompose counter",
          g_world->features[1].decompose_ticks -= 1,

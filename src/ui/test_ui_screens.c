@@ -13878,11 +13878,13 @@ TEST(a_harpy_takes_a_swordsman_standing_or_walking_across) {
     ASSERT(ok);
     ASSERT(set);
     /* Pinned. A shot lands slower than the Harpy reloads, so a second is
-     * often in the air when the first takes its target. */
+     * in the air when the first takes a still target. A walking one is
+     * taken by the first, fired from the hover attack's 200 px, in all
+     * but one seed, where the second shot takes it. */
     ASSERT_EQ_INT(4, still);
-    ASSERT_EQ_INT(9, still_shots);
+    ASSERT_EQ_INT(8, still_shots);
     ASSERT_EQ_INT(4, walking);
-    ASSERT_EQ_INT(10, walking_shots);
+    ASSERT_EQ_INT(5, walking_shots);
 }
 
 /* Use Crusades Units loads the Crusades balance set, unitscb/ in place
@@ -14138,6 +14140,100 @@ TEST(a_kamikaze_rat_bursts_as_its_death_ends) {
     ASSERT_EQ_INT(0, own_left);
     ASSERT_EQ_INT(far_max, far_hp);
     ASSERT_EQ_INT(FEATURE_FX_DYING, tree_fx);
+}
+
+static int g_wander_blasts, g_wander_bad, g_wander_def, g_wander_slot;
+/* The archer's arrows when it answers are not the shot's. */
+static void wander_note_blast(const UnitsBlast *b) {
+    if (b->def != g_wander_def || b->slot != g_wander_slot) return;
+    g_wander_blasts++;
+    if (b->struck != -1) g_wander_bad++;
+}
+
+/* The live wandering shot, or NULL. */
+static const Projectile *wander_shot(void) {
+    int n = 0;
+    const Projectile *p = Units_GetProjectiles(&n);
+    for (int i = 0; p && i < n; i++)
+        if (p[i].alive && p[i].wander) return &p[i];
+    return NULL;
+}
+
+/* Every weapon the data marks Wandering, the Weather Witch's Tornado and
+ * the gods' vortexes and Hurricane, plays its start art, bursts on each
+ * frame of its duration as it wanders, plays its end art and is gone,
+ * and the archer it was cast at 40 px off is hurt (legacy:249099-249174,
+ * 244963-245050). Each picture holds two of the original's frames. */
+TEST(every_wandering_weapon_wanders_bursts_and_ends) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    int arch_def = Units_FindDefByName("ARAARCH");
+    int found = 0, witch = 0, bad = 0;
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = 0, cy = 0;
+    int ground = world && unit_count > 0 && arch_def >= 0 &&
+                 corpse_find_clear_ground(world, units[0].world_x + 256,
+                                          units[0].world_y, 96, &cx, &cy);
+    for (int d = 0; ground && d < Units_GetDefCount(); d++) {
+        const UnitDef *ud = Units_GetDef(d);
+        for (int s = 0; ud && s < ud->num_weapons; s++) {
+            const UnitWeapon *wp = &ud->weapons[s];
+            if (!wp->is_wandering) continue;
+            found++;
+            if (strcmp(ud->unitname, "TARWITCH") == 0) witch = 1;
+            int pics[3];
+            for (int k = 0; k < 3; k++) pics[k] = Units_SpriteArtPictures(wp->wander_art[k]);
+            int caster = Units_Spawn(d, 1, 0, cx, cy);
+            int foe = Units_Spawn(arch_def, 2, 1, cx + 40, cy);
+            if (caster < 0 || foe < 0) { bad++; continue; }
+            Units_DebugSetAggro(caster, UNIT_AGGRO_PASSIVE);
+            Units_DebugSetAggro(foe, UNIT_AGGRO_PASSIVE);
+            for (int t = 0; t < 4; t++) Units_TickEngines();
+            units = Units_GetActive(&unit_count);
+            int foe_hp = units[foe].health;
+            g_wander_blasts = g_wander_bad = 0;
+            g_wander_def = d;
+            g_wander_slot = s;
+            Units_SetBlastHook(wander_note_blast);
+            int fired = Units_DebugFireAt(caster, s, foe);
+            int frames[5] = { 0, 0, 0, 0, 0 };
+            int seen = 0;
+            for (int t = 0; fired && t < 3000; t++) {
+                Units_TickEngines();
+                if (Units_SimTick() & 1u) continue;
+                const Projectile *p = wander_shot();
+                if (!p) { if (seen) break; continue; }
+                seen = 1;
+                if (p->wander <= UNIT_WANDER_END) frames[p->wander]++;
+            }
+            Units_SetBlastHook(NULL);
+            units = Units_GetActive(&unit_count);
+            int hurt = units[foe].alive != UNIT_ALIVE_ACTIVE || units[foe].health < foe_hp;
+            printf("[%s %s: pictures %d/%d/%d, frames %d/%d/%d, %d blasts, hurt %d] ",
+                   ud->unitname, wp->name, pics[0], pics[1], pics[2],
+                   frames[UNIT_WANDER_START], frames[UNIT_WANDER_LOOP],
+                   frames[UNIT_WANDER_END], g_wander_blasts, hurt);
+            if (!fired || !seen || wander_shot() || pics[0] <= 0 || pics[1] <= 0 ||
+                pics[2] <= 0 || wp->wander_duration <= 0 ||
+                frames[UNIT_WANDER_START] != 2 * pics[0] ||
+                frames[UNIT_WANDER_LOOP] != wp->wander_duration ||
+                frames[UNIT_WANDER_END] != 2 * pics[2] ||
+                g_wander_blasts != wp->wander_duration || g_wander_bad != 0 || !hurt)
+                bad++;
+            Units_DebugRemove(caster);
+            if (units[foe].alive != UNIT_ALIVE_DEAD) Units_DebugRemove(foe);
+            for (int t = 0; t < 4; t++) Units_TickEngines();
+        }
+    }
+    corpse_shutdown(&platform);
+    ASSERT(ground);
+    ASSERT(found >= 4);
+    ASSERT(witch);
+    ASSERT_EQ_INT(0, bad);
 }
 
 /* Count near-white pixels inside a screen rect. The whiteout death
@@ -18560,6 +18656,106 @@ done:
     VFS_Shutdown();
 }
 
+/* Twelve real Harpies, hoverattack = 1 and hoverattackdistance = 200,
+ * sent to attack one spot of open ground. The original holds each one
+ * on its own bearing 200 px out (legacy:30139-30370), so the flock fans
+ * out round the spot instead of stopping in a bunch at the 300 px edge
+ * of its reach. Counted while they attack: the others within 50 px of
+ * each, the most one Water Ball (Kirenna's, areaofeffect 100) could take
+ * and the most one Water Blast (areaofeffect 500) could take. */
+static int ui_flock_within(const Unit *units, const int *h, int n,
+                           int32_t x, int32_t y, int r) {
+    int c = 0;
+    for (int i = 0; i < n; i++) {
+        int64_t dx = (int64_t)units[h[i]].world_x - x;
+        int64_t dy = (int64_t)units[h[i]].world_y - y;
+        if (dx * dx + dy * dy <= (int64_t)r * r) c++;
+    }
+    return c;
+}
+
+TEST(harpies_attacking_one_spot_spread_round_it) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+    int harpy = Units_FindDefByName("ZONHARP");
+    if (harpy < 0) { SKIP_MARK("no ZONHARP"); goto done; }
+    {
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(sword_def >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t rx = 0, ry = 0;
+    if (gates_find_site(world, sword_def, units[0].world_x, units[0].world_y,
+                        320, 1, 0, &rx, &ry) != 0) {
+        SKIP_MARK("no open ground");
+        goto done;
+    }
+    #define FLOCK_N 12
+    int h[FLOCK_N];
+    for (int i = 0; i < FLOCK_N; i++) {
+        h[i] = Units_Spawn(harpy, 1, 0, rx - 480 + (i % 4) * 64, ry - 96 + (i / 4) * 64);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    for (int i = 0; i < FLOCK_N; i++) ASSERT(Units_OrderAttackGround(h[i], rx, ry));
+    int64_t near_sum = 0, near_n = 0, dist_sum = 0, dist_n = 0;
+    int ball = 0, blast = 0, attacking_end = 0;
+    for (int t = 0; t < 3600; t++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        if (t < 1200 || t % 30 != 0) continue;
+        units = Units_GetActive(&unit_count);
+        int all[FLOCK_N], n = 0, on = 0;
+        for (int i = 0; i < FLOCK_N; i++)
+            if (units[h[i]].alive == UNIT_ALIVE_ACTIVE) all[n++] = h[i];
+        for (int i = 0; i < n; i++) {
+            const Unit *a = &units[all[i]];
+            near_sum += ui_flock_within(units, all, n, a->world_x, a->world_y, 50) - 1;
+            near_n++;
+            int b = ui_flock_within(units, all, n, a->world_x, a->world_y, 50);
+            if (b > ball) ball = b;
+            int w = ui_flock_within(units, all, n, a->world_x, a->world_y, 250);
+            if (w > blast) blast = w;
+            if (a->cmd_kind != UNIT_CMD_ATTACK_GROUND) continue;
+            on++;
+            int64_t dx = (int64_t)a->world_x - rx, dy = (int64_t)a->world_y - ry;
+            dist_sum += (int64_t)sqrt((double)(dx * dx + dy * dy));
+            dist_n++;
+        }
+        int w = ui_flock_within(units, all, n, rx, ry, 250);
+        if (w > blast) blast = w;
+        attacking_end = on;
+    }
+    double near_avg = near_n ? (double)near_sum / (double)near_n : 0.0;
+    double dist_avg = dist_n ? (double)dist_sum / (double)dist_n : 0.0;
+    printf("(%.2f others within 50 px on average, attackers %.0f px from "
+           "the spot on average, one Water Ball takes up to %d, one Water "
+           "Blast up to %d, %d of %d still attacking at the end) ", near_avg, dist_avg,
+           ball, blast, attacking_end, FLOCK_N);
+    ASSERT(near_n > 0);
+    ASSERT(near_avg < 2.0);
+    ASSERT(dist_avg >= 180.0 && dist_avg <= 230.0);
+    ASSERT(ball <= 4);
+    InGame_Shutdown();
+    #undef FLOCK_N
+    }
+done:
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* User report: "when i build a ship in the water, it can come up on to
  * land". The move class water window (legacy:219155-219157) is the
  * rule; the Taros ghost ship crosses land only because tarship.fbi sets
@@ -20108,6 +20304,152 @@ TEST(flyers_cruise_over_the_sea_not_the_sea_floor) {
     ASSERT(stands >= (float)(w->water_height + dd->cruise_alt));
     ASSERT(drawn >= (float)(w->water_height + dd->cruise_alt));
     ASSERT(ghost_at >= (float)(w->water_height + 50));
+    fw_teardown(&platform);
+}
+
+/* What a flyer must never do near water: stand or be drawn under the
+ * sea, or come down with a corner of its footprint under it. */
+typedef struct FwaTally {
+    int under_sea, drawn_under, wet_landed;
+} FwaTally;
+
+static void fwa_watch(GameWorld *w, int h, const UnitDef *d, FwaTally *t) {
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    if (h < 0 || h >= n) return;
+    const Unit *v = &u[h];
+    int sea = w->water_height;
+    int g = Terrain_SampleHeight(w, v->world_x, v->world_y);
+    if (Units_DebugStandHeight(h) < (float)sea) t->under_sea++;
+    if ((float)g + Units_DrawnAlt(w, v) < (float)sea) t->drawn_under++;
+    if (d->script_flies && !v->flying &&
+        (g < sea || fw_lowest_corner(w, v->world_x, v->world_y, d->footprint_x,
+                                     d->footprint_z) < sea))
+        t->wet_landed++;
+}
+
+static void fwa_run(FwSea *s, int h, const UnitDef *d, FwaTally *t, int ticks) {
+    for (int i = 0; i < ticks; i++) {
+        InGame_DebugRunSimTicks(1);
+        fwa_watch(s->world, h, d, t);
+    }
+}
+
+/* Sent past (x, y) and stopped within 48 px of it at its cruise height. */
+static int fwa_stop_over(FwSea *s, int h, const UnitDef *d, FwaTally *t,
+                         int32_t x, int32_t y) {
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    float vx = (float)(x - u[h].world_x), vy = (float)(y - u[h].world_y);
+    float vl = sqrtf(vx * vx + vy * vy);
+    if (vl < 1.0f) vl = 1.0f;
+    Units_OrderMove(h, x + (int32_t)(vx / vl * 112.0f), y + (int32_t)(vy / vl * 112.0f));
+    for (int i = 0; i < 9000; i++) {
+        InGame_DebugRunSimTicks(1);
+        fwa_watch(s->world, h, d, t);
+        u = Units_GetActive(&n);
+        int64_t dx = u[h].world_x - x, dy = u[h].world_y - y;
+        int up = !d->script_flies ||
+                 (u[h].flying && u[h].flight_alt >= (float)d->cruise_alt);
+        if (up && dx * dx + dy * dy <= 48 * 48) {
+            Units_OrderStop(h);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Every unit with canfly on Two Castles, left idle over the open sea,
+ * stopped by the shore, stopped over the shallows and stopped after a
+ * patrol over the sea, lands only on dry ground and never stands or is
+ * drawn under the water. A hoverer stays cruisealt over the sea. */
+TEST(every_flyer_kind_keeps_off_the_water) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    FwSea s;
+    ASSERT_EQ_INT(0, fw_setup(&platform, &s));
+    GameWorld *w = s.world;
+    int sea = w->water_height;
+    Units_DebugRemove(s.drag);
+    /* No computer, so nothing ends the battle under the sweep. */
+    for (int p = 1; p < TAK_MAX_PLAYERS; p++)
+        if (w->cfg.players[p].kind == TAK_SLOT_AI) w->cfg.players[p].kind = TAK_SLOT_HUMAN;
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    for (int k = 0; k < n; k++)
+        if (u[k].alive && u[k].player_id != 1) Units_DebugSetAggro(k, UNIT_AGGRO_PASSIVE);
+    /* Shallows: no more than 12 under the sea for 24 px round. */
+    int32_t sh_x = -1, sh_y = -1;
+    const TNTFile *tt = &w->tnt;
+    for (int32_t y = 256; y < w->map_pixels_h - 256 && sh_x < 0; y += 16)
+        for (int32_t x = 256; x < w->map_pixels_w - 256 && sh_x < 0; x += 16) {
+            int ok = 1;
+            for (int32_t py = y - 24; py <= y + 24 && ok; py += 16)
+                for (int32_t px = x - 24; px <= x + 24 && ok; px += 16) {
+                    int hh = tt->heightmap[(py >> 4) * tt->height_w + (px >> 4)];
+                    if (hh >= sea || hh < sea - 12) ok = 0;
+                }
+            if (ok) { sh_x = x; sh_y = y; }
+        }
+    ASSERT(sh_x >= 0);
+    int kinds = 0, bad = 0;
+    for (int di = 0; di < Units_GetDefCount(); di++) {
+        const UnitDef *d = Units_GetDef(di);
+        if (!d || !d->can_fly) continue;
+        int32_t lx = -1, ly = -1;
+        for (int32_t r = 128; r < 4000 && lx < 0; r += 64)
+            for (int k = 0; k < 16 && lx < 0; k++) {
+                float a = (float)k * 6.2831853f / 16.0f;
+                int32_t x = s.open_x + (int32_t)((float)r * cosf(a));
+                int32_t y = s.open_y + (int32_t)((float)r * sinf(a));
+                if (x < 128 || y < 128 || x > w->map_pixels_w - 128 ||
+                    y > w->map_pixels_h - 128) continue;
+                if (fw_lowest_corner(w, x, y, d->footprint_x + 1, d->footprint_z + 1) > sea &&
+                    Units_IsBuildSiteFree(di, x, y)) { lx = x; ly = y; }
+            }
+        int h = lx >= 0 ? Units_Spawn(di, 1, 0, lx, ly) : -1;
+        if (h < 0) { printf("[%s not placed] ", d->unitname); bad++; continue; }
+        Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+        FwaTally t;
+        memset(&t, 0, sizeof(t));
+        int reached = fwa_stop_over(&s, h, d, &t, s.open_x, s.open_y);
+        fwa_run(&s, h, d, &t, 1500);
+        float open_at = Units_DebugStandHeight(h);
+        reached &= fwa_stop_over(&s, h, d, &t, s.shore_x, s.shore_y);
+        fwa_run(&s, h, d, &t, 3600);
+        reached &= fwa_stop_over(&s, h, d, &t, sh_x, sh_y);
+        fwa_run(&s, h, d, &t, 2400);
+        Units_OrderMove(h, s.open_x - 160, s.open_y);
+        fwa_run(&s, h, d, &t, 1200);
+        Units_OrderPatrol(h, s.open_x + 160, s.open_y);
+        fwa_run(&s, h, d, &t, 900);
+        Units_OrderStop(h);
+        fwa_run(&s, h, d, &t, 1500);
+        u = Units_GetActive(&n);
+        int alive = u[h].alive == UNIT_ALIVE_ACTIVE;
+        int landings = Units_DebugScriptEventCount(h, UNIT_SCRIPT_EV_BEGIN_LANDING);
+        int hover_low = !d->script_flies &&
+                        open_at < (float)(sea + d->cruise_alt);
+        if (!reached || !alive || hover_low || t.under_sea || t.drawn_under ||
+            t.wet_landed) {
+            printf("[%s reached %d alive %d over the sea at %.0f under %d drawn "
+                   "under %d down wet %d] ", d->unitname, reached, alive,
+                   (double)open_at, t.under_sea, t.drawn_under, t.wet_landed);
+            bad++;
+        }
+        if (d->script_flies && landings == 0) {
+            printf("[%s never landed] ", d->unitname);
+            bad++;
+        }
+        kinds++;
+        Units_DebugRemove(h);
+        InGame_DebugRunSimTicks(2);
+    }
+    printf("(%d kinds with canfly, %d at fault) ", kinds, bad);
+    ASSERT(kinds >= 20);
+    ASSERT_EQ_INT(0, bad);
     fw_teardown(&platform);
 }
 
@@ -30912,6 +31254,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(reclaim_clears_feature_and_pays_mana);
     RUN_UI_TEST(a_dead_unit_leaves_its_corpse_when_the_death_finishes);
     RUN_UI_TEST(a_kamikaze_rat_bursts_as_its_death_ends);
+    RUN_UI_TEST(every_wandering_weapon_wanders_bursts_and_ends);
     TEST_SUITE("Archers against melee");
     RUN_UI_TEST(a_swordsman_closes_on_the_archer_behind_and_wins);
     RUN_UI_TEST(an_idle_swordsman_looks_as_far_as_its_weapon_reaches);
@@ -30991,6 +31334,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(flyer_left_over_open_sea_never_lands_in_it);
     RUN_UI_TEST(flyer_stopped_by_the_shore_lands_on_dry_ground);
     RUN_UI_TEST(flyers_cruise_over_the_sea_not_the_sea_floor);
+    RUN_UI_TEST(every_flyer_kind_keeps_off_the_water);
     RUN_UI_TEST(tower_aim_faces_target);
     RUN_UI_TEST(war_galley_attacks_shore_target);
     RUN_UI_TEST(monarch_attacks_large_structure);
@@ -31054,6 +31398,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(completed_wall_blocks_units);
     RUN_UI_TEST(units_do_not_stack_on_one_another);
     RUN_UI_TEST(harpies_sent_to_one_place_do_not_stack);
+    RUN_UI_TEST(harpies_attacking_one_spot_spread_round_it);
     RUN_UI_TEST(boats_stay_in_water_ghost_ships_do_not);
     RUN_UI_TEST(ship_hulls_come_from_their_models);
     RUN_UI_TEST(a_ship_that_dies_leaves_its_wreck);
