@@ -31,6 +31,13 @@
 #  include <emscripten.h>
 #endif
 
+/* The folder under the organisation's. The game's is OpenKingdoms. The
+ * okengine library names its own, so a host never shares the game's
+ * options.cfg. */
+#ifndef TAK_PREF_APP
+#  define TAK_PREF_APP "OpenKingdoms"
+#endif
+
 #define PATHS_DIR_MAX  1024
 #define PATHS_SUB_MAX  1100
 
@@ -94,7 +101,7 @@ const char *Paths_PrefDir(void) {
     snprintf(s_pref, sizeof(s_pref), "test_prefs/");
     make_dirs(s_pref);
 #else
-    char *pref = SDL_GetPrefPath("OpenKingdoms", "OpenKingdoms");
+    char *pref = SDL_GetPrefPath("OpenKingdoms", TAK_PREF_APP);
     if (pref) {
         snprintf(s_pref, sizeof(s_pref), "%s", pref);
         SDL_free(pref);

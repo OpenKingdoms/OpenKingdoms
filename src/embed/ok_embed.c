@@ -48,6 +48,7 @@
 #include "tak_terrain.h"
 #include "tak_tnt.h"
 #include "tak_savegame.h"
+#include "tak_settings.h"
 #include "tak_sim_hash.h"
 #include "tak_ui.h"
 #include "tak_unit.h"
@@ -184,6 +185,12 @@ int32_t okx_init(const char *game_dir, const char *data_dir) {
     } else {
         VFS_SetModArchives(NULL, 0);
     }
+    /* Options and saves go in the user folder, else in the library's own
+     * per-user folder, never in the desktop game's options.cfg. Read
+     * before anything saves, so a save keeps what the file holds. */
+    Settings_SetDirectory(g.user_dir[0] ? g.user_dir : NULL);
+    Settings_Clear();
+    (void)Settings_Load();
     if (VFS_Init(game_dir, data_dir && data_dir[0] ? data_dir : NULL) != 0) {
         fail("no game files in %s", game_dir);
         return -1;

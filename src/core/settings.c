@@ -93,6 +93,11 @@ void Settings_SetStr(const char *key, const char *value) {
     snprintf(e->text, sizeof(e->text), "%s", value);
 }
 
+void Settings_Clear(void) {
+    memset(s_entries, 0, sizeof s_entries);
+    s_count = 0;
+}
+
 int Settings_Load(void) {
     FILE *fp = fopen(Settings_FilePath(), "r");
     if (!fp) return 0;

@@ -7,6 +7,8 @@
 #   2. Every program that compiles the paths module is the game or a test
 #      build, and the game is not a test build. A test build never asks
 #      the platform where the preference directory is.
+#   2b. Every library that compiles it, such as okengine, names a
+#      per-user folder of its own, so a host never writes the game's.
 #   3. No source but src/core/paths.c names a call or a variable that
 #      finds the platform's per-user folders.
 #
@@ -64,6 +66,10 @@ foreach(row IN LISTS rows)
             endif()
         elseif(NOT val STREQUAL "1")
             list(APPEND bad "${name} compiles the paths module but is not a test build")
+        endif()
+    elseif(kind STREQUAL "library")
+        if(val STREQUAL "" OR val STREQUAL "OpenKingdoms")
+            list(APPEND bad "${name} compiles the paths module without a per-user folder of its own")
         endif()
     endif()
 endforeach()

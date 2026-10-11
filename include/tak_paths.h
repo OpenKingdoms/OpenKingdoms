@@ -9,7 +9,8 @@
  * The preference directory is SDL's, built from "OpenKingdoms" as both
  * the organisation and the application, so it is doubled on disk. That
  * is left alone on purpose: changing it would orphan the options.cfg
- * players already have. See docs/notes/paths.md.
+ * players already have. See docs/notes/paths.md. The okengine library
+ * is built with TAK_PREF_APP naming a folder of its own.
  *
  * Separators are never assumed. SDL hands back a backslash path on
  * Windows and a forward slash path everywhere else, so anything this

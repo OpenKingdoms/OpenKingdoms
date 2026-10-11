@@ -65,7 +65,9 @@ OKX_API const char *okx_last_error(void);
 
 /* The player's own folder, mounted over the game's files and read
  * loose, where maps made in the editor are saved (under maps/) and
- * found again like any other. Call before okx_init. NULL for none. */
+ * found again like any other. The engine keeps its options.cfg there
+ * too. With none it uses a per-user folder of its own, never the
+ * desktop game's. Call before okx_init. NULL for none. */
 OKX_API void    okx_set_user_dir(const char *dir);
 
 /* A folder of .glb models that replace the shipped ones by name: a

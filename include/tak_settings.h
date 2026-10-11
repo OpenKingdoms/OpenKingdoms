@@ -23,6 +23,10 @@ int  Settings_Load(void);
 /* Write every known key. Returns 0 on success. */
 int  Settings_Save(void);
 
+/* Forget every key, as before the first load. A host that moves the
+ * store to another folder starts from that folder's file. */
+void Settings_Clear(void);
+
 int  Settings_GetInt(const char *key, int default_value);
 void Settings_SetInt(const char *key, int value);
 

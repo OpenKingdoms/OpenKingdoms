@@ -3,6 +3,20 @@
  * boot, load a real map, tick, and read back terrain, models, units,
  * poses and features. Needs the game data.
  */
+#ifdef _WIN32
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#  include <direct.h>
+/* windows.h's old pointer words, which the cases use as names. */
+#  undef near
+#  undef far
+#else
+#  include <arpa/inet.h>
+#  include <netinet/in.h>
+#  include <sys/socket.h>
+#  include <sys/stat.h>
+#  include <unistd.h>
+#endif
 #include "test_framework.h"
 #include "ok_embed.h"
 
@@ -3108,8 +3122,152 @@ TEST(scenery_a_rock_destroys_tells_each_step) {
     ASSERT_EQ_INT(hit.blast, end.blast);
 }
 
+/* ── Where the engine keeps its options ─────────────────────────────── */
+
+/* The desktop game keeps its options.cfg in TAK_CONFIG_DIR when that is
+ * set, so a folder named there stands in for the player's own. */
+#define GAME_PREFS   "test_embed_game_prefs"
+#define USER_OPTIONS "test_embed_user/options.cfg"
+
+static void set_config_env(const char *value) {
+#ifdef _WIN32
+    _putenv_s("TAK_CONFIG_DIR", value ? value : "");
+#else
+    if (value) setenv("TAK_CONFIG_DIR", value, 1);
+    else unsetenv("TAK_CONFIG_DIR");
+#endif
+}
+
+static void make_dir(const char *path) {
+#ifdef _WIN32
+    (void)_mkdir(path);
+#else
+    (void)mkdir(path, 0755);
+#endif
+}
+
+static int file_exists(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fclose(f);
+    return 1;
+}
+
+/* The value a key=value file gives `key`, "" when it gives none. */
+static const char *file_value(const char *path, const char *key, char *out, size_t cap) {
+    out[0] = 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return out;
+    char line[256];
+    size_t kn = strlen(key);
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, key, kn) != 0 || line[kn] != '=') continue;
+        snprintf(out, cap, "%s", line + kn + 1);
+        out[strcspn(out, "\r\n")] = 0;
+    }
+    fclose(f);
+    return out;
+}
+
+#ifdef _WIN32
+typedef SOCKET lsock_t;
+#  define LSOCK_NONE INVALID_SOCKET
+#  define lsock_close closesocket
+#else
+typedef int lsock_t;
+#  define LSOCK_NONE (-1)
+#  define lsock_close close
+#endif
+
+/* A socket on this machine that takes a connection and says nothing,
+ * which is all a join needs to make its hello. The port, 0 for none. */
+static int listen_here(lsock_t *out) {
+#ifdef _WIN32
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return 0;
+#endif
+    lsock_t s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == LSOCK_NONE) return 0;
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socklen_t len = sizeof a;
+    if (bind(s, (struct sockaddr *)&a, sizeof a) != 0 || listen(s, 4) != 0 ||
+        getsockname(s, (struct sockaddr *)&a, &len) != 0) {
+        lsock_close(s);
+        return 0;
+    }
+    *out = s;
+    return ntohs(a.sin_port);
+}
+
+static void listen_end(lsock_t s) {
+    lsock_close(s);
+#ifdef _WIN32
+    WSACleanup();
+#endif
+}
+
+/* Joins a server here and leaves, which makes the device token on the
+ * first join and saves it. 0 when the join went out. */
+static int join_and_leave(void) {
+    lsock_t s;
+    int port = listen_here(&s);
+    if (!port) return -1;
+    char url[64];
+    snprintf(url, sizeof url, "ws://127.0.0.1:%d/play", port);
+    int rc = okx_net_connect(url, "Tester");
+    okx_net_disconnect();
+    listen_end(s);
+    return rc;
+}
+
+/* The engine saves a joining player's device token in the host's user
+ * folder, keeping what that file held, reads it back the next time, and
+ * never writes the desktop game's options.cfg. */
+TEST(the_engine_keeps_its_options_in_the_hosts_folder) {
+    okx_shutdown();
+    g_booted = 0;
+    make_dir("test_embed_user");
+    FILE *f = fopen(USER_OPTIONS, "w");
+    ASSERT(f != NULL);
+    fputs("HostKept=7\n", f);
+    fclose(f);
+    make_dir(GAME_PREFS);
+    remove(GAME_PREFS "/options.cfg");
+    char was[1024];
+    const char *env = getenv("TAK_CONFIG_DIR");
+    snprintf(was, sizeof was, "%s", env ? env : "");
+    set_config_env(GAME_PREFS);
+
+    if (okx_init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) {
+        set_config_env(was);
+        SKIP("no game data");
+    }
+    char token[64], again[64], kept[16];
+    int first = join_and_leave();
+    file_value(USER_OPTIONS, "DeviceToken", token, sizeof token);
+    okx_shutdown();
+    int second = okx_init(TAK_GAME_DIR, TAK_DATA_DIR) == 0 ? join_and_leave() : -2;
+    okx_shutdown();
+    set_config_env(was);
+
+    ASSERT_EQ_INT(0, first);
+    ASSERT_EQ_INT(0, second);
+    ASSERT(!file_exists(GAME_PREFS "/options.cfg"));
+    ASSERT_EQ_INT(32, (int)strlen(token));
+    ASSERT_EQ_STR("7", file_value(USER_OPTIONS, "HostKept", kept, sizeof kept));
+    /* Read back, not made again. */
+    ASSERT_EQ_STR(token, file_value(USER_OPTIONS, "DeviceToken", again, sizeof again));
+}
+
 int main(void) {
     TEST_SUITE("ok_embed");
+    /* Nothing in the run may reach the player's own options: ctest names
+     * a folder for them, else this does. */
+    if (!getenv("TAK_CONFIG_DIR") || !getenv("TAK_CONFIG_DIR")[0])
+        set_config_env("test_embed_prefs");
     /* A user folder of the test's own, where the edited map is saved. */
     okx_set_user_dir("test_embed_user");
     RUN(the_maps_are_listed);
@@ -3167,5 +3325,6 @@ int main(void) {
     RUN(a_frame_is_listed_from_the_start_of_its_build);
     RUN(a_decided_battle_hands_out_its_record);
     RUN(the_game_ends_cleanly_and_can_start_again);
+    RUN(the_engine_keeps_its_options_in_the_hosts_folder);
     TEST_REPORT();
 }

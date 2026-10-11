@@ -21,10 +21,13 @@ No test touches your own options. Every test binary is a test build that
 never asks the platform where `options.cfg` lives, and ctest gives every test
 a `TAK_CONFIG_DIR` of its own under `<build tree>/src/testrun/<test>/prefs`.
 A test binary run by hand with no `TAK_CONFIG_DIR` keeps its options in
-`test_prefs` under the folder it runs in. `test_prefs_guard` fails if a test
-is registered without its own folder, if a program other than the game
-compiles the paths module without being a test build, or if any source but
-`src/core/paths.c` reaches for the platform's per-user folders.
+`test_prefs` under the folder it runs in. The okengine library keeps its
+options in the folder its host names with `okx_set_user_dir`, and with none in
+a per-user folder of its own, never in the game's. `test_prefs_guard` fails if
+a test is registered without its own folder, if a program other than the game
+compiles the paths module without being a test build, if a library compiles it
+without a per-user folder of its own, or if any source but `src/core/paths.c`
+reaches for the platform's per-user folders.
 
 ## Pick tests by what they run
 
