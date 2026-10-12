@@ -592,6 +592,61 @@ TEST(the_visitor_count_stops_at_its_cap_and_says_so) {
     ASSERT_EQ_INT((int)(cap + 10), (int)count(TAK_STAT_PAGE, "landing"));
 }
 
+static int sources_held(void) {
+    int n = 0;
+    for (unsigned i = 0; i < TAK_STATS_SOURCES; i++)
+        if (g_s.source[i].key) n++;
+    return n;
+}
+
+/* The hashed addresses go when the minute does, with or without traffic. */
+TEST(the_rate_limit_forgets_its_addresses_when_the_minute_is_up) {
+    TAK_Stats_Init(&g_s);
+    uint64_t t = NOON - NOON % TAK_STATS_WINDOW_MS;
+    ASSERT_EQ_INT(TAK_STATS_TAKEN, batch(ID_A, 0, "{\"k\":\"view\",\"page\":\"mods\"}", t));
+    ASSERT_EQ_INT(0, TAK_Stats_Authorized(&g_s, "Bearer guess", "192.0.2.1", t + 1));
+    ASSERT_EQ_INT(2, sources_held());
+    TAK_Stats_Tick(&g_s, t + TAK_STATS_WINDOW_MS - 1);
+    ASSERT_EQ_INT(2, sources_held());
+    TAK_Stats_Tick(&g_s, t + TAK_STATS_WINDOW_MS);
+    ASSERT_EQ_INT(0, sources_held());
+}
+
+TEST(a_visitor_with_no_region_is_still_none_once_read_back) {
+    clean_dir();
+    TAK_Stats_Init(&g_s);
+    ASSERT_EQ_INT(0, TAK_Stats_Open(&g_s, DIR, NOON));
+    const char json[] = "{\"v\":1,\"id\":\"aaaaaaaaaaaaaaaaaaaaaa\",\"ev\":[{\"k\":\"view\",\"page\":\"mods\"}]}";
+    ASSERT_EQ_INT(TAK_STATS_TAKEN, TAK_Stats_Post(&g_s, json, strlen(json), "192.0.2.1", NULL, NOON));
+    TAK_Stats_Close(&g_s, NOON + 10);
+    TAK_Stats_Init(&g_s);
+    ASSERT_EQ_INT(0, TAK_Stats_Open(&g_s, DIR, NOON + 5000));
+    ASSERT_EQ_INT(1, (int)count(TAK_STAT_REGION, "none"));
+    ASSERT_EQ_INT(0, (int)count(TAK_STAT_REGION, "other"));
+    TAK_Stats_Close(&g_s, NOON + 6000);
+    clean_dir();
+}
+
+/* A mod set is named only when the registry names it, since a player
+ * names their own presets. */
+TEST(a_mod_set_the_registry_does_not_list_counts_as_custom) {
+    TAK_Stats_Init(&g_s);
+    ASSERT_EQ_INT(0, TAK_Stats_KnownMod(&g_s, "TA:K Enhanced"));
+    ASSERT_EQ_INT(TAK_STATS_TAKEN, batch(ID_A, 0,
+        "{\"k\":\"start\",\"mode\":\"skirmish\",\"mod\":\"ta:k enhanced\"},"
+        "{\"k\":\"start\",\"mode\":\"skirmish\",\"mod\":\"Vanilla\"},"
+        "{\"k\":\"start\",\"mode\":\"skirmish\",\"mod\":\"Ana's own preset\"}", NOON));
+    ASSERT_EQ_INT(1, (int)count(TAK_STAT_MOD, "TA:K Enhanced"));
+    ASSERT_EQ_INT(1, (int)count(TAK_STAT_MOD, "vanilla"));
+    ASSERT_EQ_INT(1, (int)count(TAK_STAT_MOD, "custom"));
+    ASSERT_EQ_INT(0, (int)count(TAK_STAT_MOD, "Ana's own preset"));
+    /* With no registry every mod set is custom. */
+    TAK_Stats_Init(&g_s);
+    ASSERT_EQ_INT(TAK_STATS_TAKEN, batch(ID_A, 0,
+        "{\"k\":\"start\",\"mode\":\"skirmish\",\"mod\":\"TA:K Enhanced\"}", NOON));
+    ASSERT_EQ_INT(1, (int)count(TAK_STAT_MOD, "custom"));
+}
+
 int main(void) {
     TEST_SUITE("Visit counts");
     RUN(a_day_number_reads_as_its_date);
@@ -614,5 +669,8 @@ int main(void) {
     RUN(the_report_covers_the_days_asked_and_merges_their_counts);
     RUN(the_report_of_ninety_full_days_fits_the_answer);
     RUN(the_visitor_count_stops_at_its_cap_and_says_so);
+    RUN(the_rate_limit_forgets_its_addresses_when_the_minute_is_up);
+    RUN(a_visitor_with_no_region_is_still_none_once_read_back);
+    RUN(a_mod_set_the_registry_does_not_list_counts_as_custom);
     TEST_REPORT();
 }

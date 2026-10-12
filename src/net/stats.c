@@ -165,7 +165,7 @@ static const char *column_value(int dim, const char *v, char *buf, size_t cap) {
     case ALLOW:
         return allowed(k_col[dim].allow, v);
     case REGION:
-        if (!v || !v[0]) return "none";
+        if (!v || !v[0] || strcmp(v, "none") == 0) return "none";
         if (strlen(v) != 3) return "other";
         for (int i = 0; i < 3; i++) {
             int c = lower((unsigned char)v[i]);
@@ -538,8 +538,18 @@ int TAK_Stats_Open(TAK_Stats *s, const char *dir, uint64_t now_ms) {
     return 0;
 }
 
+/* The rate limit's tallies, hashed addresses and all, last the minute. */
+static void turn_window(TAK_Stats *s, uint64_t now_ms) {
+    uint64_t w = now_ms / TAK_STATS_WINDOW_MS;
+    if (w == s->window) return;
+    s->window = w;
+    s->window_batches = 0;
+    memset(s->source, 0, sizeof s->source);
+}
+
 void TAK_Stats_Tick(TAK_Stats *s, uint64_t now_ms) {
     roll(s, now_ms);
+    turn_window(s, now_ms);
     if (s->dirty && s->dir[0] && now_ms - s->flushed_ms >= TAK_STATS_FLUSH_MS) {
         s->flushed_ms = now_ms;
         (void)TAK_Stats_Flush(s);
@@ -582,6 +592,22 @@ int TAK_Stats_AllowOrigin(TAK_Stats *s, const char *origin) {
     return 0;
 }
 
+int TAK_Stats_KnownMod(TAK_Stats *s, const char *name) {
+    if (!name || s->mods >= TAK_STATS_MODS_MAX) return -1;
+    clean(name, s->mod[s->mods], sizeof s->mod[0]);
+    if (s->mod[s->mods][0]) s->mods++;
+    return 0;
+}
+
+/* What a mod set is counted as: vanilla, a registry name or custom. */
+static const char *mod_value(const TAK_Stats *s, const char *v, char *buf, size_t cap) {
+    clean(v, buf, cap);
+    if (same_folded(buf, "vanilla")) return "vanilla";
+    for (uint32_t i = 0; i < s->mods; i++)
+        if (same_folded(buf, s->mod[i])) return s->mod[i];
+    return "custom";
+}
+
 int TAK_Stats_OriginAllowed(const TAK_Stats *s, const char *origin) {
     if (s->origins == 0) return 1;
     if (!origin) return 0;
@@ -593,11 +619,7 @@ int TAK_Stats_OriginAllowed(const TAK_Stats *s, const char *origin) {
 /* This minute's tally for a source, the window turned over first. */
 static TAK_StatsSource *source_for(TAK_Stats *s, const char *source, uint64_t now_ms) {
     uint64_t w = now_ms / TAK_STATS_WINDOW_MS;
-    if (w != s->window) {
-        s->window = w;
-        s->window_batches = 0;
-        memset(s->source, 0, sizeof s->source);
-    }
+    turn_window(s, now_ms);
     uint64_t key = keyed(s->source_key, source && source[0] ? source : "direct");
     uint32_t i = (uint32_t)(key ^ (key >> 32)) & (TAK_STATS_SOURCES - 1);
     for (uint32_t probe = 0; probe < TAK_STATS_SOURCES; probe++) {
@@ -959,9 +981,10 @@ static const char *length_bucket(int64_t secs) {
     return k_length[6];
 }
 
-static void count_start(TAK_StatsDay *d, const Event *e) {
+static void count_start(const TAK_Stats *s, TAK_StatsDay *d, const Event *e) {
     const char *mode = allowed(k_mode, text_of(e, "mode"));
     const char *v;
+    char buf[TAK_STATS_VALUE_MAX];
     day_add(d, TAK_STAT_MODE, mode, 1);
     if ((v = text_of(e, "sub")) != NULL) {
         if (strcmp(mode, "multiplayer") == 0) count(d, TAK_STAT_MP, v);
@@ -981,7 +1004,8 @@ static void count_start(TAK_StatsDay *d, const Event *e) {
         int on = rb->is_num ? rb->num != 0 : strcmp(allowed(k_onoff, rb->text), "on") == 0;
         day_add(d, TAK_STAT_REMASTERED, on ? "on" : "off", 1);
     }
-    if ((v = text_of(e, "mod")) != NULL && v[0]) count(d, TAK_STAT_MOD, v);
+    if ((v = text_of(e, "mod")) != NULL && v[0])
+        day_add(d, TAK_STAT_MOD, mod_value(s, v, buf, sizeof buf), 1);
     if ((v = text_of(e, "side")) != NULL) count(d, TAK_STAT_SIDE, v);
 }
 
@@ -1030,7 +1054,7 @@ static void count_batch(TAK_Stats *s, const Batch *b, const char *region) {
         } else if (strcmp(kind, "step") == 0) {
             count(d, TAK_STAT_STEP, text_of(e, "step"));
         } else if (strcmp(kind, "start") == 0) {
-            count_start(d, e);
+            count_start(s, d, e);
         } else if (strcmp(kind, "end") == 0) {
             count_end(d, e);
         } else if (strcmp(kind, "error") == 0) {

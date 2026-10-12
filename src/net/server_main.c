@@ -436,6 +436,9 @@ int main(int argc, char **argv) {
     open_stats(stats_dir, store);
 
     load_mods(mods_path);
+    /* The counts name a mod set only when the registry does. */
+    for (int i = 0; i < g_mods.count; i++)
+        (void)TAK_Stats_KnownMod(&g_stats, g_mods.mod[i].name);
 
     if (TakNet_Start() != 0) {
         fprintf(stderr, "could not start the network layer\n");

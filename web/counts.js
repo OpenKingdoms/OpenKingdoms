@@ -4,8 +4,8 @@
  * privacy.html says what is counted and why, in plain words. In short:
  * page views, how far a visit got, the battles played and how they
  * ended, error messages and a rough picture of the device, with a
- * random id this browser keeps so that each day's visitors are counted
- * once each. The server keeps daily totals and nothing else.
+ * random id this browser makes each day so that each day's visitors are
+ * counted once each. The server keeps daily totals and nothing else.
  *
  * Nothing is sent when the browser asks not to be tracked, by Do Not
  * Track or Global Privacy Control, or when the visitor turned counting
@@ -29,6 +29,7 @@
   var FLUSH_MS = 3000;
   var HELD_MAX = 100;           /* events held while the server's address is looked up */
   var ERRORS_MAX = 5;           /* error events one page load sends */
+  var DAY_MS = 86400000;
   var ID_KEY = 'ok.counts.id';
   var OFF_KEY = 'ok.counts.off';
   var STEPS_KEY = 'ok.counts.steps';
@@ -88,11 +89,16 @@
     return '2560+';
   }
 
-  /* An error's first line, with addresses taken out, so the same fault
-     reads the same from every machine. */
+  /* An error's first line, with addresses, emails and the name on a home
+     folder taken out, so the same fault reads the same from every machine
+     and names no one. */
   function cleanMessage(msg) {
     var s = String(msg == null ? '' : (msg && msg.message) || msg);
-    s = s.split(/\r?\n/)[0].replace(/(https?|blob|file):\/\/\S+/g, 'url');
+    s = s.split(/\r?\n/)[0]
+      .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s'"<>()]+/gi, 'url')
+      .replace(/[^\s@'"<>()]+@[^\s@'"<>()]+\.[a-z]{2,}/gi, 'email')
+      .replace(/([a-z]:[\\/](?:Users|Documents and Settings)[\\/])[^\\/]+/gi, '$1~')
+      .replace(/(\/(?:home|Users)\/)[^\/\s]+/g, '$1~');
     s = s.replace(/\s+/g, ' ').trim();
     return (s || 'unknown').slice(0, 120);
   }
@@ -192,14 +198,17 @@
     function put(store, key, v) { try { if (store) store.setItem(key, v); } catch (e) {} }
     function drop(store, key) { try { if (store) store.removeItem(key); } catch (e) {} }
 
+    /* A new id each UTC day, kept as "day.id", so none outlives its day.
+       New means nothing was kept before and this one is kept. */
     function visitor() {
       if (id) return id;
-      id = get(local, ID_KEY);
-      if (!id || !/^[A-Za-z0-9_-]{16,64}$/.test(id)) {
-        id = newId(env.crypto);
-        made = true;
-        put(local, ID_KEY, id);
-      }
+      var day = String(Math.floor(now() / DAY_MS));
+      var kept = get(local, ID_KEY);
+      var m = /^(\d+)\.([A-Za-z0-9_-]{16,64})$/.exec(kept || '');
+      if (m && m[1] === day) return (id = m[2]);
+      id = newId(env.crypto);
+      put(local, ID_KEY, day + '.' + id);
+      made = !kept && get(local, ID_KEY) === day + '.' + id;
       return id;
     }
 
@@ -332,6 +341,8 @@
       flush: flush,
       /* Whether this page load counts, and if not, why not. */
       state: function () { return { counting: !why, why: why }; },
+      /* True when the browser kept the choice, false when it lasts only
+         as long as this page. */
       optOut: function () {
         put(local, OFF_KEY, '1');
         drop(local, ID_KEY);
@@ -339,6 +350,7 @@
         drop(session, SESSION_KEY);
         why = refusal(nav, win, local) || 'off';
         queue = [];
+        return get(local, OFF_KEY) === '1';
       },
       optIn: function () {
         drop(local, OFF_KEY);
@@ -362,16 +374,22 @@
     MAX_BODY: MAX_BODY
   };
 
-  /* In a page, one counter for the load, flushed as the page goes. */
+  /* In a page, one counter for the load, flushed as the page goes. A
+     browser that refuses counting does not even look the server up, and
+     a lookup that fails is the same as no server. */
   if (root && root.document && root.navigator) {
     var store = function (name) { try { return root[name]; } catch (e) { return null; } };
+    var local = store('localStorage');
     var relay = null;
     try {
-      relay = root.fetch ? root.fetch('relay.txt', { cache: 'no-store' })
-        .then(function (r) { return r.ok ? r.text() : ''; }) : null;
+      if (!refusal(root.navigator, root, local) && root.fetch) {
+        relay = root.fetch('relay.txt', { cache: 'no-store' })
+          .then(function (r) { return r.ok ? r.text() : ''; })
+          .then(null, function () { return ''; });
+      }
     } catch (e) { relay = null; }
     var counter = create({
-      nav: root.navigator, win: root, local: store('localStorage'), session: store('sessionStorage'),
+      nav: root.navigator, win: root, local: local, session: store('sessionStorage'),
       crypto: root.crypto, screen: root.screen, relayText: relay
     });
     ['view', 'step', 'game', 'error', 'flush', 'leave', 'state', 'optOut', 'optIn'].forEach(function (k) {

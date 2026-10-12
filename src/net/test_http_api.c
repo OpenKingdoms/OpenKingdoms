@@ -872,10 +872,11 @@ TEST(ev_limits_one_address_without_holding_up_another) {
     ASSERT(has("Retry-After: 60\r\n"));
     ASSERT(post_ev(SITE, "198.51.100.8", k_batch) > 0);
     ASSERT(has("HTTP/1.1 204"));
-    /* Without the proxy's header, the first forwarded address names it. */
+    /* Without the proxy's header, the address the proxy added names it,
+     * and one the client wrote in front of it does not. */
     char req[512];
     snprintf(req, sizeof req,
-             "POST /api/ev HTTP/1.1\r\nOrigin: " SITE "\r\nX-Forwarded-For: 198.51.100.7, 10.0.0.1\r\n"
+             "POST /api/ev HTTP/1.1\r\nOrigin: " SITE "\r\nX-Forwarded-For: 10.0.0.1, 198.51.100.7\r\n"
              "Content-Length: %u\r\n\r\n%s", (unsigned)strlen(k_batch), k_batch);
     ASSERT(respond(req) > 0);
     ASSERT(has("HTTP/1.1 429"));

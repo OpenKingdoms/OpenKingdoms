@@ -80,18 +80,21 @@
 
     <h3>What is counted</h3>
     <ul>
-      <li>A visit to each page of the site.</li>
-      <li>How far a visit got. The game files were chosen, the main menu came up, a battle started.</li>
-      <li>Each battle's kind (campaign, skirmish, multiplayer, a replay or a loaded game), its map or mission, the number of computer players and how hard they were, whether the Remastered Battlefield option was on, the mod set, the side you played, how long it lasted and how it ended.</li>
-      <li>The message the game shows when it stops with an error.</li>
+      <li>A visit to each page of the site, and whether it was the first page of a browser tab.</li>
+      <li>How far a visit got. The game files were chosen, the main menu came up, a battle started. Also which of the skirmish, campaign and multiplayer screens it opened.</li>
+      <li>Each battle's kind (campaign, skirmish, multiplayer, a replay or a loaded game) and its map, or its campaign and mission. For a multiplayer battle, whether you hosted, joined, dropped in, rejoined or watched, and how many people played. For a loaded game, where it was loaded from.</li>
+      <li>The number of computer players and how hard they were, whether the Remastered Battlefield option was on, the side you played, how long the battle lasted and how it ended.</li>
+      <li>The mod set, by its name when the site's mod registry lists it. Any other mod set counts only as one of your own, since you may have named it yourself.</li>
+      <li>Error messages from the page or the game, cut to their first line, with web addresses, email addresses and the name on a home folder taken out.</li>
       <li>Your browser family, your system family, whether it is a phone or a tablet, a rough screen size, and which of the game server's regions your browser reached.</li>
+      <li>Whether this browser has been counted before.</li>
     </ul>
 
     <h3>How a visitor is counted once a day</h3>
-    <p>Your browser makes up a random number and keeps it in its own storage for this site. The number says nothing about you. The game server mixes it with a key that changes every day and keeps the mixed form only to count each visitor once that day. The list goes at midnight UTC. If the server restarts during the day it keeps that list on disk while it is down and deletes it as it starts again. After the day is over all that is left are the day's totals, such as 40 visitors and 12 skirmishes on one map.</p>
+    <p>Your browser makes up a random number each day and keeps it in its own storage for this site, with the date it was made. The number says nothing about you, and the next day your browser makes a new one. The game server mixes it with a key that changes every day and keeps the mixed form only to count each visitor once that day. The list goes at midnight UTC. If the server restarts during the day it keeps that list on disk while it is down and deletes it as it starts again. After the day is over all that is left are the day's totals, such as 40 visitors and 12 skirmishes on one map.</p>
 
     <h3>What is never collected</h3>
-    <p>No cookies are set and no IP address is stored. To stop one machine from flooding the counts, the game server holds a scrambled form of the address in memory for one minute, and then it is gone. No names, chat or game files are collected. Nothing is sold or shared, and no other company tracks anyone on these pages. The desktop builds of the game send nothing at all.</p>
+    <p>No cookies are set and no IP address is stored. To stop one machine from flooding the counts, the game server holds a scrambled form of the address in memory for at most a minute, and then it is gone. No player names, chat, saved games or game files are collected. Nothing is sold or shared, and no other company tracks anyone on these pages. The desktop builds of the game send nothing at all.</p>
     <p>The pages are hosted on GitHub Pages and the game server runs on fly.io. Like any web host they see your IP address when your browser connects, under their own privacy policies. The pages also load their two typefaces from Google Fonts.</p>
     <p>The <a href="leaderboard.html">multiplayer leaderboard</a> is a separate thing. It lists finished multiplayer games with the names the players typed into the game, and all of it is on that page for anyone to see.</p>
 
@@ -120,16 +123,21 @@
     gpc: 'Nothing is counted in this browser, because it sends Global Privacy Control.',
     off: 'Nothing is counted in this browser, because you turned it off.'
   };
-  function show(again) {
+  function show(again, unkept) {
     var s = C && C.state ? C.state() : null;
     off.hidden = on.hidden = true;
     if (!s) { state.textContent = 'The counting script did not load, so nothing is counted on this visit.'; return; }
     if (again) { state.textContent = 'Counting is on again from the next page you open.'; return; }
+    if (unkept) {
+      state.textContent = 'This browser would not keep the choice, so it lasts only until you leave this page. ' +
+        'Turn on Global Privacy Control or Do Not Track in the browser\'s settings to stop the counting for good.';
+      return;
+    }
     if (s.counting) { state.textContent = 'This browser is counted.'; off.hidden = false; return; }
     state.textContent = WHY[s.why] || WHY.off;
     if (s.why === 'off') on.hidden = false;
   }
-  off.onclick = function () { C.optOut(); show(); };
+  off.onclick = function () { show(false, C.optOut() === false); };
   on.onclick = function () { C.optIn(); show(true); };
   if (C && C.view) C.view('privacy');
   show();

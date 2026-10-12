@@ -12,14 +12,15 @@
  * file a day under a folder. The events themselves are never written
  * down, and neither is anything that names a person or a machine.
  *
- * A visitor is a random id the browser made for itself. Each batch is
- * hashed with a salt drawn fresh every UTC day, and the hashes are
- * held only to count each id once that day: they go when the day
- * does. A relay stopped and started on the same day keeps them across
- * the restart in a file it deletes as it reads it back.
+ * A visitor is a random id the browser makes for itself each day.
+ * Each batch is hashed with a salt drawn fresh every UTC day, and the
+ * hashes are held only to count each id once that day: they go when
+ * the day does. A relay stopped and started on the same day keeps
+ * them across the restart in a file it deletes as it reads it back.
  *
  * The rate limit is held in memory only, keyed on a hash of the
- * address the proxy names, with a key drawn at start.
+ * address the proxy names, with a key drawn at start, and forgotten
+ * when its minute is up.
  *
  * No sockets and no clock in here. The HTTP layer hands over a batch,
  * the wall clock and where the request came from, and asks for the
@@ -36,11 +37,12 @@
  *          {"k":"end","mode":"skirmish","out":"win","secs":1260},
  *          {"k":"error","msg":"...","fatal":1}]}
  *
- * nv says the id was made on this page load, which is a new visitor.
+ * nv says the browser had never been counted before, a new visitor.
  * s on a view says it began a tab's session. A value outside the
  * allowed set for its field is counted as "other", a field that is
  * not known is ignored, and an event of a kind that is not known is
- * dropped and counted as dropped.
+ * dropped and counted as dropped. A mod set the registry does not
+ * list is counted as "custom", since players name their own.
  */
 
 #define TAK_STATS_BODY_MAX      4096u   /* one batch's request body */
@@ -54,6 +56,7 @@
 #define TAK_STATS_PATH_MAX      512u
 #define TAK_STATS_TOKEN_MAX     128u
 #define TAK_STATS_ORIGINS_MAX   4u
+#define TAK_STATS_MODS_MAX      32u     /* registry mod sets counted by name */
 
 /* Per source each minute, and for everyone together. */
 #define TAK_STATS_SOURCE_BATCHES   60u
@@ -139,6 +142,8 @@ typedef struct TAK_Stats {
     char         token[TAK_STATS_TOKEN_MAX];
     char         origin[TAK_STATS_ORIGINS_MAX][128];
     uint32_t     origins;
+    char         mod[TAK_STATS_MODS_MAX][32];
+    uint32_t     mods;
     uint32_t     write_failures;
 } TAK_Stats;
 
@@ -168,6 +173,11 @@ int  TAK_Stats_HasToken(const TAK_Stats *s);
  * origin may. Returns -1 past TAK_STATS_ORIGINS_MAX. */
 int  TAK_Stats_AllowOrigin(TAK_Stats *s, const char *origin);
 int  TAK_Stats_OriginAllowed(const TAK_Stats *s, const char *origin);
+
+/* A mod set the registry lists, counted by its name. Any other mod set
+ * but vanilla counts as "custom", since players name their own. -1 past
+ * TAK_STATS_MODS_MAX. */
+int  TAK_Stats_KnownMod(TAK_Stats *s, const char *name);
 
 /* Add one batch. `source` is the client's address as the proxy names
  * it and `region` the proxy's edge region, either NULL when not known. */

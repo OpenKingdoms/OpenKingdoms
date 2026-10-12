@@ -4,7 +4,11 @@
    web/counts.js in node with a fake browser. */
 'use strict';
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
 const C = require('./counts.js');
+const SRC = fs.readFileSync(path.join(__dirname, 'counts.js'), 'utf8');
 
 let failed = 0;
 function test(name, fn) {
@@ -47,6 +51,25 @@ function browser(opts) {
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
+
+/* counts.js loaded the way a page loads it, into a window of its own
+   whose fetch is `fetchImpl`. */
+function page(nav, local, fetchImpl) {
+  const fetches = [];
+  const win = {
+    navigator: Object.assign({ userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Firefox/131.0',
+                               sendBeacon: () => true }, nav),
+    document: { addEventListener() {}, visibilityState: 'visible' },
+    addEventListener() {},
+    localStorage: local || storage(),
+    sessionStorage: storage(),
+    screen: { width: 1920, height: 1080 },
+    fetch: (url, o) => { fetches.push(url); return fetchImpl(url, o); },
+    setTimeout, clearTimeout
+  };
+  vm.runInNewContext(SRC, win);
+  return { win, fetches };
+}
 
 (async function () {
   await test('the browser is told apart coarsely', () => {
@@ -110,6 +133,31 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
     assert.deepStrictEqual(c.state(), { counting: false, why: 'off' });
   });
 
+  await test('a browser that refuses counting asks the site for nothing, and a failed lookup stays quiet', async () => {
+    const unhandled = [];
+    const seen = (r) => unhandled.push(r);
+    process.on('unhandledRejection', seen);
+    try {
+      const offline = () => Promise.reject(new TypeError('Failed to fetch'));
+      const off = storage();
+      off.setItem('ok.counts.off', '1');
+      for (const [nav, local] of [[{ doNotTrack: '1' }, null], [{ globalPrivacyControl: true }, null], [{}, off]]) {
+        const p = page(nav, local, offline);
+        assert.deepStrictEqual(p.fetches, []);
+        assert.strictEqual(p.win.OKCounts.state().counting, false);
+      }
+      /* Counting, with the site out of reach. */
+      const p = page({}, null, offline);
+      assert.deepStrictEqual(p.fetches, ['relay.txt']);
+      p.win.OKCounts.view('landing');
+      await new Promise((r) => setTimeout(r, 20));
+      assert.deepStrictEqual(unhandled, []);
+    } finally {
+      await new Promise((r) => setTimeout(r, 20));
+      process.removeListener('unhandledRejection', seen);
+    }
+  });
+
   await test('a visit is one batch with the id, the device and its events', async () => {
     const b = browser();
     const c = C.create(b.env);
@@ -137,9 +185,9 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
       { k: 'step', step: 'battle' },
       { k: 'end', mode: 'skirmish', out: 'win', secs: 754 }
     ]);
-    /* The id stays in this browser and the next load is not new. */
-    const id = b.env.local.getItem('ok.counts.id');
-    assert.strictEqual(id, s.body.id);
+    /* The id stays in this browser for the day and the next load is not new. */
+    const id = s.body.id;
+    assert.ok(b.env.local.getItem('ok.counts.id').endsWith('.' + id));
     const again = browser({ local: b.env.local, session: b.env.session });
     const c2 = C.create(again.env);
     c2.view('play');
@@ -149,6 +197,32 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
     assert.strictEqual(again.sent[0].body.nv, undefined);
     /* Same tab: no new session, and a step it reached is not sent again. */
     assert.deepStrictEqual(again.sent[0].body.ev, [{ k: 'view', page: 'play', s: 0 }]);
+  });
+
+  await test('the id is made again each day, and only a browser\'s first visit is new', async () => {
+    const DAY = 86400000;
+    let clock = 20738 * DAY + 3600000;
+    const local = storage();
+    const load = async () => {
+      const b = browser({ local });
+      b.env.now = () => clock;
+      const c = C.create(b.env);
+      c.view('landing');
+      await tick(); b.run();
+      return b.sent[0].body;
+    };
+    const first = await load();
+    assert.strictEqual(first.nv, 1);
+    clock += 3600000;
+    const later = await load();
+    assert.strictEqual(later.id, first.id);
+    assert.strictEqual(later.nv, undefined);
+    clock += DAY;
+    const next = await load();
+    assert.notStrictEqual(next.id, first.id);
+    assert.strictEqual(next.nv, undefined);
+    /* Nothing in the browser outlives the day it was made for. */
+    assert.ok(!local.getItem('ok.counts.id').includes(first.id));
   });
 
   await test('a long visit is cut into batches under both of the server caps', () => {
@@ -209,6 +283,16 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
     assert.strictEqual(C.cleanMessage(new Error('boom')), 'boom');
     assert.strictEqual(C.cleanMessage(''), 'unknown');
     assert.strictEqual(C.cleanMessage('x'.repeat(500)).length, 120);
+    /* Any address, an email and the name on a home folder go too. */
+    assert.strictEqual(C.cleanMessage("The URL 'wss://relay.example/relay?room=AB12' is invalid."),
+                       "The URL 'url' is invalid.");
+    assert.strictEqual(C.cleanMessage('Script at chrome-extension://abcdefghijklmnop/inject.js failed'),
+                       'Script at url failed');
+    assert.strictEqual(C.cleanMessage('could not mail ana.lopez@example.com today'), 'could not mail email today');
+    assert.strictEqual(C.cleanMessage('cannot open C:\\Users\\Ana Lopez\\Games\\TAK\\x.hpi'),
+                       'cannot open C:\\Users\\~\\Games\\TAK\\x.hpi');
+    assert.strictEqual(C.cleanMessage('cannot open /home/ana/games/tak'), 'cannot open /home/~/games/tak');
+    assert.strictEqual(C.cleanMessage('cannot open /Users/ana/Games'), 'cannot open /Users/~/Games');
     const b = browser();
     const c = C.create(b.env);
     for (let i = 0; i < 3; i++) c.error('the same fault', false);
@@ -255,7 +339,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
     c.view('privacy');
     await tick(); b.run();
     assert.strictEqual(b.sent.length, 1);
-    c.optOut();
+    assert.strictEqual(c.optOut(), true);
     assert.strictEqual(b.env.local.getItem('ok.counts.id'), null);
     assert.strictEqual(b.env.local.getItem('ok.counts.off'), '1');
     c.view('privacy');
@@ -277,7 +361,8 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
     c.view('play');
     c.step('menu');
     c.step('menu');
-    c.optOut();
+    /* A choice the browser would not keep is reported as not kept. */
+    assert.strictEqual(c.optOut(), false);
     c.optIn();
     await tick(); b.run();
     assert.strictEqual(b.sent.length, 0);
@@ -288,7 +373,8 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
     await tick(); b2.run();
     assert.strictEqual(b2.sent.length, 1);
     assert.deepStrictEqual(b2.sent[0].body.ev, [{ k: 'view', page: 'landing', s: 1 }, { k: 'view', page: 'play', s: 0 }]);
-    assert.strictEqual(b2.sent[0].body.nv, 1);
+    /* An id the browser would not keep is never new, or every load would be. */
+    assert.strictEqual(b2.sent[0].body.nv, undefined);
   });
 
   console.log(failed ? failed + ' failed' : 'all passed');

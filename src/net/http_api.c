@@ -724,15 +724,18 @@ static void header_value(const uint8_t *req, size_t head, const char *name,
 }
 
 /* Where the request came from, as the proxy in front names it. It is
- * only ever hashed, for the rate limit. */
+ * only ever hashed, for the rate limit. Of a forwarded list only the
+ * last address is the proxy's own, the rest are the client's to write. */
 static void request_source(const uint8_t *req, size_t head, char *out, size_t cap) {
     header_value(req, head, "Fly-Client-IP", out, cap);
     if (out[0]) return;
     header_value(req, head, "X-Forwarded-For", out, cap);
-    char *comma = strchr(out, ',');
-    if (comma) *comma = '\0';
+    char *comma = strrchr(out, ',');
+    if (comma) memmove(out, comma + 1, strlen(comma + 1) + 1);
+    size_t skip = strspn(out, " \t");
+    if (skip) memmove(out, out + skip, strlen(out + skip) + 1);
     size_t n = strlen(out);
-    while (n && out[n - 1] == ' ') out[--n] = '\0';
+    while (n && (out[n - 1] == ' ' || out[n - 1] == '\t')) out[--n] = '\0';
 }
 
 /* A chunked body into out. -1 when it is not one, -2 when it holds

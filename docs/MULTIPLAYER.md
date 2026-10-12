@@ -672,8 +672,10 @@ web/privacy.html says in plain words what they are). The relay adds them
 into one day's totals and writes each UTC day as a text file under
 `--stats-dir PATH`, a `stats` folder beside `--store` by default. It never
 writes an event, an address or a visitor's id. A visitor is counted once a
-day from a random id the browser keeps, hashed with a salt drawn each day,
-and the hashes go when the day does. `STATS_ORIGIN` in the environment, or
+day from a random id the browser makes each day, hashed with a salt drawn
+each day, and the hashes go when the day does. A mod set is counted by name
+only when the relay's mod registry lists it, and as `custom` otherwise,
+since players name their own presets. `STATS_ORIGIN` in the environment, or
 `--stats-origin URL` once for each, names the page origins that may post.
 With none named any page may. `GET /api/stats?days=N` answers up to 90
 days of totals to a request carrying `Authorization: Bearer` and the
