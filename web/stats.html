@@ -544,7 +544,7 @@
       barList(dev, entries(c[p[1]]), { name: function (v) { return v; } });
     });
 
-    var reg = card(grid, 'Regions', 'The game server’s edge region each visitor reached, once a day.');
+    var reg = card(grid, 'Regions', 'The edge region of the game server each visitor reached, once a day.');
     barList(reg, entries(c.region), { top: 20, name: function (v) { return v === 'none' ? 'None named' : v.toUpperCase(); } });
     reg.appendChild(el('h3', null, 'Pages'));
     barList(reg, entries(c.page));
