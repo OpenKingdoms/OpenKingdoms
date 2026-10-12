@@ -170,6 +170,9 @@ self.addEventListener('fetch', function (e) {
   if (req.method !== 'GET') return;
   var url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
+  /* An API, the visit counts and their report among it, is the
+     network's whatever its last name matches. */
+  if (/^\/api\//.test(url.pathname)) return;
   var path = url.pathname.replace(/^.*\//, './');
   if (req.mode === 'navigate' && (path === './' || path === PAGE)) {
     /* The page from the newest whole generation that is the site's

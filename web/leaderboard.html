@@ -140,6 +140,9 @@
   .live-games .meta { display: block; font-size: 13.5px; color: var(--ink-soft); }
   .live-games .state { flex: none; font-size: 13.5px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
   .live-games a.join { flex: none; font-weight: 600; color: var(--ox); }
+  .site-foot { margin-top: 8px; font-size: 13.5px; text-align: center; }
+  .site-foot a { color: #b8a67a; }
+  .site-foot a:hover { color: var(--gold); }
   @media (max-width: 640px) {
     th, td { padding: 6px 6px; font-size: 14px; }
     .card { padding: 14px 12px 16px; }
@@ -155,8 +158,11 @@
   </header>
   <div id="status" class="status"><span><span class="dot"></span><span id="status-text">Finding the game server.</span></span><span id="status-when"></span></div>
   <main id="view"></main>
+  <footer class="site-foot"><a href="privacy.html">How this site counts visits</a></footer>
 </div>
 
+<script src="counts.js"></script>
+<script>if (window.OKCounts) OKCounts.view('leaderboard');</script>
 <script src="leaderboard.js"></script>
 <script>
 (function () {

@@ -665,6 +665,22 @@ download off past its listed size, and runs four at a time. That takes
 libcurl at build time. A relay built without it answers 501 to a download
 and does everything else. `--mod-registry PATH` offers another registry
 file in place of the built in one.
+
+The relay also keeps the site's visit counts. The browser page posts small
+batches of events to `POST /api/ev` (web/counts.js sends them, and
+web/privacy.html says in plain words what they are). The relay adds them
+into one day's totals and writes each UTC day as a text file under
+`--stats-dir PATH`, a `stats` folder beside `--store` by default. It never
+writes an event, an address or a visitor's id. A visitor is counted once a
+day from a random id the browser keeps, hashed with a salt drawn each day,
+and the hashes go when the day does. `STATS_ORIGIN` in the environment, or
+`--stats-origin URL` once for each, names the page origins that may post.
+With none named any page may. `GET /api/stats?days=N` answers up to 90
+days of totals to a request carrying `Authorization: Bearer` and the
+`STATS_TOKEN` from the environment, and is a 404 without one. web/stats.html
+reads it, and nothing on the site links to that page. include/tak_net_stats.h
+has the batch format and the limits.
+
 Anything about a particular deployment, its domain or its keys stays out of
 this repository.
 

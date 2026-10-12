@@ -762,6 +762,191 @@ TEST(tables_on_an_empty_ledger_name_no_default) {
     ASSERT(has("\"default\":\"earlier\"}"));
 }
 
+/* ── The site's visit counts ──────────────────────────────────────────── */
+
+static TAK_Stats g_st;
+#define SITE   "https://openkingdoms.net"
+#define TOKEN  "Zm9vYmFyYmF6cXV4cXV1eA-token"
+/* 2026-10-12, noon UTC. */
+#define NOON   (20738ull * 86400000ull + 43200000ull)
+
+static size_t respond(const char *req) {
+    TAK_HttpCtx ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.ledger = &g_l;
+    ctx.stats = &g_st;
+    ctx.now_ms = NOON;
+    size_t n = TAK_Http_Respond(&ctx, (const uint8_t *)req, strlen(req), g_out, sizeof g_out);
+    if (n < sizeof g_out) g_out[n] = '\0';
+    return n;
+}
+
+static void fresh_stats(void) {
+    TAK_Ledger_Init(&g_l);
+    TAK_Stats_Init(&g_st);
+    TAK_Stats_AllowOrigin(&g_st, SITE);
+    TAK_Stats_SetToken(&g_st, TOKEN);
+}
+
+/* A POST of `body` to /api/ev from `origin` and address `ip`. */
+static size_t post_ev(const char *origin, const char *ip, const char *body) {
+    static char req[TAK_STATS_BODY_MAX * 2];
+    snprintf(req, sizeof req,
+             "POST /api/ev HTTP/1.1\r\nHost: relay\r\nOrigin: %s\r\nFly-Client-IP: %s\r\n"
+             "Fly-Region: lhr\r\nContent-Type: text/plain;charset=UTF-8\r\n"
+             "Content-Length: %u\r\n\r\n%s",
+             origin, ip, (unsigned)strlen(body), body);
+    return respond(req);
+}
+
+static const char *k_batch =
+    "{\"v\":1,\"id\":\"aaaaaaaaaaaaaaaaaaaaaa\",\"nv\":1,"
+    "\"ev\":[{\"k\":\"view\",\"page\":\"landing\",\"s\":1}]}";
+
+TEST(ev_counts_a_batch_from_the_site_and_answers_no_content) {
+    fresh_stats();
+    ASSERT(post_ev(SITE, "198.51.100.7", k_batch) > 0);
+    ASSERT(has("HTTP/1.1 204 No Content\r\n"));
+    ASSERT(has("Access-Control-Allow-Origin: " SITE "\r\n"));
+    ASSERT(has("Vary: Origin\r\n"));
+    ASSERT_EQ_STR("", body());
+    ASSERT_EQ_INT(1, (int)g_st.today.visitors);
+    ASSERT_EQ_INT(1, (int)g_st.today.sessions);
+    ASSERT_EQ_INT(1, (int)TAK_Stats_Count(&g_st.today, TAK_STAT_PAGE, "landing"));
+    /* The proxy's edge region, from its header. */
+    ASSERT_EQ_INT(1, (int)TAK_Stats_Count(&g_st.today, TAK_STAT_REGION, "lhr"));
+}
+
+TEST(ev_from_another_site_is_refused_and_counts_nothing) {
+    fresh_stats();
+    ASSERT(post_ev("https://elsewhere.example", "198.51.100.7", k_batch) > 0);
+    ASSERT(has("HTTP/1.1 403"));
+    ASSERT(!has("Access-Control-Allow-Origin"));
+    ASSERT_EQ_INT(0, (int)g_st.today.batches);
+    /* No origin at all is not the site either. */
+    const char req[] = "POST /api/ev HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}";
+    ASSERT(respond(req) > 0);
+    ASSERT(has("HTTP/1.1 403"));
+}
+
+TEST(ev_refuses_a_body_too_large_or_not_a_batch) {
+    fresh_stats();
+    static char big[TAK_STATS_BODY_MAX + 2];
+    memset(big, ' ', sizeof big - 1);
+    big[sizeof big - 1] = '\0';
+    ASSERT(post_ev(SITE, "198.51.100.7", big) > 0);
+    ASSERT(has("HTTP/1.1 413"));
+    ASSERT(post_ev(SITE, "198.51.100.7", "{\"v\":1}") > 0);
+    ASSERT(has("HTTP/1.1 400"));
+    ASSERT(post_ev(SITE, "198.51.100.7", "") > 0);
+    ASSERT(has("HTTP/1.1 400"));
+    ASSERT_EQ_INT(0, (int)g_st.today.visitors);
+    /* A body that says it is longer than what came is not read past it. */
+    const char short_body[] = "POST /api/ev HTTP/1.1\r\nOrigin: " SITE "\r\nContent-Length: 90\r\n\r\n{}";
+    ASSERT(respond(short_body) > 0);
+    ASSERT(has("HTTP/1.1 400"));
+}
+
+TEST(ev_reads_a_chunked_body_whole) {
+    fresh_stats();
+    const char req[] =
+        "POST /api/ev HTTP/1.1\r\nOrigin: " SITE "\r\nTransfer-Encoding: chunked\r\n\r\n"
+        "20\r\n{\"v\":1,\"id\":\"aaaaaaaaaaaaaaaaaaa\r\n"
+        "1c\r\naaa\",\"ev\":[{\"k\":\"view\",\"page\r\n"
+        "b\r\n\":\"mods\"}]}\r\n0\r\n\r\n";
+    ASSERT(respond(req) > 0);
+    ASSERT(has("HTTP/1.1 204"));
+    ASSERT_EQ_INT(1, (int)TAK_Stats_Count(&g_st.today, TAK_STAT_PAGE, "mods"));
+    /* With no region header the visitor is counted under none. */
+    ASSERT_EQ_INT(1, (int)TAK_Stats_Count(&g_st.today, TAK_STAT_REGION, "none"));
+}
+
+TEST(ev_limits_one_address_without_holding_up_another) {
+    fresh_stats();
+    for (unsigned i = 0; i < TAK_STATS_SOURCE_BATCHES; i++) {
+        ASSERT(post_ev(SITE, "198.51.100.7", k_batch) > 0);
+        ASSERT(has("HTTP/1.1 204"));
+    }
+    ASSERT(post_ev(SITE, "198.51.100.7", k_batch) > 0);
+    ASSERT(has("HTTP/1.1 429"));
+    ASSERT(has("Retry-After: 60\r\n"));
+    ASSERT(post_ev(SITE, "198.51.100.8", k_batch) > 0);
+    ASSERT(has("HTTP/1.1 204"));
+    /* Without the proxy's header, the first forwarded address names it. */
+    char req[512];
+    snprintf(req, sizeof req,
+             "POST /api/ev HTTP/1.1\r\nOrigin: " SITE "\r\nX-Forwarded-For: 198.51.100.7, 10.0.0.1\r\n"
+             "Content-Length: %u\r\n\r\n%s", (unsigned)strlen(k_batch), k_batch);
+    ASSERT(respond(req) > 0);
+    ASSERT(has("HTTP/1.1 429"));
+}
+
+TEST(stats_needs_the_token_and_answers_the_days_with_it) {
+    fresh_stats();
+    ASSERT(post_ev(SITE, "198.51.100.7", k_batch) > 0);
+    ASSERT(respond("GET /api/stats?days=7 HTTP/1.1\r\nOrigin: " SITE "\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 401"));
+    ASSERT(has("WWW-Authenticate: Bearer\r\n"));
+    ASSERT(!has("visitors"));
+    ASSERT(respond("GET /api/stats?days=7 HTTP/1.1\r\nAuthorization: Bearer wrong\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 401"));
+    ASSERT(respond("GET /api/stats?days=7 HTTP/1.1\r\nOrigin: " SITE "\r\n"
+                   "Authorization: Bearer " TOKEN "\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 200"));
+    ASSERT(has("Cache-Control: no-store\r\n"));
+    ASSERT(has("Access-Control-Allow-Origin: " SITE "\r\n"));
+    ASSERT(has("{\"from\":\"2026-10-06\",\"to\":\"2026-10-12\",\"days\":7,"));
+    ASSERT(has("\"page\":{\"landing\":1}"));
+    /* Asked for nothing, it covers thirty days. */
+    ASSERT(respond("GET /api/stats HTTP/1.1\r\nAuthorization: Bearer " TOKEN "\r\n\r\n") > 0);
+    ASSERT(has("\"days\":30,"));
+}
+
+TEST(stats_is_not_there_at_all_without_a_token) {
+    fresh_stats();
+    TAK_Stats_SetToken(&g_st, NULL);
+    ASSERT(respond("GET /api/stats HTTP/1.1\r\nAuthorization: Bearer " TOKEN "\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 404"));
+    /* Nor is either route on a relay that keeps no counts. */
+    TAK_Ledger_Init(&g_l);
+    ASSERT(answer("GET /api/stats HTTP/1.1\r\nAuthorization: Bearer " TOKEN "\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 404"));
+    char req[512];
+    snprintf(req, sizeof req, "POST /api/ev HTTP/1.1\r\nOrigin: " SITE "\r\nContent-Length: %u\r\n\r\n%s",
+             (unsigned)strlen(k_batch), k_batch);
+    ASSERT(answer(req) > 0);
+    ASSERT(has("HTTP/1.1 404"));
+}
+
+TEST(a_guesser_at_the_token_is_turned_away_for_the_minute) {
+    fresh_stats();
+    for (unsigned i = 0; i < TAK_STATS_AUTH_FAILURES; i++) {
+        ASSERT(respond("GET /api/stats HTTP/1.1\r\nFly-Client-IP: 203.0.113.5\r\n"
+                       "Authorization: Bearer guess\r\n\r\n") > 0);
+        ASSERT(has("HTTP/1.1 401"));
+    }
+    ASSERT(respond("GET /api/stats HTTP/1.1\r\nFly-Client-IP: 203.0.113.5\r\n"
+                   "Authorization: Bearer " TOKEN "\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 429"));
+}
+
+TEST(the_preflight_for_the_counts_allows_a_post_and_the_token) {
+    fresh_stats();
+    ASSERT(respond("OPTIONS /api/stats HTTP/1.1\r\nOrigin: " SITE "\r\n"
+                   "Access-Control-Request-Headers: authorization\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 204"));
+    ASSERT(has("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"));
+    ASSERT(has("Access-Control-Allow-Headers: Authorization, Content-Type\r\n"));
+    ASSERT(has("Access-Control-Allow-Origin: " SITE "\r\n"));
+    /* The other routes read as they always have. */
+    ASSERT(respond("OPTIONS /api/leaderboard HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\n"));
+    ASSERT(has("Access-Control-Allow-Origin: *\r\n"));
+    /* And a POST anywhere else is still refused. */
+    ASSERT(respond("POST /api/games HTTP/1.1\r\nOrigin: " SITE "\r\nContent-Length: 2\r\n\r\n{}") > 0);
+    ASSERT(has("HTTP/1.1 405"));
+}
+
 int main(void) {
     TEST_SUITE("The JSON API");
     RUN(an_empty_ledger_gives_an_empty_table_with_cors);
@@ -789,5 +974,14 @@ int main(void) {
     RUN(an_answer_that_cannot_fit_is_a_500_not_a_cut_off_body);
     RUN(each_mod_set_has_its_own_table_and_vanilla_is_the_default);
     RUN(tables_on_an_empty_ledger_name_no_default);
+    RUN(ev_counts_a_batch_from_the_site_and_answers_no_content);
+    RUN(ev_from_another_site_is_refused_and_counts_nothing);
+    RUN(ev_refuses_a_body_too_large_or_not_a_batch);
+    RUN(ev_reads_a_chunked_body_whole);
+    RUN(ev_limits_one_address_without_holding_up_another);
+    RUN(stats_needs_the_token_and_answers_the_days_with_it);
+    RUN(stats_is_not_there_at_all_without_a_token);
+    RUN(a_guesser_at_the_token_is_turned_away_for_the_minute);
+    RUN(the_preflight_for_the_counts_allows_a_post_and_the_token);
     TEST_REPORT();
 }

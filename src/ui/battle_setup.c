@@ -47,6 +47,7 @@
 #include "tak_loading.h"
 #include "tak_net_protocol.h"
 #include "tak_map_browser.h"
+#include "tak_web_stats.h"
 #include <SDL.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -993,6 +994,7 @@ static void bs_on_click(const char *clicked, int clicked_idx, int mx,
             bs.cfg.seed = (uint32_t)SDL_GetPerformanceCounter();
             if (World_BeginLoad(platform, &bs.cfg, bs.browser.rows[bs.selected_map].key,
                                 bs.map_kingdom) == 0) {
+                WebStats_Starting("skirmish", NULL);
                 bs.pending_nextstate = GAMESTATE_GAME_LOADING;
             } else {
                 fprintf(stderr, "BattleSetup: Unable to begin world loading\n");
@@ -1052,6 +1054,7 @@ static int bs_take_browser_result(SaveBrowserResult r, TAK_Platform *platform) {
              * abandoned from here cannot leak it into the next battle. */
             World_SetRestoring(1);
             Loading_SetPendingSave(sg);
+            WebStats_Starting("load", "skirmish");
             SaveBrowser_Close();
             bs.browser_open = 0;
             bs.prev_esc = 1;
@@ -1304,6 +1307,7 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
         if (want >= 0 && bs.selected_map >= 0 && bs.browser.count > 0 &&
             World_BeginLoad(platform, &bs.cfg, bs.browser.rows[bs.selected_map].key,
                             bs.map_kingdom) == 0) {
+            WebStats_Starting("skirmish", NULL);
             bs.pending_nextstate = GAMESTATE_GAME_LOADING;
         } else {
             fprintf(stderr, "BattleSetup: autostart could not begin a skirmish (%d maps)\n", bs.browser.count);

@@ -149,6 +149,9 @@ jobs:
           # The mod registry, its page and the test mod it lists. Adding
           # a mod is a change to web/mods/registry.json.
           cp web/mods.html web/mods.js site/
+          # The site's own visit counts, the note that says what they
+          # are, and the page that reads them back with the stats token.
+          cp web/counts.js web/privacy.html web/stats.html site/
           mkdir -p site/mods
           cp web/mods/registry.json web/mods/ok-registry-test-1.0.zip site/mods/
           cp web/CNAME site/CNAME

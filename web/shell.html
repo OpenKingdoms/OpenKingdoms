@@ -518,7 +518,7 @@
             <p>Don't have the game? <a href="https://www.gog.com/en/games?query=total%20annihilation" target="_blank" rel="noopener">Find it on GOG</a>.</p>
           </div>
         </details>
-        <p class="fine">Your files never leave your machine. The page reads them locally and, if you tick the box, keeps a copy in this browser's private storage. Nothing is uploaded. <a href="https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/ASSETS.md" target="_blank" rel="noopener">More about game files</a>. See who is winning on the <a href="leaderboard.html">multiplayer leaderboard</a>, or add <a href="mods.html">mods from the registry</a>.</p>
+        <p class="fine">Your files never leave your machine. The page reads them locally and, if you tick the box, keeps a copy in this browser's private storage. Nothing is uploaded. <a href="https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/ASSETS.md" target="_blank" rel="noopener">More about game files</a>. See who is winning on the <a href="leaderboard.html">multiplayer leaderboard</a>, or add <a href="mods.html">mods from the registry</a>. The site counts visits without cookies, as the <a href="privacy.html">privacy note</a> explains.</p>
       </div>
     </div>
   </div>
@@ -615,6 +615,7 @@
   if (typeof WebGL2RenderingContext !== 'undefined') remember(WebGL2RenderingContext.prototype);
 })();
 </script>
+<script src="counts.js"></script>
 <script src="mods.js"></script>
 <script>
 /* Bring-your-own-files loader.
@@ -651,6 +652,16 @@
      in-memory filesystem, which is rebuilt from nothing on every
      page load, so options.cfg has never survived a reload. */
   var PREFDIR = '/libsdl/OpenKingdoms/OpenKingdoms';
+  /* The site's visit counts (counts.js, privacy.html). A page whose
+     counts.js did not load plays the same. */
+  function count(what) {
+    try {
+      var c = window.OKCounts;
+      if (c && c[what]) c[what].apply(c, Array.prototype.slice.call(arguments, 1));
+    } catch (e) {}
+  }
+  count('view', 'landing');
+  count('step', 'visit');
   var picker = document.getElementById('picker');
   var pick = document.getElementById('pick');
   var ready = document.getElementById('ready');
@@ -837,9 +848,12 @@
     }],
     onAbort: function (what) {
       if (reloadFresh(what)) return;
+      count('error', what, true);
       picker.hidden = false; say('The engine stopped: ' + what, true);
     },
     okOfferLeaderboard: offerLeaderboard,
+    /* A battle starting or ending, or an engine error (tak_web_stats.h). */
+    okStats: function (kind, data) { count('game', kind, data); },
     /* Join in the game's own lobby on a room that plays a mod we lack:
        the page fetches it and comes back into the game (tak_mod_fetch.h). */
     okFetchMod: function (room) {
@@ -854,12 +868,14 @@
      canvas that has stopped says nothing on its own. */
   window.addEventListener('error', function (e) {
     if (reloadFresh(e.message)) return;
+    count('error', e.message || 'error', true);
     tell('The engine stopped: ' + (e.message || 'error'), true);
   });
   window.addEventListener('unhandledrejection', function (e) {
     var r = e.reason;
     var what = r && r.message ? r.message : r;
     if (reloadFresh(what)) return;
+    count('error', what, true);
     tell('The engine stopped: ' + what, true);
   });
 
@@ -954,6 +970,7 @@
   }
 
   function showReady(msg) {
+    count('step', 'files');
     offerMods(Module.FS || window.FS);
     if (pendingJoin) msg += ' Start to join ' + (pendingJoin.host ? pendingJoin.host + '\u2019s game.' : 'the game.');
     readyMsg.textContent = msg;
@@ -967,6 +984,7 @@
 
   function start() {
     started = true;
+    count('view', 'play');
     var box = document.getElementById('mods-row');
     var sel = document.getElementById('mod-set');
     if (box && sel && !box.hidden && sel.value) {
@@ -2284,6 +2302,9 @@
     screenRoom = w > 0 && h > 0 ? { x: x, y: y, w: w, h: h } : null;
     placePlate();
     if (id === 'Multiplayer' || id === 'Loading' || id === 'In Game') linkUsed = true;
+    var step = { 'menu': 'menu', 'Skirmish Lobby': 'skirmish', 'Campaign': 'campaign',
+                 'Select Game': 'multiplayer' }[id];
+    if (step) count('step', step);
     askNewer();
   };
 
