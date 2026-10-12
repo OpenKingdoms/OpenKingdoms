@@ -320,7 +320,9 @@ static void open_stats(const char *dir, const char *store) {
             fprintf(stderr, "stats: origin %s left out, too many\n", one);
         while (*origins && *origins != ',') origins++;
     }
-    TAK_Stats_SetToken(&g_stats, getenv("STATS_TOKEN"));
+    if (TAK_Stats_SetToken(&g_stats, getenv("STATS_TOKEN")) < 0)
+        fprintf(stderr, "stats: STATS_TOKEN is shorter than 16 characters or too long, "
+                        "so the report stays off\n");
     uint64_t now = wall_ms(TakNet_NowMs());
     if (dir && TAK_Stats_Open(&g_stats, dir, now) == 0)
         printf("stats: daily counts kept under %s\n", dir);

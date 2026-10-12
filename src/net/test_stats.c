@@ -362,9 +362,12 @@ TEST(the_report_needs_the_token_and_turns_a_guesser_away) {
     TAK_Stats_Init(&g_s);
     ASSERT_EQ_INT(0, TAK_Stats_HasToken(&g_s));
     ASSERT_EQ_INT(0, TAK_Stats_Authorized(&g_s, "Bearer ", NULL, NOON));
-    TAK_Stats_SetToken(&g_s, "tooshort");
+    /* A token too short to keep is refused, so the relay can say so. */
+    ASSERT_EQ_INT(-1, TAK_Stats_SetToken(&g_s, "tooshort"));
     ASSERT_EQ_INT(0, TAK_Stats_HasToken(&g_s));
-    TAK_Stats_SetToken(&g_s, "k3J9-wq2Lx8vT5mN0pR7sY4u");
+    ASSERT_EQ_INT(0, TAK_Stats_SetToken(&g_s, NULL));
+    ASSERT_EQ_INT(0, TAK_Stats_SetToken(&g_s, "  \n"));
+    ASSERT_EQ_INT(1, TAK_Stats_SetToken(&g_s, "k3J9-wq2Lx8vT5mN0pR7sY4u"));
     ASSERT_EQ_INT(1, TAK_Stats_HasToken(&g_s));
     ASSERT_EQ_INT(1, TAK_Stats_Authorized(&g_s, "Bearer k3J9-wq2Lx8vT5mN0pR7sY4u", "192.0.2.1", NOON));
     ASSERT_EQ_INT(1, TAK_Stats_Authorized(&g_s, "bearer  k3J9-wq2Lx8vT5mN0pR7sY4u ", "192.0.2.1", NOON));

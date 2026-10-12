@@ -158,8 +158,10 @@ void TAK_Stats_Init(TAK_Stats *s);
 int  TAK_Stats_Open(TAK_Stats *s, const char *dir, uint64_t now_ms);
 
 /* The bearer token /api/stats asks for, "" or NULL for none, which
- * leaves the report unanswered. Shorter than 16 characters is none. */
-void TAK_Stats_SetToken(TAK_Stats *s, const char *token);
+ * leaves the report unanswered. Returns 1 when it is kept, 0 for none,
+ * and -1 for one shorter than 16 characters or too long, which is
+ * refused and also leaves the report unanswered. */
+int  TAK_Stats_SetToken(TAK_Stats *s, const char *token);
 int  TAK_Stats_HasToken(const TAK_Stats *s);
 
 /* A page origin that may post, as https://host. With none given, any

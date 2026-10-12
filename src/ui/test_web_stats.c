@@ -183,6 +183,16 @@ TEST(text_from_maps_and_errors_is_escaped_and_cut) {
     WebStats_Starting("skirmish", NULL);
     WebStats_BattleBegan(&cfg, "The \"Big\" One", 1, 0, 0, NULL);
     ASSERT(strstr(g_json, "\"map\":\"The \\\"Big\\\" One\",\"ai\":0,\"rb\":0,") != NULL);
+    /* Text that escapes to six bytes a byte is cut by what it writes, so
+     * every field after it still arrives whole. */
+    char wide[400];
+    for (int i = 0; i + 2 < (int)sizeof wide; i += 2) { wide[i] = (char)0xc3; wide[i + 1] = (char)0xa9; }
+    wide[sizeof wide - 2] = '\0';
+    WebStats_Starting("skirmish", NULL);
+    WebStats_BattleBegan(&cfg, wide, 1, 0, 0, wide);
+    size_t n = strlen(g_json);
+    ASSERT(n > 20);
+    ASSERT_EQ_STR(",\"side\":\"zhon\"}", g_json + n - strlen(",\"side\":\"zhon\"}"));
 }
 
 int main(void) {

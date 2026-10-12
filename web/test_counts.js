@@ -165,6 +165,14 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
       total += ev.length;
     }
     assert.strictEqual(total, 60);
+    /* The cap is the server's, in bytes, and text outside ASCII takes
+       more of them than it has characters. */
+    const wide = [];
+    for (let i = 0; i < 40; i++) wide.push({ k: 'error', msg: 'é中'.repeat(50) + i, fatal: 0 });
+    for (const b of C.bodies(head, wide)) {
+      assert.ok(Buffer.byteLength(b, 'utf8') <= C.MAX_BODY, 'a body of ' + Buffer.byteLength(b, 'utf8') + ' bytes');
+    }
+    assert.strictEqual(C.bodies(head, wide).reduce((n, b) => n + JSON.parse(b).ev.length, 0), 40);
   });
 
   await test('with no server named nothing is sent and nothing throws', async () => {

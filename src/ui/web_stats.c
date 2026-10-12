@@ -40,7 +40,8 @@ void WebStats_SetSink(WebStats_Sink sink) { g_sink = sink; }
 
 /* ── One event as JSON ────────────────────────────────────────────────── */
 
-typedef struct Js { char p[768]; size_t n; } Js;
+/* Room for every field at its cap, so no event is ever cut short. */
+typedef struct Js { char p[1536]; size_t n; } Js;
 
 static void js_raw(Js *j, const char *s) {
     size_t k = strlen(s);
@@ -55,17 +56,19 @@ static void js_key(Js *j, const char *key) {
     js_raw(j, "\":");
 }
 
-/* A string, escaped, and cut at TEXT_MAX bytes. */
+/* A string, escaped, cut where its escaped form reaches TEXT_MAX bytes. */
 static void js_text(Js *j, const char *key, const char *v) {
     js_key(j, key);
     js_raw(j, "\"");
     size_t k = 0;
-    for (; v && *v && k < TEXT_MAX; v++, k++) {
+    for (; v && *v; v++) {
         unsigned char c = (unsigned char)*v;
         char e[8];
         if (c == '"' || c == '\\') { e[0] = '\\'; e[1] = (char)c; e[2] = 0; }
         else if (c < 0x20 || c >= 0x7f) snprintf(e, sizeof e, "\\u%04x", c);
         else { e[0] = (char)c; e[1] = 0; }
+        k += strlen(e);
+        if (k > TEXT_MAX) break;
         js_raw(j, e);
     }
     js_raw(j, "\"");

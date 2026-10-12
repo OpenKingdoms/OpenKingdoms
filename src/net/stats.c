@@ -555,16 +555,18 @@ void TAK_Stats_Close(TAK_Stats *s, uint64_t now_ms) {
 
 /* ── Who may post and who may read ────────────────────────────────────── */
 
-void TAK_Stats_SetToken(TAK_Stats *s, const char *token) {
+int TAK_Stats_SetToken(TAK_Stats *s, const char *token) {
     s->token[0] = '\0';
-    if (!token) return;
+    if (!token) return 0;
     while (*token == ' ' || *token == '\t' || *token == '\r' || *token == '\n') token++;
     size_t n = strlen(token);
     while (n && (token[n - 1] == ' ' || token[n - 1] == '\t' || token[n - 1] == '\r' ||
                  token[n - 1] == '\n')) n--;
-    if (n < 16 || n >= sizeof s->token) return;
+    if (n == 0) return 0;
+    if (n < 16 || n >= sizeof s->token) return -1;
     memcpy(s->token, token, n);
     s->token[n] = '\0';
+    return 1;
 }
 
 int TAK_Stats_HasToken(const TAK_Stats *s) { return s->token[0] != '\0'; }

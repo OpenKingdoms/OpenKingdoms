@@ -128,6 +128,19 @@
     return out;
   }
 
+  /* A string's length in UTF-8 bytes, which is what the server's cap counts. */
+  function byteLength(s) {
+    var n = 0;
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      if (c < 0x80) n += 1;
+      else if (c < 0x800) n += 2;
+      else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) { n += 4; i++; }
+      else n += 3;
+    }
+    return n;
+  }
+
   /* Bodies for a list of events, each under both of the server's caps. */
   function bodies(head, events) {
     var out = [];
@@ -140,7 +153,7 @@
     events.forEach(function (e) {
       batch.push(e);
       var whole = JSON.stringify(Object.assign({}, head, { ev: batch }));
-      if (whole.length > MAX_BODY && batch.length > 1) {
+      if (byteLength(whole) > MAX_BODY && batch.length > 1) {
         batch.pop();
         close();
         batch.push(e);
@@ -148,7 +161,7 @@
       if (batch.length >= MAX_EVENTS) close();
     });
     close();
-    return out.filter(function (b) { return b.length <= MAX_BODY; });
+    return out.filter(function (b) { return byteLength(b) <= MAX_BODY; });
   }
 
   /* ---- the counter ------------------------------------------------- */
@@ -342,6 +355,7 @@
     refusal: refusal,
     apiFrom: apiFrom,
     newId: newId,
+    byteLength: byteLength,
     bodies: bodies,
     create: create,
     MAX_EVENTS: MAX_EVENTS,
