@@ -2607,6 +2607,11 @@ if(BUILD_TESTING)
     # No game data, so CI runs it too.
     add_test(NAME test_ui_screens_shards
              COMMAND test_ui_screens --verify-shards --shard=1/8)
+    # The screen cases that read the most kinds of game file, for the
+    # pass over the extracted data folder. See scripts/run-suite.sh.
+    add_test(NAME test_ui_screens_layout
+             COMMAND test_ui_screens
+                     --case-list=${CMAKE_CURRENT_SOURCE_DIR}/ui/test_ui_layout_cases.txt)
     add_test(NAME test_hpi         COMMAND test_hpi)
     add_test(NAME test_hpi_open    COMMAND test_hpi_open)
     add_test(NAME test_io          COMMAND test_io)
@@ -2689,6 +2694,8 @@ if(BUILD_TESTING)
     add_test(NAME test_stats       COMMAND test_stats)
     add_test(NAME test_web_stats   COMMAND test_web_stats)
     add_test(NAME test_unit_stall  COMMAND test_unit_stall)
+    # The #60 soak is a measurement, run on demand: ctest -L on-demand.
+    add_test(NAME test_unit_stall_soak COMMAND test_unit_stall --soak)
     add_test(NAME test_render_cache COMMAND test_render_cache)
     add_test(NAME test_view3d COMMAND test_view3d)
     add_test(NAME test_movement    COMMAND test_movement)
@@ -2774,6 +2781,27 @@ if(BUILD_TESTING)
         test_mission test_mission_script_data test_moveinfo test_savegame test_savestate
         test_unit_stall test_render_cache test_view3d
         PROPERTIES LABELS "needs-data")
+    # Measurements and soaks, left out of the gate and of CI. Run them
+    # with ctest -L on-demand.
+    set_tests_properties(test_unit_stall_soak
+        PROPERTIES LABELS "needs-data;on-demand")
+
+    # The tests whose file lookups differ between the extracted data
+    # folder and the original archives. The gate runs everything on the
+    # archives, as players have them, and only these on the extracted
+    # folder. test_ui_screens_layout runs in that second pass alone.
+    set_tests_properties(
+        test_gui_loader test_hpi test_hpi_open test_hpi_vfs
+        test_palette test_tnt test_obj3d test_jpg test_gaf test_cob
+        test_cob_vm test_cob_vm_corpus test_cob_inspect test_cob_inspect_all
+        test_map_inspect test_map_inspect_all test_map_inspect_missions
+        test_campaign_index
+        test_asset_validate_units test_asset_validate_mission_units
+        test_mission test_mission_script_data test_moveinfo test_savegame test_savestate
+        test_render_cache
+        PROPERTIES LABELS "needs-data;layout")
+    set_tests_properties(test_ui_screens_layout
+        PROPERTIES LABELS "needs-data;layout;layout-only" TIMEOUT 600)
 endif()
 
 # A test run used to rewrite the player's own options.cfg: a new
