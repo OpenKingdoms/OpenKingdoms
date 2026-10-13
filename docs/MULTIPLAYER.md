@@ -580,9 +580,11 @@ early. If the player returns inside the window, the match resumes at once and
 they catch up from the turn log.
 
 On a timeout or an early reject the server injects the player leaving into
-the turn stream and the match resumes. A room option decides whether the
-computer takes the army over or the army is removed, which is what the
-original did.
+the turn stream and the match resumes. A player who leaves the battle on
+purpose, from the menu or the end screen, tells the relay first, so their
+seat is settled at once and nobody waits through the countdown. A room
+option decides whether the computer takes the army over or the army is
+removed, which is what the original did.
 
 A dropped player can rejoin later. Select Game offers Rejoin for their device
 token, and they fast forward the whole turn log with no rendering behind the

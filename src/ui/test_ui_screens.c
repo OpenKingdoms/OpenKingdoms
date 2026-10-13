@@ -2557,9 +2557,13 @@ TEST(a_match_reports_the_verdict_to_the_server_once) {
     ASSERT_EQ_INT(0, (int)TAK_NetClient_TakeMessage(c, out, sizeof out));
     ASSERT_EQ_INT(offers + 1, NetSession_LeaderboardOffers());
 
+    /* Leaving the battle leaves the match, so a seat is not left to the
+     * relay's lost player countdown. */
+    InGame_Shutdown();
+    ASSERT_EQ_INT(0, (int)NetSession_State());   /* NET_SESSION_OFF */
+
     TAK_Match_End();
     NetSession_Disconnect();
-    InGame_Shutdown();
     Loading_Shutdown();
     World_End(&platform);
     UI_Shutdown();

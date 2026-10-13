@@ -2059,9 +2059,9 @@ void InGame_Shutdown(void) {
         Settings_SetStr("RejoinMatch", "");
         Settings_Save();
     }
-    /* A watcher who leaves tells the relay so, and is gone from the
-     * players' list of watchers at once. */
-    if (TAK_Match_IsWatching()) NetSession_LeaveMatch();
+    /* Anyone leaving the battle tells the relay so: a watcher leaves the
+     * list at once, and a player's seat is settled without the countdown. */
+    if (TAK_Match_IsLive()) NetSession_LeaveMatch();
     Ambient_Reset();
     /* Back to the interface's own music (legacy:241870). */
     TAK_Music_UseInterfaceList();
