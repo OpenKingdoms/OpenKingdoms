@@ -1,21 +1,43 @@
 # What to run before you push
 
 The whole suite runs in parallel. `ctest -j6` on one build tree takes about
-two minutes Release, where it used to take eleven one test at a time. The
+a minute Release on Linux, where it used to take eleven one test at a time. The
 screen suite is eight shards packed by measured case time, and every test
 but `test_view3d` runs with the dummy video driver, so no test opens a
 desktop window except that one.
 
 One build tree covers both data layouts. Tests read the data folder from
 `TAK_TEST_DATA_DIR` when it is set, so the archives only layout is the
-same binaries pointed at an empty folder. There is no second build.
+same binaries pointed at an empty folder. There is no second build. Every
+test runs on the archives, which is how the game and the browser read the
+files. Only the tests labelled `layout`, whose file lookups differ between
+the two, run again on the extracted folder. `test_ui_screens_layout` is the
+screen cases that read the most kinds of file, listed in
+`src/ui/test_ui_layout_cases.txt`, and it runs in that second pass alone.
 
 ```
 bash scripts/run-suite.sh <build tree> [Release] [6]
 ```
 
-That is the gate before a merge: both layouts, on the final rebased head,
-under the test lock.
+That is the gate before a merge, on the final rebased head, under the test
+lock. About a minute and a half on Linux.
+
+Tests labelled `on-demand` are measurements and soaks: the issue #60 stall
+soak (`test_unit_stall_soak`) and, inside the screen suite, the perf probes
+(`TAK_PERF_PROBE=1`) and the render probe picture (`TAK_RENDER_PROBE=1`).
+Neither the gate nor CI runs them. Run them when the change is about what
+they measure, with `ctest -L on-demand` or the variable set.
+
+## What gets a new test
+
+No new end to end case for every feature or fix. A fix is proved by an
+existing test that now catches it, by a cheap unit test beside the code, or
+by a repro written into the pull request. The screen suite gains a case only
+for the things it exists to hold: simulation determinism and the state hash,
+lockstep and the net protocol, saves and loads, golden frames, a crash that
+is cheap to repeat, and parity with the original where it already went wrong
+once. A case that boots a battle to check one function belongs in a unit
+test with a synthetic world, as `test_movement` and `test_line_of_fire` do.
 
 No test touches your own options. Every test binary is a test build that
 never asks the platform where `options.cfg` lives, and ctest gives every test
@@ -125,7 +147,8 @@ list of shard names that would go stale the next time the suite is repacked.
 ## Tier 2, the full suite, one lock take
 
 The two data layouts are the game files extracted on disk and the original
-archives read in place. Both are run, because the file lookup paths through
+archives read in place. Every test runs on the archives, and the `layout`
+tests run on the extracted folder too, because the file lookup paths through
 them differ and a change can pass on one and fail on the other.
 
 Every header, because the include graph fans out further than a filename
@@ -139,20 +162,20 @@ unrecognised, because the rules cannot vouch for it.
 1. Build your tree, outside the lock, `-m:2`.
 2. Confirm the tree knows every declared test.
 3. Take the lock once and run `bash scripts/run-suite.sh <tree>`. It runs
-   both layouts at `-j6`, a few minutes in all.
+   both passes at `-j6`, a minute and a half in all.
 4. Paste the `SUITE CLEAN on both layouts` line.
 
 One carve out, still decided by path alone. A change confined to
 `include/test_framework.h`, `include/test_hpi_builder.h` or
 `src/ui/test_ui_screens.c` cannot alter shipped behaviour, only the harness
-that measures it. That runs the full suite on one data layout and takes the
-lock once, so adding coverage does not cost double. Confined means those files
-and nothing else. Mixed with any product file it is an ordinary tier 2.
+that measures it. That runs the suite on one data layout, leaving out the
+`on-demand` and `layout-only` tests, and takes the lock once. Confined means
+those files and nothing else. Mixed with any product file it is an ordinary tier 2.
 
 ## What still gates a merge
 
-The full suite on both data layouts, once, on the final rebased head, run by
-whoever merges. Nothing lands on the main branch that has not had one. The
+`scripts/run-suite.sh`, once, on the final rebased head, run by whoever
+merges. Nothing lands on the main branch that has not had one. The
 protection on the main branch is exactly what it was. What goes away is the
 repeated full runs on intermediate states of a branch that nobody will ever
 ship.
@@ -160,8 +183,8 @@ ship.
 CI cannot take this gate. It runs `ctest --label-exclude needs-data`, which is
 the tests that need no game files, in about a second and a half. It has no
 copy of the game and cannot legally be given one, so it runs on neither data
-layout and it never builds a screen test at all. The two local runs are not
-paying twice for something CI already does. They are the only place that tier
+layout and it never builds a screen test at all. The local run is not paying
+twice for something CI already does. They are the only place that tier
 has ever run.
 
 What CI is good at, and keeps doing. Portability across four compilers and

@@ -91,7 +91,6 @@ ui = [
   ["campaign_map_water_comes_from_the_map", 1],
   ["the_revive_cursor_shows_over_a_body_the_selection_can_raise", 1],
   ["a_wrecked_keep_shows_its_timbers_over_its_walls", 1],
-  ["flyer_stopped_by_the_shore_lands_on_dry_ground", 1],
 ]
 
 [[tier1]]
@@ -130,7 +129,6 @@ name = "movement"
 paths = ["src/game/pathing.c", "src/game/occupancy.c", "src/game/moveinfo.c"]
 ctest = "^(test_build_facing|test_capture|test_command_pipeline|test_line_of_fire|test_moveinfo|test_movement|test_orders|test_path_buffers|test_pathing|test_render_cache|test_savegame|test_savegame_no_data|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
 ui = [
-  ["live_skirmish_units_actually_move", 1],
   ["an_allied_unit_is_not_an_attack_target", 1],
   ["the_sweep_button_sends_a_builder_to_clear_a_map_feature", 1],
   ["a_priest_repairs_a_swordsman_in_its_build_time", 1],
@@ -139,22 +137,14 @@ ui = [
   ["a_refused_step_banks_no_distance", 1],
   ["a_column_gets_past_a_stuck_unit_in_its_way", 1],
   ["horseman_moves_without_circling", 1],
-  ["unit_walks_around_a_wall_of_friendly_units", 1],
   ["own_unit_walks_through_its_gate_and_gate_opens", 1],
   ["completed_wall_blocks_units", 1],
-  ["units_do_not_stack_on_one_another", 1],
-  ["harpies_sent_to_one_place_do_not_stack", 1],
-  ["harpies_attacking_one_spot_spread_round_it", 1],
-  ["flyer_left_over_open_sea_never_lands_in_it", 1],
-  ["flyer_stopped_by_the_shore_lands_on_dry_ground", 1],
-  ["flyers_cruise_over_the_sea_not_the_sea_floor", 1],
   ["every_flyer_kind_keeps_off_the_water", 1],
   ["boats_stay_in_water_ghost_ships_do_not", 1],
   ["skirmish_ai_duel_reaches_game_over", 1],
   ["group_selection_and_control_groups", 1],
   ["tech_tree_all_builder_menus_resolve", 1],
   ["corpse", 6],
-  ["a_raised_unit_stands_as_the_body_lay", 1],
   ["an_ai_player_orders_a_raise_for_itself", 1],
   ["castle_has_no_ground_a_unit_can_stand_on_but_not_plan_from", 1],
   ["a_route_cache_rebuild_tests_each_feature_once", 1],
@@ -166,7 +156,7 @@ ui = [
   ["a_caster_starts_with_no_mana_of_its_own", 1],
   ["a_shot_still_in_the_air_when_its_shooter_falls_scores_its_player", 1],
   ["a_monarch_on_castles_own_pinched_ground_gets_off_it", 1],
-  ["a_monarch_on_a_one_tile_band_is_never_stuck", 1],
+  ["a_unit_on_a_band_is_never_stuck", 1],
   ["leaving_a_battle_takes_the_exit_submenu", 1],
 ]
 
@@ -310,9 +300,8 @@ paths = [
 ]
 ctest = "^(fuzz_gltf|test_blit|test_build_facing|test_capture|test_command_pipeline|test_gaf|test_gltf|test_jpg|test_jpg_no_data|test_line_of_fire|test_movement|test_obj3d|test_orders|test_render_cache|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
 ui = [
-  ["render_probe", 7],
-  ["shadow", 5],
-  ["perf_probe", 4],
+  ["render_probe", 6],
+  ["shadow", 4],
   ["battle_setup_swatches_match_authored_frames", 1],
   ["loading_progress_clamps_and_transitions", 1],
 ]

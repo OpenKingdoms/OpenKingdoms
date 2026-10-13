@@ -196,6 +196,11 @@ def main(argv=None):
                      "scripts/coverage-map.py")
     else:
         p = pick(paths, cov, rules)
+        # A case the map remembers may since have gone, or run only when
+        # asked for. Keep to the cases a plain run registers.
+        with open(os.path.join(REPO, "src", "ui", "test_ui_screens.c"),
+                  encoding="utf-8", errors="replace") as f:
+            p.cases &= set(tier.ui_case_names(f.read()))
         age = map_age(cov)
         if age is not None and age > STALE_AFTER:
             print("NOTE: the coverage map is %d commits old. Regenerate it "
@@ -203,7 +208,7 @@ def main(argv=None):
 
     times = case_times()
     if p.full:
-        print("FULL SUITE, both data layouts:")
+        print("FULL SUITE, scripts/run-suite.sh:")
         for w in p.why:
             print("  " + w)
     elif not p.tests and not p.cases:

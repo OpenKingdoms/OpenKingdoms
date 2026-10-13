@@ -29,21 +29,22 @@ welcome and are recorded in docs/MANUAL_DEVIATIONS.md.
   `cmake --build build`, then `ctest --test-dir build --output-on-failure`.
   Tests that need game data carry the CTest label `needs-data`; CI runs
   the rest with `--label-exclude needs-data`.
-- Run the gate in Release, one test at a time, and keep Debug for
-  stepping through a failure: `cmake --build build --config Release`
-  then `ctest --test-dir build -C Release --output-on-failure`. Measured
-  on one box: about 17 minutes Debug and about 11 Release, same result
-  for every case. `test_ui_screens` is registered as four slices, packed
-  by measured case time, for the day someone shows four of them can run
-  at once on Windows without the 0xc0000142 dialogs. Nobody has shown
-  that, so do not pass `-j` here.
+- The gate is `bash scripts/run-suite.sh build Release 6` on a Release
+  build: every test on the original archives, then the `layout` tests on
+  the extracted folder. Tests labelled `on-demand` (soaks, perf probes)
+  stay out of it and out of CI. Keep Debug for stepping through a failure.
 - Browser: `scripts/build-wasm.sh --public` (or `build-wasm.ps1 -Public`).
   Build the WebAssembly target before opening a PR: Emscripten's clang
   rejects implicit declarations that MSVC accepts. Declare before use.
 - `scripts/web-smoke.js` drives a browser through the whole
   bring-your-own-files flow, including a skirmish, against a real install.
-- Every bug fix gets a test that would have failed before it. Tests live
-  next to the code as `test_*.c`, registered in src/CMakeLists.txt.
+- No new end to end case per feature or fix. Prove a fix with an existing
+  test, a cheap unit test beside the code, or a repro in the PR. The screen
+  suite (`test_ui_screens`, real battles) takes new cases only for
+  determinism and the state hash, lockstep and the protocol, saves and
+  loads, golden frames, cheap crash repeats, and parity with the original
+  where it already went wrong once. Tests live next to the code as
+  `test_*.c`, registered in src/CMakeLists.txt.
 
 ## Conventions
 
