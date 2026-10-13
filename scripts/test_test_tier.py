@@ -335,7 +335,7 @@ def read(path):
 
 def ui_cases():
     text = read(UI_SOURCE)
-    names = re.findall(tier.RUN_UI_TEST_RE, text)
+    names = tier.ui_case_names(text)
     parts = re.split(r"\nTEST\((\w+)\)", text)
     bodies = {parts[i]: parts[i + 1] for i in range(1, len(parts), 2)}
     return names, bodies

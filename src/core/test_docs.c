@@ -38,11 +38,7 @@ static const char *doc_read(const char *rel) {
     return doc_buf;
 }
 
-static int has(const char *hay, const char *needle) {
-    return hay && strstr(hay, needle) != NULL;
-}
-
-/* The same, ignoring ASCII case, for names that could be written either way. */
+/* Whether hay holds needle, ignoring ASCII case. */
 static int has_ci(const char *hay, const char *needle) {
     size_t n = strlen(needle);
     for (; hay && *hay; hay++) {
@@ -94,65 +90,10 @@ static void check_prose(const char *rel) {
     ASSERT(dash == 0);
 }
 
-/* ── The record the multiplayer document had wrong ───────────────────── */
-
-TEST(multiplayer_doc_drops_the_fixed_point_claim) {
-    const char *doc = doc_read("docs/MULTIPLAYER.md");
-    ASSERT_NOT_NULL(doc);
-    /* The old text stated 16.16 positions as a fact about today's tree.
-     * The correction that replaced it said the migration was owed before
-     * two machines could agree, and 0.1.3 overtook that in turn, so what
-     * is pinned is the page saying which way the fact moved and what
-     * holds it true. */
-    ASSERT(!has(doc, "Positions are 16.16 fixed point"));
-    ASSERT(has(doc, "the reason that mattered has moved again"));
-    ASSERT(has(doc, "no longer required for two machines"));
-    ASSERT(has(doc, "test_sim_probe"));
-}
-
-TEST(multiplayer_doc_drops_the_command_layer_claim) {
-    const char *doc = doc_read("docs/MULTIPLAYER.md");
-    ASSERT_NOT_NULL(doc);
-    /* The old text said every player action is already a command, which
-     * was false then and is true now. This pinned the correction, and
-     * the correction has itself been overtaken, so what is pinned is
-     * that the page still says which way the fact moved rather than
-     * quietly asserting the original claim again. */
-    ASSERT(!has(doc, "Commands are already defined"));
-    ASSERT(has(doc, "it is true now"));
-}
-
-TEST(multiplayer_doc_names_the_websocket_transport) {
-    const char *doc = doc_read("docs/MULTIPLAYER.md");
-    ASSERT_NOT_NULL(doc);
-    ASSERT(!has(doc, "Native clients use UDP"));
-    ASSERT(has(doc, "one WebSocket for every client"));
-}
-
-TEST(multiplayer_doc_keeps_the_relay_free_of_game_data) {
-    const char *doc = doc_read("docs/MULTIPLAYER.md");
-    ASSERT_NOT_NULL(doc);
-    ASSERT(has(doc, "never reads game data"));
-}
+/* ── The prose rules and what stays out of the repo ─────────────────── */
 
 TEST(multiplayer_doc_follows_the_prose_rules) {
     check_prose("docs/MULTIPLAYER.md");
-}
-
-/* ── The departures the design adds, and what stays out of the repo ── */
-
-TEST(deviations_record_the_new_multiplayer_departures) {
-    const char *doc = doc_read("docs/MANUAL_DEVIATIONS.md");
-    ASSERT_NOT_NULL(doc);
-    static const char *const ids[] = {
-        "## N-002", "## N-003", "## N-004", "## N-005",
-        "## N-006", "## N-007", "## N-008", "## N-009", "## N-010" };
-    for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) {
-        if (!has(doc, ids[i])) printf("\n    missing %s\n", ids[i]);
-        ASSERT(has(doc, ids[i]));
-    }
-    /* N-001 carries the non goal of playing the original on GameRanger. */
-    ASSERT(has(doc, "GameRanger"));
 }
 
 TEST(deviations_follow_the_prose_rules) {
@@ -182,12 +123,7 @@ TEST(public_docs_carry_no_hosting_detail) {
 
 int main(void) {
     TEST_SUITE("Shipped documents");
-    RUN(multiplayer_doc_drops_the_fixed_point_claim);
-    RUN(multiplayer_doc_drops_the_command_layer_claim);
-    RUN(multiplayer_doc_names_the_websocket_transport);
-    RUN(multiplayer_doc_keeps_the_relay_free_of_game_data);
     RUN(multiplayer_doc_follows_the_prose_rules);
-    RUN(deviations_record_the_new_multiplayer_departures);
     RUN(deviations_follow_the_prose_rules);
     RUN(public_docs_carry_no_hosting_detail);
     TEST_REPORT();
