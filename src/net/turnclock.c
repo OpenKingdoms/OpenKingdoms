@@ -448,6 +448,25 @@ void TAK_TurnClock_Start(TAK_TurnClock *c, uint64_t now_ms) {
 
 /* ── Membership ───────────────────────────────────────────────────────── */
 
+/* A leaver's army goes, as the original's did. A room that hands armies
+ * to the computer does so only for a seat a computer began in (a drop
+ * in) or while a human of the leaver's team plays on (co-op). */
+static uint8_t leave_as(const TAK_TurnClock *c, int sim) {
+    if (c->cfg.left_as != TAK_LEFT_COMPUTER_TAKES_OVER) return c->cfg.left_as;
+    uint8_t seat = c->sim[sim].seat;
+    if (seat >= TAK_NET_SEATS) return TAK_LEFT_ARMY_REMOVED;
+    if (c->cfg.computer_seats & (1u << seat)) return TAK_LEFT_COMPUTER_TAKES_OVER;
+    uint8_t team = c->cfg.team[seat];
+    if (team == 0) return TAK_LEFT_ARMY_REMOVED;
+    for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
+        const TAK_TurnSim *o = &c->sim[i];
+        if (i == sim || !o->in_use || o->takeover || o->status == TAK_PSTATUS_DROPPED) continue;
+        if (o->seat < TAK_NET_SEATS && o->seat != seat && c->cfg.team[o->seat] == team)
+            return TAK_LEFT_COMPUTER_TAKES_OVER;
+    }
+    return TAK_LEFT_ARMY_REMOVED;
+}
+
 static void drop_sim(TAK_TurnClock *c, int sim, uint8_t left_as,
                      uint64_t now_ms) {
     TAK_TurnSim *s = &c->sim[sim];
@@ -460,6 +479,7 @@ static void drop_sim(TAK_TurnClock *c, int sim, uint8_t left_as,
         size_t n = TAK_Sys_PlayerLeft(s->seat, left_as, blob, sizeof(blob));
         (void)TAK_TurnClock_System(c, blob, (uint16_t)n);
         c->seat_left_turn[s->seat] = c->head;
+        c->seat_left_as[s->seat] = left_as;
         emit_status(c, sim, 0);
     }
     rejudge(c, now_ms);
@@ -603,6 +623,11 @@ int TAK_TurnClock_SeatHeld(const TAK_TurnClock *c, uint8_t seat) {
     return held;
 }
 
+int TAK_TurnClock_ComputerHolds(const TAK_TurnClock *c, uint8_t seat) {
+    return seat < TAK_NET_SEATS && c->seat_left_turn[seat] != TAK_TURN_SEAT_STAYED &&
+           c->seat_left_as[seat] == TAK_LEFT_COMPUTER_TAKES_OVER;
+}
+
 int TAK_TurnClock_DropIn(TAK_TurnClock *c, uint32_t client_id, uint8_t seat,
                          uint64_t now_ms) {
     if (!c->started || c->ended || seat >= TAK_NET_SEATS) return -1;
@@ -642,7 +667,7 @@ int TAK_TurnClock_Reconnect(TAK_TurnClock *c, int sim, uint32_t from_turn,
     TAK_TurnSim *s = &c->sim[sim];
     int was_dropped = (s->status == TAK_PSTATUS_DROPPED);
     s->reclaim = (uint8_t)(was_dropped && s->seat != TAK_NET_SEAT_NONE &&
-                           c->cfg.left_as == TAK_LEFT_COMPUTER_TAKES_OVER &&
+                           TAK_TurnClock_ComputerHolds(c, s->seat) &&
                            !seat_promised(c, sim, s->seat));
     if (was_dropped && !s->reclaim) s->seat = TAK_NET_SEAT_NONE;  /* watches */
     begin_catch_up(c, sim, from_turn, now_ms);
@@ -658,7 +683,7 @@ int TAK_TurnClock_Reject(TAK_TurnClock *c, uint8_t seat, uint64_t now_ms) {
     for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
         TAK_TurnSim *s = &c->sim[i];
         if (s->in_use && s->seat == seat && s->status == TAK_PSTATUS_LOST) {
-            drop_sim(c, i, c->cfg.left_as, now_ms);
+            drop_sim(c, i, leave_as(c, i), now_ms);
             c->next_close_ms = now_ms + TAK_TurnClock_Period(c);
             return 0;
         }
@@ -680,6 +705,7 @@ int TAK_TurnClock_Resign(TAK_TurnClock *c, int sim) {
      * keeps reporting its hash. It just no longer holds a seat. */
     emit_status(c, sim, 0);
     c->seat_left_turn[s->seat] = c->head;
+    c->seat_left_as[s->seat] = TAK_LEFT_RESIGNED;
     s->seat = TAK_NET_SEAT_NONE;
     return 0;
 }
@@ -811,7 +837,7 @@ static void run_countdowns(TAK_TurnClock *c, uint64_t now_ms) {
         }
         if (s->status != TAK_PSTATUS_LOST) continue;
         if (s->seat == TAK_NET_SEAT_NONE || now_ms >= s->lost_deadline_ms) {
-            drop_sim(c, i, c->cfg.left_as, now_ms);
+            drop_sim(c, i, leave_as(c, i), now_ms);
             c->next_close_ms = now_ms + TAK_TurnClock_Period(c);
             continue;
         }
