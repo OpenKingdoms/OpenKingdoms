@@ -119,13 +119,17 @@ static int            g_panel1_n = 0;
 static HUDPanelWidget g_panel2[HUD_MAX_PANEL_WIDGETS];
 static int            g_panel2_n = 0;
 
-/* Portrait cache by def_idx. We keep BOTH raw RGBA pixels (so we can
- * blit into the UI canvas at the same compositing layer as the HUD
- * widgets) and a GPU_Texture (so we can blit to renderer if needed).
- * Without the canvas blit the GUI's empty UnitPic frame draws on top
- * of any GPU overlay. */
-static SDL_Surface *g_portrait_surf[64];
-static int          g_portraits_def[64];
+/* Decoded RGBA art, wrapped in a surface only while it is blitted: SDL 3,
+ * under the SDL 2 that Arch ships, invalidates every surface at SDL_Quit. */
+typedef struct HudPixels {
+    uint32_t *rgba;
+    int       w, h;
+} HudPixels;
+
+/* Portrait cache by def_idx, blitted into the UI canvas so the GUI's
+ * empty UnitPic frame does not draw over it. */
+static HudPixels g_portrait_px[64];
+static int       g_portraits_def[64];
 
 /* Per-weapon icon cache, keyed by JPEG basename (e.g. "LightningSB").
  * Loaded lazily from `data/anims/weaponpic/<basename>.jpg`. Mirrors
@@ -133,8 +137,8 @@ static int          g_portraits_def[64];
  * `buttonimage*` fields and resolves them under
  * `Path_BuildFullPath(..., str_anims_WeaponPic, ...)`. */
 typedef struct WeaponIconEntry {
-    char         key[40];
-    SDL_Surface *surf;
+    char      key[40];
+    HudPixels px;
 } WeaponIconEntry;
 #define HUD_MAX_WEAPON_ICONS 64
 static WeaponIconEntry g_weapon_icons[HUD_MAX_WEAPON_ICONS];
@@ -250,16 +254,23 @@ static int rect_contains(SDL_Rect outer, SDL_Rect inner) {
            inner.y + inner.h <= outer.y + outer.h;
 }
 
-/* Decode + cache the buildpic JPG for a unit def as an SDL_Surface.
- * The surface is what we blit into the UI canvas (UI_Offscreen) so
- * the portrait lands in the SAME compositing layer as the dialog's
- * widget frames — otherwise the empty UnitPic frame from the .gui
- * (drawn last as part of the canvas) covers any renderer-side blit. */
-static SDL_Surface *portrait_surface_for_def(TAK_Platform *plat, int def_idx) {
-    (void)plat;
+/* Blits cached art into the UI canvas. */
+static void hud_blit_pixels(const HudPixels *p, SDL_Surface *dst, SDL_Rect *dst_rect) {
+    if (!p || !p->rgba || !dst) return;
+    SDL_Surface *s = SDL_CreateRGBSurfaceWithFormatFrom(p->rgba, p->w, p->h, 32,
+                                                        p->w * 4, SDL_PIXELFORMAT_RGBA32);
+    if (!s) return;
+    SDL_BlitScaled(s, NULL, dst, dst_rect);
+    SDL_FreeSurface(s);
+}
+
+/* Decode + cache the buildpic JPG for a unit def. A full cache gives up
+ * its oldest portrait. */
+static const HudPixels *portrait_pixels_for_def(int def_idx) {
+    static int next_slot;
     if (def_idx < 0) return NULL;
     for (int i = 0; i < 64; i++) {
-        if (g_portraits_def[i] == def_idx) return g_portrait_surf[i];
+        if (g_portraits_def[i] == def_idx) return &g_portrait_px[i];
     }
     const UnitDef *d = Units_GetDef(def_idx);
     if (!d || !d->unitname[0]) return NULL;
@@ -284,36 +295,28 @@ static SDL_Surface *portrait_surface_for_def(TAK_Platform *plat, int def_idx) {
     VFS_FreeBuffer(jpg_bytes);
     if (!ok) return NULL;
 
-    /* Wrap the decoded RGBA in an SDL_Surface (deep-copy via
-     * CreateRGBSurfaceFrom semantics: we keep ownership of `rgba`
-     * inside the surface's userdata so it lives as long as the
-     * surface). Simpler path: copy the pixels into a fresh surface
-     * we own outright. */
-    SDL_Surface *src = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32,
-                                                       SDL_PIXELFORMAT_RGBA32);
-    if (!src) { tak_free(rgba); return NULL; }
-    SDL_LockSurface(src);
-    memcpy(src->pixels, rgba, (size_t)w * h * 4);
-    SDL_UnlockSurface(src);
-    tak_free(rgba);
-
-    for (int i = 0; i < 64; i++) {
-        if (g_portraits_def[i] < 0) {
-            g_portrait_surf[i] = src;
-            g_portraits_def[i] = def_idx;
-            fprintf(stderr, "HUD: portrait surface cached %s (%dx%d)\n",
-                    path, w, h);
-            return src;
-        }
+    int slot = -1;
+    for (int i = 0; i < 64 && slot < 0; i++) {
+        if (g_portraits_def[i] < 0) slot = i;
     }
-    return src;
+    if (slot < 0) {
+        slot = next_slot;
+        next_slot = (next_slot + 1) % 64;
+        tak_free(g_portrait_px[slot].rgba);
+    }
+    g_portrait_px[slot].rgba = rgba;
+    g_portrait_px[slot].w = w;
+    g_portrait_px[slot].h = h;
+    g_portraits_def[slot] = def_idx;
+    fprintf(stderr, "HUD: portrait cached %s (%dx%d)\n", path, w, h);
+    return &g_portrait_px[slot];
 }
 
 /* Load (or fetch from cache) a weaponpic JPEG by basename. The legacy
  * engine resolves each weapon's `buttonimage*` field under
  * `data/anims/weaponpic/<name>.jpg`; we mirror that path. NULL on
- * miss. Returns an SDL_Surface owned by the cache (do not free). */
-static SDL_Surface *weapon_icon_load(const char *basename) {
+ * miss. The pixels belong to the cache. */
+static const HudPixels *weapon_icon_load(const char *basename) {
     if (!basename || !basename[0]) return NULL;
     /* Cache hit (case-insensitive). */
     for (int i = 0; i < g_weapon_icon_count; i++) {
@@ -326,7 +329,7 @@ static SDL_Surface *weapon_icon_load(const char *basename) {
             if (la != lb) { eq = 0; break; }
             if (!a) break;
         }
-        if (eq) return g_weapon_icons[i].surf;
+        if (eq) return &g_weapon_icons[i].px;
     }
     if (g_weapon_icon_count >= HUD_MAX_WEAPON_ICONS) return NULL;
 
@@ -356,19 +359,13 @@ static SDL_Surface *weapon_icon_load(const char *basename) {
     VFS_FreeBuffer(jpg_bytes);
     if (!ok) return NULL;
 
-    SDL_Surface *src = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32,
-                                                       SDL_PIXELFORMAT_RGBA32);
-    if (!src) { tak_free(rgba); return NULL; }
-    SDL_LockSurface(src);
-    memcpy(src->pixels, rgba, (size_t)w * h * 4);
-    SDL_UnlockSurface(src);
-    tak_free(rgba);
-
     WeaponIconEntry *e = &g_weapon_icons[g_weapon_icon_count++];
     snprintf(e->key, sizeof(e->key), "%s", basename);
-    e->surf = src;
+    e->px.rgba = rgba;
+    e->px.w = w;
+    e->px.h = h;
     fprintf(stderr, "HUD: weapon icon cached %s (%dx%d)\n", path, w, h);
-    return src;
+    return &e->px;
 }
 
 /* The sidebar is <nameprefix>ingame.gui for the local player's side
@@ -850,7 +847,7 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world) {
         SDL_FreeFormat(fmt);
         if (g_font) g_text = HUDText_Load(plat, g_font);
         for (int i = 0; i < 64; i++) {
-            g_portrait_surf[i] = NULL;
+            g_portrait_px[i] = (HudPixels){ NULL, 0, 0 };
             g_portraits_def[i] = -1;
         }
         for (int i = 0; i < 128; i++) g_cursors[i] = NULL;
@@ -1270,12 +1267,12 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             if (!icon_name || !icon_name[0]) icon_name = wp->icon_up;
             if (!icon_name || !icon_name[0]) continue;
 
-            SDL_Surface *icon = weapon_icon_load(icon_name);
+            const HudPixels *icon = weapon_icon_load(icon_name);
             if (!icon || !off) continue;
 
             SDL_Rect dlg_r;
             if (!find_widget_rect(&dlg_r, wname)) continue;
-            SDL_BlitScaled(icon, NULL, off, &dlg_r);
+            hud_blit_pixels(icon, off, &dlg_r);
 
             if (active) {
                 SDL_Rect win = dialog_to_window(plat, dlg_r);
@@ -1342,10 +1339,10 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
          * the platform-present scales the entire canvas to the window. */
         if (g_rect_have_unit_image) {
             SDL_Surface *off = UI_Offscreen();
-            SDL_Surface *port = portrait_surface_for_def(plat, def_idx);
+            const HudPixels *port = portrait_pixels_for_def(def_idx);
             if (off && port) {
                 SDL_Rect dst = g_rect_unit_image;
-                SDL_BlitScaled(port, NULL, off, &dst);
+                hud_blit_pixels(port, off, &dst);
             }
         }
 
@@ -1416,10 +1413,10 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
                         SDL_Rect fill = dlg_rect;
                         SDL_FillRect(off, &fill,
                             SDL_MapRGBA(off->format, 30, 24, 16, 255));
-                        SDL_Surface *port = portrait_surface_for_def(plat, g_build_list[b]);
+                        const HudPixels *port = portrait_pixels_for_def(g_build_list[b]);
                         if (port) {
                             SDL_Rect dst = dlg_rect;
-                            SDL_BlitScaled(port, NULL, off, &dst);
+                            hud_blit_pixels(port, off, &dst);
                         }
                     }
                     HUDBuildSlot *bs = &g_build_slots_live[g_build_slots_count++];
