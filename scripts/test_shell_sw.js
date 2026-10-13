@@ -102,9 +102,10 @@ function worker(w) {
     Date: { now: () => ++w.clock }
   });
   return {
-    async install() {
+    /* ev adds to the install event, such as a browser's addRoutes. */
+    async install(ev) {
       const waits = [];
-      on.install({ waitUntil: (p) => waits.push(p) });
+      on.install(Object.assign({ waitUntil: (p) => waits.push(p) }, ev));
       await Promise.all(waits);
     },
     /* The response, or undefined when the worker let it go by. */
@@ -305,6 +306,26 @@ const asserts = [
   /* Not even a name under /api/ that the engine's files share. */
   assert.strictEqual(await sw.get('api/tak-re.js', { client: 'c1' }), undefined);
   assert.strictEqual(await sw.get('api/favicon.png', { client: 'c1' }), undefined);
+}],
+
+['a POST goes to the network without waking the worker where the browser can route', async () => {
+  const w = world();
+  w.net.build = 'A';
+  const calls = [];
+  await worker(w).install({ addRoutes(r) { calls.push([this, r]); return Promise.resolve(); } });
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(typeof calls[0][0].waitUntil, 'function', 'called on the install event');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(calls[0][1])), [{ condition: { requestMethod: 'POST' }, source: 'network' }]);
+  assert.deepStrictEqual(w.caches.builds(), ['A']);
+}],
+
+['a browser that refuses the route installs as before', async () => {
+  for (const addRoutes of [() => { throw new TypeError('no'); }, () => Promise.reject(new TypeError('no'))]) {
+    const w = world();
+    w.net.build = 'A';
+    await worker(w).install({ addRoutes });
+    assert.deepStrictEqual(w.caches.builds(), ['A']);
+  }
 }]
 
 ];
