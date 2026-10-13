@@ -155,8 +155,10 @@ the rest of this document is still design.
   worlds are compared, and its arrival moves no turn. The players see
   who is watching. See docs/notes/2026-09-30-watching-a-match.md.
 - Co-op against the computer with drop in seats (#292, N-010). A
-  hosted room lets players drop in and hands a leaving player's army to
-  the computer. The host may start alone against computer players. A
+  hosted room lets players drop in. A leaving player's army goes to the
+  computer when the seat was a computer's at the start or a human of the
+  leaver's team plays on, and is removed otherwise, as in the original.
+  The host may start alone against computer players. A
   player who joins the match later takes a computer seat, replays the
   turn log from turn 0 like a rejoin, and is handed the seat through the
   turn stream on the turn after they catch up. The client acts on every
@@ -582,9 +584,12 @@ they catch up from the turn log.
 On a timeout or an early reject the server injects the player leaving into
 the turn stream and the match resumes. A player who leaves the battle on
 purpose, from the menu or the end screen, tells the relay first, so their
-seat is settled at once and nobody waits through the countdown. A room
-option decides whether the computer takes the army over or the army is
-removed, which is what the original did.
+seat is settled at once and nobody waits through the countdown. The
+army is removed, which is what the original did. A room that hands armies
+to the computer does so only for a seat a computer began in, a drop in's,
+or while a human of the leaver's team still plays, so co-op keeps its
+strength and a versus game that someone walks out of ends with the one
+who stayed as the winner.
 
 A dropped player can rejoin later. Select Game offers Rejoin for their device
 token, and they fast forward the whole turn log with no rendering behind the

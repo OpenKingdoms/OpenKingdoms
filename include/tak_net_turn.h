@@ -105,6 +105,10 @@ typedef struct TAK_TurnClockCfg {
     uint16_t timeout_secs;    /* the room's reject countdown */
     uint8_t  left_as;         /* TAK_NetLeftAs when a countdown runs out */
     uint8_t  host_paces_only; /* only the host may pause or change speed */
+    /* Each seat's team, 0 for none, and the seats a computer began in.
+     * They decide whether the computer may take a leaver's army. */
+    uint8_t  team[TAK_NET_SEATS];
+    uint8_t  computer_seats;  /* bit per seat */
 } TAK_TurnClockCfg;
 
 typedef struct TAK_TurnSim {
@@ -181,6 +185,7 @@ typedef struct TAK_TurnClock {
     /* The turn each seat's player left on, by resigning, being
      * removed or dropping, or TAK_TURN_SEAT_STAYED. A reclaim clears it. */
     uint32_t          seat_left_turn[TAK_NET_SEATS];
+    uint8_t           seat_left_as[TAK_NET_SEATS];  /* TAK_NetLeftAs, once left */
 
     /* What the clients were last told about pacing. */
     uint8_t           pace_reason;
@@ -260,6 +265,9 @@ int TAK_TurnClock_Reconnect(TAK_TurnClock *c, int sim, uint32_t from_turn,
  * players who have gone and left it to the computer. */
 enum { TAK_SEAT_HELD_NONE = 0, TAK_SEAT_HELD_LIVE, TAK_SEAT_HELD_GONE };
 int TAK_TurnClock_SeatHeld(const TAK_TurnClock *c, uint8_t seat);
+
+/* Whether a seat's player has left and the computer plays their army. */
+int TAK_TurnClock_ComputerHolds(const TAK_TurnClock *c, uint8_t seat);
 
 /* A player dropping in to a match under way, to take `seat` from the
  * computer. The seat must be held by nobody live. Returns the new

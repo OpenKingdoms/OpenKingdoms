@@ -312,6 +312,10 @@ static void begin_match(TAK_Relay *r, TAK_RelayRoom *rr) {
     cfg.left_as = (rr->room.cfg.flags & TAK_ROOMF_AI_TAKES_OVER)
                 ? TAK_LEFT_COMPUTER_TAKES_OVER : TAK_LEFT_ARMY_REMOVED;
     cfg.host_paces_only = (uint8_t)((rr->room.cfg.flags & TAK_ROOMF_HOST_PACES_ONLY) ? 1 : 0);
+    for (int s = 0; s < TAK_NET_SEATS; s++) {
+        cfg.team[s] = rr->room.slot[s].team;
+        if (rr->room.slot[s].kind == TAK_NSLOT_COMPUTER) cfg.computer_seats |= (uint8_t)(1u << s);
+    }
     TAK_TurnClock_Init(&rr->clock, &cfg, &rr->log, clock_send, rr);
 
     int idx = room_index(r, rr);
@@ -738,7 +742,7 @@ static int dropin_seat(const TAK_RelayRoom *rr) {
         if (slot->kind == TAK_NSLOT_COMPUTER && held == TAK_SEAT_HELD_NONE) return s;
         if (slot->kind == TAK_NSLOT_HUMAN && !slot->connected &&
             held == TAK_SEAT_HELD_GONE &&
-            rr->clock.cfg.left_as == TAK_LEFT_COMPUTER_TAKES_OVER) return s;
+            TAK_TurnClock_ComputerHolds(&rr->clock, (uint8_t)s)) return s;
     }
     return -1;
 }
