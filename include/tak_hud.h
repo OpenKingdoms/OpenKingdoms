@@ -234,8 +234,6 @@ int  HUD_GetActionButtonRect(int mode, SDL_Rect *out);
  * because the unit cannot pay for that weapon, 1 down because that slot
  * is the current weapon, 2 up (legacy:151820-151900). */
 int  HUD_WeaponButtonState(int slot);
-/* A magic button's rect in dialog space. 0 when the dialog has none. */
-int  HUD_GetWeaponButtonRect(int slot, SDL_Rect *out);
 /* Build buttons as laid out by the last HUD_Draw, in dialog space. */
 int  HUD_BuildSlotCount(void);
 /* 1 when the in-game dialog has a widget of that name and it shows. */

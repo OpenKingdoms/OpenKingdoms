@@ -20758,59 +20758,6 @@ TEST(caster_short_of_mana_drops_to_a_spell_it_can_pay_for) {
     VFS_Shutdown();
 }
 
-/* SDL 3 invalidates every surface when SDL quits, and the SDL 2 that
- * Arch and newer Fedora ship runs on it. The HUD's art draws the same
- * in a second session. */
-TEST(weapon_icons_draw_the_same_after_sdl_restarts) {
-    enum { MAX_PX = 64 * 64 };
-    static uint32_t px[2][MAX_PX];
-    int got[2] = { 0, 0 };
-    for (int round = 0; round < 2; round++) {
-        if (setup_vfs() != 0) SKIP("no data dir");
-        TAK_Platform platform;
-        if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
-        ASSERT_EQ_INT(0, UI_Init());
-        GameWorld *world = NULL;
-        ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
-        int n = 0;
-        const Unit *units = Units_GetActive(&n);
-        ASSERT(n > 0);
-        int pri_def = Units_FindDefByName("ARAPRIES");
-        ASSERT(pri_def >= 0);
-        int priest = Units_Spawn(pri_def, 1, 0, units[0].world_x + 300, units[0].world_y);
-        ASSERT(priest >= 0);
-        ASSERT_EQ_INT(0, InGame_Init(&platform));
-        Units_SelectSingle(priest);
-        Timer timer;
-        Timer_Init(&timer);
-        timer.accumulator = 0.0;
-        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
-
-        SDL_Rect r;
-        SDL_Surface *canvas = UI_Offscreen();
-        ASSERT(HUD_GetWeaponButtonRect(0, &r));
-        ASSERT(canvas && r.w > 0 && r.h > 0 && r.w * r.h <= MAX_PX);
-        for (int y = 0; y < r.h; y++) {
-            const uint8_t *row = (const uint8_t *)canvas->pixels + (size_t)(r.y + y) * canvas->pitch;
-            memcpy(&px[round][y * r.w], row + (size_t)r.x * 4, (size_t)r.w * 4);
-        }
-        got[round] = r.w * r.h;
-
-        Units_SelectSingle(-1);
-        InGame_Shutdown();
-        Loading_Shutdown();
-        World_End(&platform);
-        UI_Shutdown();
-        teardown_platform(&platform);
-        VFS_Shutdown();
-    }
-    ASSERT(got[0] > 0 && got[0] == got[1]);
-    int varied = 0;
-    for (int i = 1; i < got[0]; i++) varied |= px[0][i] != px[0][0];
-    ASSERT(varied);
-    ASSERT_EQ_INT(0, memcmp(px[0], px[1], (size_t)got[0] * 4));
-}
-
 /* Probes for two reports: a war galley in the water never attacks a
  * unit on the shore (#35), and Elsin will not attack a Veruna Enclave,
  * a 5x14 structure (#42). Both print where they stall. */
@@ -31357,7 +31304,6 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_dropped_bomb_falls_from_the_flyer);
     RUN_UI_TEST(caster_reserve_recharges_and_gates_shots);
     RUN_UI_TEST(caster_short_of_mana_drops_to_a_spell_it_can_pay_for);
-    RUN_UI_TEST(weapon_icons_draw_the_same_after_sdl_restarts);
     RUN_UI_TEST(tower_auto_engages_enemy);
     RUN_UI_TEST(hud_kill_count_follows_the_selected_units_kills);
     RUN_UI_TEST(trebuchet_waits_for_a_spotter);

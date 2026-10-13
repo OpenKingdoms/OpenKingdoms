@@ -968,11 +968,6 @@ int HUD_WeaponButtonState(int slot) {
     return hud_weapon_button_state(slot);
 }
 
-int HUD_GetWeaponButtonRect(int slot, SDL_Rect *out) {
-    if (slot < 0 || slot >= HUD_NUM_WEAPON_WIDGETS || !out) return 0;
-    return find_widget_rect(out, g_weapon_widgets[slot]);
-}
-
 static void fill_rect_canvas(SDL_Rect rc, SDL_Color c) {
     SDL_Surface *off = UI_Offscreen();
     if (!off) return;
