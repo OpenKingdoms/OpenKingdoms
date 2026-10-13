@@ -127,6 +127,63 @@ void TAK_WsConn_Close(TAK_WsConn *c, uint16_t code) {
     c->state = TAK_WSCONN_CLOSING;
 }
 
+static int is_post(const uint8_t *p, size_t n) {
+    return n >= 5 && memcmp(p, "POST ", 5) == 0;
+}
+
+/* Where a chunked body that starts at `at` ends, 0 while it is still
+ * arriving, or `head` when it is not one or grows past the cap. */
+static size_t chunked_end(const uint8_t *p, size_t n, size_t head) {
+    size_t at = head;
+    for (;;) {
+        if (at - head > 2 * TAK_WSCONN_PLAIN_BODY_MAX) return head;
+        size_t eol = at;
+        while (eol + 1 < n && !(p[eol] == '\r' && p[eol + 1] == '\n')) eol++;
+        if (eol + 1 >= n) return 0;
+        size_t size = 0, digits = 0;
+        for (size_t i = at; i < eol && p[i] != ';'; i++, digits++) {
+            uint8_t c = p[i];
+            int d = (c >= '0' && c <= '9') ? c - '0' : (c >= 'a' && c <= 'f') ? c - 'a' + 10 :
+                    (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+            if (d < 0 || size > TAK_WSCONN_PLAIN_BODY_MAX) return head;
+            size = size * 16 + (size_t)d;
+        }
+        if (!digits || size > TAK_WSCONN_PLAIN_BODY_MAX) return head;
+        at = eol + 2;
+        if (size == 0) {
+            /* Trailer lines, if any, then the blank line. */
+            for (;;) {
+                eol = at;
+                while (eol + 1 < n && !(p[eol] == '\r' && p[eol + 1] == '\n')) eol++;
+                if (eol + 1 >= n) return 0;
+                if (eol == at) return at + 2;
+                at = eol + 2;
+            }
+        }
+        if (n - at < size + 2) return 0;
+        at += size + 2;
+    }
+}
+
+/* The length of a plain request with its body, 0 while any of it is
+ * still arriving. Only a POST has a body. */
+static size_t plain_len(const uint8_t *p, size_t n) {
+    size_t head = header_len(p, n);
+    if (head == 0 || !is_post(p, n)) return head;
+    size_t vlen = 0;
+    const char *v = TAK_Ws_Header((const char *)p, head, "Transfer-Encoding", &vlen);
+    if (v && TAK_Ws_HeaderHas(v, vlen, "chunked")) return chunked_end(p, n, head);
+    v = TAK_Ws_Header((const char *)p, head, "Content-Length", &vlen);
+    if (!v) return head;
+    size_t body = 0;
+    for (size_t i = 0; i < vlen; i++) {
+        if (v[i] < '0' || v[i] > '9' || body > TAK_WSCONN_PLAIN_BODY_MAX) return head;
+        body = body * 10 + (size_t)(v[i] - '0');
+    }
+    if (vlen == 0 || body > TAK_WSCONN_PLAIN_BODY_MAX) return head;
+    return n - head >= body ? head + body : 0;
+}
+
 int TAK_WsConn_PlainRequest(const TAK_WsConn *c, const uint8_t **req,
                             size_t *len) {
     if (!c->is_server || c->state != TAK_WSCONN_HANDSHAKE) return 0;
@@ -140,9 +197,11 @@ int TAK_WsConn_PlainRequest(const TAK_WsConn *c, const uint8_t **req,
     if (TAK_Ws_ServerHandshake((const char *)p, n, resp, sizeof resp,
                                &need_more) != 0) return 0;
     if (n < 4 || (memcmp(p, "GET ", 4) != 0 && memcmp(p, "HEAD", 4) != 0 &&
-                  memcmp(p, "OPTI", 4) != 0)) return 0;
+                  memcmp(p, "OPTI", 4) != 0 && !is_post(p, n))) return 0;
+    size_t whole = plain_len(p, n);
+    if (whole == 0) return 0;
     *req = p;
-    *len = header_len(p, n);
+    *len = whole;
     return 1;
 }
 
@@ -187,6 +246,12 @@ static TAK_WsConnStep step_handshake(TAK_WsConn *c) {
                                           resp, sizeof resp, &need_more);
         if (n == 0) {
             if (need_more && in_avail(c) < HANDSHAKE_MAX) {
+                return TAK_WSCONN_NEED_MORE;
+            }
+            /* A POST whose body is still on its way is the host's to
+             * answer once it is whole. */
+            if (is_post(in_head(c), in_avail(c)) &&
+                plain_len(in_head(c), in_avail(c)) == 0) {
                 return TAK_WSCONN_NEED_MORE;
             }
             die(c, "not a WebSocket upgrade");

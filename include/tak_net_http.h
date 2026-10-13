@@ -6,6 +6,7 @@
 
 #include "tak_net_ledger.h"
 #include "tak_net_protocol.h"
+#include "tak_net_stats.h"
 
 /*
  * The relay's read only JSON API, for the leaderboard page.
@@ -72,6 +73,17 @@ size_t TAK_Http_Answer(const TAK_Ledger *l, const uint8_t *req, size_t len,
 /* The same with the relay's live view. NULL live makes /api/rooms a 404. */
 size_t TAK_Http_AnswerLive(const TAK_Ledger *l, const TAK_HttpLive *live,
                            const uint8_t *req, size_t len, char *out, size_t cap);
+
+/* Everything an answer may read, and for /api/ev add to. */
+typedef struct TAK_HttpCtx {
+    const TAK_Ledger   *ledger;
+    const TAK_HttpLive *live;     /* NULL: /api/rooms is a 404 */
+    TAK_Stats          *stats;    /* NULL: /api/ev and /api/stats are 404s */
+    uint64_t            now_ms;   /* the wall clock, for which day a count is */
+} TAK_HttpCtx;
+
+size_t TAK_Http_Respond(const TAK_HttpCtx *ctx, const uint8_t *req, size_t len,
+                        char *out, size_t cap);
 
 /* The registry text /api/mods answers with, kept by pointer. */
 void TAK_Http_SetModRegistry(const char *json, size_t len);

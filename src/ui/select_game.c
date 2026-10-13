@@ -36,6 +36,7 @@
 #include "tak_settings.h"
 #include "tak_ui.h"
 #include "tak_util.h"
+#include "tak_web_stats.h"
 
 #include <SDL.h>
 #include <stdio.h>
@@ -845,6 +846,9 @@ static void take_events(TAK_Platform *platform) {
             /* A match of ours still running, or one we asked to watch:
              * the server hands it over, and the turns so far replay once
              * the world is up. */
+            WebStats_Starting("multiplayer", c->start.your_seat >= TAK_NET_SEATS ? "watch"
+                                             : Settings_GetStr("RejoinMatch", "")[0] ? "rejoin"
+                                             : "dropin");
             if (MP_BeginMatchWorld(platform, &c->start) == 0) {
                 set_status(c->start.your_seat >= TAK_NET_SEATS
                            ? "Catching up with the game..."
@@ -852,6 +856,7 @@ static void take_events(TAK_Platform *platform) {
                            ? "Rejoining your game..." : "Joining the game under way...");
                 sg.next_state = GAMESTATE_GAME_LOADING;
             } else {
+                WebStats_Error("a multiplayer battle could not be built here");
                 set_status(c->start.your_seat < TAK_NET_SEATS
                            ? "Your game could not be rebuilt here."
                            : "That game could not be built here.");

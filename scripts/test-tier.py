@@ -40,6 +40,13 @@ REPO = os.path.dirname(HERE)
 # packs cases into ctest shards by measured time, and a targeted run
 # invokes it directly, which runs every shard unless asked for one.
 RUN_UI_TEST_RE = r"RUN_UI_TEST\(\s*(\w+)\s*\)"
+# Cases registered only when an environment variable asks for them are
+# measurements, so no filter can count on them.
+GATED_UI_RE = r"if \(getenv\(\"\w+\"\)\) \{[^{}]*\}"
+
+
+def ui_case_names(src):
+    return re.findall(RUN_UI_TEST_RE, re.sub(GATED_UI_RE, "", src))
 RULES = os.path.join(HERE, "test-tiers.toml")
 LOCK = "source <scratchpad>/testlock.sh   # then: with_test_lock <command>"
 
@@ -152,6 +159,7 @@ class CMakeIndex:
         self.ok = False
         self.tests = {}
         self.sources = {}
+        self.on_demand = set()
         try:
             with open(os.path.join(repo, "src", "CMakeLists.txt"),
                       encoding="utf-8", errors="replace") as fh:
@@ -193,6 +201,16 @@ class CMakeIndex:
             self.tests[m.group(1)] = (command if re.match(r"^[\w-]+$", command)
                                       else None)
         self.exe_sources = exe_sources
+        # Tests labelled on-demand are measurements left out of the gate,
+        # so no rule has to run them. layout-only runs on the extracted
+        # folder alone.
+        self.layout_only = set()
+        for m in re.finditer(r"set_tests_properties\(([^()]*?)PROPERTIES\s+LABELS\s+\"([^\"]*)\"", text):
+            labels = m.group(2).split(";")
+            if "on-demand" in labels:
+                self.on_demand.update(expand(m.group(1)).split())
+            if "layout-only" in labels:
+                self.layout_only.update(expand(m.group(1)).split())
         for test, exe in self.tests.items():
             for src in exe_sources.get(exe, []):
                 self.sources.setdefault(src, set()).add(test)
@@ -200,6 +218,10 @@ class CMakeIndex:
 
     def declared_test_count(self):
         return len(self.tests)
+
+    # What one pass over every data path test but the measurements runs.
+    def gate_test_count(self):
+        return len(set(self.tests) - self.on_demand - self.layout_only)
 
     # The screen suite is covered by the named case list on each rule,
     # not by a ctest regex, so the tests that run it are left out of the
@@ -209,7 +231,8 @@ class CMakeIndex:
     # of names would go stale the next time the shard count changes.
     def targets_for(self, source, exclude=("test_ui_screens",)):
         return sorted(t for t in self.sources.get(source, set())
-                      if self.tests.get(t) not in exclude)
+                      if self.tests.get(t) not in exclude
+                      and t not in self.on_demand)
 
 
 # --------------------------------------------------------------------------
@@ -384,7 +407,7 @@ def render_plan_script(decision, targets, ui, build, config, count):
     lines += [
         'if [ $fail -ne 0 ]; then echo "TIER 1 RUN FAILED"; exit 1; fi',
         'echo "TIER 1 RUN CLEAN. This branch is tier 1 clean, not merge ready."',
-        'echo "The full suite on both data layouts still gates the merge."',
+        'echo "scripts/run-suite.sh still gates the merge."',
     ]
     return "\n".join(lines) + "\n"
 
@@ -394,6 +417,7 @@ def print_report(decision, rules, index, args):
     build = args.build_dir
     b = build or "D:/OKBuild/<your tree>"
     count = index.declared_test_count() if index.ok else 0
+    gate = index.gate_test_count() if index.ok else 0
     out = print
 
     if decision.tier == 0:
@@ -448,8 +472,8 @@ def print_report(decision, rules, index, args):
         out("  3. Paste every Results line with the number the rules")
         out("     expect beside it. A filter that matches nothing exits 0")
         out("     with 0 total, so an unchecked ui run proves nothing.")
-        out("  4. Tier 1 clean is not merge ready. The full suite on both")
-        out("     data layouts still gates the merge.")
+        out("  4. Tier 1 clean is not merge ready. scripts/run-suite.sh")
+        out("     still gates the merge.")
         return 0
 
     trees = decision.trees
@@ -469,13 +493,14 @@ def print_report(decision, rules, index, args):
     out("  3. %s" % LOCK)
     if trees == 2:
         out("       with_test_lock bash scripts/run-suite.sh %s %s" % (b, config))
-        out("     One take runs both data layouts in parallel from the one tree.")
+        out("     One take runs every test on the archives and the layout")
+        out("     tests on the extracted folder, from the one tree.")
         out("  4. Paste the \"SUITE CLEAN on both layouts\" line.")
     else:
         out("       with_test_lock ctest --test-dir %s -C %s -j 6 --output-on-failure"
-            % (b, config))
+            " -LE \"on-demand|layout-only\"" % (b, config))
         out("  4. Paste the \"100%% tests passed, 0 tests failed out of %d\" line."
-            % count)
+            % gate)
     return 0
 
 
@@ -522,7 +547,7 @@ def regenerate(rules, index, repo=REPO):
     is added or a test binary starts linking another module.
     """
     src = _read(os.path.join(repo, UI_SOURCE))
-    names = re.findall(RUN_UI_TEST_RE, src)
+    names = ui_case_names(src)
     parts = re.split(r"\nTEST\((\w+)\)", src)
     bodies = {parts[i]: parts[i + 1] for i in range(1, len(parts), 2)}
     blocks = _read(rules.path).split("[[tier1]]")

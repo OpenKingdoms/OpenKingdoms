@@ -227,8 +227,12 @@ Format per entry:
   replays the turn log, and once it has caught up the relay puts a seat
   takeover into the next turn, so every machine hands the seat to them
   on the same tick and the computer stops ordering that army from then
-  on. A player who leaves hands their army back to the computer, and
-  that seat is open to the next player who drops in.
+  on. A player who leaves a seat the computer began in, or who leaves
+  while a human of their team plays on, hands the army to the computer,
+  and that seat is open to the next player who drops in. Anyone else who
+  leaves loses the army as in the original, so a versus game that a
+  player walks out of ends, and the one who stayed is recorded as the
+  winner.
 - Why: The original would not start a network game with one human in
   it, and a seat was fixed once the game began. A friend who arrived
   late had to wait for the next game. In lockstep a seat is a
@@ -238,7 +242,10 @@ Format per entry:
   host did not ask for drop in, keeps its seats shut once the match is
   under way, exactly as before.
 - Citation: Manual section on multiplayer setup, which asks for a
-  second human before a game can start. Issue #292.
+  second human before a game can start. Issue #292. The army that goes
+  on a leave is the original's drop, which tells everyone the player
+  left or was defeated and frees the slot
+  (docs/notes/2026-09-04-multiplayer-hapinet.md, legacy:194242).
 
 ## D-003: Raising the dead always works at full supply
 

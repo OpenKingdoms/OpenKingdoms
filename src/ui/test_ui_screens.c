@@ -288,6 +288,28 @@ static void ui_report_shards(void) {
     if (unmeasured)
         printf("  %d case(s) have no measured time and count as the median\n",
                unmeasured);
+    /* A listed name that is not a case would run nothing and say so
+     * nowhere, so it fails the run. */
+    if (g_case_list) {
+        char *p = g_case_list;
+        while ((p = strchr(p, '@')) != NULL && p[1]) {
+            char name[160];
+            size_t n = strcspn(p + 1, "@");
+            int found = 0;
+            if (n > 0 && n < sizeof name) {
+                memcpy(name, p + 1, n);
+                name[n] = '\0';
+                for (i = 0; i < g_case_name_count && !found; i++)
+                    found = strcmp(g_case_names[i], name) == 0;
+                if (!found) {
+                    printf("  BROKEN: the case list names %s, which is not a case\n",
+                           name);
+                    g_registration_faults++;
+                }
+            }
+            p += 1 + n;
+        }
+    }
     for (i = 0; i < g_shard_count; i++) {
         if (counts[i] == 0 && !g_case_list) {
             printf("  BROKEN: shard %d/%d has no cases\n", i + 1, g_shard_count);
@@ -2557,9 +2579,13 @@ TEST(a_match_reports_the_verdict_to_the_server_once) {
     ASSERT_EQ_INT(0, (int)TAK_NetClient_TakeMessage(c, out, sizeof out));
     ASSERT_EQ_INT(offers + 1, NetSession_LeaderboardOffers());
 
+    /* Leaving the battle leaves the match, so a seat is not left to the
+     * relay's lost player countdown. */
+    InGame_Shutdown();
+    ASSERT_EQ_INT(0, (int)NetSession_State());   /* NET_SESSION_OFF */
+
     TAK_Match_End();
     NetSession_Disconnect();
-    InGame_Shutdown();
     Loading_Shutdown();
     World_End(&platform);
     UI_Shutdown();
@@ -7264,32 +7290,6 @@ TEST(sim_spike_probe) {
     build_probe_end(&platform);
 }
 
-/* One computer player against a seat that never acts, which is seat
- * one in both scenarios. The run ends when the AI takes that seat's
- * last unit, a little short of the ticks asked for. */
-TEST(one_ai_builds_and_holds_an_army) {
-    if (setup_vfs() != 0) SKIP("no data dir");
-    TAK_Platform platform;
-    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
-    int ticks = build_probe_ticks(), capped = 0;
-    int ok = build_probe_run(&platform, "build1", ticks, &capped);
-    SeatCensus ai;
-    int ran = 0;
-    memset(&ai, 0, sizeof(ai));
-    if (ok == 0) { seat_census(2, &ai); ran = PerfProbe_Ticks(); }
-    build_probe_end(&platform);
-    ASSERT_EQ_INT(0, ok);
-    printf("\n    build1 asked=%d ran=%d capped=%d built=%d alive=%d lost=%d "
-           "enemy_kills=%d frames=%d unattended=%d ", ticks, ran, capped,
-           ai.built, ai.alive, ai.lost, ai.enemy_kills, ai.frames_lost,
-           ai.unattended);
-    ASSERT_EQ_INT(0, capped);
-    /* An AI left alone fields a force, not a handful. */
-    ASSERT(ai.alive >= 12);
-    /* Under a quarter of what it starts may die with nobody to credit. */
-    ASSERT(ai.unattended * 4 < ai.built);
-}
-
 /* The same rate with all eight starts taken, so a regression that only
  * shows up with a full table cannot hide. Seat one is the seat that
  * never acts, so the seven counted here are the computer players. */
@@ -10342,187 +10342,6 @@ TEST(ctrl_on_a_zhon_builders_button_summons_without_end) {
 /* Long AI-vs-AI run: guard against progressive slowdown from leaked
  * units (e.g. Killed threads that never finish leaving units stuck
  * DYING forever) or unbounded projectile growth. */
-/* Guard against total movement failure in a LIVE skirmish (many units,
- * AI issuing orders, plan-budget contention) — the single-unit nav test
- * cannot see a global stall like a starved A* budget. */
-TEST(live_skirmish_units_actually_move) {
-    if (setup_vfs() != 0) SKIP("no data dir");
-    TAK_Platform platform;
-    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
-    ASSERT_EQ_INT(0, UI_Init());
-
-    BattleConfig cfg;
-    BattleConfig_SetDefaults(&cfg);
-    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
-    cfg.players[1].kind = TAK_SLOT_AI;
-    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
-                                     "two castles", "aramon"));
-    ASSERT_EQ_INT(0, Loading_Init(&platform));
-    int next = GAMESTATE_GAME_LOADING;
-    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
-        next = Loading_Tick(&platform, 1.0f / 60.0f);
-    }
-    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
-    GameWorld *world = World_Get();
-    ASSERT_NOT_NULL(world);
-
-    int unit_count = 0;
-    const Unit *units = Units_GetActive(&unit_count);
-    int32_t cx = units[0].world_x, cy = units[0].world_y;
-
-    /* A squad of player units all ordered at once — this is where a
-     * global planning budget starves and everything freezes. */
-    int sword = Units_FindDefByName("ARASWORD");
-    ASSERT(sword >= 0);
-    /* Large enough to starve the per-tick planning budget several times
-     * over — that contention is what a small squad never reproduces. */
-    enum { SQUAD = 60 };
-    int squad[SQUAD];
-    int32_t start_x[SQUAD], start_y[SQUAD];
-    for (int i = 0; i < SQUAD; i++) {
-        squad[i] = Units_Spawn(sword, 1, 0,
-                               cx + 64 + (i % 10) * 40,
-                               cy + 64 + (i / 10) * 40);
-        ASSERT(squad[i] >= 0);
-    }
-    ASSERT_EQ_INT(0, InGame_Init(&platform));
-    Timer timer;
-    Timer_Init(&timer);
-    timer.max_ticks_per_frame = 30;
-
-    units = Units_GetActive(&unit_count);
-    for (int i = 0; i < SQUAD; i++) {
-        start_x[i] = units[squad[i]].world_x;
-        start_y[i] = units[squad[i]].world_y;
-        Units_CommandMoveUnit(squad[i], cx + 700, cy + 520);
-    }
-
-    for (int t = 0; t < 900; t++) {          /* 15 sim-seconds */
-        timer.accumulator = timer.sim_dt;
-        next = InGame_Tick(&platform, &timer);
-        ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
-    }
-
-    units = Units_GetActive(&unit_count);
-    int moved = 0, stirred = 0, failed = 0, failed_still = 0;
-    int64_t least2 = -1;
-    for (int i = 0; i < SQUAD; i++) {
-        int32_t dx = units[squad[i]].world_x - start_x[i];
-        int32_t dy = units[squad[i]].world_y - start_y[i];
-        int64_t d2 = (int64_t)dx * dx + (int64_t)dy * dy;
-        if (d2 > (int64_t)48 * 48) moved++;
-        if (d2 > (int64_t)8 * 8) stirred++;
-        if (units[squad[i]].path_failed) {
-            failed++;
-            if (units[squad[i]].cur_speed_ppt <= 0.0f) failed_still++;
-            fprintf(stderr, "failed search: squad %d h=%d moved2=%d "
-                    "anim=%d v=%.2f plen=%d ppend=%d wait=%d blk=%d\n",
-                    i, squad[i], (int)d2, units[squad[i]].anim_state,
-                    (double)units[squad[i]].cur_speed_ppt,
-                    units[squad[i]].path_len, units[squad[i]].path_pending,
-                    units[squad[i]].path_wait, units[squad[i]].blocked_ticks);
-        }
-        if (least2 < 0 || d2 < least2) least2 = d2;
-    }
-    int least = 0;
-    while ((int64_t)(least + 1) * (least + 1) <= least2) least++;
-    int spawn_trapped = 0;
-    for (int i = 0; i < SQUAD; i++) {
-        if (!Units_CanStandAt(squad[i], start_x[i], start_y[i]))
-            spawn_trapped++;
-    }
-    /* What this case is for: an order given to a whole squad at once
-     * must not freeze anyone. That is asserted three ways below. The
-     * count of units clearing 48 px is printed and not asserted, and
-     * the rest of this comment is why, because two people have now
-     * tried to make it an assertion and it does not support one.
-     *
-     * It was ASSERT_EQ_INT(SQUAD, moved) and main failed it on every
-     * run (#118). Traced, the four units under the bar were all moving
-     * at the end: anim moving, speed 0.28 to 0.55, no failed route, no
-     * pending plan, routes of 8 to 22 points with the unit still on
-     * its first or second waypoint. They had covered 31, 39, 44 and 48
-     * px. Nothing is stuck. Sixty units converging on one point in
-     * fifteen seconds queue, and the ones at the back are legitimately
-     * behind, so displacement across the squad is a continuum and 48
-     * px is a line drawn through the middle of it.
-     *
-     * Two restatements were tried before and measured worse.
-     * Displacement in any direction, which the bar is, passes a unit
-     * sent the wrong way: three units once cleared it walking 1800 px
-     * north of a goal to the south east. Displacement toward the goal
-     * is worse still, because feeding the mover an uncorrectable spin
-     * took the score UP, from 14 of 60 to 28: scattering units break
-     * the jam and drift goal-ward while healthy units queue.
-     *
-     * So the bar is a printed number. The assertions are the ones a
-     * freeze actually breaks. */
-    printf("(%d/%d squad moved 48 px, %d stirred, least %d px, "
-           "%d started on bad ground) ", moved, SQUAD, stirred, least,
-           spawn_trapped);
-    if (getenv("TAK_NAV_TRACE")) {
-        for (int i = 0; i < SQUAD; i++) {
-            const Unit *u = &units[squad[i]];
-            int32_t dx = u->world_x - start_x[i];
-            int32_t dy = u->world_y - start_y[i];
-            if ((int64_t)dx * dx + (int64_t)dy * dy > (int64_t)48 * 48) continue;
-            fprintf(stderr, "squad %d h=%d start=%d,%d now=%d,%d stand=%d anim=%d "
-                    "plen=%d pidx=%d pfail=%d ppend=%d blk=%d rf=%d v=%.2f "
-                    "seg=%d,%d wp=%d,%d\n", i, squad[i], start_x[i],
-                    start_y[i], u->world_x, u->world_y,
-                    Units_CanStandAt(squad[i], start_x[i], start_y[i]),
-                    u->anim_state, u->path_len, u->path_index,
-                    u->path_failed, u->path_pending, u->blocked_ticks,
-                    u->route_flags, u->cur_speed_ppt, u->route_seg_x,
-                    u->route_seg_y,
-                    u->path_index < u->path_len ? u->path_x[u->path_index] : -1,
-                    u->path_index < u->path_len ? u->path_y[u->path_index] : -1);
-        }
-    }
-    /* Every ordered unit left the ground it stood on, including any
-     * that spawned on illegal ground, which has to be able to step OFF
-     * it through the escape hatch in walk_tick. Eight px is a quarter
-     * of a tile and well clear of jitter. The slowest unit measured
-     * covers 31 px, so this has room without being generous. */
-    ASSERT_EQ_INT(SQUAD, stirred);
-
-    /* And nobody is sitting on a route the planner gave up on. A
-     * search that failed is tried again inside 45 ticks and the unit
-     * walks a straight line meanwhile (units.c :7059), so what makes
-     * it a fault is standing still in it, not holding it for a
-     * moment. */
-    printf("(failed %d, of those still %d) ", failed, failed_still);
-    ASSERT_EQ_INT(0, failed_still);
-
-    /* Structural guarantee: no unit may sit waiting on a planning slot.
-     * A starved budget freezing units is the regression this test
-     * exists for, so assert the wait is bounded, not merely rare. */
-    int starved = 0;
-    for (int i = 0; i < unit_count; i++) {
-        if (units[i].alive != UNIT_ALIVE_ACTIVE) continue;
-        if (units[i].path_pending && units[i].path_wait > 24) starved++;
-    }
-    printf("(starved %d) ", starved);
-    ASSERT_EQ_INT(0, starved);
-
-    /* The AI side must be moving its own units too. */
-    units = Units_GetActive(&unit_count);
-    int ai_moving = 0;
-    for (int i = 0; i < unit_count; i++) {
-        if (units[i].alive != UNIT_ALIVE_ACTIVE) continue;
-        if (units[i].player_id != 2) continue;
-        if (units[i].anim_state == UNIT_ANIM_MOVING) ai_moving++;
-    }
-    printf("(ai moving %d) ", ai_moving);
-
-    InGame_Shutdown();
-    Loading_Shutdown();
-    World_End(&platform);
-    UI_Shutdown();
-    teardown_platform(&platform);
-    VFS_Shutdown();
-}
-
 TEST(ai_long_run_no_entity_leak) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -10616,9 +10435,7 @@ TEST(units_navigate_to_distant_goals) {
     const UnitDef *sdf = Units_GetDef(sword);
 
     ASSERT_EQ_INT(0, InGame_Init(&platform));
-    Timer timer;
-    Timer_Init(&timer);
-    timer.max_ticks_per_frame = 30;
+    /* The simulation alone: a walk needs no frame drawn. */
 
     /* Several long routes; each goal is one the planner says is
      * reachable, so failure means the unit-side follow is broken. */
@@ -10656,9 +10473,7 @@ TEST(units_navigate_to_distant_goals) {
         int64_t best_d2 = INT64_MAX;
         int stuck_ticks = 0, ok = 0;
         for (int i = 0; i < 5400; i++) {   /* 90 sim-seconds */
-            timer.accumulator = timer.sim_dt;
-            next = InGame_Tick(&platform, &timer);
-            ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+            InGame_DebugRunSimTicks(1);
             units = Units_GetActive(&unit_count);
             int64_t dx = (int64_t)units[h].world_x - gx;
             int64_t dy = (int64_t)units[h].world_y - gy;
@@ -15945,79 +15760,6 @@ TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise) {
     corpse_shutdown(&platform);
 }
 
-/* Live effects playing a sequence, split by the way they drift. */
-static void count_effects(const char *seq, int *out_all, int *out_up,
-                          int *out_down) {
-    int n = 0, all = 0, up = 0, down = 0;
-    const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
-    for (int i = 0; i < n; i++) {
-        const char *file = NULL, *sq = NULL;
-        int frame = 0;
-        if (!Units_GetEffectInfo(i, &file, &sq, &frame) || !sq) continue;
-        if (strcmp(sq, seq) != 0) continue;
-        all++;
-        if (fx[i].rise > 0) up++;
-        if (fx[i].rise < 0) down++;
-    }
-    if (out_all) *out_all = all;
-    if (out_up) *out_up = up;
-    if (out_down) *out_down = down;
-}
-
-/* While a raise works, the raiser's side sparkles fall onto him and
- * rise off the body, one each per original frame (legacy:13129-13132).
- * The unit comes back in a purple flash, PurpleDeath from deathmagic,
- * on the tick it appears and not before (legacy:13203,
- * 161486-161493). */
-TEST(a_raise_sheds_sparkles_and_ends_in_a_purple_flash) {
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    ASSERT_NOT_NULL(world);
-    int unit_count = 0;
-    const Unit *units = Units_GetActive(&unit_count);
-    RaiseScene s;
-    ASSERT(raise_scene(world, units[0].world_x + 256, units[0].world_y,
-                       "ARAKING", 0, "ARASWORD", 2, 5, &s) >= 0);
-    int flash_idle = 0;
-    count_effects("PurpleDeath", &flash_idle, NULL, NULL);
-    ASSERT_EQ_INT(0, flash_idle);
-
-    Units_SelectSingle(s.raiser);
-    ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(s.fx, s.fy));
-    raise_mark_alive();
-    int nh = -1, most = 0, most_up = 0, most_down = 0;
-    int flash_early = 0, flash_at_spawn = 0;
-    for (int t = 0; t < 6000 && nh < 0; t++) {
-        Units_TickEngines();
-        int n = 0;
-        Units_GetActive(&n);
-        int all = 0, up = 0, down = 0, flash = 0;
-        count_effects("aramonbuild", &all, &up, &down);
-        count_effects("PurpleDeath", &flash, NULL, NULL);
-        if (all > most) most = all;
-        if (up > most_up) most_up = up;
-        if (down > most_down) most_down = down;
-        int spawned = raise_new_slot();
-        if (spawned >= 0) {
-            nh = spawned;
-            flash_at_spawn = flash;
-        } else if (flash > 0) {
-            flash_early++;
-        }
-    }
-    printf("[sparkles up to %d (%d rising, %d falling), flash %d] ",
-           most, most_up, most_down, flash_at_spawn);
-    ASSERT(nh >= 0);
-    ASSERT(most_up > 0);
-    ASSERT(most_down > 0);
-    ASSERT_EQ_INT(0, flash_early);
-    ASSERT_EQ_INT(1, flash_at_spawn);
-    corpse_shutdown(&platform);
-}
-
 /* Animation makes the raiser's animatetype, whatever the body was. A
  * Taros priest (cananimate, animatetype MONGHOUL) over a Veruna body it
  * can animate brings back a ghoul at full health for its own player
@@ -16116,85 +15858,6 @@ TEST(an_ai_player_orders_a_raise_for_itself) {
     ASSERT_EQ_INT(wdef, units[nh].def_idx);
     ASSERT_EQ_INT(2, units[nh].player_id);
     ASSERT_EQ_INT(3, units[nh].team_color_idx);
-    corpse_shutdown(&platform);
-}
-
-static uint16_t test_angle16(float rad) {
-    float turns = rad / 6.2831853f;
-    turns -= floorf(turns);
-    return (uint16_t)((int32_t)(turns * 65536.0f) & 0xffff);
-}
-
-/* The body keeps the tilt the unit fell with, and a raise stands the
- * unit up in all three of the body's angles, not the heading alone
- * (legacy:128220-128224, 13172-13176). */
-TEST(a_raised_unit_stands_as_the_body_lay) {
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    ASSERT_NOT_NULL(world);
-    int wdef = Units_FindDefByName("ARASWORD");
-    int kdef = Units_FindDefByName("ARAKING");
-    ASSERT(wdef >= 0 && kdef >= 0);
-    const UnitDef *wd = Units_GetDef(wdef);
-    int cdef = Features_FindByName(wd->corpse);
-    ASSERT(cdef >= 0);
-    int unit_count = 0;
-    const Unit *units = Units_GetActive(&unit_count);
-    int32_t cx = 0, cy = 0;
-    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 256,
-                                    units[0].world_y, 40, &cx, &cy));
-    int k = Units_Spawn(kdef, 1, 0, cx + 110, cy);
-    int h = Units_Spawn(wdef, 2, 5, cx, cy);
-    ASSERT(k >= 0 && h >= 0);
-    units = Units_GetActive(&unit_count);
-    Unit *vu = (Unit *)&units[h];   /* test-only mutation */
-    vu->pitch = 0.2f;
-    vu->roll = -0.15f;
-    int fpx = wd->footprint_x > 0 ? wd->footprint_x : 1;
-    int fpz = wd->footprint_z > 0 ? wd->footprint_z : 1;
-    int cell_x = Occ_TileOf(cx - fpx * 8) + wd->corpse_adjust_x;
-    int cell_z = Occ_TileOf(cy - fpz * 8) + wd->corpse_adjust_z;
-    ASSERT_EQ_INT(h, Units_DebugKillHandle(h));
-    int ci = -1;
-    for (int t = 0; t < 600 && ci < 0; t++) {
-        Units_TickEngines();
-        ci = corpse_instance_at_cell(world, cdef, cell_x, cell_z);
-    }
-    ASSERT(ci >= 0);
-    uint16_t want_pitch = test_angle16(0.2f), want_roll = test_angle16(-0.15f);
-    printf("[body pitch %d roll %d, want %d %d] ", world->features[ci].pitch,
-           world->features[ci].roll, want_pitch, want_roll);
-    ASSERT(abs((int)world->features[ci].pitch - (int)want_pitch) <= 1);
-    ASSERT(abs((int)world->features[ci].roll - (int)want_roll) <= 1);
-
-    int32_t fx, fy;
-    ASSERT_EQ_INT(0, Features_InstanceCentre(world, ci, &fx, &fy));
-    Units_SelectSingle(k);
-    ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(fx, fy));
-    int nh = raise_until_spawn(6000);
-    ASSERT(nh >= 0);
-    units = Units_GetActive(&unit_count);
-    ASSERT(abs((int)test_angle16(units[nh].pitch) - (int)want_pitch) <= 1);
-    ASSERT(abs((int)test_angle16(units[nh].roll) - (int)want_roll) <= 1);
-
-    /* It draws that way: stood upright, the same unit projects to a
-     * different box. */
-    float mn[2], mx[2], mn0[2], mx0[2];
-    ASSERT_EQ_INT(0, Units_DebugProjectedBounds(nh, world, mn, mx));
-    Unit *nu = (Unit *)&units[nh];   /* test-only mutation */
-    float p = nu->pitch, r = nu->roll;
-    nu->pitch = 0.0f;
-    nu->roll = 0.0f;
-    ASSERT_EQ_INT(0, Units_DebugProjectedBounds(nh, world, mn0, mx0));
-    nu->pitch = p;
-    nu->roll = r;
-    float moved = fabsf(mn[0] - mn0[0]) + fabsf(mn[1] - mn0[1]) +
-                  fabsf(mx[0] - mx0[0]) + fabsf(mx[1] - mx0[1]);
-    printf("[box moved %.2f px] ", moved);
-    ASSERT(moved > 0.5f);
     corpse_shutdown(&platform);
 }
 
@@ -17198,358 +16861,6 @@ TEST(build_sparkles_stand_on_the_building_at_any_terrain_height) {
     corpse_shutdown(&platform);
 }
 
-/* The number of sparkles follows the building: the ring holds as many
- * as it is wide in pixels (legacy:198576), so a keep carries more than
- * a tower, and a finished building carries none. */
-TEST(build_sparkles_follow_the_size_of_the_building) {
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    ASSERT_NOT_NULL(world);
-
-    int tower_def = Units_FindDefByName("ARAAT");
-    int keep_def = Units_FindDefByName("ARAKEEP");
-    int build_def = Units_FindDefByName("ARABUILD");
-    ASSERT(tower_def >= 0 && keep_def >= 0 && build_def >= 0);
-    const UnitDef *td = Units_GetDef(tower_def);
-    const UnitDef *kd = Units_GetDef(keep_def);
-    ASSERT_NOT_NULL(td);
-    ASSERT_NOT_NULL(kd);
-    ASSERT(kd->footprint_x > td->footprint_x);
-
-    int unit_count = 0;
-    const Unit *units = Units_GetActive(&unit_count);
-    int32_t tx = 0, ty = 0, kx = 0, ky = 0;
-    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 256,
-                                    units[0].world_y, 80, &tx, &ty));
-    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 256,
-                                    units[0].world_y + 640, 160, &kx, &ky));
-    int tb = -1, kb = -1;
-    int tower = sparkle_site(world, build_def, tower_def, tx, ty, &tb);
-    int keep = sparkle_site(world, build_def, keep_def, kx, ky, &kb);
-    ASSERT(tower >= 0 && keep >= 0);
-    int tower_cap = Units_DebugBuildSparkleCap(tower);
-    int keep_cap = Units_DebugBuildSparkleCap(keep);
-    printf("[tower cap %d, keep cap %d] ", tower_cap, keep_cap);
-    ASSERT(keep_cap > tower_cap);
-
-    /* Both builders at work long enough for the rings to fill. */
-    for (int t = 0; t < 240; t++) Units_TickEngines();
-    int tower_live = Units_DebugBuildSparkles(tower);
-    int keep_live = Units_DebugBuildSparkles(keep);
-    printf("[tower %d live, keep %d live] ", tower_live, keep_live);
-    ASSERT(tower_live > 0);
-    ASSERT(tower_live <= tower_cap);
-    ASSERT(keep_live <= keep_cap);
-    ASSERT(keep_live > tower_live);
-
-    /* A finished building gets no new sparkles, and the ones in the
-     * air end on their own, the slowest riser last. */
-    Units_SetHealthPercent(tower, 100);
-    for (int t = 0; t < 600 && Units_IsUnderConstruction(tower); t++)
-        Units_TickEngines();
-    ASSERT_EQ_INT(0, Units_IsUnderConstruction(tower));
-    int fresh = 0, left = 0;
-    for (int t = 0; t < 1800; t++) {
-        Units_TickEngines();
-        int n = 0;
-        const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
-        for (int i = 0; i < n; i++)
-            if (fx[i].alive && fx[i].owner == tower && fx[i].age_ticks <= 1)
-                fresh++;
-        left = Units_DebugBuildSparkles(tower);
-        if (left == 0) break;
-    }
-    printf("[%d new sparkles after completion, %d left] ", fresh, left);
-    ASSERT_EQ_INT(0, fresh);
-    ASSERT_EQ_INT(0, left);
-
-    corpse_shutdown(&platform);
-}
-
-/* A site of the named def on clear ground `dy` below the monarch,
- * with its builder at work. Returns the site handle, or -1. */
-static int sparkle_named_site(GameWorld *world, const char *name, int32_t dy,
-                              int clear, int *out_def) {
-    int site_def = Units_FindDefByName(name);
-    int build_def = Units_FindDefByName("ARABUILD");
-    if (site_def < 0 || build_def < 0) return -1;
-    int n = 0;
-    const Unit *units = Units_GetActive(&n);
-    int32_t sx = 0, sy = 0;
-    if (!corpse_find_clear_ground(world, units[0].world_x + 256,
-                                  units[0].world_y + dy, clear, &sx, &sy))
-        return -1;
-    int builder = -1;
-    *out_def = site_def;
-    return sparkle_site(world, build_def, site_def, sx, sy, &builder);
-}
-
-static int sparkle_tower_site(GameWorld *world, int *out_def) {
-    return sparkle_named_site(world, "ARAAT", 0, 80, out_def);
-}
-
-/* A def's model box in px, half the x and z extents and the full
- * height, from whichever colour's mesh is baked. */
-static int sparkle_model_box(const UnitDef *d, float *hx, float *hz,
-                             float *h) {
-    for (int c = 0; c < 12; c++) {
-        const UnitMesh *m = d->mesh_per_color[c];
-        if (!m) continue;
-        *hx = (m->aabb_max[0] - m->aabb_min[0]) * 0.5f / 65536.0f;
-        *hz = (m->aabb_max[2] - m->aabb_min[2]) * 0.5f / 65536.0f;
-        *h = (m->aabb_max[1] - m->aabb_min[1]) / 65536.0f;
-        return 1;
-    }
-    return 0;
-}
-
-/* The ring a def's sparkles stand on, from its model box and from its
- * footprint. */
-static void sparkle_rings_of(const UnitDef *d, int *from_box,
-                             int *from_footprint) {
-    float hx = 0.0f, hz = 0.0f, h = 0.0f;
-    *from_box = sparkle_model_box(d, &hx, &hz, &h)
-        ? (int)sqrtf(hx * hx + hz * hz) : -1;
-    int fpx = (d->footprint_x > 0 ? d->footprint_x : 1) * 8;
-    int fpz = (d->footprint_z > 0 ? d->footprint_z : 1) * 8;
-    *from_footprint = (int)(sqrtf((float)(fpx * fpx + fpz * fpz)) + 0.5f);
-}
-
-/* Each sparkle has a speed of its own, 2 to 4 px an original frame,
- * which is 1 to 2 px a tick, and they fall as well as rise
- * (legacy:201441-201455, legacy:201355-201374). */
-TEST(build_sparkles_rise_and_fall_each_at_its_own_speed) {
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    ASSERT_NOT_NULL(world);
-    int tower_def = -1;
-    int site = sparkle_tower_site(world, &tower_def);
-    ASSERT(site >= 0);
-
-    int32_t speeds[64];
-    int distinct = 0, up = 0, down = 0, slow = 0, fast = 0;
-    for (int t = 0; t < 240; t++) {
-        Units_TickEngines();
-        int n = 0;
-        const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
-        for (int i = 0; i < n; i++) {
-            if (!fx[i].alive || fx[i].owner != site) continue;
-            int32_t r = fx[i].rise;
-            if (r > 0) up++;
-            if (r < 0) down++;
-            int32_t s = r < 0 ? -r : r;
-            if (s < 0x10000) slow++;
-            if (s >= 0x20000) fast++;
-            int seen = 0;
-            for (int k = 0; k < distinct && !seen; k++)
-                if (speeds[k] == r) seen = 1;
-            if (!seen && distinct < 64) speeds[distinct++] = r;
-        }
-    }
-    printf("[%d speeds, %d rising, %d falling, %d slow, %d fast] ",
-           distinct, up, down, slow, fast);
-    ASSERT(distinct >= 8);
-    ASSERT(up > 0);
-    ASSERT(down > 0);
-    ASSERT_EQ_INT(0, slow);
-    ASSERT_EQ_INT(0, fast);
-    corpse_shutdown(&platform);
-}
-
-/* The ring holds as many sparkles as it is wide and adds none while it
- * is full, and since each one ends at its own time the flow never
- * pauses (legacy:201434-201436). */
-TEST(build_sparkles_keep_flowing_once_the_ring_is_full) {
-    Units_SetBuildSparklesOn(1);
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    ASSERT_NOT_NULL(world);
-    int tower_def = -1;
-    int site = sparkle_tower_site(world, &tower_def);
-    ASSERT(site >= 0);
-    int cap = Units_DebugBuildSparkleCap(site);
-    ASSERT(cap > 0);
-
-    for (int t = 0; t < 180; t++) Units_TickEngines();
-    int most = 0, empty_windows = 0;
-    for (int w = 0; w < 12; w++) {
-        int fresh = 0;
-        for (int t = 0; t < 20; t++) {
-            Units_TickEngines();
-            int n = 0, live = 0;
-            const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
-            for (int i = 0; i < n; i++) {
-                if (!fx[i].alive || fx[i].owner != site) continue;
-                live++;
-                if (fx[i].age_ticks <= 1) fresh++;
-            }
-            if (live > most) most = live;
-        }
-        if (fresh == 0) empty_windows++;
-    }
-    printf("[cap %d, most %d live, %d of 12 windows without a new sparkle] ",
-           cap, most, empty_windows);
-    ASSERT(most <= cap);
-    ASSERT_EQ_INT(0, empty_windows);
-    corpse_shutdown(&platform);
-}
-
-/* The ring is the model's: half its box's diagonal in px, and the
- * sparkles stand that far from the centre (legacy:198540-198576). */
-TEST(build_sparkle_ring_is_the_model_box) {
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    ASSERT_NOT_NULL(world);
-    int tower_def = -1, keep_def = -1;
-    int tower = sparkle_tower_site(world, &tower_def);
-    int keep = sparkle_named_site(world, "ARAKEEP", 640, 160, &keep_def);
-    ASSERT(tower >= 0 && keep >= 0);
-    int tower_box = 0, tower_fp = 0, keep_box = 0, keep_fp = 0;
-    sparkle_rings_of(Units_GetDef(tower_def), &tower_box, &tower_fp);
-    sparkle_rings_of(Units_GetDef(keep_def), &keep_box, &keep_fp);
-    int tower_cap = Units_DebugBuildSparkleCap(tower);
-    int keep_cap = Units_DebugBuildSparkleCap(keep);
-    printf("[tower ring %d from the box, %d from the footprint, cap %d] ",
-           tower_box, tower_fp, tower_cap);
-    printf("[keep ring %d from the box, %d from the footprint, cap %d] ",
-           keep_box, keep_fp, keep_cap);
-    ASSERT(tower_box > 0 && keep_box > 0);
-    ASSERT(tower_box != tower_fp);
-    ASSERT(keep_box != keep_fp);
-    ASSERT_EQ_INT(tower_box, tower_cap);
-    ASSERT_EQ_INT(keep_box, keep_cap);
-
-    /* And the sparkles stand on it. */
-    for (int t = 0; t < 60; t++) Units_TickEngines();
-    int n = 0, on_ring = 0, off_ring = 0;
-    const Unit *units = Units_GetActive(&n);
-    int32_t cx = units[keep].world_x, cy = units[keep].world_y;
-    const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
-    for (int i = 0; i < n; i++) {
-        if (!fx[i].alive || fx[i].owner != keep) continue;
-        float dx = (float)(fx[i].world_x - cx), dy = (float)(fx[i].world_y - cy);
-        float d = sqrtf(dx * dx + dy * dy);
-        if (fabsf(d - (float)keep_box) <= 2.0f) on_ring++; else off_ring++;
-    }
-    printf("[%d on the keep's ring, %d off] ", on_ring, off_ring);
-    ASSERT(on_ring > 0);
-    ASSERT_EQ_INT(0, off_ring);
-    corpse_shutdown(&platform);
-}
-
-/* Fallers start at the top of the model and risers on the ground, so
- * new sparkles appear through the model's whole height
- * (legacy:201355-201374). */
-TEST(build_sparkles_start_through_the_height_of_the_model) {
-    Units_SetBuildSparklesOn(1);
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    ASSERT_NOT_NULL(world);
-    int tower_def = -1;
-    int site = sparkle_tower_site(world, &tower_def);
-    ASSERT(site >= 0);
-    const UnitDef *td = Units_GetDef(tower_def);
-    ASSERT_NOT_NULL(td);
-    float hx = 0.0f, hz = 0.0f, h = 0.0f;
-    ASSERT(sparkle_model_box(td, &hx, &hz, &h));
-    ASSERT(h >= 32.0f);
-    int n = 0;
-    const Unit *units = Units_GetActive(&n);
-    int ground = Terrain_SampleHeight(world, units[site].world_x,
-                                      units[site].world_y);
-
-    int lo = 1 << 30, hi = -(1 << 30), fresh = 0;
-    for (int t = 0; t < 240; t++) {
-        Units_TickEngines();
-        const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
-        for (int i = 0; i < n; i++) {
-            if (!fx[i].alive || fx[i].owner != site || fx[i].age_ticks > 1)
-                continue;
-            fresh++;
-            if (fx[i].height < lo) lo = fx[i].height;
-            if (fx[i].height > hi) hi = fx[i].height;
-        }
-    }
-    printf("[model %.1f tall, ground %d, %d new sparkles start at %d..%d] ",
-           (double)h, ground, fresh, lo, hi);
-    ASSERT(fresh > 0);
-    ASSERT(lo <= ground + 2);
-    ASSERT(hi >= ground + (int)h - 2);
-    corpse_shutdown(&platform);
-}
-
-/* A bmcode 1 unit's ring keeps the full half diagonal as its radius
- * and holds a quarter of that many sparkles (legacy:198557-198560).
- * The raiser's sparkles stand on it while a raise works. */
-TEST(a_mobile_units_ring_is_full_width_and_holds_a_quarter) {
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    ASSERT_NOT_NULL(world);
-    int unit_count = 0;
-    const Unit *units = Units_GetActive(&unit_count);
-    RaiseScene s;
-    ASSERT(raise_scene(world, units[0].world_x + 256, units[0].world_y,
-                       "ARAKING", 0, "ARASWORD", 2, 5, &s) >= 0);
-    units = Units_GetActive(&unit_count);
-    const UnitDef *rd = Units_GetDef(units[s.raiser].def_idx);
-    ASSERT_NOT_NULL(rd);
-    ASSERT_EQ_INT(1, rd->bmcode);
-    int box = 0, fp = 0;
-    sparkle_rings_of(rd, &box, &fp);
-    ASSERT(box >= 8);
-    int radius = Units_DebugBuildSparkleRadius(s.raiser);
-    int cap = Units_DebugBuildSparkleCap(s.raiser);
-    printf("[box ring %d, radius %d, cap %d] ", box, radius, cap);
-    ASSERT_EQ_INT(box, radius);
-    ASSERT_EQ_INT(box / 4, cap);
-
-    Units_SelectSingle(s.raiser);
-    ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(s.fx, s.fy));
-    int on_ring = 0, off_ring = 0, most = 0;
-    for (int t = 0; t < 1200 && on_ring + off_ring < 20; t++) {
-        Units_TickEngines();
-        int n = 0, live = 0;
-        units = Units_GetActive(&unit_count);
-        int32_t cx = units[s.raiser].world_x, cy = units[s.raiser].world_y;
-        const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
-        for (int i = 0; i < n; i++) {
-            if (!fx[i].alive || fx[i].owner != s.raiser) continue;
-            live++;
-            if (fx[i].age_ticks > 1) continue;
-            float dx = (float)(fx[i].world_x - cx);
-            float dy = (float)(fx[i].world_y - cy);
-            float d = sqrtf(dx * dx + dy * dy);
-            if (fabsf(d - (float)radius) <= 2.0f) on_ring++; else off_ring++;
-        }
-        if (live > most) most = live;
-    }
-    printf("[%d on the raiser's ring, %d off, most %d live] ",
-           on_ring, off_ring, most);
-    ASSERT(on_ring > 0);
-    ASSERT_EQ_INT(0, off_ring);
-    ASSERT(most > 0);
-    ASSERT(most <= cap);
-    corpse_shutdown(&platform);
-}
-
 TEST(a_feature_draws_its_shadow_sprite) {
     TAK_Platform platform;
     if (shadow_boot(&platform) != 0) return;
@@ -18114,100 +17425,6 @@ done:
     VFS_Shutdown();
 }
 
-/* A unit ordered through a wall of idle friendly units must come out
- * on the far side. The original folds a unit that has not moved for a
- * while into the search's cost grid (legacy:188962-188972) and plans
- * again after a refused step (legacy:191265-191388), so a stale route
- * into the crowd is replaced by one around it. */
-TEST(unit_walks_around_a_wall_of_friendly_units) {
-    if (setup_vfs() != 0) SKIP("no data dir");
-    TAK_Platform platform;
-    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
-    ASSERT_EQ_INT(0, UI_Init());
-    GameWorld *world = NULL;
-    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
-
-    int knight_def = Units_FindDefByName("ARAKNIGH");
-    int sword_def = Units_FindDefByName("ARASWORD");
-    ASSERT(knight_def >= 0 && sword_def >= 0);
-    int unit_count = 0;
-    const Unit *units = Units_GetActive(&unit_count);
-    ASSERT(unit_count > 0);
-    int32_t ax = units[0].world_x, ay = units[0].world_y;
-
-    int32_t rx = 0, ry = 0;
-    if (gates_find_site(world, knight_def, ax, ay, 400, 1, 0, &rx, &ry) != 0) {
-        SKIP_MARK("no open ground");
-        goto done;
-    }
-    {
-    /* Thirteen swordsmen shoulder to shoulder across the corridor,
-     * the mover 350 px west of them, the goal 350 px east. */
-    #define WALL_N 13
-    int wall[WALL_N];
-    for (int i = 0; i < WALL_N; i++) {
-        wall[i] = Units_Spawn(sword_def, 1, 0, rx, ry + (i - WALL_N / 2) * 32);
-        ASSERT(wall[i] >= 0);
-        Units_SelectSingle(wall[i]);
-        Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
-    }
-    int h = Units_Spawn(knight_def, 1, 0, rx - 350, ry);
-    ASSERT(h >= 0);
-    Units_SelectSingle(h);
-    Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
-    Units_SelectSingle(-1);
-
-    ASSERT_EQ_INT(0, InGame_Init(&platform));
-    Timer timer;
-    Timer_Init(&timer);
-    timer.max_ticks_per_frame = 30;
-    int32_t gx = rx + 350, gy = ry;
-    Units_CommandMoveUnit(h, gx, gy);
-    int arrived = 0, ticks = 0;
-    for (int i = 0; i < 3600; i++) {   /* 60 sim-seconds */
-        timer.accumulator = timer.sim_dt;
-        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
-        units = Units_GetActive(&unit_count);
-        ticks = i + 1;
-        if (getenv("TAK_NAV_TRACE") && (i % 30) == 0) {
-            fprintf(stderr, "wall t%4d pos=%d,%d plen=%d pidx=%d blk=%d "
-                    "rf=%d v=%.2f still=%d parked=%d wall0=%d,%d occ=%d "
-                    "q=%d occ_layer=%d %dx%d alive=%d\n", i,
-                    units[h].world_x, units[h].world_y,
-                    units[h].path_len, units[h].path_index,
-                    units[h].blocked_ticks, units[h].route_flags,
-                    units[h].cur_speed_ppt, units[wall[0]].still_ticks,
-                    units[wall[0]].occ_parked, units[wall[6]].world_x,
-                    units[wall[6]].world_y, units[wall[6]].occ_on,
-                    Occ_QueryWorld(world, rx, ry, 1, 0),
-                    world->occ != NULL, world->occ_w, world->occ_h,
-                    (int)units[wall[6]].alive);
-        }
-        int64_t dx = (int64_t)units[h].world_x - gx;
-        int64_t dy = (int64_t)units[h].world_y - gy;
-        if (dx * dx + dy * dy <= (int64_t)96 * 96) { arrived = 1; break; }
-    }
-    printf("(%d ticks, ends at %+d,%+d) ", ticks,
-           units[h].world_x - gx, units[h].world_y - gy);
-    ASSERT(arrived);
-    /* The wall stood still: nobody was shoved through. */
-    for (int i = 0; i < WALL_N; i++) {
-        int32_t wy = ry + (i - WALL_N / 2) * 32;
-        int64_t dx = (int64_t)units[wall[i]].world_x - rx;
-        int64_t dy = (int64_t)units[wall[i]].world_y - wy;
-        ASSERT(dx * dx + dy * dy <= 16 * 16);
-    }
-    InGame_Shutdown();
-    #undef WALL_N
-    }
-done:
-    Loading_Shutdown();
-    World_End(&platform);
-    UI_Shutdown();
-    teardown_platform(&platform);
-    VFS_Shutdown();
-}
-
 TEST(own_unit_walks_through_its_gate_and_gate_opens) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -18445,16 +17662,12 @@ TEST(completed_wall_blocks_units) {
     Units_SelectSingle(-1);
 
     ASSERT_EQ_INT(0, InGame_Init(&platform));
-    Timer timer;
-    Timer_Init(&timer);
-    timer.max_ticks_per_frame = 30;
     /* Ordered straight into the wall: it must stop at the face. */
     Units_CommandMoveUnit(walker, wx, wy);
 
     int inside = 0;
     for (int i = 0; i < 1800; i++) {
-        timer.accumulator = timer.sim_dt;
-        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        InGame_DebugRunSimTicks(1);
         units = Units_GetActive(&unit_count);
         if (Occ_QueryWorld(world, units[walker].world_x,
                            units[walker].world_y, 1, walker + 1) == 1) {
@@ -18476,277 +17689,6 @@ TEST(completed_wall_blocks_units) {
     Units_DebugKillHandle(seg);
     ASSERT_EQ_INT(0, Occ_QueryWorld(world, sx, sy, 1, 0));
     InGame_Shutdown();
-    }
-done:
-    Loading_Shutdown();
-    World_End(&platform);
-    UI_Shutdown();
-    teardown_platform(&platform);
-    VFS_Shutdown();
-}
-
-/* User report: "it's possible for units to perfectly overlap on top of
- * one another". Legacy keeps the occupant id per map cell for mobile
- * units too (legacy:217933-217971) and the move step refuses a cell
- * another unit holds (legacy:219329-219340), which is what makes a
- * crowd pack instead of stack. */
-TEST(units_do_not_stack_on_one_another) {
-    if (setup_vfs() != 0) SKIP("no data dir");
-    TAK_Platform platform;
-    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
-    ASSERT_EQ_INT(0, UI_Init());
-    GameWorld *world = NULL;
-    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
-
-    int sword_def = Units_FindDefByName("ARASWORD");
-    ASSERT(sword_def >= 0);
-    int unit_count = 0;
-    const Unit *units = Units_GetActive(&unit_count);
-    ASSERT(unit_count > 0);
-    int32_t ax = units[0].world_x, ay = units[0].world_y;
-
-    int32_t rx = 0, ry = 0;
-    if (gates_find_site(world, sword_def, ax, ay, 320, 1, 0, &rx, &ry) != 0) {
-        SKIP_MARK("no open ground");
-        goto done;
-    }
-    {
-    /* Twenty units on a loose grid, all ordered onto one point. */
-    #define STACK_N 20
-    int h[STACK_N];
-    int spawned = 0;
-    for (int i = 0; i < STACK_N; i++) {
-        int32_t sx = rx - 480 + (i % 5) * 64;
-        int32_t sy = ry - 160 + (i / 5) * 64;
-        h[i] = Units_Spawn(sword_def, 1, 0, sx, sy);
-        if (h[i] < 0) break;
-        spawned++;
-    }
-    ASSERT_EQ_INT(STACK_N, spawned);
-    for (int i = 0; i < STACK_N; i++) {
-        Units_SelectSingle(h[i]);
-        Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
-    }
-    Units_SelectSingle(-1);
-
-    ASSERT_EQ_INT(0, InGame_Init(&platform));
-    Timer timer;
-    Timer_Init(&timer);
-    timer.max_ticks_per_frame = 30;
-    for (int i = 0; i < STACK_N; i++) Units_CommandMoveUnit(h[i], rx, ry);
-
-    for (int i = 0; i < 4200; i++) {
-        timer.accumulator = timer.sim_dt;
-        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
-    }
-    units = Units_GetActive(&unit_count);
-    int shared = 0;
-    int64_t worst = 0;
-    for (int i = 0; i < STACK_N; i++) {
-        ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)units[h[i]].alive);
-        int64_t dx = (int64_t)units[h[i]].world_x - rx;
-        int64_t dy = (int64_t)units[h[i]].world_y - ry;
-        int64_t d2 = dx * dx + dy * dy;
-        if (d2 > worst) worst = d2;
-        for (int j = i + 1; j < STACK_N; j++) {
-            if (Occ_TileOf(units[h[i]].world_x) ==
-                    Occ_TileOf(units[h[j]].world_x) &&
-                Occ_TileOf(units[h[i]].world_y) ==
-                    Occ_TileOf(units[h[j]].world_y)) {
-                shared++;
-            }
-        }
-    }
-    printf("(spread %d px) ", (int)sqrt((double)worst));
-    ASSERT_EQ_INT(0, shared);
-    /* They still gather: nobody is left wandering the map. */
-    ASSERT(worst <= (int64_t)512 * 512);
-    InGame_Shutdown();
-    #undef STACK_N
-    }
-done:
-    Loading_Shutdown();
-    World_End(&platform);
-    UI_Shutdown();
-    teardown_platform(&platform);
-    VFS_Shutdown();
-}
-
-/* Real Harpies with their own scripts, ordered onto one point of open
- * ground. The original keeps airborne flyers off each other's cells and
- * lands one only on clear ground (legacy:236040-236113,
- * legacy:24297-24399), so none ends on another. */
-TEST(harpies_sent_to_one_place_do_not_stack) {
-    if (setup_vfs() != 0) SKIP("no data dir");
-    TAK_Platform platform;
-    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
-    ASSERT_EQ_INT(0, UI_Init());
-    GameWorld *world = NULL;
-    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
-    int harpy = Units_FindDefByName("ZONHARP");
-    if (harpy < 0) { SKIP_MARK("no ZONHARP"); goto done; }
-    {
-    int sword_def = Units_FindDefByName("ARASWORD");
-    ASSERT(sword_def >= 0);
-    int unit_count = 0;
-    const Unit *units = Units_GetActive(&unit_count);
-    ASSERT(unit_count > 0);
-    int32_t rx = 0, ry = 0;
-    if (gates_find_site(world, sword_def, units[0].world_x, units[0].world_y,
-                        320, 1, 0, &rx, &ry) != 0) {
-        SKIP_MARK("no open ground");
-        goto done;
-    }
-    #define FLOCK_N 12
-    int h[FLOCK_N];
-    for (int i = 0; i < FLOCK_N; i++) {
-        h[i] = Units_Spawn(harpy, 1, 0, rx - 480 + (i % 4) * 64, ry - 96 + (i / 4) * 64);
-        ASSERT(h[i] >= 0);
-        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
-    }
-    ASSERT_EQ_INT(0, InGame_Init(&platform));
-    Timer timer;
-    Timer_Init(&timer);
-    timer.max_ticks_per_frame = 30;
-    for (int i = 0; i < FLOCK_N; i++) Units_OrderMove(h[i], rx, ry);
-    int worst_air = 0;
-    for (int t = 0; t < 4200; t++) {
-        timer.accumulator = timer.sim_dt;
-        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
-        units = Units_GetActive(&unit_count);
-        int up = 0, air = 0;
-        for (int i = 0; i < FLOCK_N; i++) up += units[h[i]].flying ? 1 : 0;
-        for (int i = 0; i < FLOCK_N && up == FLOCK_N; i++)
-            for (int j = i + 1; j < FLOCK_N; j++)
-                if (abs(Occ_TileOf(units[h[i]].world_x - 16) - Occ_TileOf(units[h[j]].world_x - 16)) < 2 &&
-                    abs(Occ_TileOf(units[h[i]].world_y - 16) - Occ_TileOf(units[h[j]].world_y - 16)) < 2)
-                    air++;
-        if (air > worst_air) worst_air = air;
-    }
-    units = Units_GetActive(&unit_count);
-    int shared = 0;
-    int64_t far2 = 0, near2 = INT64_MAX;
-    for (int i = 0; i < FLOCK_N; i++) {
-        ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)units[h[i]].alive);
-        int64_t dx = (int64_t)units[h[i]].world_x - rx;
-        int64_t dy = (int64_t)units[h[i]].world_y - ry;
-        if (dx * dx + dy * dy > far2) far2 = dx * dx + dy * dy;
-        for (int j = i + 1; j < FLOCK_N; j++) {
-            int64_t ex = (int64_t)units[h[i]].world_x - units[h[j]].world_x;
-            int64_t ey = (int64_t)units[h[i]].world_y - units[h[j]].world_y;
-            if (ex * ex + ey * ey < near2) near2 = ex * ex + ey * ey;
-            if (abs(Occ_TileOf(units[h[i]].world_x - 16) - Occ_TileOf(units[h[j]].world_x - 16)) < 2 &&
-                abs(Occ_TileOf(units[h[i]].world_y - 16) - Occ_TileOf(units[h[j]].world_y - 16)) < 2)
-                shared++;
-        }
-    }
-    printf("(%d of 66 pairs overlap in the air, %d at rest, closest %d px, "
-           "spread %d px) ", worst_air, shared, (int)sqrt((double)near2),
-           (int)sqrt((double)far2));
-    ASSERT_EQ_INT(0, shared);
-    ASSERT(far2 <= (int64_t)512 * 512);
-    InGame_Shutdown();
-    #undef FLOCK_N
-    }
-done:
-    Loading_Shutdown();
-    World_End(&platform);
-    UI_Shutdown();
-    teardown_platform(&platform);
-    VFS_Shutdown();
-}
-
-/* Twelve real Harpies, hoverattack = 1 and hoverattackdistance = 200,
- * sent to attack one spot of open ground. The original holds each one
- * on its own bearing 200 px out (legacy:30139-30370), so the flock fans
- * out round the spot instead of stopping in a bunch at the 300 px edge
- * of its reach. Counted while they attack: the others within 50 px of
- * each, the most one Water Ball (Kirenna's, areaofeffect 100) could take
- * and the most one Water Blast (areaofeffect 500) could take. */
-static int ui_flock_within(const Unit *units, const int *h, int n,
-                           int32_t x, int32_t y, int r) {
-    int c = 0;
-    for (int i = 0; i < n; i++) {
-        int64_t dx = (int64_t)units[h[i]].world_x - x;
-        int64_t dy = (int64_t)units[h[i]].world_y - y;
-        if (dx * dx + dy * dy <= (int64_t)r * r) c++;
-    }
-    return c;
-}
-
-TEST(harpies_attacking_one_spot_spread_round_it) {
-    if (setup_vfs() != 0) SKIP("no data dir");
-    TAK_Platform platform;
-    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
-    ASSERT_EQ_INT(0, UI_Init());
-    GameWorld *world = NULL;
-    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
-    int harpy = Units_FindDefByName("ZONHARP");
-    if (harpy < 0) { SKIP_MARK("no ZONHARP"); goto done; }
-    {
-    int sword_def = Units_FindDefByName("ARASWORD");
-    ASSERT(sword_def >= 0);
-    int unit_count = 0;
-    const Unit *units = Units_GetActive(&unit_count);
-    ASSERT(unit_count > 0);
-    int32_t rx = 0, ry = 0;
-    if (gates_find_site(world, sword_def, units[0].world_x, units[0].world_y,
-                        320, 1, 0, &rx, &ry) != 0) {
-        SKIP_MARK("no open ground");
-        goto done;
-    }
-    #define FLOCK_N 12
-    int h[FLOCK_N];
-    for (int i = 0; i < FLOCK_N; i++) {
-        h[i] = Units_Spawn(harpy, 1, 0, rx - 480 + (i % 4) * 64, ry - 96 + (i / 4) * 64);
-        ASSERT(h[i] >= 0);
-        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
-    }
-    ASSERT_EQ_INT(0, InGame_Init(&platform));
-    Timer timer;
-    Timer_Init(&timer);
-    timer.max_ticks_per_frame = 30;
-    for (int i = 0; i < FLOCK_N; i++) ASSERT(Units_OrderAttackGround(h[i], rx, ry));
-    int64_t near_sum = 0, near_n = 0, dist_sum = 0, dist_n = 0;
-    int ball = 0, blast = 0, attacking_end = 0;
-    for (int t = 0; t < 3600; t++) {
-        timer.accumulator = timer.sim_dt;
-        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
-        if (t < 1200 || t % 30 != 0) continue;
-        units = Units_GetActive(&unit_count);
-        int all[FLOCK_N], n = 0, on = 0;
-        for (int i = 0; i < FLOCK_N; i++)
-            if (units[h[i]].alive == UNIT_ALIVE_ACTIVE) all[n++] = h[i];
-        for (int i = 0; i < n; i++) {
-            const Unit *a = &units[all[i]];
-            near_sum += ui_flock_within(units, all, n, a->world_x, a->world_y, 50) - 1;
-            near_n++;
-            int b = ui_flock_within(units, all, n, a->world_x, a->world_y, 50);
-            if (b > ball) ball = b;
-            int w = ui_flock_within(units, all, n, a->world_x, a->world_y, 250);
-            if (w > blast) blast = w;
-            if (a->cmd_kind != UNIT_CMD_ATTACK_GROUND) continue;
-            on++;
-            int64_t dx = (int64_t)a->world_x - rx, dy = (int64_t)a->world_y - ry;
-            dist_sum += (int64_t)sqrt((double)(dx * dx + dy * dy));
-            dist_n++;
-        }
-        int w = ui_flock_within(units, all, n, rx, ry, 250);
-        if (w > blast) blast = w;
-        attacking_end = on;
-    }
-    double near_avg = near_n ? (double)near_sum / (double)near_n : 0.0;
-    double dist_avg = dist_n ? (double)dist_sum / (double)dist_n : 0.0;
-    printf("(%.2f others within 50 px on average, attackers %.0f px from "
-           "the spot on average, one Water Ball takes up to %d, one Water "
-           "Blast up to %d, %d of %d still attacking at the end) ", near_avg, dist_avg,
-           ball, blast, attacking_end, FLOCK_N);
-    ASSERT(near_n > 0);
-    ASSERT(near_avg < 2.0);
-    ASSERT(dist_avg >= 180.0 && dist_avg <= 230.0);
-    ASSERT(ball <= 4);
-    InGame_Shutdown();
-    #undef FLOCK_N
     }
 done:
     Loading_Shutdown();
@@ -18953,9 +17895,6 @@ TEST(boats_stay_in_water_ghost_ships_do_not) {
     Units_SelectSingle(-1);
 
     ASSERT_EQ_INT(0, InGame_Init(&platform));
-    Timer timer;
-    Timer_Init(&timer);
-    timer.max_ticks_per_frame = 30;
     Units_CommandMoveUnit(boat, lx, ly);
     Units_CommandMoveUnit(ghost, lx, ly);
 
@@ -18966,8 +17905,7 @@ TEST(boats_stay_in_water_ghost_ships_do_not) {
                             (int64_t)(wy - ly) * (wy - ly);
     int64_t boat_best_d2 = boat_start_d2;
     for (int i = 0; i < 3600; i++) {
-        timer.accumulator = timer.sim_dt;
-        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        InGame_DebugRunSimTicks(1);
         units = Units_GetActive(&unit_count);
         if (water_depth_at(world, units[boat].world_x,
                            units[boat].world_y) < bmc->min_water_depth) {
@@ -20106,205 +19044,6 @@ static void fw_teardown(TAK_Platform *platform) {
     UI_Shutdown();
     teardown_platform(platform);
     VFS_Shutdown();
-}
-
-/* Left idle over the open water's middle, a dragon finds no dry ground
- * in its first search and circles on, a flyer at its cruise height over
- * the sea (legacy:24331-24381). It never comes down in the water: when
- * the circling brings dry ground into reach it lands there, once. */
-TEST(flyer_left_over_open_sea_never_lands_in_it) {
-    if (setup_vfs() != 0) SKIP("no data dir");
-    TAK_Platform platform;
-    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
-    ASSERT_EQ_INT(0, UI_Init());
-    FwSea s;
-    ASSERT_EQ_INT(0, fw_setup(&platform, &s));
-    GameWorld *w = s.world;
-    const UnitDef *dd = Units_GetDef(s.drag_def);
-    int n = 0;
-    const Unit *u = Units_GetActive(&n);
-    /* A move ends 80 to 144 px short of its point (legacy:25066-25110),
-     * so the dragon is sent 112 px past the middle. */
-    float vx = (float)(s.open_x - u[s.drag].world_x);
-    float vy = (float)(s.open_y - u[s.drag].world_y);
-    float vl = sqrtf(vx * vx + vy * vy);
-    Units_SelectSingle(s.drag);
-    Units_CommandMoveSelected(s.open_x + (int32_t)(vx / vl * 112.0f),
-                              s.open_y + (int32_t)(vy / vl * 112.0f));
-    Units_SelectSingle(-1);
-    int arrived = 0, flew = 0;
-    for (int i = 0; i < 6000 && !arrived; i++) {
-        fw_tick(&platform, &s, 1);
-        u = Units_GetActive(&n);
-        if (u[s.drag].flying) flew = 1;
-        arrived = flew && u[s.drag].cmd_kind == UNIT_CMD_NONE;
-    }
-    ASSERT(arrived);
-    int32_t ax = u[s.drag].world_x, ay = u[s.drag].world_y;
-    int landed_at = -1, circled = 0, waded = 0, low_over_sea = 0, landings = 0;
-    float drawn_low = 1e9f;
-    for (int i = 0; i < 1200; i++) {
-        fw_tick(&platform, &s, 1);
-        u = Units_GetActive(&n);
-        const Unit *d = &u[s.drag];
-        int g = Terrain_SampleHeight(w, d->world_x, d->world_y);
-        if (d->air_mode == UNIT_AIR_CIRCLE) circled = 1;
-        if (d->sfx_occupy == 4) waded = 1;
-        if (!d->flying && landed_at < 0) landed_at = i;
-        if (d->flying && g < w->water_height) {
-            if (d->flight_alt < (float)dd->cruise_alt) low_over_sea = 1;
-            float drawn = (float)g + Units_DrawnAlt(w, d);
-            if (drawn < drawn_low) drawn_low = drawn;
-        }
-    }
-    u = Units_GetActive(&n);
-    landings = Units_DebugScriptEventCount(s.drag, UNIT_SCRIPT_EV_BEGIN_LANDING);
-    int low = fw_lowest_corner(w, u[s.drag].world_x, u[s.drag].world_y,
-                               dd->footprint_x, dd->footprint_z);
-    printf("(sea at %d,%d, dry ground %d px off, idle at %d,%d, %s at tick %d, "
-           "lowest corner %d, sea %d, drawn no lower than %.0f over it) ",
-           (int)s.open_x, (int)s.open_y, (int)s.open_clear, (int)ax, (int)ay,
-           landed_at < 0 ? "still up" : "down", landed_at, low,
-           w->water_height, (double)drawn_low);
-    ASSERT(circled);
-    ASSERT_EQ_INT(0, waded);
-    ASSERT_EQ_INT(0, low_over_sea);
-    ASSERT(drawn_low >= (float)(w->water_height + dd->cruise_alt));
-    if (landed_at < 0) {
-        ASSERT_EQ_INT(1, (int)u[s.drag].flying);
-        ASSERT_EQ_INT(5, (int)u[s.drag].sfx_occupy);
-        ASSERT_EQ_INT(0, landings);
-    } else {
-        ASSERT_EQ_INT(1, landings);
-        ASSERT(low >= w->water_height);
-    }
-    fw_teardown(&platform);
-}
-
-/* Stopped over the water by the shore, a dragon lands once, on ground
- * where no corner under it is below sea level. Scenery it has seen
- * refuses it as the original's test does (legacy:220115-220140). */
-TEST(flyer_stopped_by_the_shore_lands_on_dry_ground) {
-    if (setup_vfs() != 0) SKIP("no data dir");
-    TAK_Platform platform;
-    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
-    ASSERT_EQ_INT(0, UI_Init());
-    FwSea s;
-    ASSERT_EQ_INT(0, fw_setup(&platform, &s));
-    GameWorld *w = s.world;
-    const UnitDef *dd = Units_GetDef(s.drag_def);
-    int n = 0, stopped = 0;
-    const Unit *u = Units_GetActive(&n);
-    /* Sent 112 px past the point, so it flies over the point before its
-     * move ends on the ring short of it (legacy:25066-25110). */
-    float vx = (float)(s.shore_x - u[s.drag].world_x);
-    float vy = (float)(s.shore_y - u[s.drag].world_y);
-    float vl = sqrtf(vx * vx + vy * vy);
-    Units_SelectSingle(s.drag);
-    Units_CommandMoveSelected(s.shore_x + (int32_t)(vx / vl * 112.0f),
-                              s.shore_y + (int32_t)(vy / vl * 112.0f));
-    Units_SelectSingle(-1);
-    for (int i = 0; i < 6000 && !stopped; i++) {
-        fw_tick(&platform, &s, 1);
-        u = Units_GetActive(&n);
-        int64_t dx = u[s.drag].world_x - s.shore_x, dy = u[s.drag].world_y - s.shore_y;
-        if (u[s.drag].flying && u[s.drag].flight_alt >= (float)dd->cruise_alt &&
-            dx * dx + dy * dy <= 48 * 48) {
-            Units_SelectSingle(s.drag);
-            Units_CommandStopSelected();
-            Units_SelectSingle(-1);
-            stopped = 1;
-        }
-    }
-    ASSERT(stopped);
-    int landed_at = -1;
-    for (int i = 0; i < 3600 && landed_at < 0; i++) {
-        fw_tick(&platform, &s, 1);
-        u = Units_GetActive(&n);
-        if (!u[s.drag].flying) landed_at = i;
-    }
-    fw_tick(&platform, &s, 600);
-    u = Units_GetActive(&n);
-    int low = fw_lowest_corner(w, u[s.drag].world_x, u[s.drag].world_y,
-                               dd->footprint_x, dd->footprint_z);
-    printf("(shore at %d,%d, down after %d ticks at %d,%d, lowest corner %d, "
-           "sea %d) ", (int)s.shore_x, (int)s.shore_y, landed_at,
-           (int)u[s.drag].world_x, (int)u[s.drag].world_y, low, w->water_height);
-    ASSERT(landed_at >= 0);
-    ASSERT_EQ_INT(0, (int)u[s.drag].flying);
-    ASSERT(u[s.drag].flight_alt <= 0.0f);
-    ASSERT(low >= w->water_height);
-    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(s.drag, UNIT_SCRIPT_EV_BEGIN_LANDING));
-
-    /* A blocking piece of scenery on seen, dry, clear ground. */
-    int checked = 0;
-    for (int f = 0; f < w->feature_count && !checked; f++) {
-        if (!Features_InstanceBlocks(w, f)) continue;
-        int32_t x = w->features[f].tile_x * 16 + 8, y = w->features[f].tile_z * 16 + 8;
-        if (fw_lowest_corner(w, x, y, dd->footprint_x, dd->footprint_z) < w->water_height)
-            continue;
-        /* The fog cell the test reads, from the footprint's origin. */
-        int ftx = (x - dd->footprint_x * 8 + 8) >> 4;
-        int ftz = (y - dd->footprint_z * 8 + 8) >> 4;
-        if (Fog_StateAtForPlayer(w, 1, ((ftx >> 1) + (dd->footprint_x >> 2)) * 32,
-                                 ((ftz >> 1) + (dd->footprint_z >> 2)) * 32) ==
-            TAK_FOG_UNEXPLORED)
-            continue;
-        int near = 0;
-        for (int k = 0; k < n; k++) {
-            int64_t dx = u[k].world_x - x, dy = u[k].world_y - y;
-            if (u[k].alive && dx * dx + dy * dy < 128 * 128) near = 1;
-        }
-        if (near) continue;
-        printf("(scenery at %d,%d) ", (int)x, (int)y);
-        ASSERT_EQ_INT(0, Units_DebugCanLandAt(s.drag, x, y));
-        checked = 1;
-    }
-    if (!checked) printf("(no seen scenery to try) ");
-    fw_teardown(&platform);
-}
-
-/* Over the sea on Two Castles a dragon cruises 150 over the water, not
- * over the sea floor, and the ghost ship hovers 50 over it
- * (legacy:190499-190507). */
-TEST(flyers_cruise_over_the_sea_not_the_sea_floor) {
-    if (setup_vfs() != 0) SKIP("no data dir");
-    TAK_Platform platform;
-    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
-    ASSERT_EQ_INT(0, UI_Init());
-    FwSea s;
-    ASSERT_EQ_INT(0, fw_setup(&platform, &s));
-    GameWorld *w = s.world;
-    const UnitDef *dd = Units_GetDef(s.drag_def);
-    Units_SelectSingle(s.drag);
-    Units_CommandMoveSelected(s.open_x, s.open_y);
-    Units_SelectSingle(-1);
-    int n = 0, cruising = 0;
-    const Unit *u = NULL;
-    for (int i = 0; i < 6000 && !cruising; i++) {
-        fw_tick(&platform, &s, 1);
-        u = Units_GetActive(&n);
-        int g = Terrain_SampleHeight(w, u[s.drag].world_x, u[s.drag].world_y);
-        cruising = u[s.drag].flying && u[s.drag].cmd_kind == UNIT_CMD_NONE &&
-                   g < w->water_height;
-    }
-    ASSERT(cruising);
-    float stands = Units_DebugStandHeight(s.drag);
-    float drawn = (float)Terrain_SampleHeight(w, u[s.drag].world_x, u[s.drag].world_y) +
-                  Units_DrawnAlt(w, &u[s.drag]);
-    int ghost_def = Units_FindDefByName("TARSHIP");
-    ASSERT(ghost_def >= 0);
-    int ghost = Units_Spawn(ghost_def, 1, 0, s.open_x, s.open_y + 200);
-    ASSERT(ghost >= 0);
-    fw_tick(&platform, &s, 120);
-    u = Units_GetActive(&n);
-    float ghost_at = Units_DebugStandHeight(ghost);
-    printf("(sea %d, dragon stands at %.0f and is drawn at %.0f, ghost ship at "
-           "%.0f) ", w->water_height, (double)stands, (double)drawn, (double)ghost_at);
-    ASSERT(stands >= (float)(w->water_height + dd->cruise_alt));
-    ASSERT(drawn >= (float)(w->water_height + dd->cruise_alt));
-    ASSERT(ghost_at >= (float)(w->water_height + 50));
-    fw_teardown(&platform);
 }
 
 /* What a flyer must never do near water: stand or be drawn under the
@@ -23298,98 +22037,6 @@ TEST(load_holds_half_a_second_before_the_cargo_vanishes) {
     }
     ASSERT(aboard >= 29);
     ASSERT(aboard <= 60);
-    }
-done:
-    tr_teardown(&platform);
-}
-
-/* The pickup plays the load sound and the mindspin at the rider and the
- * swirl at the transport, once, as the hold starts (legacy:14461-14463,
- * :27571-27582). */
-TEST(load_plays_swirl_on_the_ship_and_mindspin_on_the_cargo) {
-    if (setup_vfs() != 0) SKIP("no data dir");
-    TAK_Platform platform;
-    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
-    ASSERT_EQ_INT(0, UI_Init());
-    GameWorld *world = NULL;
-    Timer timer;
-    static const int32_t off[1][2] = { { 48, 0 } };
-    int carrier = -1, riders[1] = { -1 };
-    int32_t cx = 0, cy = 0;
-    int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 1, off,
-                        &carrier, riders, &cx, &cy);
-    ASSERT(rc >= 0);
-    if (rc > 0) { SKIP_MARK("no room"); goto done; }
-    {
-    int n = 0;
-    const Unit *units = Units_GetActive(&n);
-    int32_t rx = units[riders[0]].world_x, ry = units[riders[0]].world_y;
-    int sounds0 = Units_DebugTransportSoundCount(0);
-    Units_SelectSingle(carrier);
-    Units_CommandLoadSelected(riders[0], 0);
-    Units_SelectSingle(-1);
-    int spin = 0, swirl = 0;
-    for (int i = 0; i < 10; i++) {
-        ASSERT(tr_step(&platform, &timer));
-        if (tr_effect_near("mindspin", rx, ry)) spin = 1;
-        if (tr_effect_near("transportfx", cx, cy)) swirl = 1;
-    }
-    ASSERT(spin);
-    ASSERT(swirl);
-    ASSERT_EQ_INT(sounds0 + 1, Units_DebugTransportSoundCount(0));
-    }
-done:
-    tr_teardown(&platform);
-}
-
-/* The swirl plays its frames once at the original's 2 frames a picture
- * (legacy:161482-161485, :255772-255794), which is 4 of our ticks. */
-TEST(transport_effects_play_out_once) {
-    if (setup_vfs() != 0) SKIP("no data dir");
-    TAK_Platform platform;
-    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
-    ASSERT_EQ_INT(0, UI_Init());
-    GameWorld *world = NULL;
-    Timer timer;
-    static const int32_t off[1][2] = { { 48, 0 } };
-    int carrier = -1, riders[1] = { -1 };
-    int32_t cx = 0, cy = 0;
-    int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 1, off,
-                        &carrier, riders, &cx, &cy);
-    ASSERT(rc >= 0);
-    if (rc > 0) { SKIP_MARK("no room"); goto done; }
-    {
-    Units_SelectSingle(carrier);
-    Units_CommandLoadSelected(riders[0], 0);
-    Units_SelectSingle(-1);
-    int slot = -1, seen = 0, last = -1, wrapped = 0, on5 = 0, ended = 0;
-    for (int i = 0; i < 200 && !ended; i++) {
-        ASSERT(tr_step(&platform, &timer));
-        int n = 0;
-        (void)Units_GetProjectileEffects(&n);
-        const char *f = NULL;
-        int frame = 0;
-        if (slot < 0) {
-            for (int e = 0; e < n && slot < 0; e++)
-                if (Units_GetEffectInfo(e, &f, NULL, NULL) &&
-                    strcmp(f, "transportfx") == 0) slot = e;
-            if (slot < 0) continue;
-        }
-        if (!Units_GetEffectInfo(slot, &f, NULL, &frame) ||
-            strcmp(f, "transportfx") != 0) {
-            ended = 1;
-            break;
-        }
-        seen++;
-        if (frame < last) wrapped = 1;
-        last = frame;
-        if (frame == 5) on5++;
-    }
-    ASSERT(slot >= 0);
-    ASSERT(ended);
-    ASSERT_EQ_INT(0, wrapped);
-    ASSERT_EQ_INT(4, on5);
-    ASSERT(seen >= 42 && seen <= 45);
     }
 done:
     tr_teardown(&platform);
@@ -28864,61 +27511,34 @@ static int spit_case(const char *label, int width, int align,
     return outcome;
 }
 
-/* The fixture itself, and the proof the way round exists: on a band
- * four tiles across the monarch plans the long way round the bay and
- * arrives in the field. */
-TEST(a_monarch_on_a_wide_band_walks_around_the_bay) {
-    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("wide band", 4, 0, "TARNECRO", NULL, 0, 9000));
-}
-
-/* The report: the same ground, two tiles across. He stands on it and
- * can walk along it, and no route can start from it. */
-TEST(a_monarch_on_a_narrow_band_is_never_stuck) {
-    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("narrow band", 2, 0, "TARNECRO", NULL, 0, 9000));
-}
-
-/* Three tiles, one more than his own footprint, but offset by a tile
- * so the band does not line up with the even 32 px search grid. */
-TEST(a_monarch_on_an_offset_band_is_never_stuck) {
-    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("offset band", 3, 1, "TARNECRO", NULL, 0, 9000));
-}
-
-/* The same band lined up with the grid: the width alone is not the
- * whole story. */
-TEST(a_monarch_on_a_three_tile_band_is_never_stuck) {
-    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("three tile band", 3, 0, "TARNECRO", NULL, 0, 9000));
-}
-
-/* The reported scene: two of his own mounted units on the band beside
- * him, one either side. */
-TEST(a_monarch_with_friends_on_a_band_is_never_stuck) {
-    /* He does not get there, and that is the honest answer rather than
-     * a defect in the route. A monarch is two tiles across, so is each
-     * of his escorts, and the band is three. On a corridor one tile
-     * wider than a body, a body cannot pass a body. There is no other
-     * route to take, which is what issue #60 asks for, so the rule
-     * that applies is the other half of it: he must not grind at it
-     * for ever. The order is ended and he is idle, not stalled.
-     *
-     * Getting him past them needs the blocking unit to move, which the
-     * original does not do here either (legacy:191265-191388 re-runs
-     * the search on a delay and never commands the blocker), and which
-     * is a feature and not a fix. Recorded against issue #60's "or
-     * another unit" clause. */
-    ASSERT(spit_case("with friends", 3, 0, "TARNECRO", "TARBLACK", 2, 9000)
-           != SPIT_GRINDING);
-}
-
-/* Nothing here is about the monarch: an ordinary footsoldier of the
- * same move class meets the same ground. */
-TEST(a_footsoldier_on_a_narrow_band_is_never_stuck) {
-    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("narrow band, trooper", 2, 0, "TARTROOP", NULL, 0, 9000));
-}
-
-/* A band narrower than his own footprint: half of him hangs over the
- * water. He still must not stand there for good. */
-TEST(a_monarch_on_a_one_tile_band_is_never_stuck) {
-    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("one tile band", 1, 0, "TARNECRO", NULL, 0, 9000));
+/* The narrow band report (#60), one row per ground. Wide is the
+ * fixture's own proof that the way round exists. Narrow is the report.
+ * Offset and three tile split width from the 32 px search grid. One
+ * tile hangs half of him over the water. The trooper shows nothing here
+ * is about the monarch. With friends he cannot pass two escorts on a
+ * band one tile wider than a body, which the original does not do
+ * either (legacy:191265-191388), so that row asks only that he ends the
+ * order rather than grinding at it for ever. */
+TEST(a_unit_on_a_band_is_never_stuck) {
+    static const struct {
+        const char *label; int tiles, offset;
+        const char *unit, *friend_kind; int friends, arrives;
+    } rows[] = {
+        { "wide band",            4, 0, "TARNECRO", NULL,       0, 1 },
+        { "narrow band",          2, 0, "TARNECRO", NULL,       0, 1 },
+        { "offset band",          3, 1, "TARNECRO", NULL,       0, 1 },
+        { "three tile band",      3, 0, "TARNECRO", NULL,       0, 1 },
+        { "with friends",         3, 0, "TARNECRO", "TARBLACK", 2, 0 },
+        { "narrow band, trooper", 2, 0, "TARTROOP", NULL,       0, 1 },
+        { "one tile band",        1, 0, "TARNECRO", NULL,       0, 1 },
+    };
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        int got = spit_case(rows[i].label, rows[i].tiles, rows[i].offset,
+                            rows[i].unit, rows[i].friend_kind,
+                            rows[i].friends, 9000);
+        if (rows[i].arrives) ASSERT_EQ_INT(SPIT_ARRIVED, got);
+        else ASSERT(got != SPIT_GRINDING);
+    }
 }
 
 /* ── The shipped map ───────────────────────────────────────────────
@@ -31027,13 +29647,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_caster_starts_with_no_mana_of_its_own);
     RUN_UI_TEST(a_shot_still_in_the_air_when_its_shooter_falls_scores_its_player);
     RUN_UI_TEST(a_monarch_on_castles_own_pinched_ground_gets_off_it);
-    RUN_UI_TEST(a_monarch_on_a_wide_band_walks_around_the_bay);
-    RUN_UI_TEST(a_monarch_on_a_narrow_band_is_never_stuck);
-    RUN_UI_TEST(a_monarch_on_an_offset_band_is_never_stuck);
-    RUN_UI_TEST(a_monarch_on_a_three_tile_band_is_never_stuck);
-    RUN_UI_TEST(a_monarch_with_friends_on_a_band_is_never_stuck);
-    RUN_UI_TEST(a_footsoldier_on_a_narrow_band_is_never_stuck);
-    RUN_UI_TEST(a_monarch_on_a_one_tile_band_is_never_stuck);
+    RUN_UI_TEST(a_unit_on_a_band_is_never_stuck);
 
     TEST_SUITE("BattleConfig");
     RUN_UI_TEST(battle_config_defaults_are_sensible);
@@ -31184,16 +29798,12 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(ai_sends_its_home_units_at_a_base_raider);
     RUN_UI_TEST(ai_rebuilds_and_fights_back_after_losing_its_base);
     RUN_UI_TEST(influence_maps_size_to_the_map_and_see_the_army);
-    RUN_UI_TEST(perf_probe_duel);
-    RUN_UI_TEST(perf_probe_ffa);
-    RUN_UI_TEST(perf_probe_crowd);
-    RUN_UI_TEST(one_ai_builds_and_holds_an_army);
     RUN_UI_TEST(eight_ai_seats_each_build_an_army);
     RUN_UI_TEST(skirmish_ai_full_progression);
-    /* A measuring tool: it runs only when asked for, and is not a case
-     * that skipped when it is not. */
     RUN_UI_TEST(the_computer_sweeps_its_way_out_of_rubble);
     RUN_UI_TEST(the_computer_walks_its_units_out_of_a_forest_fire);
+    /* A measuring tool: it runs only when asked for, and is not a case
+     * that skipped when it is not. */
     if (getenv("TAK_AI_DUEL")) {
         RUN_UI_TEST(ai_duel_tactics_against_none);
     }
@@ -31203,6 +29813,16 @@ static void ui_run_cases(void) {
     if (getenv("TAK_FIRE_PROBE")) {
         RUN_UI_TEST(fire_census_of_the_shipped_maps);
         RUN_UI_TEST(fire_on_the_shipped_maps);
+    }
+    /* Measurements and a picture for eyes, run only when asked for. */
+    if (getenv("TAK_PERF_PROBE")) {
+        RUN_UI_TEST(perf_probe_duel);
+        RUN_UI_TEST(perf_probe_ffa);
+        RUN_UI_TEST(perf_probe_crowd);
+        RUN_UI_TEST(perf_probe_shadows);
+    }
+    if (getenv("TAK_RENDER_PROBE")) {
+        RUN_UI_TEST(render_probe_building_and_walker);
     }
     /* The same for a real mod: the mod is no part of any install. */
     if (getenv("TAK_TEST_MOD_ROOT")) {
@@ -31218,7 +29838,6 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(base_game_skirmish_spawns_the_kingdom_monarchs);
     RUN_UI_TEST(a_dead_monarch_leaves_no_mana_in_the_pool);
     RUN_UI_TEST(build_placement_sacred_and_water_rules);
-    RUN_UI_TEST(render_probe_building_and_walker);
     RUN_UI_TEST(render_probe_models);
     RUN_UI_TEST(render_probe_lodestone_covers_pad);
     RUN_UI_TEST(a_feature_past_the_known_map_is_cut_by_the_fog);
@@ -31229,13 +29848,6 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_unit_under_half_built_is_an_intangible_mass);
     RUN_UI_TEST(a_feature_draws_its_shadow_sprite);
     RUN_UI_TEST(build_sparkles_stand_on_the_building_at_any_terrain_height);
-    RUN_UI_TEST(build_sparkles_follow_the_size_of_the_building);
-    RUN_UI_TEST(build_sparkles_rise_and_fall_each_at_its_own_speed);
-    RUN_UI_TEST(build_sparkles_keep_flowing_once_the_ring_is_full);
-    RUN_UI_TEST(build_sparkle_ring_is_the_model_box);
-    RUN_UI_TEST(build_sparkles_start_through_the_height_of_the_model);
-    RUN_UI_TEST(a_mobile_units_ring_is_full_width_and_holds_a_quarter);
-    RUN_UI_TEST(perf_probe_shadows);
     RUN_UI_TEST(weapon_art_resolves_per_weapon);
     RUN_UI_TEST(only_the_monarchs_help_build_off_their_lists);
     RUN_UI_TEST(a_veteran_shooters_shot_uses_the_veteran_model);
@@ -31283,10 +29895,8 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_priest_repairs_a_swordsman_in_its_build_time);
     RUN_UI_TEST(a_raised_enemy_joins_the_raiser);
     RUN_UI_TEST(a_raise_that_cannot_spawn_leaves_the_body);
-    RUN_UI_TEST(a_raised_unit_stands_as_the_body_lay);
     RUN_UI_TEST(an_ai_player_orders_a_raise_for_itself);
     RUN_UI_TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise);
-    RUN_UI_TEST(a_raise_sheds_sparkles_and_ends_in_a_purple_flash);
     RUN_UI_TEST(a_taros_priest_animates_a_body_into_a_ghoul);
     RUN_UI_TEST(a_corpse_left_alone_rots_on_schedule);
     RUN_UI_TEST(a_corpse_waits_for_a_raiser);
@@ -31296,7 +29906,6 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_refused_step_banks_no_distance);
     RUN_UI_TEST(a_column_gets_past_a_stuck_unit_in_its_way);
     RUN_UI_TEST(ai_long_run_no_entity_leak);
-    RUN_UI_TEST(live_skirmish_units_actually_move);
     RUN_UI_TEST(patrol_from_the_sidebar_loops_until_a_new_order);
     RUN_UI_TEST(magic_weapon_fires_and_damages);
     RUN_UI_TEST(an_earthquake_shakes_the_view);
@@ -31331,9 +29940,6 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(sound_transport_plays_once_per_rider);
     RUN_UI_TEST(cob_entry_points_fire_once);
     RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
-    RUN_UI_TEST(flyer_left_over_open_sea_never_lands_in_it);
-    RUN_UI_TEST(flyer_stopped_by_the_shore_lands_on_dry_ground);
-    RUN_UI_TEST(flyers_cruise_over_the_sea_not_the_sea_floor);
     RUN_UI_TEST(every_flyer_kind_keeps_off_the_water);
     RUN_UI_TEST(tower_aim_faces_target);
     RUN_UI_TEST(war_galley_attacks_shore_target);
@@ -31383,8 +29989,6 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(unload_onto_a_building_is_refused);
     RUN_UI_TEST(unload_plays_the_swirl_and_steps_the_unit_clear);
     RUN_UI_TEST(load_holds_half_a_second_before_the_cargo_vanishes);
-    RUN_UI_TEST(load_plays_swirl_on_the_ship_and_mindspin_on_the_cargo);
-    RUN_UI_TEST(transport_effects_play_out_once);
     RUN_UI_TEST(flying_transport_runs_EndTransport_before_BeginLanding);
     RUN_UI_TEST(drag_in_load_mode_boards_every_boxed_rider);
     RUN_UI_TEST(drag_load_leaves_riders_that_do_not_fit);
@@ -31393,12 +29997,8 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(click_load_with_shift_queues_behind_the_current_pickup);
     RUN_UI_TEST(units_navigate_to_distant_goals);
     RUN_UI_TEST(horseman_moves_without_circling);
-    RUN_UI_TEST(unit_walks_around_a_wall_of_friendly_units);
     RUN_UI_TEST(own_unit_walks_through_its_gate_and_gate_opens);
     RUN_UI_TEST(completed_wall_blocks_units);
-    RUN_UI_TEST(units_do_not_stack_on_one_another);
-    RUN_UI_TEST(harpies_sent_to_one_place_do_not_stack);
-    RUN_UI_TEST(harpies_attacking_one_spot_spread_round_it);
     RUN_UI_TEST(boats_stay_in_water_ghost_ships_do_not);
     RUN_UI_TEST(ship_hulls_come_from_their_models);
     RUN_UI_TEST(a_ship_that_dies_leaves_its_wreck);

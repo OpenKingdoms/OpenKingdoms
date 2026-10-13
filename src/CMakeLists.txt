@@ -155,6 +155,7 @@ set(TAK_UI_SOURCES
     ui/hud.c
     ui/hud_text.c
     ui/replay_session.c
+    ui/web_stats.c
 )
 
 set(TAK_NET_SOURCES
@@ -401,6 +402,7 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/capture.c
     ui/save_browser.c
     ui/replay_session.c
+    ui/web_stats.c
     ui/message_box.c
     ui/briefing.c
     ui/game_info.c
@@ -689,6 +691,7 @@ add_executable(test_unit_stall
     ui/capture.c
     ui/save_browser.c
     ui/replay_session.c
+    ui/web_stats.c
     ui/message_box.c
     ui/briefing.c
     ui/game_info.c
@@ -1142,6 +1145,8 @@ add_executable(test_mod_registry
     core/sha256.c
     net/mod_proxy.c
     net/http_api.c
+    net/stats.c
+    net/ws.c
     net/ledger.c
     net/protocol.c
     game/data_fingerprint.c
@@ -2326,6 +2331,7 @@ add_executable(okrelay
     net/player_id.c
     core/sha256.c
     net/http_api.c
+    net/stats.c
     net/mod_proxy.c
     net/mod_fetch.c
     core/mod_registry.c
@@ -2440,9 +2446,33 @@ add_executable(test_http_api
     net/test_http_api.c
     net/http_api.c
     net/ledger.c
+    net/stats.c
+    net/ws.c
+    core/sha256.c
     net/protocol.c
 )
 target_include_directories(test_http_api PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+# ── What the engine tells the browser page about play ───────────────────────
+add_executable(test_web_stats
+    ui/test_web_stats.c
+    ui/web_stats.c
+    core/battle_config.c
+)
+target_include_directories(test_web_stats PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+# ── The site's visit counts ─────────────────────────────────────────────────
+# Fed batches and a clock by hand, with a scratch folder for the day files.
+add_executable(test_stats
+    net/test_stats.c
+    net/stats.c
+    core/sha256.c
+)
+target_include_directories(test_stats PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
@@ -2594,6 +2624,11 @@ if(BUILD_TESTING)
     # No game data, so CI runs it too.
     add_test(NAME test_ui_screens_shards
              COMMAND test_ui_screens --verify-shards --shard=1/8)
+    # The screen cases that read the most kinds of game file, for the
+    # pass over the extracted data folder. See scripts/run-suite.sh.
+    add_test(NAME test_ui_screens_layout
+             COMMAND test_ui_screens
+                     --case-list=${CMAKE_CURRENT_SOURCE_DIR}/ui/test_ui_layout_cases.txt)
     add_test(NAME test_hpi         COMMAND test_hpi)
     add_test(NAME test_hpi_open    COMMAND test_hpi_open)
     add_test(NAME test_io          COMMAND test_io)
@@ -2673,7 +2708,11 @@ if(BUILD_TESTING)
     add_test(NAME test_relay_loopback COMMAND test_relay_loopback)
     add_test(NAME test_ledger      COMMAND test_ledger)
     add_test(NAME test_http_api    COMMAND test_http_api)
+    add_test(NAME test_stats       COMMAND test_stats)
+    add_test(NAME test_web_stats   COMMAND test_web_stats)
     add_test(NAME test_unit_stall  COMMAND test_unit_stall)
+    # The #60 soak is a measurement, run on demand: ctest -L on-demand.
+    add_test(NAME test_unit_stall_soak COMMAND test_unit_stall --soak)
     add_test(NAME test_render_cache COMMAND test_render_cache)
     add_test(NAME test_view3d COMMAND test_view3d)
     add_test(NAME test_hpi_write COMMAND test_hpi_write)
@@ -2703,8 +2742,10 @@ if(BUILD_TESTING)
     find_program(TAK_NODE node)
     if(TAK_NODE)
         add_test(NAME test_leaderboard_page COMMAND ${TAK_NODE} ${CMAKE_SOURCE_DIR}/web/test_leaderboard.js)
+        add_test(NAME test_counts_page COMMAND ${TAK_NODE} ${CMAKE_SOURCE_DIR}/web/test_counts.js)
     else()
         add_test(NAME test_leaderboard_page COMMAND ${CMAKE_COMMAND} -E echo "node not found, the leaderboard page logic was not run")
+        add_test(NAME test_counts_page COMMAND ${CMAKE_COMMAND} -E echo "node not found, the counts page logic was not run")
     endif()
 
     # Each test runs in a directory of its own. Between them the suites
@@ -2758,6 +2799,27 @@ if(BUILD_TESTING)
         test_mission test_mission_script_data test_moveinfo test_savegame test_savestate
         test_unit_stall test_render_cache test_view3d
         PROPERTIES LABELS "needs-data")
+    # Measurements and soaks, left out of the gate and of CI. Run them
+    # with ctest -L on-demand.
+    set_tests_properties(test_unit_stall_soak
+        PROPERTIES LABELS "needs-data;on-demand")
+
+    # The tests whose file lookups differ between the extracted data
+    # folder and the original archives. The gate runs everything on the
+    # archives, as players have them, and only these on the extracted
+    # folder. test_ui_screens_layout runs in that second pass alone.
+    set_tests_properties(
+        test_gui_loader test_hpi test_hpi_open test_hpi_vfs
+        test_palette test_tnt test_obj3d test_jpg test_gaf test_cob
+        test_cob_vm test_cob_vm_corpus test_cob_inspect test_cob_inspect_all
+        test_map_inspect test_map_inspect_all test_map_inspect_missions
+        test_campaign_index
+        test_asset_validate_units test_asset_validate_mission_units
+        test_mission test_mission_script_data test_moveinfo test_savegame test_savestate
+        test_render_cache
+        PROPERTIES LABELS "needs-data;layout")
+    set_tests_properties(test_ui_screens_layout
+        PROPERTIES LABELS "needs-data;layout;layout-only" TIMEOUT 600)
 endif()
 
 # ── The engine as a library (include/ok_embed.h) ─────────────────────────────

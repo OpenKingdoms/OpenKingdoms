@@ -449,7 +449,7 @@ TEST(a_lagging_watcher_never_slows_the_players) {
 
 /* ── Silence, the countdown and the drop ─────────────────────────────── */
 
-TEST(silence_pauses_the_match_counts_down_and_the_computer_takes_over) {
+TEST(silence_pauses_the_match_counts_down_and_a_lone_side_loses_the_army) {
     TAK_MsgPace p;
     TAK_MsgPlayerStatus st;
     const uint8_t *blob = NULL;
@@ -483,7 +483,32 @@ TEST(silence_pauses_the_match_counts_down_and_the_computer_takes_over) {
     ASSERT(clk.head > frozen);                     /* and the match resumes */
     ASSERT(find_system(TAK_SYS_PLAYER_LEFT, frozen, &blob));
     ASSERT_EQ_INT(1, blob[1]);
-    ASSERT_EQ_INT(TAK_LEFT_COMPUTER_TAKES_OVER, blob[2]);
+    /* No human of theirs plays on, so the army goes as in the original,
+     * even in a room that hands armies to the computer. */
+    ASSERT_EQ_INT(TAK_LEFT_ARMY_REMOVED, blob[2]);
+}
+
+/* A leaver keeps their army for the computer only while a human of their
+ * team plays on, or when the seat was a computer's to begin with. */
+TEST(the_computer_takes_an_army_only_for_a_side_that_plays_on) {
+    setup(30, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
+    clk.cfg.team[0] = clk.cfg.team[1] = 1;
+    clk.cfg.team[2] = 2;
+    clk.cfg.computer_seats = 1u << 3;              /* a drop in's seat */
+    int s[4];
+    for (int i = 0; i < 4; i++) s[i] = TAK_TurnClock_AddSim(&clk, 101u + (uint32_t)i, (uint8_t)i, 0);
+    TAK_TurnClock_Start(&clk, 0);
+    static const uint8_t order[4] = { 1, 0, 2, 3 };
+    static const uint8_t want[4] = { TAK_LEFT_COMPUTER_TAKES_OVER, TAK_LEFT_ARMY_REMOVED,
+                                     TAK_LEFT_ARMY_REMOVED, TAK_LEFT_COMPUTER_TAKES_OVER };
+    for (int k = 0; k < 4; k++) {
+        uint8_t seat = order[k];
+        TAK_TurnClock_Disconnect(&clk, s[seat], 100u * (uint64_t)(k + 1));
+        ASSERT_EQ_INT(0, TAK_TurnClock_Reject(&clk, seat, 100u * (uint64_t)(k + 1)));
+        ASSERT_EQ_INT(want[k], clk.seat_left_as[seat]);
+        ASSERT_EQ_INT(want[k] == TAK_LEFT_COMPUTER_TAKES_OVER,
+                      TAK_TurnClock_ComputerHolds(&clk, seat));
+    }
 }
 
 TEST(a_player_back_inside_the_window_resumes_the_match_at_once) {
@@ -524,6 +549,7 @@ TEST(the_host_may_reject_a_lost_player_early) {
 TEST(a_dropped_player_replays_the_log_and_reclaims_the_seat) {
     const uint8_t *blob = NULL;
     setup(30, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
+    clk.cfg.team[0] = clk.cfg.team[1] = 1;         /* co-op, so the computer keeps it */
     int a = TAK_TurnClock_AddSim(&clk, 101, 0, 0);
     int b = TAK_TurnClock_AddSim(&clk, 102, 1, 0);
     TAK_TurnClock_Start(&clk, 0);
@@ -967,7 +993,8 @@ int main(void) {
     RUN(a_catching_up_player_is_checked_against_the_agreed_hash);
     RUN(the_governor_slows_turns_for_a_player_who_falls_behind);
     RUN(a_lagging_watcher_never_slows_the_players);
-    RUN(silence_pauses_the_match_counts_down_and_the_computer_takes_over);
+    RUN(silence_pauses_the_match_counts_down_and_a_lone_side_loses_the_army);
+    RUN(the_computer_takes_an_army_only_for_a_side_that_plays_on);
     RUN(a_player_back_inside_the_window_resumes_the_match_at_once);
     RUN(the_host_may_reject_a_lost_player_early);
     RUN(a_dropped_player_replays_the_log_and_reclaims_the_seat);

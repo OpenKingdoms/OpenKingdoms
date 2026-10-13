@@ -7,6 +7,7 @@
  */
 
 #include "tak_net_http.h"
+#include "tak_ws.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -689,11 +690,152 @@ static const char *status_text(int code) {
     switch (code) {
     case 200: return "OK";
     case 204: return "No Content";
+    case 400: return "Bad Request";
+    case 401: return "Unauthorized";
+    case 403: return "Forbidden";
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
+    case 413: return "Payload Too Large";
+    case 429: return "Too Many Requests";
     default:  return "Internal Server Error";
     }
 }
+
+/* ── The site's visit counts ──────────────────────────────────────────── */
+
+/* The length of the header block, or all of it when it never ends. */
+static size_t head_len(const uint8_t *p, size_t len) {
+    for (size_t i = 0; i + 1 < len; i++) {
+        if (i + 3 < len && p[i] == '\r' && p[i + 1] == '\n' && p[i + 2] == '\r' &&
+            p[i + 3] == '\n') return i + 4;
+        if (p[i] == '\n' && p[i + 1] == '\n') return i + 2;
+    }
+    return len;
+}
+
+/* One header's value, "" when the request has none or it is too long. */
+static void header_value(const uint8_t *req, size_t head, const char *name,
+                         char *out, size_t cap) {
+    size_t n = 0;
+    const char *v = TAK_Ws_Header((const char *)req, head, name, &n);
+    if (!v || n >= cap) n = 0;
+    if (n) memcpy(out, v, n);
+    out[n] = '\0';
+}
+
+/* Where the request came from, as the proxy in front names it. It is
+ * only ever hashed, for the rate limit. Of a forwarded list only the
+ * last address is the proxy's own, the rest are the client's to write. */
+static void request_source(const uint8_t *req, size_t head, char *out, size_t cap) {
+    header_value(req, head, "Fly-Client-IP", out, cap);
+    if (out[0]) return;
+    header_value(req, head, "X-Forwarded-For", out, cap);
+    char *comma = strrchr(out, ',');
+    if (comma) memmove(out, comma + 1, strlen(comma + 1) + 1);
+    size_t skip = strspn(out, " \t");
+    if (skip) memmove(out, out + skip, strlen(out + skip) + 1);
+    size_t n = strlen(out);
+    while (n && (out[n - 1] == ' ' || out[n - 1] == '\t')) out[--n] = '\0';
+}
+
+/* A chunked body into out. -1 when it is not one, -2 when it holds
+ * more than cap. */
+static long dechunk(const uint8_t *p, size_t n, char *out, size_t cap) {
+    size_t at = 0, got = 0;
+    for (;;) {
+        size_t eol = at;
+        while (eol + 1 < n && !(p[eol] == '\r' && p[eol + 1] == '\n')) eol++;
+        if (eol + 1 >= n) return -1;
+        size_t size = 0, digits = 0;
+        for (size_t i = at; i < eol && p[i] != ';'; i++, digits++) {
+            int d = hex_digit((char)p[i]);
+            if (d < 0) return -1;
+            if (size > cap) return -2;
+            size = size * 16 + (size_t)d;
+        }
+        if (!digits) return -1;
+        at = eol + 2;
+        if (size == 0) return (long)got;
+        if (size > cap - got) return -2;
+        if (n - at < size + 2) return -1;
+        memcpy(out + got, p + at, size);
+        got += size;
+        at += size + 2;
+    }
+}
+
+static char g_ev_body[TAK_STATS_BODY_MAX + 1];
+
+static int route_ev(const TAK_HttpCtx *ctx, const uint8_t *req, size_t len, size_t head,
+                    const char *origin, Json *j) {
+    if (!TAK_Stats_OriginAllowed(ctx->stats, origin[0] ? origin : NULL)) {
+        js_raw(j, "{\"error\":\"not from this site\"}");
+        return 403;
+    }
+    const uint8_t *rest = req + head;
+    size_t have = len - head, n = 0;
+    long body;
+    const char *te = TAK_Ws_Header((const char *)req, head, "Transfer-Encoding", &n);
+    if (te && TAK_Ws_HeaderHas(te, n, "chunked")) {
+        body = dechunk(rest, have, g_ev_body, TAK_STATS_BODY_MAX);
+    } else {
+        char v[24];
+        header_value(req, head, "Content-Length", v, sizeof v);
+        char *end = NULL;
+        unsigned long cl = strtoul(v, &end, 10);
+        if (!v[0] || (end && *end)) cl = 0;
+        if (cl > TAK_STATS_BODY_MAX) body = -2;
+        else if (cl > have) body = -1;
+        else { memcpy(g_ev_body, rest, cl); body = (long)cl; }
+    }
+    if (body == -2) {
+        js_raw(j, "{\"error\":\"too large\"}");
+        return 413;
+    }
+    char source[64], region[16];
+    request_source(req, head, source, sizeof source);
+    header_value(req, head, "Fly-Region", region, sizeof region);
+    switch (TAK_Stats_Post(ctx->stats, g_ev_body, body < 0 ? 0 : (size_t)body,
+                           source[0] ? source : NULL, region[0] ? region : NULL,
+                           ctx->now_ms)) {
+    case TAK_STATS_TAKEN:
+        return 204;
+    case TAK_STATS_LIMITED:
+        js_raw(j, "{\"error\":\"too many, try again in a minute\"}");
+        return 429;
+    default:
+        js_raw(j, "{\"error\":\"not a batch\"}");
+        return 400;
+    }
+}
+
+static int route_stats(const TAK_HttpCtx *ctx, const Request *rq, const uint8_t *req,
+                       size_t head, Json *j) {
+    if (!TAK_Stats_HasToken(ctx->stats)) {
+        js_raw(j, "{\"error\":\"not found\"}");
+        return 404;
+    }
+    char auth[TAK_STATS_TOKEN_MAX + 32], source[64];
+    header_value(req, head, "Authorization", auth, sizeof auth);
+    request_source(req, head, source, sizeof source);
+    int ok = TAK_Stats_Authorized(ctx->stats, auth[0] ? auth : NULL,
+                                  source[0] ? source : NULL, ctx->now_ms);
+    if (ok < 0) {
+        js_raw(j, "{\"error\":\"too many tries, wait a minute\"}");
+        return 429;
+    }
+    if (!ok) {
+        js_raw(j, "{\"error\":\"this needs the stats token\"}");
+        return 401;
+    }
+    uint32_t days = query_uint(rq->query, "days", 30, 1, TAK_STATS_DAYS_MAX);
+    size_t n = TAK_Stats_ReportJson(ctx->stats, days, ctx->now_ms, j->p, j->cap);
+    if (n == 0) j->overflow = 1;
+    else j->len = n;
+    return 200;
+}
+
+/* ── Answering ────────────────────────────────────────────────────────── */
 
 size_t TAK_Http_Answer(const TAK_Ledger *l, const uint8_t *req, size_t len,
                        char *out, size_t cap) {
@@ -702,42 +844,80 @@ size_t TAK_Http_Answer(const TAK_Ledger *l, const uint8_t *req, size_t len,
 
 size_t TAK_Http_AnswerLive(const TAK_Ledger *l, const TAK_HttpLive *live,
                            const uint8_t *req, size_t len, char *out, size_t cap) {
+    TAK_HttpCtx ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.ledger = l;
+    ctx.live = live;
+    return TAK_Http_Respond(&ctx, req, len, out, cap);
+}
+
+size_t TAK_Http_Respond(const TAK_HttpCtx *ctx, const uint8_t *req, size_t len,
+                        char *out, size_t cap) {
     Request rq;
     parse_request(req, len, &rq);
+    size_t head = head_len(req, len);
     Json j = { g_body, sizeof g_body, 0, 0 };
     int code;
     int head_only = 0;
+    /* The counts' two routes answer only the site once one is named,
+     * and say so to a cache. Everything else is public. */
+    int counts = ctx->stats &&
+                 (strcmp(rq.path, "/api/ev") == 0 || strcmp(rq.path, "/api/stats") == 0);
+    char origin[160];
+    header_value(req, head, "Origin", origin, sizeof origin);
+    const char *allow = "*";
+    if (counts && ctx->stats->origins)
+        allow = TAK_Stats_OriginAllowed(ctx->stats, origin) ? origin : NULL;
+
     if (strcmp(rq.method, "OPTIONS") == 0) {
         code = 204;
         head_only = 1;
+    } else if (counts && strcmp(rq.method, "POST") == 0 && strcmp(rq.path, "/api/ev") == 0) {
+        code = route_ev(ctx, req, len, head, origin, &j);
+    } else if (counts && (strcmp(rq.method, "GET") == 0 || strcmp(rq.method, "HEAD") == 0) &&
+               strcmp(rq.path, "/api/stats") == 0) {
+        head_only = rq.method[0] == 'H';
+        code = route_stats(ctx, &rq, req, head, &j);
     } else if (strcmp(rq.method, "GET") == 0 || strcmp(rq.method, "HEAD") == 0) {
         head_only = rq.method[0] == 'H';
-        code = dispatch(l, live, &rq, &j);
+        code = dispatch(ctx->ledger, ctx->live, &rq, &j);
         if (code != 200) { j.len = 0; j.overflow = 0; }
         if (code == 404) js_raw(&j, "{\"error\":\"not found\"}");
-        if (j.overflow) {
-            code = 500;
-            j.len = 0; j.overflow = 0;
-            js_raw(&j, "{\"error\":\"the page is too large, ask for fewer rows\"}");
-        }
+    } else if (strcmp(rq.method, "POST") == 0 && strcmp(rq.path, "/api/ev") == 0) {
+        code = 404;
+        js_raw(&j, "{\"error\":\"not found\"}");
     } else {
         code = 405;
         js_raw(&j, "{\"error\":\"read only\"}");
     }
+    if (j.overflow) {
+        code = 500;
+        j.len = 0; j.overflow = 0;
+        js_raw(&j, "{\"error\":\"the page is too large, ask for fewer rows\"}");
+    }
     g_body[j.len] = '\0';
 
+    char cors[200];
+    if (allow) snprintf(cors, sizeof cors, "Access-Control-Allow-Origin: %s\r\n", allow);
+    else cors[0] = '\0';
     int n = snprintf(out, cap,
         "HTTP/1.1 %d %s\r\n"
         "Content-Type: application/json; charset=utf-8\r\n"
         "Content-Length: %u\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\n"
-        "Access-Control-Allow-Headers: *\r\n"
+        "%s%s"
+        "Access-Control-Allow-Methods: %s\r\n"
+        "Access-Control-Allow-Headers: %s\r\n"
         "Access-Control-Max-Age: 86400\r\n"
+        "%s%s"
         "Cache-Control: no-store\r\n"
         "Connection: close\r\n"
         "\r\n",
-        code, status_text(code), (unsigned)(head_only ? 0 : j.len));
+        code, status_text(code), (unsigned)(head_only || code == 204 ? 0 : j.len),
+        cors, counts ? "Vary: Origin\r\n" : "",
+        counts ? "GET, POST, OPTIONS" : "GET, HEAD, OPTIONS",
+        counts ? "Authorization, Content-Type" : "*",
+        code == 401 ? "WWW-Authenticate: Bearer\r\n" : "",
+        code == 429 ? "Retry-After: 60\r\n" : "");
     if (n < 0 || (size_t)n >= cap) return 0;
     if (head_only || code == 204) return (size_t)n;
     if ((size_t)n + j.len > cap) return 0;

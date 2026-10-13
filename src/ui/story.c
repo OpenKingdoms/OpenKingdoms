@@ -33,6 +33,7 @@
 #include "tak_ui.h"
 #include "tak_util.h"
 #include "tak_world.h"
+#include "tak_web_stats.h"
 
 #include <SDL.h>
 #include <stdio.h>
@@ -602,8 +603,11 @@ static int story_begin(TAK_Platform *platform, const char *mission_file) {
 
     if (World_BeginLoad(platform, &cfg, m.stem, kingdom) != 0) {
         fprintf(stderr, "Story: failed to begin mission %s\n", m.stem);
+        WebStats_Error("a campaign mission could not begin");
         return GAMESTATE_CAMPAIGN;
     }
+    WebStats_Starting("campaign", NULL);
+    WebStats_Mission(Story_CampaignName(Story_SelectedCampaign()), m.stem);
     fprintf(stderr, "Story: launching %s (%s) as side %d\n", m.stem,
             kingdom, cfg.players[0].side);
     /* A mission with a clip is loaded by way of it. */
@@ -938,6 +942,7 @@ static int take_browser_result(SaveBrowserResult r, TAK_Platform *platform) {
                                     info->map_kingdom) == 0) {
             World_SetRestoring(1);
             Loading_SetPendingSave(sg);
+            WebStats_Starting("load", "campaign");
             SaveBrowser_Close();
             story.browser_open = 0;
             return GAMESTATE_GAME_LOADING;

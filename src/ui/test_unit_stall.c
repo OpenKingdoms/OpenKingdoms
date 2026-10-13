@@ -1861,23 +1861,31 @@ TEST(no_unit_with_a_live_order_stands_still_for_good) {
     ASSERT(soak_sixty_ok());
 }
 
+/* The two reports run by default. The soak is a measurement for issue
+ * #60 and runs only with --soak (ctest test_unit_stall_soak). */
 int main(int argc, char **argv) {
+    int soak = 0;
     SDL_SetMainReady();
-    if (argc > 1) g_test_filter = argv[1];
-    printf("\n=== unit stall soak ===\n");
-    RUN_SOAK(soak_open_ground_control);
-    RUN_SOAK(soak_legitimate_waits);
-    RUN_SOAK(soak_one_cell_gap_crowd);
-    RUN_SOAK(soak_narrow_strip);
-    RUN_SOAK(soak_walled_courtyard);
-    RUN_SOAK(soak_large_unit_small_gap);
-    RUN_SOAK(soak_surrounded_by_friends);
-    RUN_SOAK(soak_unreachable_destination);
-    RUN_SOAK(soak_wander_many_maps);
-    RUN_SOAK(soak_ai_battle);
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--soak") == 0) soak = 1;
+        else g_test_filter = argv[i];
+    }
+    printf("\n=== unit stall%s ===\n", soak ? " soak" : "");
+    if (soak) {
+        RUN_SOAK(soak_open_ground_control);
+        RUN_SOAK(soak_legitimate_waits);
+        RUN_SOAK(soak_one_cell_gap_crowd);
+        RUN_SOAK(soak_narrow_strip);
+        RUN_SOAK(soak_walled_courtyard);
+        RUN_SOAK(soak_large_unit_small_gap);
+        RUN_SOAK(soak_surrounded_by_friends);
+        RUN_SOAK(soak_unreachable_destination);
+        RUN_SOAK(soak_wander_many_maps);
+        RUN_SOAK(soak_ai_battle);
+    }
     RUN_SOAK(the_monarch_leaves_a_castle_tile_no_route_starts_from);
     RUN_SOAK(a_wall_angvirs_maze_marks_impassable_is_not_climbed);
-    RUN_SOAK(no_unit_with_a_live_order_stands_still_for_good);
+    if (soak) RUN_SOAK(no_unit_with_a_live_order_stands_still_for_good);
     printf("\n%d/%d passed\n", _tf_pass_count, _tf_total_count);
     return _tf_fail_count ? 1 : 0;
 }

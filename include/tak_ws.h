@@ -62,6 +62,16 @@ int TAK_Ws_CheckServerResponse(const char *resp, size_t resp_len,
                                const char key[TAK_WS_KEY_CHARS],
                                int *need_more);
 
+/* The value of one header in a request's header block, trimmed, with
+ * its length in *value_len. The name is matched without regard to
+ * case. NULL when the block has no such header. */
+const char *TAK_Ws_Header(const char *head, size_t len, const char *name,
+                          size_t *value_len);
+
+/* Whether a comma list header value holds `token`, without regard to
+ * case, as Connection: keep-alive, Upgrade does. */
+int TAK_Ws_HeaderHas(const char *value, size_t value_len, const char *token);
+
 /* The accept value for a key, which is what the handshake is. Exposed
  * because it is the one part with a published test vector. */
 void TAK_Ws_Accept(const char key[TAK_WS_KEY_CHARS],

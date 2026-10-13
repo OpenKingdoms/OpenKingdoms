@@ -39,6 +39,7 @@
 #include "tak_unit.h"
 #include "tak_world.h"
 #include "tak_map_browser.h"
+#include "tak_web_stats.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -905,12 +906,15 @@ static int mp_take_events(TAK_Platform *platform) {
              * this screen's job: the loading screen loads a world, it
              * does not make one, and handing it none is a bar stuck at
              * ten per cent with nothing said. */
+            WebStats_Starting("multiplayer", c->start.your_seat >= TAK_NET_SEATS ? "watch"
+                                             : mp_is_host() ? "host" : "join");
             if (MP_BeginMatchWorld(platform, &c->start) == 0) {
                 next = GAMESTATE_GAME_LOADING;
             } else {
                 fprintf(stderr,
                         "Multiplayer: no world could be built for %s\n",
                         c->start.map_name);
+                WebStats_Error("a multiplayer battle could not be built here");
                 (void)TAK_NetClient_LeaveRoom(c);
                 next = GAMESTATE_SELECT_GAME;
             }

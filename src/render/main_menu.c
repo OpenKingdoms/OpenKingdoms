@@ -40,6 +40,7 @@
 #include "tak_paths.h"
 #include "tak_replay_session.h"
 #include "tak_save_browser.h"
+#include "tak_web_stats.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -664,6 +665,7 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
                 menu.pending_nextstate = GAMESTATE_GAME_LOADING;
             } else {
                 fprintf(stderr, "MainMenu: the replay's battle could not begin\n");
+                WebStats_Error("a replay could not begin");
             }
         }
         if (r != SAVEBROWSER_OPEN) {

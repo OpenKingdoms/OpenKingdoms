@@ -39,6 +39,14 @@ var pins = {};
 function pinned(id) { return !!id && Object.prototype.hasOwnProperty.call(pins, id); }
 
 self.addEventListener('install', function (e) {
+  /* A POST, the visit counts among them, skips the worker where the
+     browser can route, so a beacon from a closing tab still goes out. */
+  if (e.addRoutes) {
+    try {
+      e.waitUntil(Promise.resolve(e.addRoutes([{ condition: { requestMethod: 'POST' }, source: 'network' }]))
+        .catch(function () {}));
+    } catch (err) {}
+  }
   e.waitUntil(fetchSet().then(function (set) { return set ? store(set) : null; })
     .then(function () { return self.skipWaiting(); }));
 });
@@ -170,6 +178,9 @@ self.addEventListener('fetch', function (e) {
   if (req.method !== 'GET') return;
   var url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
+  /* An API, the visit counts and their report among it, is the
+     network's whatever its last name matches. */
+  if (/^\/api\//.test(url.pathname)) return;
   var path = url.pathname.replace(/^.*\//, './');
   if (req.mode === 'navigate' && (path === './' || path === PAGE)) {
     /* The page from the newest whole generation that is the site's

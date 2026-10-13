@@ -176,6 +176,18 @@ static size_t header_block_end(const char *p, size_t len) {
     return 0;
 }
 
+const char *TAK_Ws_Header(const char *head, size_t len, const char *name,
+                          size_t *value_len) {
+    size_t n = 0;
+    const char *v = (head && name) ? find_header(head, len, name, &n) : NULL;
+    if (value_len) *value_len = v ? n : 0;
+    return v;
+}
+
+int TAK_Ws_HeaderHas(const char *value, size_t value_len, const char *token) {
+    return value && token && header_list_has(value, value_len, token);
+}
+
 void TAK_Ws_Accept(const char key[TAK_WS_KEY_CHARS],
                    char out[TAK_WS_ACCEPT_CHARS]) {
     static const char GUID[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";

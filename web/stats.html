@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>OpenKingdoms visits</title>
+<link rel="icon" type="image/png" href="favicon.png">
+<style>
+  /* Chart chrome and the categorical order from one validated palette,
+     light and dark (both checked with the palette validator). */
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --ring: rgba(11,11,11,0.10);
+    --accent: #7a1f1f;
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+    --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7;
+    --o1: #86b6ef; --o2: #5598e7; --o3: #2a78d6; --o4: #1c5cab;
+    --warn: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10); --accent: #e66767;
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+      --s5: #d55181; --s6: #008300; --s7: #9085e9;
+      --o1: #184f95; --o2: #256abf; --o3: #3987e5; --o4: #6da7ec;
+      --warn: #e66767;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10); --accent: #e66767;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+    --s5: #d55181; --s6: #008300; --s7: #9085e9;
+    --o1: #184f95; --o2: #256abf; --o3: #3987e5; --o4: #6da7ec;
+    --warn: #e66767;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--page); color: var(--ink);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .page { max-width: 1180px; margin: 0 auto; padding: 20px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; margin-bottom: 14px; }
+  header h1 { margin: 0; font-size: 22px; font-weight: 650; }
+  header .sub { color: var(--ink-2); font-size: 14px; }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0 0 18px; }
+  .seg { display: inline-flex; border: 1px solid var(--ring); border-radius: 8px; overflow: hidden; background: var(--surface); }
+  .seg button { font: inherit; font-size: 14px; color: var(--ink-2); background: none; border: 0; padding: 6px 14px; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--ring); }
+  .seg button[aria-pressed="true"] { color: var(--ink); font-weight: 650; background: color-mix(in srgb, var(--s1) 12%, transparent); }
+  .link { font: inherit; font-size: 13.5px; color: var(--ink-2); background: none; border: 0; padding: 4px 0; cursor: pointer; text-decoration: underline; }
+  .note { color: var(--ink-2); font-size: 13.5px; }
+  .note.err { color: var(--warn); }
+  .card { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 16px 18px 18px; margin-bottom: 16px; min-width: 0; }
+  .card h2 { margin: 0 0 2px; font-size: 15.5px; font-weight: 650; }
+  .card .what { margin: 0 0 12px; color: var(--ink-2); font-size: 13px; }
+  .card h3 { margin: 14px 0 6px; font-size: 13.5px; font-weight: 650; color: var(--ink-2); }
+  .card.wide { grid-column: 1 / -1; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 0 16px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; align-items: end; }
+  .tile .label { color: var(--ink-2); font-size: 13px; }
+  .tile .value { font-size: 26px; font-weight: 650; line-height: 1.15; }
+  .tile.hero .value { font-size: 48px; }
+  .tile .more { color: var(--muted); font-size: 12.5px; }
+  .bars { list-style: none; margin: 0; padding: 0; }
+  .bars li { display: grid; grid-template-columns: minmax(90px, 38%) 1fr auto; align-items: center; gap: 10px; padding: 3px 0; font-size: 13.5px; }
+  .bars .name { overflow-wrap: anywhere; color: var(--ink); }
+  .bars .track { height: 12px; position: relative; }
+  .bars .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; background: var(--s1); min-width: 2px; }
+  .bars .num { font-variant-numeric: tabular-nums; color: var(--ink-2); text-align: right; min-width: 3.5em; }
+  .empty { color: var(--muted); font-size: 13.5px; font-style: italic; padding: 4px 0; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 8px; font-size: 13px; color: var(--ink-2); }
+  .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; background: var(--c); vertical-align: -1px; }
+  .legend.lines span::before { height: 2px; width: 14px; border-radius: 1px; vertical-align: 3px; }
+  .chart { position: relative; }
+  .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .chart text { fill: var(--muted); font-size: 11.5px; font-family: inherit; }
+  .tip {
+    position: absolute; pointer-events: none; z-index: 2; min-width: 130px;
+    background: var(--surface); border: 1px solid var(--ring); border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.18); padding: 8px 10px; font-size: 12.5px;
+  }
+  .tip .when { color: var(--ink-2); margin-bottom: 4px; }
+  .tip .row { display: flex; align-items: center; gap: 8px; }
+  .tip .row b { min-width: 2.5em; text-align: right; font-variant-numeric: tabular-nums; }
+  .tip .row i { display: inline-block; width: 12px; height: 2px; background: var(--c); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--ink-2); font-weight: 600; }
+  details { margin-top: 10px; font-size: 13px; }
+  details summary { cursor: pointer; color: var(--ink-2); }
+  .wrap { overflow-x: auto; }
+  form.token { max-width: 460px; }
+  form.token label { display: block; margin-bottom: 6px; font-weight: 600; }
+  form.token input { font: inherit; width: 100%; padding: 8px 10px; border: 1px solid var(--axis); border-radius: 6px; background: var(--page); color: var(--ink); }
+  form.token button { margin-top: 10px; font: inherit; font-weight: 600; padding: 8px 16px; border-radius: 6px; border: 0; color: #fff; background: var(--s1); cursor: pointer; }
+  footer { color: var(--muted); font-size: 12.5px; margin-top: 8px; }
+  footer a { color: var(--ink-2); }
+  .stale { opacity: .55; transition: opacity .2s; }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>OpenKingdoms visits</h1>
+    <span class="sub" id="span"></span>
+  </header>
+  <div id="gate" hidden>
+    <section class="card">
+      <form class="token" id="token-form">
+        <label for="token">Stats token</label>
+        <input id="token" type="password" autocomplete="off" spellcheck="false" required>
+        <button type="submit">Show the counts</button>
+        <p class="note" id="gate-note">The token is kept in this browser only.</p>
+      </form>
+    </section>
+  </div>
+  <div id="board" hidden>
+    <div class="controls">
+      <div class="seg" role="group" aria-label="Days shown" id="range">
+        <button type="button" data-days="7">7 days</button>
+        <button type="button" data-days="30">30 days</button>
+        <button type="button" data-days="90">90 days</button>
+      </div>
+      <button class="link" type="button" id="reload">Refresh</button>
+      <button class="link" type="button" id="forget">Forget the token</button>
+      <span class="note" id="status"></span>
+    </div>
+    <div id="view"></div>
+    <footer id="foot"></footer>
+  </div>
+</div>
+<script src="counts.js"></script>
+<script>
+(function () {
+  'use strict';
+  if (window.OKCounts && OKCounts.view) OKCounts.view('stats');
+
+  var TOKEN_KEY = 'ok.stats.token';
+  var DAYS_KEY = 'ok.stats.days';
+  var MODES = ['campaign', 'skirmish', 'multiplayer', 'replay', 'load', 'editor', 'other'];
+  var MODE_NAME = { campaign: 'Campaign', skirmish: 'Skirmish', multiplayer: 'Multiplayer', replay: 'Replay',
+                    load: 'Loaded game', editor: 'Map editor', other: 'Other' };
+  var OUTS = ['win', 'loss', 'draw', 'quit', 'left', 'restart', 'disconnect', 'desync', 'over', 'other'];
+  var OUT_NAME = { win: 'Won', loss: 'Lost', draw: 'Draw', quit: 'Quit', left: 'Closed the page',
+                   restart: 'Restarted', disconnect: 'Lost the server', desync: 'Desync',
+                   over: 'Watched to the end', other: 'Other' };
+  var LENGTHS = ['under 1m', '1-5m', '5-15m', '15-30m', '30-60m', '1-2h', 'over 2h'];
+  var NAMES = {
+    visit: 'Visited the game page', files: 'Chose the game files', menu: 'Reached the main menu',
+    battle: 'Started a battle', skirmish: 'Skirmish lobby', campaign: 'Campaign screen',
+    multiplayer: 'Multiplayer server list', landing: 'Game page', play: 'Game started',
+    mods: 'Mods', leaderboard: 'Leaderboard', stats: 'This page', privacy: 'Privacy note',
+    host: 'Hosted', join: 'Joined a room', dropin: 'Dropped in', watch: 'Watched', rejoin: 'Rejoined',
+    on: 'On', off: 'Off', none: 'None', battle_load: 'From the battle menu'
+  };
+
+  var gate = document.getElementById('gate');
+  var board = document.getElementById('board');
+  var view = document.getElementById('view');
+  var statusEl = document.getElementById('status');
+  var spanEl = document.getElementById('span');
+  var foot = document.getElementById('foot');
+  var apiBase = null;
+  var last = null;
+
+  function store(k, v) {
+    try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {}
+  }
+  function read(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+
+  /* ---- small builders, text always as text --------------------------- */
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = String(text);
+    return e;
+  }
+  var NS = 'http://www.w3.org/2000/svg';
+  function sv(tag, attrs, text) {
+    var e = document.createElementNS(NS, tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    if (text != null) e.textContent = String(text);
+    return e;
+  }
+  function fmt(n) { return Math.round(n).toLocaleString('en-US'); }
+  function compact(n) {
+    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M';
+    if (n >= 1e4) return (n / 1e3).toFixed(n >= 1e5 ? 0 : 1) + 'K';
+    return fmt(n);
+  }
+  function pct(a, b) { return b ? Math.round(100 * a / b) + '%' : '-'; }
+  function nice(v) { return NAMES[v] || v; }
+  function dayLabel(d) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
+    if (!m) return d;
+    var mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][+m[2] - 1];
+    return (+m[3]) + ' ' + mon;
+  }
+  function entries(obj) {
+    return Object.keys(obj || {}).map(function (k) { return [k, obj[k]]; })
+      .sort(function (a, b) { return b[1] - a[1] || (a[0] < b[0] ? -1 : 1); });
+  }
+  function sum(obj) { return entries(obj).reduce(function (s, e) { return s + e[1]; }, 0); }
+
+  function card(parent, title, what) {
+    var c = el('section', 'card');
+    c.appendChild(el('h2', null, title));
+    if (what) c.appendChild(el('p', 'what', what));
+    parent.appendChild(c);
+    return c;
+  }
+
+  /* One series of named counts as bars, most first, the rest as Other. */
+  function barList(parent, list, opts) {
+    opts = opts || {};
+    if (!list.length) { parent.appendChild(el('p', 'empty', 'Nothing counted yet.')); return; }
+    var top = opts.top || 12;
+    if (list.length > top) {
+      var rest = list.slice(top).reduce(function (s, e) { return s + e[1]; }, 0);
+      list = list.slice(0, top).concat([['other', rest]]);
+    }
+    var max = Math.max.apply(null, list.map(function (e) { return e[1]; })) || 1;
+    var ul = el('ul', 'bars');
+    list.forEach(function (e) {
+      var li = el('li');
+      li.appendChild(el('span', 'name', opts.name ? opts.name(e[0]) : nice(e[0])));
+      var track = el('span', 'track');
+      var fill = el('span', 'fill');
+      fill.style.width = (100 * e[1] / max) + '%';
+      if (opts.color) fill.style.background = opts.color(e[0]);
+      track.appendChild(fill);
+      li.appendChild(track);
+      li.appendChild(el('span', 'num', opts.value ? opts.value(e[1]) : fmt(e[1])));
+      li.title = (opts.name ? opts.name(e[0]) : nice(e[0])) + ': ' + fmt(e[1]);
+      ul.appendChild(li);
+    });
+    parent.appendChild(ul);
+  }
+
+  function table(parent, head, rows) {
+    var wrap = el('div', 'wrap');
+    var t = el('table');
+    var tr = el('tr');
+    head.forEach(function (h) { tr.appendChild(el('th', null, h)); });
+    t.appendChild(tr);
+    rows.forEach(function (r) {
+      var row = el('tr');
+      r.forEach(function (v) { row.appendChild(el('td', null, v)); });
+      t.appendChild(row);
+    });
+    wrap.appendChild(t);
+    parent.appendChild(wrap);
+  }
+
+  function legend(parent, items, lines) {
+    var l = el('div', 'legend' + (lines ? ' lines' : ''));
+    items.forEach(function (it) {
+      var s = el('span', null, it[0]);
+      s.style.setProperty('--c', it[1]);
+      l.appendChild(s);
+    });
+    parent.appendChild(l);
+  }
+
+  function tooltip(box) {
+    var tip = el('div', 'tip');
+    tip.hidden = true;
+    box.appendChild(tip);
+    return {
+      show: function (x, when, rows) {
+        tip.textContent = '';
+        tip.appendChild(el('div', 'when', when));
+        rows.forEach(function (r) {
+          var row = el('div', 'row');
+          var key = el('i');
+          key.style.setProperty('--c', r[2]);
+          row.appendChild(key);
+          row.appendChild(el('b', null, fmt(r[1])));
+          row.appendChild(el('span', null, r[0]));
+          tip.appendChild(row);
+        });
+        tip.hidden = false;
+        var w = box.clientWidth, tw = tip.offsetWidth;
+        tip.style.left = Math.max(0, Math.min(w - tw, x + 14)) + 'px';
+        tip.style.top = '6px';
+      },
+      hide: function () { tip.hidden = true; }
+    };
+  }
+
+  /* Clean ticks from 0 to past max. */
+  function ticks(max) {
+    if (max <= 4) return [0, 1, 2, 3, 4].slice(0, Math.max(2, max + 1));
+    var step = Math.pow(10, Math.floor(Math.log10(max / 4)));
+    [1, 2, 5, 10].some(function (m) { if (max / (step * m) <= 4) { step *= m; return true; } return false; });
+    var out = [];
+    for (var v = 0; v <= max + step * 0.999; v += step) out.push(v);
+    return out;
+  }
+
+  function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+  /* The frame both day charts share: y grid and ticks, day labels. */
+  function frame(box, days, max, height, label) {
+    var W = Math.max(300, box.clientWidth || 600), H = height;
+    var L = 40, R = 10, T = 10, B = 24;
+    var s = sv('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': label });
+    var tk = ticks(max), top = tk[tk.length - 1] || 1;
+    var y = function (v) { return T + (H - T - B) * (1 - v / top); };
+    tk.forEach(function (v) {
+      s.appendChild(sv('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: css(v ? '--grid' : '--axis'), 'stroke-width': 1 }));
+      s.appendChild(sv('text', { x: L - 6, y: y(v) + 4, 'text-anchor': 'end' }, compact(v)));
+    });
+    var n = days.length, band = (W - L - R) / n;
+    var every = Math.ceil(n / Math.max(2, Math.floor((W - L - R) / 64)));
+    days.forEach(function (d, i) {
+      if (i % every && i !== n - 1) return;
+      if (i !== n - 1 && n - 1 - i < every) return;
+      s.appendChild(sv('text', { x: L + band * (i + 0.5), y: H - 6, 'text-anchor': 'middle' }, dayLabel(d.day)));
+    });
+    return { svg: s, W: W, H: H, L: L, R: R, T: T, B: B, y: y, band: band };
+  }
+
+  function lineChart(parent, days, series) {
+    legend(parent, series.map(function (s) { return [s.name, css(s.color)]; }), true);
+    var box = el('div', 'chart');
+    parent.appendChild(box);
+    var max = 0;
+    series.forEach(function (s) { days.forEach(function (d) { max = Math.max(max, d[s.key]); }); });
+    var f = frame(box, days, max, 220, series.map(function (s) { return s.name; }).join(' and ') + ' each day');
+    var x = function (i) { return f.L + f.band * (i + 0.5); };
+    series.forEach(function (s) {
+      var pts = days.map(function (d, i) { return x(i).toFixed(1) + ',' + f.y(d[s.key]).toFixed(1); });
+      f.svg.appendChild(sv('polyline', { points: pts.join(' '), fill: 'none', stroke: css(s.color),
+        'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+      var i = days.length - 1;
+      f.svg.appendChild(sv('circle', { cx: x(i), cy: f.y(days[i][s.key]), r: 4, fill: css(s.color),
+        stroke: css('--surface'), 'stroke-width': 2 }));
+    });
+    var hair = sv('line', { y1: f.T, y2: f.H - f.B, stroke: css('--axis'), 'stroke-width': 1, visibility: 'hidden' });
+    f.svg.appendChild(hair);
+    var hit = sv('rect', { x: f.L, y: 0, width: f.W - f.L - f.R, height: f.H, fill: 'transparent' });
+    f.svg.appendChild(hit);
+    box.appendChild(f.svg);
+    var tip = tooltip(box);
+    function at(clientX) {
+      var r = f.svg.getBoundingClientRect();
+      var px = (clientX - r.left) * f.W / r.width;
+      var i = Math.max(0, Math.min(days.length - 1, Math.floor((px - f.L) / f.band)));
+      hair.setAttribute('x1', x(i)); hair.setAttribute('x2', x(i));
+      hair.setAttribute('visibility', 'visible');
+      tip.show(x(i) * r.width / f.W, dayLabel(days[i].day) + ' ' + days[i].day.slice(0, 4),
+               series.map(function (s) { return [s.name, days[i][s.key], css(s.color)]; }));
+    }
+    hit.addEventListener('pointermove', function (e) { at(e.clientX); });
+    hit.addEventListener('pointerleave', function () { hair.setAttribute('visibility', 'hidden'); tip.hide(); });
+  }
+
+  function modeColor(m) { return css('--s' + (MODES.indexOf(m) + 1)); }
+
+  function stackedDays(parent, days) {
+    var used = MODES.filter(function (m) { return days.some(function (d) { return d.modes[m]; }); });
+    if (!used.length) { parent.appendChild(el('p', 'empty', 'No battles in these days.')); return; }
+    legend(parent, used.map(function (m) { return [MODE_NAME[m], modeColor(m)]; }));
+    var box = el('div', 'chart');
+    parent.appendChild(box);
+    var max = Math.max.apply(null, days.map(function (d) { return d.battles; })) || 1;
+    var f = frame(box, days, max, 220, 'Battles started each day, by kind');
+    var w = Math.max(2, Math.min(24, f.band * 0.62));
+    var tip = tooltip(box);
+    days.forEach(function (d, i) {
+      var cx = f.L + f.band * (i + 0.5), base = 0;
+      var g = sv('g', {});
+      used.forEach(function (m) {
+        var n = d.modes[m] || 0;
+        if (!n) return;
+        var y0 = f.y(base), y1 = f.y(base + n);
+        var h = Math.max(1, y0 - y1 - (base ? 2 : 0));
+        var top = base + n === d.battles;
+        g.appendChild(sv(top ? 'path' : 'rect', top
+          ? { d: roundTop(cx - w / 2, y0 - (base ? 2 : 0) - h, w, h, Math.min(4, h, w / 2)), fill: modeColor(m) }
+          : { x: cx - w / 2, y: y0 - (base ? 2 : 0) - h, width: w, height: h, fill: modeColor(m) }));
+        base += n;
+      });
+      var hit = sv('rect', { x: cx - f.band / 2, y: 0, width: f.band, height: f.H, fill: 'transparent' });
+      hit.addEventListener('pointermove', function () {
+        var r = f.svg.getBoundingClientRect();
+        tip.show(cx * r.width / f.W, dayLabel(d.day) + ', ' + fmt(d.battles) + ' battles',
+                 used.filter(function (m) { return d.modes[m]; })
+                     .map(function (m) { return [MODE_NAME[m], d.modes[m], modeColor(m)]; }));
+      });
+      hit.addEventListener('pointerleave', function () { tip.hide(); });
+      f.svg.appendChild(g);
+      f.svg.appendChild(hit);
+    });
+    box.appendChild(f.svg);
+  }
+
+  function roundTop(x, y, w, h, r) {
+    return 'M' + x + ',' + (y + h) + 'V' + (y + r) + 'Q' + x + ',' + y + ' ' + (x + r) + ',' + y +
+           'H' + (x + w - r) + 'Q' + (x + w) + ',' + y + ' ' + (x + w) + ',' + (y + r) + 'V' + (y + h) + 'Z';
+  }
+
+  /* ---- the board ----------------------------------------------------- */
+
+  function render(d) {
+    last = d;
+    view.textContent = '';
+    view.classList.remove('stale');
+    var c = d.counts, t = d.totals, days = d.series;
+    spanEl.textContent = dayLabel(d.from) + ' to ' + dayLabel(d.to) + ' ' + d.to.slice(0, 4) + ', UTC days';
+
+    var head = card(view, 'At a glance');
+    var tiles = el('div', 'tiles');
+    function tile(label, value, more, hero) {
+      var b = el('div', 'tile' + (hero ? ' hero' : ''));
+      b.appendChild(el('div', 'label', label));
+      b.appendChild(el('div', 'value', value));
+      if (more) b.appendChild(el('div', 'more', more));
+      tiles.appendChild(b);
+    }
+    var battles = sum(c.mode), ended = sum(c.outcome);
+    tile('Visitors a day', (t.visitors / d.days).toFixed(t.visitors / d.days < 10 ? 1 : 0),
+         fmt(t.visitors) + ' over ' + d.days + ' days', true);
+    tile('New visitors', compact(t.new), pct(t.new, t.visitors) + ' of daily visitors');
+    tile('Sessions', compact(t.sessions), compact(t.views) + ' page views');
+    tile('Battles started', compact(battles), fmt(ended) + ' finished');
+    tile('Errors', compact(sum(c.error) + sum(c.crash)), fmt(sum(c.crash)) + ' stopped the game');
+    head.appendChild(tiles);
+    if (t.capped) head.appendChild(el('p', 'note err', 'On at least one day more visitors came than the server counts one by one, so those days read low.'));
+
+    var daily = card(view, 'Visitors and sessions each day',
+      'A visitor is one browser on one day. A session is one browser tab, however many pages it opens.');
+    lineChart(daily, days, [{ key: 'visitors', name: 'Visitors', color: '--s1' },
+                            { key: 'sessions', name: 'Sessions', color: '--s2' }]);
+    var dt = el('details');
+    dt.appendChild(el('summary', null, 'As a table'));
+    table(dt, ['Day', 'Visitors', 'New', 'Sessions', 'Page views', 'Battles', 'Finished', 'Errors'],
+          days.slice().reverse().map(function (r) {
+            return [r.day, fmt(r.visitors), fmt(r.new), fmt(r.sessions), fmt(r.views),
+                    fmt(r.battles), fmt(r.ended), fmt(r.errors)];
+          }));
+    daily.appendChild(dt);
+
+    var bd = card(view, 'Battles started each day, by kind');
+    stackedDays(bd, days);
+    var bt = el('details');
+    bt.appendChild(el('summary', null, 'As a table'));
+    table(bt, ['Day'].concat(MODES.map(function (m) { return MODE_NAME[m]; })),
+          days.slice().reverse().filter(function (r) { return r.battles; }).map(function (r) {
+            return [r.day].concat(MODES.map(function (m) { return fmt(r.modes[m] || 0); }));
+          }));
+    bd.appendChild(bt);
+
+    var grid = el('div', 'grid');
+    view.appendChild(grid);
+
+    var fun = card(grid, 'From visit to battle', 'Sessions that reached each step, and the share of the step before.');
+    var steps = ['visit', 'files', 'menu', 'battle'];
+    var prev = 0;
+    barList(fun, steps.map(function (s) { return [s, c.step[s] || 0]; }), {
+      top: 4,
+      color: function (s) { return css('--o' + (steps.indexOf(s) + 1)); },
+      value: function (n) { var v = fmt(n) + (prev ? ' (' + pct(n, prev) + ')' : ''); prev = n; return v; }
+    });
+
+    var kinds = card(grid, 'Battles by kind');
+    barList(kinds, MODES.map(function (m) { return [m, c.mode[m] || 0]; }).filter(function (e) { return e[1]; }),
+            { name: function (m) { return MODE_NAME[m]; }, color: modeColor });
+    kinds.appendChild(el('h3', null, 'How multiplayer battles began'));
+    barList(kinds, entries(c.mp));
+    kinds.appendChild(el('h3', null, 'Where loaded games came from'));
+    barList(kinds, entries(c.load), { name: function (v) { return v === 'battle' ? NAMES.battle_load : nice(v); } });
+
+    barList(card(grid, 'Maps', 'Skirmish, multiplayer, replays and loaded games.'), entries(c.map), { top: 15 });
+    var camp = card(grid, 'Campaign missions');
+    barList(camp, entries(c.mission), { top: 15 });
+    camp.appendChild(el('h3', null, 'Campaigns'));
+    barList(camp, entries(c.campaign));
+
+    var setup = card(grid, 'Skirmish and multiplayer setup');
+    setup.appendChild(el('h3', null, 'Computer players'));
+    barList(setup, entries(c.ai).sort(function (a, b) { return a[0] - b[0]; }), { top: 9 });
+    setup.appendChild(el('h3', null, 'Their difficulty'));
+    barList(setup, entries(c.level));
+    setup.appendChild(el('h3', null, 'People in a multiplayer battle'));
+    barList(setup, entries(c.humans).sort(function (a, b) { return a[0] - b[0]; }), { top: 9 });
+    setup.appendChild(el('h3', null, 'Remastered Battlefield'));
+    barList(setup, entries(c.remastered));
+    setup.appendChild(el('h3', null, 'Mod sets'));
+    barList(setup, entries(c.mod));
+
+    var sides = card(grid, 'Sides played');
+    barList(sides, entries(c.side), { name: function (s) { return s === 'none' ? 'None, watching' : s.charAt(0).toUpperCase() + s.slice(1); } });
+    sides.appendChild(el('h3', null, 'Screens reached'));
+    barList(sides, ['skirmish', 'campaign', 'multiplayer'].map(function (s) { return [s, c.step[s] || 0]; }));
+
+    var ends = card(grid, 'How battles ended', 'Finished battles by kind and outcome, with the average length of play.');
+    ends.classList.add('wide');
+    var rows = MODES.map(function (m) {
+      var by = {}, total = 0;
+      OUTS.forEach(function (o) { by[o] = c.outcome[m + ':' + o] || 0; total += by[o]; });
+      return { m: m, by: by, total: total };
+    }).filter(function (r) { return r.total; });
+    if (!rows.length) ends.appendChild(el('p', 'empty', 'No battle has finished in these days.'));
+    else {
+      var shown = OUTS.filter(function (o) { return rows.some(function (r) { return r.by[o]; }); });
+      table(ends, ['Kind'].concat(shown.map(function (o) { return OUT_NAME[o]; }), ['Average']),
+            rows.map(function (r) {
+              var secs = (c.secs[r.m] || 0) / r.total;
+              return [MODE_NAME[r.m]].concat(shown.map(function (o) { return fmt(r.by[o]); }),
+                     [secs >= 60 ? Math.round(secs / 60) + ' min' : Math.round(secs) + ' s']);
+            }));
+    }
+    ends.appendChild(el('h3', null, 'Battle length'));
+    var len = {};
+    entries(c.length).forEach(function (e) { var b = e[0].split(':')[1]; len[b] = (len[b] || 0) + e[1]; });
+    barList(ends, LENGTHS.map(function (b) { return [b, len[b] || 0]; }).filter(function (e) { return e[1]; }), { top: 7 });
+
+    var errs = card(grid, 'Errors', 'The message the page or the engine gave, cut to its first line.');
+    errs.appendChild(el('h3', null, 'Stopped the game'));
+    barList(errs, entries(c.crash), { top: 15 });
+    errs.appendChild(el('h3', null, 'Did not stop it'));
+    barList(errs, entries(c.error), { top: 15 });
+
+    var dev = card(grid, 'Devices and browsers', 'Each visitor once a day.');
+    [['Browser', 'browser'], ['System', 'os'], ['Device', 'device'], ['Screen, long side in pixels', 'screen']].forEach(function (p) {
+      dev.appendChild(el('h3', null, p[0]));
+      barList(dev, entries(c[p[1]]), { name: function (v) { return v; } });
+    });
+
+    var reg = card(grid, 'Regions', 'The edge region of the game server each visitor reached, once a day.');
+    barList(reg, entries(c.region), { top: 20, name: function (v) { return v === 'none' ? 'None named' : v.toUpperCase(); } });
+    reg.appendChild(el('h3', null, 'Pages'));
+    barList(reg, entries(c.page));
+
+    foot.textContent = '';
+    foot.appendChild(document.createTextNode(
+      fmt(t.batches) + ' batches and ' + fmt(t.events) + ' events taken, ' + fmt(t.dropped) + ' events dropped, ' +
+      fmt(t.refused) + ' batches refused, ' + fmt(t.limited) + ' turned away by the rate limit. Your own visits count too unless you turn counting off on the '));
+    var a = el('a', null, 'privacy note');
+    a.href = 'privacy.html';
+    foot.appendChild(a);
+    foot.appendChild(document.createTextNode('.'));
+  }
+
+  /* ---- fetching ------------------------------------------------------ */
+
+  function relayApi(text) {
+    var url = String(text || '').split(/[\r\n]/)[0].trim();
+    url = url.replace(/^wss:\/\//i, 'https://').replace(/^ws:\/\//i, 'http://');
+    url = url.replace(/\/relay\/?$/, '').replace(/\/+$/, '');
+    return /^https?:\/\/[^\s]+$/.test(url) ? url + '/api' : '';
+  }
+
+  function findApi() {
+    if (apiBase) return Promise.resolve(apiBase);
+    return fetch('relay.txt', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.text() : ''; }, function () { return ''; })
+      .then(function (t) {
+        apiBase = relayApi(t);
+        if (!apiBase) throw new Error('This site names no game server in relay.txt, so there is nothing to ask.');
+        return apiBase;
+      });
+  }
+
+  function showGate(msg) {
+    board.hidden = true;
+    gate.hidden = false;
+    spanEl.textContent = '';
+    var n = document.getElementById('gate-note');
+    n.textContent = msg || 'The token is kept in this browser only.';
+    n.className = 'note' + (msg ? ' err' : '');
+    document.getElementById('token').focus();
+  }
+
+  function selectedDays() {
+    var d = +read(DAYS_KEY);
+    return d === 7 || d === 90 ? d : 30;
+  }
+
+  function load() {
+    var token = read(TOKEN_KEY);
+    if (!token) { showGate(); return; }
+    var days = selectedDays();
+    Array.prototype.forEach.call(document.querySelectorAll('#range button'), function (b) {
+      b.setAttribute('aria-pressed', String(+b.dataset.days === days));
+    });
+    gate.hidden = true;
+    board.hidden = false;
+    if (last) view.classList.add('stale');
+    statusEl.textContent = 'Asking the game server.';
+    statusEl.className = 'note';
+    findApi().then(function (base) {
+      return fetch(base + '/stats?days=' + days, { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' });
+    }).then(function (r) {
+      if (r.status === 401) { store(TOKEN_KEY, null); showGate('That token was not right.'); return null; }
+      if (r.status === 429) throw new Error('Too many wrong tokens from here. Wait a minute and try again.');
+      if (r.status === 404) throw new Error('The game server has no report. Its STATS_TOKEN is not set, or it is an older build.');
+      if (!r.ok) throw new Error('The game server answered ' + r.status + '.');
+      return r.json();
+    }).then(function (d) {
+      if (!d) return;
+      render(d);
+      statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    }).catch(function (e) {
+      view.classList.remove('stale');
+      statusEl.textContent = e && e.message && !/fetch/i.test(e.message) ? e.message : 'The game server did not answer.';
+      statusEl.className = 'note err';
+    });
+  }
+
+  document.getElementById('token-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var v = document.getElementById('token').value.trim();
+    if (!v) return;
+    store(TOKEN_KEY, v);
+    document.getElementById('token').value = '';
+    load();
+  });
+  document.getElementById('range').addEventListener('click', function (e) {
+    var b = e.target.closest('button');
+    if (!b) return;
+    store(DAYS_KEY, b.dataset.days);
+    load();
+  });
+  document.getElementById('reload').addEventListener('click', load);
+  document.getElementById('forget').addEventListener('click', function () {
+    store(TOKEN_KEY, null);
+    last = null;
+    view.textContent = '';
+    showGate();
+  });
+  var resizing = null;
+  window.addEventListener('resize', function () {
+    clearTimeout(resizing);
+    resizing = setTimeout(function () { if (last && !board.hidden) render(last); }, 200);
+  });
+  load();
+})();
+</script>
+</body>
+</html>

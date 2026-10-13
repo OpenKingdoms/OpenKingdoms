@@ -177,6 +177,8 @@ static TAK_FakeNet      net;
 static uint8_t          log_arena[TAK_RELAY_ROOMS_MAX * (512u << 10)];
 static TAK_TurnLogEntry log_entries[TAK_RELAY_ROOMS_MAX * 32768u];
 static Client           cl[N_MAX];
+/* Teams for the next start_match, 0 for none. setup() clears them. */
+static uint8_t          g_team[N_MAX];
 static int              ncl;
 static uint64_t         g_now;
 static uint8_t          tx[TAK_NET_FRAME_MAX];
@@ -570,6 +572,7 @@ static void setup(uint32_t latency, uint32_t jitter, uint32_t seed) {
     g_hello_mod = g_hello_mod_version = NULL;
     g_hello_content = 0;
     g_blank_token_at = -1;
+    memset(g_team, 0, sizeof g_team);
     for (int i = 0; i < N_MAX; i++) { free(cl[i].inbox.p); free(cl[i].rec.p); }
     memset(cl, 0, sizeof(cl));
     ncl = 0;
@@ -646,6 +649,8 @@ static int start_match(int players, uint32_t flags, uint16_t timeout) {
     }
     run_for(1000);
     for (int i = 0; i < players; i++) if (cl[i].seat == TAK_NET_SEAT_NONE) return 0;
+    for (int i = 0; i < players; i++)
+        if (g_team[i]) send_edit(&cl[i], TAK_EDIT_TEAM, cl[i].seat, g_team[i], NULL);
     ready_up(0, players);
     up(host, TAK_Msg_EmptyEncode(TAK_MSG_START, tx, sizeof(tx)));
     for (int k = 0; k < 300 && !all_started(0, players); k++) step();
@@ -791,6 +796,8 @@ TEST(a_reconnect_by_fast_forward_matches_the_live_trace) {
 
 TEST(a_silent_player_is_replaced_by_the_computer_then_reclaims_the_seat) {
     setup(20, 20, 13);
+    g_team[0] = g_team[2] = 1;                 /* the silent one's ally plays on */
+    g_team[1] = g_team[3] = 2;
     ASSERT(start_match(4, TAK_ROOMF_AI_TAKES_OVER, 30));
     uint8_t seat2 = cl[2].seat;
     cl[2].mute_at = g_now + 5000;            /* stops talking, connection open */
