@@ -112,7 +112,7 @@ function worker(w) {
       opts = opts || {};
       let res;
       const e = {
-        request: { method: 'GET', url: ORIGIN + '/' + file, mode: opts.navigate ? 'navigate' : 'no-cors' },
+        request: { method: opts.method || 'GET', url: ORIGIN + '/' + file, mode: opts.navigate ? 'navigate' : 'no-cors' },
         clientId: opts.navigate ? '' : (opts.client || ''),
         resultingClientId: opts.navigate ? (opts.client || '') : '',
         respondWith: (p) => { res = p; },
@@ -294,6 +294,17 @@ const asserts = [
   assert.strictEqual(await sw.get('relay.txt', { client: 'c1' }), undefined);
   assert.strictEqual(await sw.get('leaderboard.html', { navigate: true, client: 'c2' }), undefined);
   assert.strictEqual(await sw.get('version.txt?1', { client: 'c1' }), undefined, 'a page asks the site, not the cache');
+}],
+
+['the visit counts and their report are never the worker\'s', async () => {
+  const [w, sw] = await installed('A');
+  w.clients.live.add('c1');
+  assert.strictEqual(await sw.get('api/ev', { client: 'c1', method: 'POST' }), undefined);
+  assert.strictEqual(await sw.get('api/stats?days=30', { client: 'c1' }), undefined);
+  assert.strictEqual(await sw.get('stats.html', { navigate: true, client: 'c2' }), undefined);
+  /* Not even a name under /api/ that the engine's files share. */
+  assert.strictEqual(await sw.get('api/tak-re.js', { client: 'c1' }), undefined);
+  assert.strictEqual(await sw.get('api/favicon.png', { client: 'c1' }), undefined);
 }]
 
 ];

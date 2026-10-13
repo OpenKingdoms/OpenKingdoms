@@ -154,6 +154,7 @@ set(TAK_UI_SOURCES
     ui/hud.c
     ui/hud_text.c
     ui/replay_session.c
+    ui/web_stats.c
 )
 
 set(TAK_NET_SOURCES
@@ -400,6 +401,7 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/capture.c
     ui/save_browser.c
     ui/replay_session.c
+    ui/web_stats.c
     ui/message_box.c
     ui/briefing.c
     ui/game_info.c
@@ -688,6 +690,7 @@ add_executable(test_unit_stall
     ui/capture.c
     ui/save_browser.c
     ui/replay_session.c
+    ui/web_stats.c
     ui/message_box.c
     ui/briefing.c
     ui/game_info.c
@@ -1125,6 +1128,8 @@ add_executable(test_mod_registry
     core/sha256.c
     net/mod_proxy.c
     net/http_api.c
+    net/stats.c
+    net/ws.c
     net/ledger.c
     net/protocol.c
     game/data_fingerprint.c
@@ -2309,6 +2314,7 @@ add_executable(okrelay
     net/player_id.c
     core/sha256.c
     net/http_api.c
+    net/stats.c
     net/mod_proxy.c
     net/mod_fetch.c
     core/mod_registry.c
@@ -2423,9 +2429,33 @@ add_executable(test_http_api
     net/test_http_api.c
     net/http_api.c
     net/ledger.c
+    net/stats.c
+    net/ws.c
+    core/sha256.c
     net/protocol.c
 )
 target_include_directories(test_http_api PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+# ── What the engine tells the browser page about play ───────────────────────
+add_executable(test_web_stats
+    ui/test_web_stats.c
+    ui/web_stats.c
+    core/battle_config.c
+)
+target_include_directories(test_web_stats PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+# ── The site's visit counts ─────────────────────────────────────────────────
+# Fed batches and a clock by hand, with a scratch folder for the day files.
+add_executable(test_stats
+    net/test_stats.c
+    net/stats.c
+    core/sha256.c
+)
+target_include_directories(test_stats PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
@@ -2656,6 +2686,8 @@ if(BUILD_TESTING)
     add_test(NAME test_relay_loopback COMMAND test_relay_loopback)
     add_test(NAME test_ledger      COMMAND test_ledger)
     add_test(NAME test_http_api    COMMAND test_http_api)
+    add_test(NAME test_stats       COMMAND test_stats)
+    add_test(NAME test_web_stats   COMMAND test_web_stats)
     add_test(NAME test_unit_stall  COMMAND test_unit_stall)
     add_test(NAME test_render_cache COMMAND test_render_cache)
     add_test(NAME test_view3d COMMAND test_view3d)
@@ -2685,8 +2717,10 @@ if(BUILD_TESTING)
     find_program(TAK_NODE node)
     if(TAK_NODE)
         add_test(NAME test_leaderboard_page COMMAND ${TAK_NODE} ${CMAKE_SOURCE_DIR}/web/test_leaderboard.js)
+        add_test(NAME test_counts_page COMMAND ${TAK_NODE} ${CMAKE_SOURCE_DIR}/web/test_counts.js)
     else()
         add_test(NAME test_leaderboard_page COMMAND ${CMAKE_COMMAND} -E echo "node not found, the leaderboard page logic was not run")
+        add_test(NAME test_counts_page COMMAND ${CMAKE_COMMAND} -E echo "node not found, the counts page logic was not run")
     endif()
 
     # Each test runs in a directory of its own. Between them the suites

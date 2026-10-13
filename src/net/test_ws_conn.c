@@ -355,10 +355,65 @@ TEST(a_websocket_upgrade_is_never_mistaken_for_a_plain_request) {
     ASSERT_EQ_INT(TAK_WSCONN_OPEN, g_server.state);
     /* And an open connection is past all this. */
     ASSERT_EQ_INT(0, TAK_WsConn_PlainRequest(&g_server, &got, &n));
-    /* A POST is not offered either: the handshake refuses it. */
+}
+
+/* The site's counts arrive as a POST, which is offered only once its
+ * body has, and waited for rather than refused while it comes. */
+TEST(a_post_is_offered_once_its_body_has_arrived) {
     TAK_WsConn_InitServer(&g_server);
-    const char post[] = "POST /api/x HTTP/1.1\r\n\r\n";
-    ASSERT_EQ_INT(0, TAK_WsConn_Feed(&g_server, post, sizeof post - 1));
+    const char req[] = "POST /api/ev HTTP/1.1\r\nHost: relay\r\ncontent-length: 13\r\n\r\n{\"v\":1,\"x\":2}";
+    const size_t whole = sizeof req - 1;
+    const uint8_t *got = NULL;
+    size_t n = 0;
+    ASSERT_EQ_INT(0, TAK_WsConn_Feed(&g_server, req, whole - 5));
+    ASSERT_EQ_INT(0, TAK_WsConn_PlainRequest(&g_server, &got, &n));
+    ASSERT_EQ_INT(TAK_WSCONN_NEED_MORE, TAK_WsConn_Step(&g_server));
+    ASSERT_EQ_INT(TAK_WSCONN_HANDSHAKE, g_server.state);
+    ASSERT_EQ_INT(0, TAK_WsConn_Feed(&g_server, req + whole - 5, 5));
+    ASSERT_EQ_INT(1, TAK_WsConn_PlainRequest(&g_server, &got, &n));
+    ASSERT_EQ_INT((int)whole, (int)n);
+    ASSERT(memcmp(got, req, n) == 0);
+}
+
+TEST(a_chunked_post_is_offered_once_its_last_chunk_has_arrived) {
+    const char req[] = "POST /api/ev HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"
+                       "5\r\nhello\r\n6;ext=1\r\n world\r\n0\r\n\r\n";
+    const size_t whole = sizeof req - 1;
+    const size_t head = sizeof "POST /api/ev HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n" - 1;
+    const uint8_t *got = NULL;
+    size_t n = 0;
+    /* Every cut short of the end waits. */
+    for (size_t cut = head; cut < whole; cut++) {
+        TAK_WsConn_InitServer(&g_server);
+        ASSERT_EQ_INT(0, TAK_WsConn_Feed(&g_server, req, cut));
+        ASSERT_EQ_INT(0, TAK_WsConn_PlainRequest(&g_server, &got, &n));
+        ASSERT_EQ_INT(TAK_WSCONN_NEED_MORE, TAK_WsConn_Step(&g_server));
+    }
+    TAK_WsConn_InitServer(&g_server);
+    ASSERT_EQ_INT(0, TAK_WsConn_Feed(&g_server, req, whole));
+    ASSERT_EQ_INT(1, TAK_WsConn_PlainRequest(&g_server, &got, &n));
+    ASSERT_EQ_INT((int)whole, (int)n);
+}
+
+TEST(a_post_too_large_to_hold_is_offered_at_once_for_refusal) {
+    TAK_WsConn_InitServer(&g_server);
+    const char head[] = "POST /api/ev HTTP/1.1\r\nContent-Length: 1000000\r\n\r\n";
+    const uint8_t *got = NULL;
+    size_t n = 0;
+    ASSERT_EQ_INT(0, TAK_WsConn_Feed(&g_server, head, sizeof head - 1));
+    ASSERT_EQ_INT(0, TAK_WsConn_Feed(&g_server, "{\"v\"", 4));
+    ASSERT_EQ_INT(1, TAK_WsConn_PlainRequest(&g_server, &got, &n));
+    ASSERT_EQ_INT((int)(sizeof head - 1), (int)n);
+    /* A POST that names no length has no body. */
+    TAK_WsConn_InitServer(&g_server);
+    const char bare[] = "POST /api/x HTTP/1.1\r\n\r\n";
+    ASSERT_EQ_INT(0, TAK_WsConn_Feed(&g_server, bare, sizeof bare - 1));
+    ASSERT_EQ_INT(1, TAK_WsConn_PlainRequest(&g_server, &got, &n));
+    ASSERT_EQ_INT((int)(sizeof bare - 1), (int)n);
+    /* Anything else that is not an upgrade is still refused. */
+    TAK_WsConn_InitServer(&g_server);
+    const char put[] = "PUT /api/x HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}";
+    ASSERT_EQ_INT(0, TAK_WsConn_Feed(&g_server, put, sizeof put - 1));
     ASSERT_EQ_INT(0, TAK_WsConn_PlainRequest(&g_server, &got, &n));
     ASSERT_EQ_INT(TAK_WSCONN_ERROR, TAK_WsConn_Step(&g_server));
 }
@@ -389,6 +444,9 @@ int main(void) {
     RUN(a_partial_write_leaves_the_rest_queued);
     RUN(a_plain_http_request_is_offered_to_the_host_and_answered_then_closed);
     RUN(a_websocket_upgrade_is_never_mistaken_for_a_plain_request);
+    RUN(a_post_is_offered_once_its_body_has_arrived);
+    RUN(a_chunked_post_is_offered_once_its_last_chunk_has_arrived);
+    RUN(a_post_too_large_to_hold_is_offered_at_once_for_refusal);
     RUN(a_server_that_is_not_a_websocket_server_is_not_believed);
     TEST_REPORT();
 }

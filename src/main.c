@@ -68,6 +68,8 @@
 #include "tak_capture.h"
 #include "tak_hud_layout.h"
 #include "tak_replay_session.h"
+#include "tak_unit.h"
+#include "tak_web_stats.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -84,6 +86,42 @@ EM_JS(void, web_screen, (const char *id, int x, int y, int w, int h), {
     if (Module['onScreen']) Module['onScreen'](s, x, y, w, h);
 });
 #endif
+
+/* The page counts battles (tak_web_stats.h). A desktop build tells no
+ * one. Only a battle that began in a match can end in a desync or a
+ * lost connection. */
+static int g_battle_in_match;
+
+static void battle_began(void) {
+    const GameWorld *w = World_Get();
+    if (!w) return;
+    TAK_NetClient *c = NetSession_Client();
+    g_battle_in_match = c && (c->state == TAK_NC_LOADING || c->state == TAK_NC_PLAYING);
+    WebStats_BattleBegan(&w->cfg, w->map_name, Units_LocalPlayer(), g_battle_in_match,
+                         Replay_IsPlaying(),
+                         TAK_ModSet_IsVanilla() ? NULL : TAK_ModSet_ActiveModName());
+}
+
+static void battle_ended(int restart) {
+    const GameWorld *w = World_Get();
+    WebStatsResult r;
+    memset(&r, 0, sizeof r);
+    if (w) {
+        r.over = w->skirmish_game_over;
+        r.local = w->skirmish_local_result;
+        r.victory = w->mission_victory;
+        r.defeat = w->mission_defeat;
+        r.ticks = w->skirmish_elapsed_ticks + w->mission_elapsed_ticks;
+    }
+    const char *how = restart ? "restart" : NULL;
+    TAK_NetClient *c = NetSession_Client();
+    if (!how && g_battle_in_match) {
+        if (c && c->pace.reason == TAK_PACE_DESYNC_HALT) how = "desync";
+        else if (NetSession_State() == NET_SESSION_FAILED) how = "disconnect";
+    }
+    WebStats_BattleEnded(&r, how);
+    g_battle_in_match = 0;
+}
 
 #ifndef TAK_GAME_DIR
 #define TAK_GAME_DIR "C:/GOG Games/Total Annihilation Kingdoms"
@@ -516,6 +554,7 @@ static void app_frame(AppState *app) {
             if (!app->loading_initialized) {
                 if (Loading_Init(&app->platform) != 0) {
                     fprintf(stderr, "Failed to initialize loading — returning to menu\n");
+                    WebStats_Error("the battle could not load");
                     app->state = GAMESTATE_MENU;
                     break;
                 }
@@ -538,6 +577,7 @@ static void app_frame(AppState *app) {
             if (!app->story_initialized) {
                 if (Story_Init(&app->platform) != 0) {
                     fprintf(stderr, "Failed to initialize Story — back to menu\n");
+                    WebStats_Error("the campaign screen could not open");
                     app->state = GAMESTATE_MENU;
                     break;
                 }
@@ -575,6 +615,7 @@ static void app_frame(AppState *app) {
             if (!app->multiplayer_initialized) {
                 if (Multiplayer_Init(&app->platform) != 0) {
                     fprintf(stderr, "Failed to initialize Multiplayer — back to menu\n");
+                    WebStats_Error("the multiplayer screen could not open");
                     app->state = GAMESTATE_MENU;
                     break;
                 }
@@ -593,6 +634,7 @@ static void app_frame(AppState *app) {
             if (!app->ingame_initialized) {
                 if (InGame_Init(&app->platform) != 0) {
                     fprintf(stderr, "Failed to initialize in-game — back to menu\n");
+                    WebStats_Error("the battle could not start");
                     World_End(&app->platform);
                     app->state = GAMESTATE_MENU;
                     break;
@@ -601,6 +643,7 @@ static void app_frame(AppState *app) {
                 /* Every skirmish and match is recorded from its first
                  * tick, beside the saved games. */
                 Replay_RecordBattle();
+                battle_began();
             }
             int next_state = InGame_Tick(&app->platform, &app->timer);
             g_ingame_frames++;
@@ -640,6 +683,7 @@ static void app_frame(AppState *app) {
                 int restart = InGameMenu_TakeRestart(&again,
                                                      again_map, sizeof(again_map),
                                                      again_kingdom, sizeof(again_kingdom));
+                battle_ended(restart);
                 InGame_Shutdown();
                 Capture_ScoutReset();
                 /* Release the loaded map before leaving — next Play
@@ -653,7 +697,10 @@ static void app_frame(AppState *app) {
                                                again_map, again_kingdom) == 0) {
                     /* Only the load raises this, never the restart: this
                      * path serves both, and a restart has to spawn. */
-                    if (Loading_HasPendingSave()) World_SetRestoring(1);
+                    if (Loading_HasPendingSave()) {
+                        World_SetRestoring(1);
+                        WebStats_Starting("load", "battle");
+                    }
                     app->state = GAMESTATE_GAME_LOADING;
                 }
                 /* F1's Restart during a replay plays it again. */

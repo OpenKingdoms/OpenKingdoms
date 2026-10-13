@@ -69,6 +69,13 @@ static TAK_TurnLogEntry g_log_entries[TAK_RELAY_ROOMS_MAX * LOG_ENTRIES_PER_ROOM
 static TAK_Ledger g_ledger;
 static char       g_http_out[TAK_HTTP_RESPONSE_MAX + 1024];
 
+/* The site's daily visit counts, and the wall clock their days are
+ * kept by: the host clock plus the difference measured at start. */
+static TAK_Stats  g_stats;
+static uint64_t   g_wall_offset_ms;
+
+static uint64_t wall_ms(uint64_t now) { return now + g_wall_offset_ms; }
+
 static volatile sig_atomic_t g_stop;
 
 /* The mod registry, built in from web/mods/registry.json unless
@@ -192,8 +199,12 @@ static void read_conn(Conn *c, uint64_t now) {
         if (req) {
             static TAK_HttpLive live;
             TAK_Relay_Live(&g_server.relay, &live);
-            size_t rn = TAK_Http_AnswerLive(&g_ledger, &live, req, req_len,
-                                            g_http_out, sizeof g_http_out);
+            TAK_HttpCtx ctx;
+            ctx.ledger = &g_ledger;
+            ctx.live = &live;
+            ctx.stats = &g_stats;
+            ctx.now_ms = wall_ms(now);
+            size_t rn = TAK_Http_Respond(&ctx, req, req_len, g_http_out, sizeof g_http_out);
             if (rn == 0 || TAK_WsConn_Answer(&c->ws, g_http_out, rn) != 0)
                 drop(c, now, "an answer that did not fit");
             return;
@@ -284,9 +295,49 @@ static void load_mods(const char *path) {
            g_proxy.can_fetch ? "streamed" : "not available in this build");
 }
 
+/* The visit counts: where they are kept, which pages may post them and
+ * the token that reads them, from the arguments and the environment. */
+static void open_stats(const char *dir, const char *store) {
+    char beside[TAK_STATS_PATH_MAX];
+    if (!dir && store) {
+        size_t n = strlen(store);
+        while (n && store[n - 1] != '/' && store[n - 1] != '\\') n--;
+        if (n + 6 < sizeof beside) {
+            memcpy(beside, store, n);
+            memcpy(beside + n, "stats", 6);
+            dir = beside;
+        }
+    }
+    const char *origins = getenv("STATS_ORIGIN");
+    while (origins && *origins) {
+        char one[128];
+        size_t k = 0;
+        while (*origins == ',' || *origins == ' ') origins++;
+        while (*origins && *origins != ',' && *origins != ' ' && k + 1 < sizeof one)
+            one[k++] = *origins++;
+        one[k] = '\0';
+        if (k && TAK_Stats_AllowOrigin(&g_stats, one) != 0)
+            fprintf(stderr, "stats: origin %s left out, too many\n", one);
+        while (*origins && *origins != ',') origins++;
+    }
+    if (TAK_Stats_SetToken(&g_stats, getenv("STATS_TOKEN")) < 0)
+        fprintf(stderr, "stats: STATS_TOKEN is shorter than 16 characters or too long, "
+                        "so the report stays off\n");
+    uint64_t now = wall_ms(TakNet_NowMs());
+    if (dir && TAK_Stats_Open(&g_stats, dir, now) == 0)
+        printf("stats: daily counts kept under %s\n", dir);
+    else if (dir)
+        fprintf(stderr, "stats: could not use %s, counts are kept in memory until restart\n", dir);
+    else
+        printf("stats: no --stats-dir, counts are kept in memory until restart\n");
+    printf("stats: %u origin(s) named, the report is %s\n", (unsigned)g_stats.origins,
+           TAK_Stats_HasToken(&g_stats) ? "open to the token" : "off, no STATS_TOKEN");
+}
+
 static void usage(const char *argv0) {
     printf("usage: %s [--port N] [--name TEXT] [--motd TEXT] [--key TEXT]"
-           " [--store PATH] [--mod-registry PATH]\n", argv0);
+           " [--store PATH] [--mod-registry PATH] [--stats-dir PATH]"
+           " [--stats-origin URL]\n", argv0);
     printf("  --port  which port to listen on, default 8443\n");
     printf("  --name  the server name clients see\n");
     printf("  --motd  the message of the day\n");
@@ -295,6 +346,15 @@ static void usage(const char *argv0) {
            "          leaderboard. Without it results last until restart.\n");
     printf("  --mod-registry  a registry file to offer in place of the one\n"
            "          this build carries\n");
+    printf("  --stats-dir  the folder the site's daily visit counts are kept\n"
+           "          in, by default a stats folder beside --store. Without\n"
+           "          either the counts last until restart.\n");
+    printf("  --stats-origin  a page origin that may post counts, such as\n"
+           "          https://example.org, once for each. Without one any\n"
+           "          page may. STATS_ORIGIN in the environment is a comma\n"
+           "          list of the same.\n");
+    printf("  STATS_TOKEN in the environment is the bearer token GET\n"
+           "          /api/stats asks for. Without it that route is a 404.\n");
     printf("\nTLS is not terminated here. Put a reverse proxy in front\n"
            "for wss, which is what a browser on a secure page needs.\n");
 }
@@ -315,6 +375,8 @@ int main(int argc, char **argv) {
     cfg.seed = 1u;
     const char *store = NULL;
     const char *mods_path = NULL;
+    const char *stats_dir = NULL;
+    TAK_Stats_Init(&g_stats);
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -338,6 +400,13 @@ int main(int argc, char **argv) {
             store = argv[++i];
         } else if (strcmp(a, "--mod-registry") == 0 && has_next) {
             mods_path = argv[++i];
+        } else if (strcmp(a, "--stats-dir") == 0 && has_next) {
+            stats_dir = argv[++i];
+        } else if (strcmp(a, "--stats-origin") == 0 && has_next) {
+            if (TAK_Stats_AllowOrigin(&g_stats, argv[++i]) != 0) {
+                printf("too many --stats-origin values, or an empty one\n");
+                return 2;
+            }
         } else {
             printf("unknown option \"%s\"\n", a);
             usage(argv[0]);
@@ -363,8 +432,13 @@ int main(int argc, char **argv) {
     /* The host clock counts from boot. The ledger wants the wall clock,
      * so the difference is measured once and added on. */
     cfg.wall_offset_ms = (uint64_t)time(NULL) * 1000u - TakNet_NowMs();
+    g_wall_offset_ms = cfg.wall_offset_ms;
+    open_stats(stats_dir, store);
 
     load_mods(mods_path);
+    /* The counts name a mod set only when the registry does. */
+    for (int i = 0; i < g_mods.count; i++)
+        (void)TAK_Stats_KnownMod(&g_stats, g_mods.mod[i].name);
 
     if (TakNet_Start() != 0) {
         fprintf(stderr, "could not start the network layer\n");
@@ -435,6 +509,7 @@ int main(int argc, char **argv) {
         }
 
         TAK_Relay_Tick(&g_server.relay, now);
+        TAK_Stats_Tick(&g_stats, wall_ms(now));
 
         TAK_ModFetch_Pump(&g_proxy);
         TAK_ModProxy_Drain(&g_proxy, proxy_write, NULL, now);
@@ -456,5 +531,6 @@ int main(int argc, char **argv) {
     TakNet_Close(g_server.listener);
     TakNet_Stop();
     TAK_Ledger_Close(&g_ledger);
+    TAK_Stats_Close(&g_stats, wall_ms(now));
     return 0;
 }

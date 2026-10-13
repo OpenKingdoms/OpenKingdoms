@@ -109,9 +109,16 @@ void TAK_WsConn_Close(TAK_WsConn *c, uint16_t code);
 const uint8_t *TAK_WsConn_Pending(const TAK_WsConn *c, size_t *len);
 void TAK_WsConn_Wrote(TAK_WsConn *c, size_t len);
 
-/* A whole GET, HEAD or OPTIONS on a server connection still waiting
- * for an upgrade this end would answer. Returns 1 and points at it so
- * the host can answer it itself. The bytes last until the next Feed. */
+/* The largest body a plain POST is held for. One declared larger, or a
+ * chunked one that grows past it, is offered with its head alone for
+ * the host to refuse. */
+#define TAK_WSCONN_PLAIN_BODY_MAX  16384u
+
+/* A whole GET, HEAD, OPTIONS or POST on a server connection still
+ * waiting for an upgrade this end would answer. A POST is whole once
+ * its body is: Content-Length bytes, or a chunked body to its last
+ * chunk. Returns 1 and points at the request, body and all, so the
+ * host can answer it itself. The bytes last until the next Feed. */
 int  TAK_WsConn_PlainRequest(const TAK_WsConn *c, const uint8_t **req,
                              size_t *len);
 
