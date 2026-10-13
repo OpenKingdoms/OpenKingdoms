@@ -39,6 +39,14 @@ var pins = {};
 function pinned(id) { return !!id && Object.prototype.hasOwnProperty.call(pins, id); }
 
 self.addEventListener('install', function (e) {
+  /* A POST, the visit counts among them, skips the worker where the
+     browser can route, so a beacon from a closing tab still goes out. */
+  if (e.addRoutes) {
+    try {
+      e.waitUntil(Promise.resolve(e.addRoutes([{ condition: { requestMethod: 'POST' }, source: 'network' }]))
+        .catch(function () {}));
+    } catch (err) {}
+  }
   e.waitUntil(fetchSet().then(function (set) { return set ? store(set) : null; })
     .then(function () { return self.skipWaiting(); }));
 });
