@@ -142,8 +142,8 @@ falloff, friend or foe as a shot fired at the ground does (D-024), and
 then reaches the scenery. It is the dead unit's player's blast and no
 unit fired it, so a kill counts for that player and ranks no unit
 (legacy:227300-227327). A death that still owes its blast keeps owing
-it across a save. A self destruct would burst `[SELFDESTRUCTAS]`, and
-the engine has no self destruct order yet.
+it across a save. A self destruct bursts `[SELFDESTRUCTAS]` instead
+(docs/notes/2026-10-15-self-destruct.md).
 
 ## Death pieces
 

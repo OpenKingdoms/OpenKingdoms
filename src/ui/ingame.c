@@ -93,6 +93,9 @@ static struct {
     char  banner_defeat[32];
     /* A skirmish the local seat lost, played on for it to watch. */
     uint8_t play_on;
+    /* Each player had units on the map at the last look, for the line
+     * that says they have fallen. */
+    uint8_t had_units[TAK_MAX_PLAYERS + 1];
     /* The view that draws the world and maps the pointer: the classic
      * renderer, or the 3D view while it is toggled on. */
     const TAK_View *view;
@@ -290,6 +293,39 @@ void InGame_ReportMatchResult(GameWorld *world, const int *present) {
         NetSession_OfferLeaderboard();
 }
 
+/* The DEATHn lines a fallen player is announced with, read before the
+ * battle runs. */
+static TranslateTable g_death_lines;
+
+/* A player whose last unit is gone is announced in the message list
+ * with one DEATHn line, the player's name in it, in a skirmish or a
+ * match (legacy:206939-207005, legacy:227378-227387). The original
+ * picks the line with the C library's rand. Ours takes the tick and
+ * the seat, so every machine shows the same line. */
+static void InGame_AnnounceFallen(const GameWorld *world, int player_id) {
+    char key[16];
+    int lines = 0;
+    for (;;) {
+        snprintf(key, sizeof key, "DEATH%d", lines + 1);
+        if (!Translate_Find(&g_death_lines, key)) break;
+        lines++;
+    }
+    if (lines == 0) return;
+    snprintf(key, sizeof key, "DEATH%d",
+             1 + (int)(((uint32_t)world->skirmish_elapsed_ticks +
+                        (uint32_t)player_id) % (uint32_t)lines));
+    const char *form = Translate_Find(&g_death_lines, key);
+    const char *name = world->cfg.players[player_id - 1].name;
+    if (!name[0]) name = "Player";
+    /* The line names the player where it says %s. */
+    char line[CHAT_TEXT_MAX];
+    const char *at = strstr(form, "%s");
+    if (at) snprintf(line, sizeof line, "%.*s%s%s", (int)(at - form), form,
+                     name, at + 2);
+    else snprintf(line, sizeof line, "%s", form);
+    Chat_Push(line, CHAT_TYPE_MINE, player_id, SDL_GetTicks());
+}
+
 /* The verdict belongs to the simulation and is the same on every
  * machine. The battle is over when no two seats still standing are
  * enemies, or when no human seat still stands. A seat that resigned
@@ -368,8 +404,10 @@ static void InGame_EvaluateSkirmishRules(GameWorld *world) {
     int standing[TAK_MAX_PLAYERS];
     int n_standing = 0, human_standing = 0;
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
-        present[p] = world->resigned[p]
-                   ? 0 : player_units_present(world, p, units, unit_count);
+        int have = player_units_present(world, p, units, unit_count);
+        if (ig.had_units[p] && have <= 0) InGame_AnnounceFallen(world, p);
+        ig.had_units[p] = (uint8_t)(have > 0);
+        present[p] = world->resigned[p] ? 0 : have;
         if (present[p] <= 0) continue;
         /* The stamp the end screen prints as Time (legacy:206617). */
         world->stats[p].last_alive_tick = world->skirmish_elapsed_ticks;
@@ -724,6 +762,8 @@ int InGame_Init(TAK_Platform *platform) {
                              Translate_Find(&tt, "Game Speed"));
         Translate_Free(&tt);
     }
+    Translate_Free(&g_death_lines);
+    Translate_Load(&g_death_lines, "english/translate/death.tdf");
 
     /* The sidebar belongs to the screen's entry, not to the first frame
      * drawn. The original builds <nameprefix>ingame.gui from the local
@@ -2089,6 +2129,7 @@ void InGame_Shutdown(void) {
     HUD_SetBuildGhostHook(NULL);
     OrderOverlay_SetShift(0);
     g_request_view3d = 0;
+    Translate_Free(&g_death_lines);
     /* A test's mouse goes with the battle it drove. */
     g_dbg_mouse_on = 0;
     /* Nothing transient yet. GameWorld teardown is main.c's responsibility

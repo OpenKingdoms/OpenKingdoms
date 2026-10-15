@@ -44,7 +44,8 @@
  * only when the ChatLevel option is on or the type is 8
  * (legacy:206003-206004). So with Unit Chat On switched off you see
  * everyone else and never yourself. 2 is ours, for a local notice that
- * never went anywhere. 1 is the self destruct's line (legacy:122290). */
+ * never went anywhere. 1 is the self destruct's line (legacy:122290),
+ * and a fallen player's line is a 4 (legacy:207005). */
 #define CHAT_TYPE_ORDER   1
 #define CHAT_TYPE_NOTICE  2
 #define CHAT_TYPE_MINE    4
