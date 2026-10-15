@@ -4347,6 +4347,30 @@ int Units_OrderRepair(int handle, int target_handle) {
     return 1;
 }
 
+/* A guard whose charge is building a frame the guard may help takes a
+ * help build order on it ahead of the guard, and guards again once the
+ * frame is done (legacy:14157-14216). */
+static void guard_join_build(Unit *u, int h) {
+    if (u->cmd_kind != UNIT_CMD_GUARD || u->target < 0 ||
+        u->target >= g_unit_count || u->leg_count >= UNIT_MOVE_LEGS_MAX)
+        return;
+    const Unit *charge = &g_units[u->target];
+    int frame = charge->build_target;
+    if (charge->cmd_kind != UNIT_CMD_BUILD || frame < 0 ||
+        !Units_CanHelpBuild(h, frame))
+        return;
+    uint32_t charge_id = charge->stable_id;
+    g_leg_taking = 1;
+    int took = Units_OrderRepair(h, frame);
+    g_leg_taking = 0;
+    if (!took) return;
+    memmove(&u->legs[1], &u->legs[0], sizeof(u->legs[0]) * u->leg_count);
+    memset(&u->legs[0], 0, sizeof(u->legs[0]));
+    u->legs[0].kind = UNIT_LEG_GUARD;
+    u->legs[0].target = charge_id;
+    u->leg_count++;
+}
+
 int Units_OrderReclaim(int handle, int target_handle) {
     Unit *u = order_unit(handle);
     Unit *t = order_target(target_handle);
@@ -13965,6 +13989,7 @@ static void Units_TickCombat(void) {
         if (unit_def_is_factory(def)) factory_tick(u, i, def);
         else if (u->cmd_kind == UNIT_CMD_NONE && u->leg_count > 0)
             unit_next_leg(u, i);
+        guard_join_build(u, i);
 
         /* A fight it took on for itself, maneuvering or answering fire,
          * may run the standard search again at the end of each wait of

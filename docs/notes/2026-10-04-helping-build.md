@@ -82,12 +82,22 @@ ones in hand.
 Engine build 30 records the change, since an order a client accepted
 before may now be refused.
 
+## A guard helps
+
+A unit guarding a builder joins the work on the frame that builder is
+building, a factory's product included, when the test above lets it
+help. It takes a help build order ahead of its guard and guards again
+once the frame is done (legacy:14157-14216). The orders a guard joins
+are the build, help build and repair orders, the ones whose type
+carries the flag that check reads. The engine joins the build ones.
+
 ## Left for later
 
 - When several builders are selected and a building is placed, the
   original sends every one that may build it (legacy:39194-39256), and a
   builder that finds the frame already standing joins it
   (legacy:12040-12052). The engine gives the site to the first.
-- Guarding a builder helps its build in the original (legacy:25917-26040).
+- A guard joins its charge's repair too (legacy:14217-14255), and a
+  flying guard has its own copy of the rule (legacy:25917-26040).
 - The hammer and a repair for a finished, damaged unit with a builder
   selected (legacy:233526-233553), and allies for the armed heal.

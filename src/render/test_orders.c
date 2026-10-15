@@ -900,6 +900,31 @@ TEST(a_click_on_a_frame_sends_the_helpers_and_walks_the_rest) {
     oq_end();
 }
 
+/* A guard joins the work on the frame the builder it guards builds,
+ * and guards it again once the frame is done (legacy:14157-14216). */
+TEST(a_guard_helps_its_builder_build_and_guards_again) {
+    double spent = 0.0;
+    int alone = oq_build_hall_with(1, &spent);
+    ASSERT(alone > 0 && alone < 2000);
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 50, OQ_CY);
+    int guard = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX + 50, OQ_CY);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_GUARD, guard, OQ_CX, OQ_CY, bd, -1, 0));
+    int frame = Units_BeginBuildingForUnit(bd, OQ_HALL, OQ_CX, OQ_CY);
+    ASSERT(frame >= 0);
+    oq_ticks(1);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(guard)->cmd_kind);
+    ASSERT_EQ_INT(frame, (int)oq_unit(guard)->build_target);
+    int t = 1;
+    while (t < 2000 && oq_unit(frame)->under_construction) { oq_ticks(1); t++; }
+    printf("(alone %d ticks, guarded %d) ", alone, t);
+    ASSERT(t * 4 < alone * 3);
+    oq_ticks(2);
+    ASSERT_EQ_INT(UNIT_CMD_GUARD, (int)oq_unit(guard)->cmd_kind);
+    ASSERT_EQ_INT(bd, (int)oq_unit(guard)->target);
+    oq_end();
+}
+
 /* ── a builder walks to its site as a move does ────────────────────── */
 
 /* A ridge too steep to climb, x cells 60 to 63 and y cells 30 to 90,
@@ -2300,6 +2325,7 @@ int main(int argc, char **argv) {
     RUN(the_hammer_shows_only_for_a_helper_that_could_build_it);
     RUN(a_frame_nobody_selected_can_help_shows_no_select_hand);
     RUN(a_click_on_a_frame_sends_the_helpers_and_walks_the_rest);
+    RUN(a_guard_helps_its_builder_build_and_guards_again);
     RUN(a_builder_goes_round_a_ridge_as_a_move_does);
     RUN(a_repairer_goes_round_a_ridge_as_a_move_does);
     RUN(a_builder_walking_out_of_a_pocket_keeps_its_frame);

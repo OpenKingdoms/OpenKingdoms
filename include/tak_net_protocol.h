@@ -130,8 +130,9 @@
  * maneuverleashlength from where it began and it walks back there, a
  * patrol fights in any stance and goes on from where it broke off, a
  * builder on patrol mends and helps build, and a blade takes no flyer
- * in the air. */
-#define TAK_ENGINE_BUILD_ID           42
+ * in the air. 43: a guard helps the builder it guards with the frame
+ * that builder works on. */
+#define TAK_ENGINE_BUILD_ID           43
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
