@@ -1708,7 +1708,7 @@ static uint32_t rec_u32(const uint8_t *r, int at) {
  * drawn shot at 974, version 7 a builder's walk goal at 983,
  * version 8 the attack handler's wait at 991, version 9 the death blast
  * at 992, version 10 a summons without end at 993, version 11 a
- * flyer's air traffic at 1000, version 12 a hover attack at 1024 and
+ * flyer's air traffic at 1000, version 12 a hover attack at 1024,
  * version 13 a fight's post at 1036 and version 14 a self destruct's
  * count at 1047. */
 TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {

@@ -37,9 +37,9 @@ weapon to burst then, and none in the shipped data does.
 In the engine the command is TAK_CMD_SELF_DESTRUCT with the selection,
 and every machine decides start or stop on the tick it runs. The count
 is `Unit.selfd_ticks`, in the state hash and in the unit record from
-version 13. The few random frames come from the simulation's generator
+version 14. The few random frames come from the simulation's generator
 when the count starts, where the original draws them when the seconds
-run out. Engine build 41.
+run out. Engine build 43.
 
 ## A fallen player
 
