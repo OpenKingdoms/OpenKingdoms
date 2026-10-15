@@ -991,6 +991,10 @@ typedef struct Unit {
     /* Ticks left before a self destruct ends the unit, 0 for none. It
      * counts down beside whatever orders the unit holds. */
     uint16_t   selfd_ticks;
+    /* The last enemy unit that hit this one, by stable id, 0 for none,
+     * and the engine tick of that hit, for its guards to answer. */
+    uint32_t   hit_by;
+    uint32_t   hit_tick;
     /* An attack order, not a target it took itself: UNIT_ATTACK_ORDER,
      * or UNIT_ATTACK_HELD for a mission script's, which D-025 never
      * lets go. */

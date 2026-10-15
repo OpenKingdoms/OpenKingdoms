@@ -417,6 +417,8 @@ static const char *unit_field_at(size_t o) {
         { offsetof(Unit, post_x), 4, "post_x" },
         { offsetof(Unit, post_y), 4, "post_y" },
         { offsetof(Unit, selfd_ticks), 2, "selfd_ticks" },
+        { offsetof(Unit, hit_by), 4, "hit_by" },
+        { offsetof(Unit, hit_tick), 4, "hit_tick" },
         { offsetof(Unit, mana), 4, "mana" },
         { offsetof(Unit, occ_on), 1, "occ_on" },
         { offsetof(Unit, occ_pending), 1, "occ_pending" },

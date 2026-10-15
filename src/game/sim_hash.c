@@ -205,6 +205,11 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     }
     /* Only a unit counting down to its self destruct adds to the hash. */
     if (u->selfd_ticks) h = TAK_HashI32(h, 0x1000 | u->selfd_ticks);
+    /* Only a unit an enemy has hit adds what hit it and when. */
+    if (u->hit_by) {
+        h = TAK_HashU32(h, u->hit_by);
+        h = TAK_HashU32(h, u->hit_tick);
+    }
     h = TAK_HashI32(h, u->attack_explicit);
     /* The target its shots were found not to reach, and where it and
      * that target stood then. */

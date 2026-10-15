@@ -926,6 +926,54 @@ TEST(a_guard_helps_its_builder_build_and_guards_again) {
     oq_end();
 }
 
+/* A guard mends the unit it guards when that is damaged, joins the
+ * repair its charge is at, and guards again after each
+ * (legacy:14100-14155, legacy:14217-14255). */
+TEST(a_guard_mends_its_charge_and_joins_its_repairs) {
+    ASSERT_NOT_NULL(oq_world());
+    int s = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX, OQ_CY);
+    int guard = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX + 40, OQ_CY);
+    ASSERT(s >= 0 && guard >= 0);
+    Units_SetHealthPercent(s, 50);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_GUARD, guard, OQ_CX, OQ_CY, s, -1, 0));
+    oq_ticks(1);
+    ASSERT_EQ_INT(UNIT_CMD_REPAIR, (int)oq_unit(guard)->cmd_kind);
+    ASSERT_EQ_INT(s, (int)oq_unit(guard)->target);
+    int t = 0;
+    while (t < 3000 && oq_unit(s)->health < oq_unit(s)->max_health) { oq_ticks(1); t++; }
+    oq_ticks(2);
+    ASSERT_EQ_INT(oq_unit(s)->max_health, oq_unit(s)->health);
+    ASSERT_EQ_INT(UNIT_CMD_GUARD, (int)oq_unit(guard)->cmd_kind);
+    ASSERT_EQ_INT(s, (int)oq_unit(guard)->target);
+
+    int hall = Units_Spawn(OQ_HALL, 1, 0, OQ_CX, OQ_CY + 200);
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 60, OQ_CY + 230);
+    int helper = Units_Spawn(OQ_HELPER, 1, 0, OQ_CX + 60, OQ_CY + 230);
+    ASSERT(hall >= 0 && bd >= 0 && helper >= 0);
+    Units_SetHealthPercent(hall, 50);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_GUARD, helper, OQ_CX, OQ_CY, bd, -1, 0));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_REPAIR, bd, OQ_CX, OQ_CY, hall, -1, 0));
+    oq_ticks(1);
+    ASSERT_EQ_INT(UNIT_CMD_REPAIR, (int)oq_unit(helper)->cmd_kind);
+    ASSERT_EQ_INT(hall, (int)oq_unit(helper)->target);
+    oq_end();
+}
+
+/* A guard keeps five cells and its own footprint off its charge's
+ * footprint, a hall's three cells here (legacy:14011-14022). */
+TEST(a_guard_keeps_its_distance_from_a_building) {
+    ASSERT_NOT_NULL(oq_world());
+    int hall = Units_Spawn(OQ_HALL, 1, 0, OQ_CX, OQ_CY);
+    int g = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX + 500, OQ_CY);
+    ASSERT(hall >= 0 && g >= 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_GUARD, g, OQ_CX, OQ_CY, hall, -1, 0));
+    oq_ticks(1500);
+    int32_t d = oq_unit(g)->world_x - OQ_CX;
+    printf("(stands %d px off) ", d);
+    ASSERT(d >= 130 && d <= 144);
+    oq_end();
+}
+
 static void oq_chord(int mods, int key);
 
 /* Ctrl+D ends any unit of yours, a building too, two seconds and up to
@@ -2354,6 +2402,8 @@ int main(int argc, char **argv) {
     RUN(a_frame_nobody_selected_can_help_shows_no_select_hand);
     RUN(a_click_on_a_frame_sends_the_helpers_and_walks_the_rest);
     RUN(a_guard_helps_its_builder_build_and_guards_again);
+    RUN(a_guard_mends_its_charge_and_joins_its_repairs);
+    RUN(a_guard_keeps_its_distance_from_a_building);
     RUN(ctrl_d_self_destructs_a_building_and_again_calls_it_off);
     RUN(a_builder_goes_round_a_ridge_as_a_move_does);
     RUN(a_repairer_goes_round_a_ridge_as_a_move_does);

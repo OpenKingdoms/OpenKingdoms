@@ -454,6 +454,10 @@ static int test_every_subsystem_contributes(void) {
     g_units[0].post_set = 0;
     POKE("self destruct count", g_units[0].selfd_ticks = 120,
          g_units[0].selfd_ticks = 0);
+    POKE("hit by", g_units[0].hit_by = 77, g_units[0].hit_by = 0);
+    g_units[0].hit_by = 77;
+    POKE("hit tick", g_units[0].hit_tick = 300, g_units[0].hit_tick = 0);
+    g_units[0].hit_by = 0;
     POKE("summons held for units on its spot",
          g_units[0].build_held = 1, g_units[0].build_held = 0);
     g_units[0].build_held = 1;

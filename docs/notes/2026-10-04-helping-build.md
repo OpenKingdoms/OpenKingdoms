@@ -84,12 +84,23 @@ before may now be refused.
 
 ## A guard helps
 
-A unit guarding a builder joins the work on the frame that builder is
-building, a factory's product included, when the test above lets it
-help. It takes a help build order ahead of its guard and guards again
-once the frame is done (legacy:14157-14216). The orders a guard joins
-are the build, help build and repair orders, the ones whose type
-carries the flag that check reads. The engine joins the build ones.
+A guard runs through the original's checks in this order whenever it
+looks (legacy:14035-14255). When the unit it guards has just been hit by
+an enemy unit it can fire on, it attacks that unit, whatever its own
+stance, with a plain attack that has no leash (legacy:181888-181915).
+Otherwise, when it walks, it mends the unit it guards if that is
+damaged and standing still (legacy:233526-233553), or helps build it if
+it is a frame, and then it joins the build, help build or repair the
+unit it guards is at, when the tests above let it. Each of these goes
+ahead of the guard, which resumes once it is done. With nothing to do
+it walks up to within the longer side of the other unit's footprint,
+five cells and its own footprint of it, in cells of 16 px
+(legacy:14011-14022).
+
+The unit record keeps the last enemy unit that hit a unit and the tick
+it did, for its guards (legacy:233765-233768). The original wakes a
+guard with an event on that hit. The engine has the guard answer a hit
+from that tick or the one before.
 
 ## Left for later
 
@@ -97,7 +108,7 @@ carries the flag that check reads. The engine joins the build ones.
   original sends every one that may build it (legacy:39194-39256), and a
   builder that finds the frame already standing joins it
   (legacy:12040-12052). The engine gives the site to the first.
-- A guard joins its charge's repair too (legacy:14217-14255), and a
-  flying guard has its own copy of the rule (legacy:25917-26040).
+- When a guard cannot attack what hit the unit it guards, the original
+  turns its weapons on it from where it stands (legacy:14053-14098).
 - The hammer and a repair for a finished, damaged unit with a builder
   selected (legacy:233526-233553), and allies for the armed heal.

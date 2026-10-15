@@ -1575,6 +1575,9 @@ static void unit_on_damaged(Unit *victim, int shooter_handle) {
     if (shooter->alive != 1) return;
     if (!unit_players_are_enemies(victim->player_id, shooter->player_id))
         return;
+    /* What hit it last, which its guards answer (legacy:233765-233768). */
+    victim->hit_by = shooter->stable_id;
+    victim->hit_tick = g_sim_tick;
     /* A hit from what it passed over ends the skip (D-025). */
     if (victim->skip_id != 0 && victim->skip_id == shooter->stable_id) {
         victim->skip_id = 0;
@@ -4347,21 +4350,52 @@ int Units_OrderRepair(int handle, int target_handle) {
     return 1;
 }
 
-/* A guard whose charge is building a frame the guard may help takes a
- * help build order on it ahead of the guard, and guards again once the
- * frame is done (legacy:14157-14216). */
-static void guard_join_build(Unit *u, int h) {
+/* The original's repair test (legacy:233526-233553): a finished,
+ * damaged unit of a side at peace with the mender, standing still on
+ * the ground, and a mender that walks and repairs. */
+static int unit_may_mend(const Unit *u, const UnitDef *d, int h, int t) {
+    if (t < 0 || t >= g_unit_count || t == h) return 0;
+    const Unit *m = &g_units[t];
+    if (m->alive != UNIT_ALIVE_ACTIVE || m->under_construction ||
+        m->health >= m->max_health || m->flying || m->velocity != 0)
+        return 0;
+    return d && d->max_velocity > 0.0f && unit_def_can_repair(d) &&
+           !unit_players_are_enemies(u->player_id, m->player_id);
+}
+
+/* A guard first answers what has just hit its charge with an attack,
+ * whatever its own stance, then mends its charge or helps build it,
+ * then joins the build or repair its charge is at. Each goes ahead of
+ * the guard, which resumes once it is done (legacy:14035-14255,
+ * legacy:181888-181915). */
+static void guard_take_work(Unit *u, int h, const UnitDef *d) {
     if (u->cmd_kind != UNIT_CMD_GUARD || u->target < 0 ||
         u->target >= g_unit_count || u->leg_count >= UNIT_MOVE_LEGS_MAX)
         return;
-    const Unit *charge = &g_units[u->target];
-    int frame = charge->build_target;
-    if (charge->cmd_kind != UNIT_CMD_BUILD || frame < 0 ||
-        !Units_CanHelpBuild(h, frame))
-        return;
+    int c = u->target;
+    const Unit *charge = &g_units[c];
     uint32_t charge_id = charge->stable_id;
+    int took = 0;
     g_leg_taking = 1;
-    int took = Units_OrderRepair(h, frame);
+    if (charge->hit_by && charge->hit_tick + 1 >= g_sim_tick &&
+        d->num_weapons > 0) {
+        int f = Units_FindByStableId(charge->hit_by);
+        int slot = u->weapon_slot < d->num_weapons ? u->weapon_slot : 0;
+        if (f >= 0 && g_units[f].alive == UNIT_ALIVE_ACTIVE &&
+            unit_players_are_enemies(u->player_id, g_units[f].player_id) &&
+            weapon_can_target_unit(&d->weapons[slot], &g_units[f]))
+            took = Units_OrderAttack(h, f);
+    }
+    if (!took && d->max_velocity > 0.0f) {
+        if (unit_may_mend(u, d, h, c) || Units_CanHelpBuild(h, c))
+            took = Units_OrderRepair(h, c);
+        else if (charge->cmd_kind == UNIT_CMD_BUILD &&
+                 Units_CanHelpBuild(h, charge->build_target))
+            took = Units_OrderRepair(h, charge->build_target);
+        else if (charge->cmd_kind == UNIT_CMD_REPAIR &&
+                 unit_may_mend(u, d, h, charge->target))
+            took = Units_OrderRepair(h, charge->target);
+    }
     g_leg_taking = 0;
     if (!took) return;
     memmove(&u->legs[1], &u->legs[0], sizeof(u->legs[0]) * u->leg_count);
@@ -13837,6 +13871,21 @@ static UnitAnimState unit_board_tick(Unit *u, int idx, const UnitDef *def,
     return UNIT_ANIM_MOVING;
 }
 
+/* How near a guard keeps to its charge: the longer side of the
+ * charge's footprint, five cells and its own footprint
+ * (legacy:14011-14022). */
+static int64_t guard_reach_px(const Unit *g, const Unit *c) {
+    const UnitDef *cd = Units_GetDef(c->def_idx);
+    int cfx, cfz, gfx, gfz;
+    unit_occ_fp(c, &cfx, &cfz);
+    if (unit_def_is_structure(cd)) {
+        cfx = cd->footprint_x;
+        cfz = cd->footprint_z;
+    }
+    unit_occ_fp(g, &gfx, &gfz);
+    return (int64_t)((cfx > cfz ? cfx : cfz) + 5 + gfx) * 16;
+}
+
 /* A builder on patrol with nothing to fight mends a damaged ally or
  * helps raise one of its side's frames inside its sight, one drawn at
  * random from those standing still. A computer player's minds only its
@@ -14047,7 +14096,7 @@ static void Units_TickCombat(void) {
         if (unit_def_is_factory(def)) factory_tick(u, i, def);
         else if (u->cmd_kind == UNIT_CMD_NONE && u->leg_count > 0)
             unit_next_leg(u, i);
-        guard_join_build(u, i);
+        guard_take_work(u, i, def);
 
         /* A fight it took on for itself, maneuvering or answering fire,
          * may run the standard search again at the end of each wait of
@@ -14183,7 +14232,8 @@ static void Units_TickCombat(void) {
             int64_t dx = (int64_t)(t->world_x - u->world_x);
             int64_t dy = (int64_t)(t->world_y - u->world_y);
             target_d2 = dx*dx + dy*dy;
-            if (target_d2 > (int64_t)96 * 96) {
+            int64_t reach = guard_reach_px(u, t);
+            if (target_d2 > reach * reach) {
                 desired = UNIT_ANIM_MOVING;
                 goal_x = t->world_x;
                 goal_y = t->world_y;
