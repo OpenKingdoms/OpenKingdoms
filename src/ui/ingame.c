@@ -1031,6 +1031,22 @@ static void ig_select_key(const GameWorld *world, InGameSelectKey k) {
     fprintf(stderr, "Select key: %d units\n", n);
 }
 
+/* Ctrl+D (legacy:122248-122294): the selection starts its self
+ * destruct, or stops it when any of it counts down already, and a start
+ * says so in the message list. */
+static void ig_self_destruct(void) {
+    int n = 0;
+    const int *sel = Units_GetSelection(&n);
+    int counting = 0;
+    for (int k = 0; k < n; k++)
+        if (g_units_get_player(sel[k]) == Units_LocalPlayer() &&
+            Units_SelfDestructing(sel[k])) counting = 1;
+    if (TAK_Cmd_EmitSelection(TAK_CMD_SELF_DESTRUCT, 0, 0, -1, 0, 0) != 0) return;
+    if (!counting)
+        Chat_Push(HUD_MissionWords("SELF DESTRUCT ENGAGED"), CHAT_TYPE_ORDER,
+                  Chat_LocalSlot(), SDL_GetTicks());
+}
+
 /* Cancel: an armed command goes first and the selection survives
  * (legacy:242517-242525), and with nothing armed the selection is
  * cleared instead (legacy:237360-237385). Escape and the right click
@@ -1629,6 +1645,7 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
     if (has_focus) {
         InGameSelectKey sk = InGame_SelectKey(keys, ig.prev_keys);
         if (sk.kind != IG_SELECT_NONE) ig_select_key(world, sk);
+        if (InGame_SelfDestructKey(keys, ig.prev_keys)) ig_self_destruct();
     }
 #undef IG_PRESSED
 }

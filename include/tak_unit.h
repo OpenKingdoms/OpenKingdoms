@@ -582,6 +582,9 @@ typedef struct UnitDef {
      * says death_weapons[k] was read. */
     UnitWeapon   death_weapons[2];
     uint8_t      death_weapon_set;
+    /* `selfdestructcountdown`: seconds a self destruct counts down, 2
+     * when the file has none (legacy:163089-163095). */
+    uint8_t      selfd_countdown;
 
     /* Per-player-color baked meshes. NULL until first spawn with
      * that color; Mesh_Bake fills it lazily. */
@@ -985,6 +988,9 @@ typedef struct Unit {
     uint8_t    hover_steps;
     uint8_t    hover_events;
     int32_t    hover_x, hover_y;
+    /* Ticks left before a self destruct ends the unit, 0 for none. It
+     * counts down beside whatever orders the unit holds. */
+    uint16_t   selfd_ticks;
     /* An attack order, not a target it took itself: UNIT_ATTACK_ORDER,
      * or UNIT_ATTACK_HELD for a mission script's, which D-025 never
      * lets go. */
@@ -1919,6 +1925,11 @@ int               Units_SelectionHasBuilder(void);
  * legacy:233556-233574): its own player's frame, a builder that walks,
  * and for a limited builder a type on its own build list. */
 int               Units_CanHelpBuild(int helper, int frame);
+/* Ctrl+D on these units: any already counting down stop, otherwise all
+ * start. Returns how many changed. */
+int               Units_ToggleSelfDestruct(const int *handles, int n);
+/* 1 while the unit counts down to its self destruct. */
+int               Units_SelfDestructing(int handle);
 /* Any selected unit of the local player's that could help that frame. */
 int               Units_SelectionCanHelpBuild(int frame);
 

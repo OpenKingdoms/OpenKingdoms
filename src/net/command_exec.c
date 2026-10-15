@@ -512,6 +512,9 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
                     ? exec_leg(g_exec_handles[i], UNIT_LEG_CAPTURE, cmd, target)
                     : Units_OrderCapture(g_exec_handles[i], target);
             break;
+        case TAK_CMD_SELF_DESTRUCT:
+            applied = Units_ToggleSelfDestruct(g_exec_handles, count);
+            break;
         case TAK_CMD_WAIT:
             /* Declared on the wire, not yet simulated. Refusing it
              * everywhere alike is what keeps the machines in step. */

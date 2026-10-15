@@ -392,7 +392,10 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 #define U_POST_LEASH    (U_POST_SET + 1u)
 #define U_POST_X        (U_POST_SET + 3u)
 #define U_POST_Y        (U_POST_SET + 7u)
-#define U_END           (U_POST_SET + 11u)
+/* Version 14 on: the ticks a self destruct has left. An older record
+ * reads back none. */
+#define U_SELFD_TICKS   (U_POST_SET + 11u)
+#define U_END           (U_SELFD_TICKS + 2u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -1216,6 +1219,7 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_u16(r + U_POST_LEASH, u->post_leash);
     tak_put_i32(r + U_POST_X, u->post_x);
     tak_put_i32(r + U_POST_Y, u->post_y);
+    tak_put_u16(r + U_SELFD_TICKS, u->selfd_ticks);
     tak_put_u8(r + U_BUILD_ENDLESS, (uint8_t)((u->build_endless ? 1u : 0u) |
                                               (u->build_held ? 2u : 0u)));
     tak_put_u8(r + U_BUILD_TRIES, u->build_tries);
@@ -1477,6 +1481,7 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->post_leash = tak_get_u16(r + U_POST_LEASH);
     u->post_x = tak_get_i32(r + U_POST_X);
     u->post_y = tak_get_i32(r + U_POST_Y);
+    u->selfd_ticks = tak_get_u16(r + U_SELFD_TICKS);
     uint8_t summons = tak_get_u8(r + U_BUILD_ENDLESS);
     u->build_endless = (summons & 1u) ? 1 : 0;
     u->build_held = (summons & 2u) ? 1 : 0;

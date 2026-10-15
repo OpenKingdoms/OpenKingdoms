@@ -140,6 +140,9 @@ typedef enum TAK_CommandType {
      * from the relay's own entry in a turn and never taken from a
      * player, so no client can hand itself another seat. */
     TAK_CMD_SEAT_CONTROL,
+    /* Ctrl+D: the units start their self destruct, or stop it when any
+     * of them already counts down. */
+    TAK_CMD_SELF_DESTRUCT,
 
     TAK_CMD_COUNT
 } TAK_CommandType;

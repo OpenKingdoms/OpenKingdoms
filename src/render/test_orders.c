@@ -62,6 +62,7 @@ static void oq_fill(UnitDef *d, const char *name, float velocity, int fx, int fz
     d->footprint_z = fz;
     d->build_cost = 100;
     d->buildtime = 100.0f;
+    d->selfd_countdown = 2;   /* a file without the line */
 }
 
 static GameWorld *oq_world(void) {
@@ -922,6 +923,33 @@ TEST(a_guard_helps_its_builder_build_and_guards_again) {
     oq_ticks(2);
     ASSERT_EQ_INT(UNIT_CMD_GUARD, (int)oq_unit(guard)->cmd_kind);
     ASSERT_EQ_INT(bd, (int)oq_unit(guard)->target);
+    oq_end();
+}
+
+static void oq_chord(int mods, int key);
+
+/* Ctrl+D ends any unit of yours, a building too, two seconds and up to
+ * fourteen frames on, counted as your loss, and Ctrl+D again before
+ * then calls it off (legacy:122248-122294, legacy:9056-9088). */
+TEST(ctrl_d_self_destructs_a_building_and_again_calls_it_off) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    int hall = Units_Spawn(OQ_HALL, 1, 0, OQ_CX, OQ_CY);
+    int kept = Units_Spawn(OQ_HALL, 1, 0, OQ_CX + 200, OQ_CY);
+    ASSERT(hall >= 0 && kept >= 0);
+    Units_SelectSingle(hall);
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_D);
+    oq_ticks(119);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(hall)->alive);
+    oq_ticks(30);
+    ASSERT(oq_unit(hall)->alive != UNIT_ALIVE_ACTIVE);
+    ASSERT_EQ_INT(1, (int)w->stats[1].losses);
+    Units_SelectSingle(kept);
+    oq_chord(IG_CLICK_CTRL | IG_CLICK_SHIFT, SDL_SCANCODE_D);
+    oq_ticks(60);
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_D);
+    oq_ticks(200);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(kept)->alive);
     oq_end();
 }
 
@@ -2326,6 +2354,7 @@ int main(int argc, char **argv) {
     RUN(a_frame_nobody_selected_can_help_shows_no_select_hand);
     RUN(a_click_on_a_frame_sends_the_helpers_and_walks_the_rest);
     RUN(a_guard_helps_its_builder_build_and_guards_again);
+    RUN(ctrl_d_self_destructs_a_building_and_again_calls_it_off);
     RUN(a_builder_goes_round_a_ridge_as_a_move_does);
     RUN(a_repairer_goes_round_a_ridge_as_a_move_does);
     RUN(a_builder_walking_out_of_a_pocket_keeps_its_frame);

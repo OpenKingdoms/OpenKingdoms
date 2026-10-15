@@ -203,6 +203,8 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
         h = TAK_HashI32(h, u->hover_x);
         h = TAK_HashI32(h, u->hover_y);
     }
+    /* Only a unit counting down to its self destruct adds to the hash. */
+    if (u->selfd_ticks) h = TAK_HashI32(h, 0x1000 | u->selfd_ticks);
     h = TAK_HashI32(h, u->attack_explicit);
     /* The target its shots were found not to reach, and where it and
      * that target stood then. */

@@ -6989,6 +6989,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     if (TDF_ReadInt(tdf, "cantransport",   0)) out->cap_flags |= UNIT_CAP_TRANSPORT;
     if (TDF_ReadInt(tdf, "builder",        0)) out->cap_flags |= UNIT_CAP_BUILDER;
     out->builder_limited = (uint8_t)(TDF_ReadInt(tdf, "builderlimited", 0) & 1);
+    out->selfd_countdown =
+        (uint8_t)(TDF_ReadInt(tdf, "selfdestructcountdown", 2) & 7);
     if (TDF_ReadInt(tdf, "canreclaim",     0)) out->cap_flags |= UNIT_CAP_RECLAIM;
     if (TDF_ReadInt(tdf, "canresurrect",   0)) out->cap_flags |= UNIT_CAP_RESURRECT;
     if (TDF_ReadInt(tdf, "cananimate",     0)) out->cap_flags |= UNIT_CAP_ANIMATE;
@@ -9740,6 +9742,11 @@ static void build_stance_args(const Unit *u, const UnitDef *def,
     out[0] = (site_ang - hdg_ang) & 0xffff;
 }
 
+/* The death type a dying unit's scripts hear: 0 for a blow, 5 for a
+ * self destruct, which runs no Killed (legacy:227124-227127). */
+#define UNIT_DEATH_SELF_DESTRUCT 5
+static int g_death_kind;
+
 static void enter_state(Unit *u, UnitAnimState new_state) {
     if (u->anim_state == (uint8_t)new_state) return;
     /* Exit-old: kill scripts that don't belong to the new state. */
@@ -9800,12 +9807,13 @@ static void enter_state(Unit *u, UnitAnimState new_state) {
              * clamps it to 1..100 (legacy:227142, legacy:227241).
              * Death scripts branch on it. */
             int32_t args[3] = { unit_death_severity(u), 0, 0 };
-            u->killed_thread_slot = (int8_t)unit_start_script(
-                u, "Killed", args, 3);
+            if (g_death_kind != UNIT_DEATH_SELF_DESTRUCT)
+                u->killed_thread_slot = (int8_t)unit_start_script(
+                    u, "Killed", args, 3);
             /* Dying(kind) follows when the script exists: the fall
              * animation and the death cry live there, kind 0 for a
              * plain kill (legacy:227250-227256). */
-            int32_t dying_args[1] = { 0 };
+            int32_t dying_args[1] = { g_death_kind };
             (void)unit_start_script(u, "Dying", dying_args, 1);
             break;
         }
@@ -10138,6 +10146,52 @@ static void apply_killed_as(Unit *t, int t_idx, int bursts) {
 }
 
 static void apply_killed(Unit *t, int t_idx) { apply_killed_as(t, t_idx, 1); }
+
+/* A self destruct is death type 5: no Killed, so no body, the owner
+ * counts the loss and nobody the kill, and SELFDESTRUCTAS bursts as the
+ * death ends (legacy:227124-227127, 227331-227338). */
+static void apply_self_destructed(Unit *t, int t_idx) {
+    g_death_kind = UNIT_DEATH_SELF_DESTRUCT;
+    apply_killed_as(t, t_idx, 0);
+    g_death_kind = 0;
+    const UnitDef *d = Units_GetDef(t->def_idx);
+    if (!d || !(d->death_weapon_set & 2u)) return;
+    t->death_blast = 2;
+    if (t->alive == UNIT_ALIVE_DEAD) unit_death_blast(t, t_idx);
+}
+
+/* Ctrl+D (legacy:122248-122294). The count is selfdestructcountdown
+ * seconds and up to 14 frames more (legacy:9056-9088). It runs beside
+ * the unit's orders: the original keeps it on a list of its own and
+ * clears nothing to give it (legacy:180727-180741, 181669-181683). */
+int Units_ToggleSelfDestruct(const int *handles, int n) {
+    int counting = 0, changed = 0;
+    for (int k = 0; k < n; k++) {
+        const Unit *u = order_unit(handles[k]);
+        if (u && u->selfd_ticks) counting = 1;
+    }
+    for (int k = 0; k < n; k++) {
+        Unit *u = order_unit(handles[k]);
+        if (!u || (counting && !u->selfd_ticks)) continue;
+        if (counting) {
+            u->selfd_ticks = 0;
+        } else {
+            const UnitDef *d = Units_GetDef(u->def_idx);
+            int secs = d ? d->selfd_countdown : 2;
+            /* Two ticks to each of the original's frames. */
+            u->selfd_ticks = (uint16_t)(secs > 0
+                ? secs * 60 + 2 * (int)World_Rand(15) : 1);
+        }
+        changed++;
+    }
+    return changed;
+}
+
+int Units_SelfDestructing(int handle) {
+    return handle >= 0 && handle < g_unit_count &&
+           g_units[handle].alive == UNIT_ALIVE_ACTIVE &&
+           g_units[handle].selfd_ticks != 0;
+}
 
 static int unit_path_goal_changed(const Unit *u, int32_t gx, int32_t gy) {
     if (!u) return 1;
@@ -13875,6 +13929,10 @@ static void Units_TickCombat(void) {
         /* Not built yet: the order is kept but nothing acts on it until
          * getbuilt runs, so a product cannot be walked off the pad. */
         if (u->under_construction) continue;
+        if (u->selfd_ticks && --u->selfd_ticks == 0) {
+            apply_self_destructed(u, i);
+            continue;
+        }
         flight_tick(u, def, flight_world);
         caster_mana_tick(u, def);
         caster_weapon_fallback(u, def);
