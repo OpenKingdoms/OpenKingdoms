@@ -1149,6 +1149,10 @@ static void draw_selection_rings(const GameWorld *world) {
         const UnitDef *def = Units_GetDef(u->def_idx);
         const GpuModel *m = def ? ModelStore_Get(def->objectname, u->team_color_idx) : NULL;
         float r = m ? m->foot_radius_px + 4.0f : 24.0f;
+        /* The ring follows the ground but stays near the unit's own
+         * height, so a cliff beside it cuts the ring instead of lifting it. */
+        float own = surface_height(world, (float)u->world_x, (float)u->world_y);
+        float lo = own - r * 0.5f, hi = own + r * 0.5f;
         float g = 1.0f, rr = 0.2f;
         if (u->player_id != Units_LocalPlayer()) { rr = 1.0f; g = 0.3f; }
         for (int s = 0; s < segs; s++) {
@@ -1156,8 +1160,8 @@ static void draw_selection_rings(const GameWorld *world) {
             float ca = cosf(a), sa = sinf(a);
             float x0 = (float)u->world_x + ca * r, z0 = (float)u->world_y + sa * r;
             float x1 = (float)u->world_x + ca * (r + 3.0f), z1 = (float)u->world_y + sa * (r + 3.0f);
-            float y0 = surface_height(world, x0, z0) + 1.5f;
-            float y1 = surface_height(world, x1, z1) + 1.5f;
+            float y0 = fmaxf(lo, fminf(hi, surface_height(world, x0, z0))) + 1.5f;
+            float y1 = fmaxf(lo, fminf(hi, surface_height(world, x1, z1))) + 1.5f;
             put_vert(v.stream_v + (size_t)(nv + 2 * s) * 9, x0, y0, z0, 0, 0, rr, g, 0.2f, 1.0f);
             put_vert(v.stream_v + (size_t)(nv + 2 * s + 1) * 9, x1, y1, z1, 0, 0, rr, g, 0.2f, 1.0f);
         }
@@ -1171,6 +1175,53 @@ static void draw_selection_rings(const GameWorld *world) {
         nv += segs * 2;
     }
     if (nv > 0) GL3D_DrawSprites(v.stream_v, nv, v.stream_i, ni, NULL, 0, 0);
+}
+
+/* Past the map's edges the view is black, as the classic view and
+ * unexplored ground are: a skirt down from the edge and a floor out
+ * to the far plane. */
+static void draw_map_edge(const GameWorld *world) {
+    const TNTFile *t = &world->tnt;
+    const int cols = (int)(v.map_w / V3_TILE_PX), rows = (int)(v.map_h / V3_TILE_PX);
+    if (!t->heightmap || cols < 1 || rows < 1) return;
+    const int ring = 2 * (cols + rows);
+    if (2 * ring + 8 > 65535 || ensure_stream(2 * ring + 8, 6 * ring + 24) != 0) return;
+    const float floor_y = -1.0f, out = v.cam.far_z;
+    int nv = 0, ni = 0;
+    for (int k = 0; k < ring; k++) {
+        int tx, tz;
+        if (k < cols)                 { tx = k;                    tz = 0; }
+        else if (k < cols + rows)     { tx = cols;                 tz = k - cols; }
+        else if (k < 2 * cols + rows) { tx = 2 * cols + rows - k;  tz = rows; }
+        else                          { tx = 0;                    tz = ring - k; }
+        float x = (float)(tx * V3_TILE_PX), z = (float)(tz * V3_TILE_PX);
+        put_vert(v.stream_v + (size_t)nv * 9, x, height_at_tile(t, tx, tz), z, 0, 0, 0, 0, 0, 1);
+        put_vert(v.stream_v + (size_t)(nv + 1) * 9, x, floor_y, z, 0, 0, 0, 0, 0, 1);
+        nv += 2;
+    }
+    for (int k = 0; k < ring; k++) {
+        int a = 2 * k, b = 2 * ((k + 1) % ring);
+        uint16_t *q = v.stream_i + ni;
+        q[0] = (uint16_t)a; q[1] = (uint16_t)(a + 1); q[2] = (uint16_t)b;
+        q[3] = (uint16_t)(a + 1); q[4] = (uint16_t)(b + 1); q[5] = (uint16_t)b;
+        ni += 6;
+    }
+    const float in[4][2]  = { { 0, 0 }, { v.map_w, 0 }, { v.map_w, v.map_h }, { 0, v.map_h } };
+    const float rim[4][2] = { { -out, -out }, { v.map_w + out, -out },
+                              { v.map_w + out, v.map_h + out }, { -out, v.map_h + out } };
+    const int base = nv;
+    for (int c = 0; c < 4; c++) {
+        put_vert(v.stream_v + (size_t)(nv++) * 9, in[c][0], floor_y, in[c][1], 0, 0, 0, 0, 0, 1);
+        put_vert(v.stream_v + (size_t)(nv++) * 9, rim[c][0], floor_y, rim[c][1], 0, 0, 0, 0, 0, 1);
+    }
+    for (int c = 0; c < 4; c++) {
+        int i0 = base + 2 * c, i1 = base + 2 * ((c + 1) % 4);
+        uint16_t *q = v.stream_i + ni;
+        q[0] = (uint16_t)i0; q[1] = (uint16_t)(i0 + 1); q[2] = (uint16_t)(i1 + 1);
+        q[3] = (uint16_t)i0; q[4] = (uint16_t)(i1 + 1); q[5] = (uint16_t)i1;
+        ni += 6;
+    }
+    GL3D_DrawSprites(v.stream_v, nv, v.stream_i, ni, NULL, 0, 0);
 }
 
 static void draw_water(const GameWorld *world) {
@@ -1452,6 +1503,7 @@ static void v3_render(const GameWorld *world, TAK_Platform *plat,
         GL3D_Texture *tex = s->chunk < v.chunk_count ? v.chunk_tex[s->chunk] : NULL;
         GL3D_DrawTerrain(v.meshes[s->mesh], tex, s->first_index, s->index_count);
     }
+    draw_map_edge(world);
     draw_ground_pieces(world, planes);
     draw_features(world, planes);
     draw_selection_rings(world);
