@@ -465,6 +465,10 @@ typedef struct UnitDef {
      * lodestones raise their crystal through this). */
     int32_t  activate_when_built;
     int32_t  floater;          /* floater; unit floats on water surface */
+    /* canhover and upright (legacy:162991-162994): an upright unit that
+     * hovers wades with its origin waterline under the sea. */
+    uint8_t  can_hover;
+    uint8_t  upright;
     /* amphibious (legacy:162997): a flyer with it may land under water,
      * down to its maxwaterdepth (legacy:220103-220109). */
     uint8_t  amphibious;
@@ -1430,7 +1434,8 @@ void              Units_EliminatePlayer(int player_id, int keep_handle);
 void              Units_DebugSetAggro(int handle, int aggro_mode);
 
 /* How high over the ground under it a unit is drawn: its altitude, on
- * top of the sea for a flyer over water (legacy:190499-190507). */
+ * top of the sea for a flyer over water (legacy:190499-190507), and a
+ * floater or wading hover unit at its waterline (legacy:234287-234330). */
 float             Units_DrawnAlt(const struct GameWorld *w, const Unit *u);
 
 /* Test hook: the height a unit stands at for the simulation, its shots
@@ -1549,6 +1554,8 @@ int         Units_FeatureSequenceFrame(const struct FeatureDef *fd, int which,
                                        int *out_w, int *out_h,
                                        int *out_off_x, int *out_off_y);
 int         Units_ProjectileVisible(const struct GameWorld *world, const Projectile *p);
+/* How high a beam leaves: its firing piece, a flyer's in the air. */
+float       Units_BeamStartHeight(const Projectile *p);
 const char *Units_ProjectileModelName(int art_idx);
 /* The art slot a sequence name resolved to, -1 when never seen. */
 int         Units_FindSpriteArt(const char *name);

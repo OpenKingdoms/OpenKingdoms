@@ -1124,7 +1124,14 @@ static void draw_features(const GameWorld *world, const float planes[6][4]) {
     tak_free(bb);
 }
 
-/* A flat ring on the ground around each selected unit. */
+/* The ground, or the sea where it covers the ground. */
+static float surface_height(const GameWorld *world, float x, float z) {
+    float g = (float)Terrain_SampleHeight(world, (int32_t)x, (int32_t)z);
+    float sea = (float)world->water_height;
+    return world->water_height > 0 && sea > g ? sea : g;
+}
+
+/* A flat ring on the ground or the water around each selected unit. */
 static void draw_selection_rings(const GameWorld *world) {
     int n = 0;
     const int *sel = Units_GetSelection(&n);
@@ -1149,8 +1156,8 @@ static void draw_selection_rings(const GameWorld *world) {
             float ca = cosf(a), sa = sinf(a);
             float x0 = (float)u->world_x + ca * r, z0 = (float)u->world_y + sa * r;
             float x1 = (float)u->world_x + ca * (r + 3.0f), z1 = (float)u->world_y + sa * (r + 3.0f);
-            float y0 = (float)Terrain_SampleHeight(world, (int32_t)x0, (int32_t)z0) + 1.5f;
-            float y1 = (float)Terrain_SampleHeight(world, (int32_t)x1, (int32_t)z1) + 1.5f;
+            float y0 = surface_height(world, x0, z0) + 1.5f;
+            float y1 = surface_height(world, x1, z1) + 1.5f;
             put_vert(v.stream_v + (size_t)(nv + 2 * s) * 9, x0, y0, z0, 0, 0, rr, g, 0.2f, 1.0f);
             put_vert(v.stream_v + (size_t)(nv + 2 * s + 1) * 9, x1, y1, z1, 0, 0, rr, g, 0.2f, 1.0f);
         }
@@ -1328,7 +1335,7 @@ static void draw_beams(const GameWorld *world) {
         if (!p->alive || !p->is_beam || p->visual_kind == UNIT_PROJECTILE_VIS_FLAME) continue;
         if (!Units_ProjectileVisible(world, p)) continue;
         float ax = (float)p->src_x, az = (float)p->src_y;
-        float ay = (float)p->src_height + 12.0f;
+        float ay = Units_BeamStartHeight(p);
         float bx = (float)p->world_x, bz = (float)p->world_y;
         /* The ray's end is where it stopped: its target, or whatever
          * was in the way. */
