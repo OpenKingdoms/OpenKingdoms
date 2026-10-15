@@ -1335,7 +1335,7 @@ static void draw_beams(const GameWorld *world) {
         if (!p->alive || !p->is_beam || p->visual_kind == UNIT_PROJECTILE_VIS_FLAME) continue;
         if (!Units_ProjectileVisible(world, p)) continue;
         float ax = (float)p->src_x, az = (float)p->src_y;
-        float ay = (float)p->src_height + 12.0f;
+        float ay = Units_BeamStartHeight(p);
         float bx = (float)p->world_x, bz = (float)p->world_y;
         /* The ray's end is where it stopped: its target, or whatever
          * was in the way. */

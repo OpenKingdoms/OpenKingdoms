@@ -1554,6 +1554,8 @@ int         Units_FeatureSequenceFrame(const struct FeatureDef *fd, int which,
                                        int *out_w, int *out_h,
                                        int *out_off_x, int *out_off_y);
 int         Units_ProjectileVisible(const struct GameWorld *world, const Projectile *p);
+/* How high a beam leaves: its firing piece, a flyer's in the air. */
+float       Units_BeamStartHeight(const Projectile *p);
 const char *Units_ProjectileModelName(int art_idx);
 /* The art slot a sequence name resolved to, -1 when never seen. */
 int         Units_FindSpriteArt(const char *name);

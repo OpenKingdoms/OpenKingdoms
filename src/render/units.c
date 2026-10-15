@@ -12046,7 +12046,7 @@ static void spell_effects_at(const UnitWeapon *wp, int shot, int32_t x, int32_t 
 /* Where a beam leaves, as drawn: its firing piece, never below the flat
  * clearance. A piece whose origin sits at the feet (TARMAGE's staff) and
  * a shot with no piece record, as one from a save, take the clearance. */
-static float beam_start_height(const Projectile *p) {
+float Units_BeamStartHeight(const Projectile *p) {
     float clear = (float)p->src_height + 12.0f;
     if (!p->from_piece && p->muzzle_height <= 0.0f) return clear;
     return p->muzzle_height > clear ? p->muzzle_height : clear;
@@ -12065,7 +12065,7 @@ static void flame_particle(const Projectile *p, int idx) {
     uint32_t n = unit_deterministic_noise((uint32_t)idx, (uint32_t)p->ttl_ticks, 7u);
     float jx = 1.0f + ((float)(n & 0xffu) / 255.0f - 0.5f) * 0.2f;
     float jy = 1.0f + ((float)((n >> 8) & 0xffu) / 255.0f - 0.5f) * 0.2f;
-    float h0 = beam_start_height(p);
+    float h0 = Units_BeamStartHeight(p);
     uint16_t life = (uint16_t)(len / speed + 1.0f);
     /* It falls or climbs to where the ray stopped as it gets there. */
     ProjectileEffect *e = spawn_unit_fx_moving(s_flame, p->src_x, p->src_y,
@@ -17292,12 +17292,12 @@ static void render_projectiles(const struct GameWorld *world,
         int sx = p->world_x - world->cam_x;
         int sy = p->world_y - world->cam_y - (int)(p->height * g_tan_tilt);
         if (p->is_beam) {
-            /* Jagged src→dest ray, three passes outer→inner. Jitter is
-             * reseeded per rendered frame for the flicker. */
+            /* Jagged ray from the firing piece, in the air for a hovering
+             * caster, to where it stopped (legacy:247277, :246220-246225).
+             * Three passes outer to inner, jitter reseeded per frame. */
             int ax = p->src_x - world->cam_x;
             int ay = p->src_y - world->cam_y
-                   - (int)((float)Terrain_SampleHeight(world, p->src_x, p->src_y)
-                           * g_tan_tilt);
+                   - (int)(Units_BeamStartHeight(p) * g_tan_tilt);
             float dx = (float)(sx - ax), dy = (float)(sy - ay);
             float len = sqrtf(dx * dx + dy * dy);
             float nx = len > 0.001f ? -dy / len : 0.0f;
