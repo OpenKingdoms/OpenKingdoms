@@ -206,6 +206,14 @@ static int unit_reach_ok(const Unit *u, const UnitWeapon *wp, const Unit *t) {
     return range > 0 && d2 <= range * range && d2 >= min_range * min_range;
 }
 
+/* A unit that cannot move, or one holding position, fights only what
+ * it reaches. On patrol every stance with fire closes in on what the
+ * search finds (legacy:10843-10851, legacy:181879-181947). */
+static int unit_holds(const Unit *u, const UnitDef *d) {
+    if (d && d->max_velocity <= 0.0f) return 1;
+    return u->aggro_mode == UNIT_AGGRO_DEFENSIVE && u->cmd_kind != UNIT_CMD_PATROL;
+}
+
 /* D-025: a unit passes over what it skipped only while neither it nor
  * the target has moved more than this from where they stood then. */
 #define UNIT_SKIP_STAY_PX 32
@@ -229,9 +237,7 @@ static int unit_skips(const Unit *u, const Unit *t) {
 static int ugrid_nearest_enemy(const Unit *u, int self_idx, int64_t radius,
                                const UnitWeapon *wp) {
     if (radius <= 0) return -1;
-    const UnitDef *ud = Units_GetDef(u->def_idx);
-    int holds = (ud && ud->max_velocity <= 0.0f) ||
-                u->aggro_mode == UNIT_AGGRO_DEFENSIVE;
+    int holds = unit_holds(u, Units_GetDef(u->def_idx));
     int c0x = (int)((u->world_x - radius) >> UGRID_SHIFT);
     int c1x = (int)((u->world_x + radius) >> UGRID_SHIFT);
     int c0y = (int)((u->world_y - radius) >> UGRID_SHIFT);
@@ -286,7 +292,7 @@ static int ugrid_random_enemy(const Unit *u, int self_idx, int64_t radius,
     if (radius <= 0 || !wp) return -1;
     const UnitDef *ud = Units_GetDef(u->def_idx);
     int immobile = ud && ud->max_velocity <= 0.0f;
-    int holds = immobile || u->aggro_mode == UNIT_AGGRO_DEFENSIVE;
+    int holds = unit_holds(u, ud);
     int c0x = (int)((u->world_x - radius) >> UGRID_SHIFT);
     int c1x = (int)((u->world_x + radius) >> UGRID_SHIFT);
     int c0y = (int)((u->world_y - radius) >> UGRID_SHIFT);
@@ -1502,6 +1508,11 @@ static void credit_kill(int shooter_handle, int killer_player, const Unit *victi
         Economy_EarnBounty(&world->economy, killer_player, vdef->mogrium_bounty);
 }
 
+static void unit_post_take(Unit *u, const UnitDef *d);
+static int unit_post_may_take(const Unit *u, const UnitDef *d, const Unit *t);
+static int unit_weapon_reaches(const Unit *u, const UnitDef *def, int slot,
+                               const Unit *t);
+
 /* Can the victim answer this shooter at all? Its selected weapon has
  * to be able to take it, and it has to be in that weapon's reach
  * (legacy:15123), or inside nine tenths of maneuverleashlength plus the
@@ -1517,8 +1528,7 @@ static int unit_can_answer(const Unit *victim, const UnitDef *d,
     if (slot < 0 || slot >= d->num_weapons) slot = 0;
     const UnitWeapon *wp = &d->weapons[slot];
     if (!weapon_can_target_unit(wp, shooter)) return 0;
-    if (d->max_velocity <= 0.0f || victim->aggro_mode == UNIT_AGGRO_DEFENSIVE)
-        return unit_reach_ok(victim, wp, shooter);
+    if (unit_holds(victim, d)) return unit_reach_ok(victim, wp, shooter);
     if (d->roams) return 1;
     int64_t range = weapon_effective_range(wp);
     if (range > 0 && unit_reach_d2(victim, shooter) <= range * range) return 1;
@@ -1575,6 +1585,9 @@ static void unit_on_damaged(Unit *victim, int shooter_handle) {
     if (victim->cmd_kind != UNIT_CMD_NONE &&
         victim->cmd_kind != UNIT_CMD_PATROL) return;
     if (!unit_would_answer(victim, shooter)) return;
+    const UnitDef *vd = Units_GetDef(victim->def_idx);
+    if (!unit_post_may_take(victim, vd, shooter)) return;
+    unit_post_take(victim, vd);
     victim->target = (int16_t)shooter_handle;
     /* Patrol is a standing order — engage without losing the route. */
     victim->attack_explicit = 0;
@@ -3794,6 +3807,7 @@ static int g_leg_taking;
  * formation and the heading it was to take or hold all go. */
 static void order_fresh(Unit *u) {
     if (!g_leg_taking) u->leg_count = 0;
+    u->post_set = UNIT_POST_NONE;
     u->air_mode = UNIT_AIR_NONE;
     u->air_circles = 0;
     u->air_band = 0;
@@ -4465,14 +4479,50 @@ int Units_OrderStop(int handle) {
 /* How far an idle unit looks for a target. The offensive search reaches
  * the larger of sight and the weapon's raw range (legacy:21113-21118),
  * which patch 3 set to 300 px for melee. A defensive unit takes only
- * what it reaches. */
+ * what it reaches, except on patrol. */
 static int64_t unit_search_radius(const Unit *u, const UnitDef *def) {
     int64_t wrange = (int64_t)weapon_effective_range(&def->weapons[0]);
-    if (u->aggro_mode == UNIT_AGGRO_DEFENSIVE) return wrange;
+    if (u->aggro_mode == UNIT_AGGRO_DEFENSIVE && u->cmd_kind != UNIT_CMD_PATROL)
+        return wrange;
     int64_t search = def->weapons[0].range > wrange
         ? (int64_t)def->weapons[0].range : wrange;
     return (int64_t)def->sight_distance > search
         ? (int64_t)def->sight_distance : search;
+}
+
+/* A fight the unit takes on for itself starts where it stands. One on
+ * maneuver goes no further than maneuverleashlength from there and walks
+ * back after, as does one on patrol whatever its stance, and one that
+ * roams does neither (legacy:181879-181947, legacy:10843-10851). A fight
+ * taken on the walk back keeps the first post. */
+static void unit_post_take(Unit *u, const UnitDef *d) {
+    if (u->post_set == UNIT_POST_FIGHT) return;
+    if (d->max_velocity <= 0.0f || d->can_fly) return;
+    if (u->cmd_kind != UNIT_CMD_PATROL &&
+        (d->roams || u->aggro_mode != UNIT_AGGRO_OFFENSIVE)) return;
+    u->post_set = UNIT_POST_FIGHT;
+    u->post_x = u->world_x;
+    u->post_y = u->world_y;
+    u->post_leash = (uint16_t)d->leash_length;
+}
+
+/* (x, y) lies inside the leash round the unit's post, or it has no
+ * leash to keep. */
+static int unit_post_inside(const Unit *u, int32_t x, int32_t y) {
+    if (u->post_set != UNIT_POST_FIGHT || u->post_leash == 0) return 1;
+    int64_t dx = (int64_t)x - u->post_x;
+    int64_t dy = (int64_t)y - u->post_y;
+    return dx * dx + dy * dy < (int64_t)u->post_leash * u->post_leash;
+}
+
+/* On the walk back a unit takes on only what is inside its post's leash
+ * (legacy:10438-10443), or what its weapon reaches from where it stands. */
+static int unit_post_may_take(const Unit *u, const UnitDef *d, const Unit *t) {
+    if (unit_post_inside(u, t->world_x, t->world_y)) return 1;
+    if (!d || d->num_weapons <= 0) return 0;
+    int slot = u->weapon_slot;
+    if (slot < 0 || slot >= d->num_weapons) slot = 0;
+    return unit_weapon_reaches(u, d, slot, t);
 }
 
 /* The attack handler's wait with its target more than a footprint and
@@ -4557,6 +4607,7 @@ void Units_CommandPatrolUnit(int handle, int32_t world_x, int32_t world_y) {
     u->patrol_y = u->world_y;
     u->target = -1;
     u->build_target = -1;
+    u->post_set = UNIT_POST_NONE;
     unit_clear_path(u);
     unit_kick_walk(u);
 }
@@ -13708,6 +13759,58 @@ static UnitAnimState unit_board_tick(Unit *u, int idx, const UnitDef *def,
     return UNIT_ANIM_MOVING;
 }
 
+/* A builder on patrol with nothing to fight mends a damaged ally or
+ * helps raise one of its side's frames inside its sight, one drawn at
+ * random from those standing still. A computer player's minds only its
+ * finished buildings. The patrol then goes on from where the work left
+ * it (legacy:10861-10930, legacy:14708-14722, legacy:233526-233571). */
+static void patrol_take_work(Unit *u, int self, const UnitDef *d) {
+    int repairs = unit_def_can_repair(d);
+    if (!repairs && !(d->cap_flags & UNIT_CAP_BUILDER)) return;
+    int64_t r = d->sight_distance;
+    if (r <= 0) return;
+    int human = unit_seat_is_human(u->player_id);
+    int cand[UNIT_PICK_CANDIDATES];
+    int n = 0;
+    int c0x = (int)((u->world_x - r) >> UGRID_SHIFT);
+    int c1x = (int)((u->world_x + r) >> UGRID_SHIFT);
+    int c0y = (int)((u->world_y - r) >> UGRID_SHIFT);
+    int c1y = (int)((u->world_y + r) >> UGRID_SHIFT);
+    for (int cy = c0y; cy <= c1y; cy++) {
+        for (int cx = c0x; cx <= c1x; cx++) {
+            int c = (cy & UGRID_MASK) * UGRID_W + (cx & UGRID_MASK);
+            for (int j = g_ugrid_head[c]; j >= 0; j = g_ugrid_next[j]) {
+                const Unit *t = &g_units[j];
+                if (j == self || t->alive != UNIT_ALIVE_ACTIVE ||
+                    t->flying || t->velocity != 0) continue;
+                const UnitDef *td = Units_GetDef(t->def_idx);
+                if (!td || td->is_feature) continue;
+                if (t->under_construction) {
+                    if (!human || !Units_CanHelpBuild(self, j)) continue;
+                } else if (!repairs || t->health >= t->max_health ||
+                           unit_players_are_enemies(u->player_id, t->player_id) ||
+                           (!human && td->max_velocity > 0.0f)) {
+                    continue;
+                }
+                int64_t dx = (int64_t)t->world_x - u->world_x;
+                int64_t dy = (int64_t)t->world_y - u->world_y;
+                if (dx * dx + dy * dy > r * r) continue;
+                if (n < UNIT_PICK_CANDIDATES) cand[n++] = j;
+            }
+        }
+    }
+    if (n == 0) return;
+    int pick = cand[World_Rand((uint32_t)n)];
+    int32_t to_x = u->cmd_x, to_y = u->cmd_y;
+    g_leg_taking = 1;
+    int took = Units_OrderRepair(self, pick);
+    g_leg_taking = 0;
+    if (!took) return;
+    u->post_set = UNIT_POST_WORK;
+    u->post_x = to_x;
+    u->post_y = to_y;
+}
+
 /* Where the combat tick's time goes, for the perf probe: the upkeep,
  * the target checks and search, the decision, the act, the tail. */
 double g_cmb_prof_ms[5];
@@ -13766,6 +13869,13 @@ static void Units_TickCombat(void) {
         if (u->attack_cooldown > 0) u->attack_cooldown--;
 
         CMB_MARK(0);
+        /* An order from outside ends the walk back and a patrol's repairs. */
+        if ((u->post_set == UNIT_POST_FIGHT && u->cmd_kind != UNIT_CMD_NONE &&
+             u->cmd_kind != UNIT_CMD_PATROL &&
+             !(u->cmd_kind == UNIT_CMD_ATTACK && !u->attack_explicit)) ||
+            (u->post_set == UNIT_POST_WORK && u->cmd_kind != UNIT_CMD_NONE &&
+             u->cmd_kind != UNIT_CMD_REPAIR && u->cmd_kind != UNIT_CMD_BUILD))
+            u->post_set = UNIT_POST_NONE;
         /* Validate target. Clear if dead, out-of-range, or friendly
          * (auto-acquire only fires on enemy player_ids). */
         if (u->target >= 0) {
@@ -13795,12 +13905,11 @@ static void Units_TickCombat(void) {
                  (u->cmd_kind == UNIT_CMD_REPAIR && !friendly_target) ||
                  (u->cmd_kind == UNIT_CMD_LOAD && !friendly_target) ||
                  (u->cmd_kind == UNIT_CMD_BOARD && !friendly_target));
-            /* A unit that cannot move, or one holding position, lets go
-             * of a target it picked for itself once that is out of its
-             * reach or inside its minrange, and looks again. */
+            /* A unit that cannot move, or one holding position off
+             * patrol, lets go of a target it picked for itself once that
+             * is out of its reach or inside its minrange, and looks again. */
             int unreachable = 0;
-            if ((def->max_velocity <= 0.0f ||
-                 u->aggro_mode == UNIT_AGGRO_DEFENSIVE) && !u->attack_explicit &&
+            if (unit_holds(u, def) && !u->attack_explicit &&
                 (u->cmd_kind == UNIT_CMD_ATTACK ||
                  u->cmd_kind == UNIT_CMD_PATROL) &&
                 def->num_weapons > 0 && u->target < g_unit_count &&
@@ -13810,6 +13919,16 @@ static void Units_TickCombat(void) {
                 unreachable = !unit_reach_ok(u, &def->weapons[slot],
                                              &g_units[u->target]);
             }
+            /* A fight it took on for itself ends once the unit stands its
+             * leash from its post (legacy:11020, legacy:11380), unless the
+             * target is still in its reach. */
+            if (u->post_set == UNIT_POST_FIGHT && !u->attack_explicit &&
+                (u->cmd_kind == UNIT_CMD_ATTACK ||
+                 u->cmd_kind == UNIT_CMD_PATROL) &&
+                u->target < g_unit_count && !friendly_target &&
+                !unit_post_inside(u, u->world_x, u->world_y) &&
+                !unit_post_may_take(u, def, &g_units[u->target]))
+                unreachable = 1;
             if (u->target >= g_unit_count || g_units[u->target].alive != 1
                 || bad_relation || !target_allowed || unreachable
                 || !unit_can_see_target(u, &g_units[u->target]))
@@ -13834,6 +13953,15 @@ static void Units_TickCombat(void) {
 
         /* A factory tends its yard, and anyone else takes the next
          * queued leg once the order in hand is done. */
+        /* A patrol stopped for repairs goes on to the point it was
+         * making for. */
+        if (u->post_set == UNIT_POST_WORK && u->cmd_kind == UNIT_CMD_NONE) {
+            u->cmd_kind = UNIT_CMD_PATROL;
+            u->cmd_x = u->post_x;
+            u->cmd_y = u->post_y;
+            u->post_set = UNIT_POST_NONE;
+            unit_clear_path(u);
+        }
         if (unit_def_is_factory(def)) factory_tick(u, i, def);
         else if (u->cmd_kind == UNIT_CMD_NONE && u->leg_count > 0)
             unit_next_leg(u, i);
@@ -13904,7 +14032,10 @@ static void Units_TickCombat(void) {
                 int best_i = def->fire_at_will_random
                     ? ugrid_random_enemy(u, i, scan_radius, &def->weapons[0])
                     : ugrid_nearest_enemy(u, i, scan_radius, &def->weapons[0]);
+                if (best_i >= 0 && !unit_post_may_take(u, def, &g_units[best_i]))
+                    best_i = -1;
                 if (best_i >= 0) {
+                    unit_post_take(u, def);
                     u->target = (int16_t)best_i;
                     u->attack_explicit = 0;
                     if (u->cmd_kind != UNIT_CMD_PATROL)
@@ -13940,6 +14071,10 @@ static void Units_TickCombat(void) {
                 }
             }
         }
+
+        if (u->cmd_kind == UNIT_CMD_PATROL && u->target < 0 &&
+            u->post_set == UNIT_POST_NONE && !def->can_fly)
+            patrol_take_work(u, i, def);
 
         CMB_MARK(1);
         /* Determine desired state. Order of precedence:
@@ -14159,10 +14294,15 @@ static void Units_TickCombat(void) {
             goal_x = u->cmd_x;
             goal_y = u->cmd_y;
             if (def->can_fly) flyer_move_band(u, def, &goal_x, &goal_y);
-        } else if (u->cmd_kind == UNIT_CMD_PATROL) {
+        } else if (u->cmd_kind == UNIT_CMD_PATROL ||
+                   (u->cmd_kind == UNIT_CMD_NONE &&
+                    u->post_set == UNIT_POST_FIGHT)) {
+            /* After a fight of its own it walks back to its post first
+             * (legacy:181918-181945). */
+            int back = u->post_set == UNIT_POST_FIGHT;
             desired = UNIT_ANIM_MOVING;
-            goal_x = u->cmd_x;
-            goal_y = u->cmd_y;
+            goal_x = back ? u->post_x : u->cmd_x;
+            goal_y = back ? u->post_y : u->cmd_y;
         } else if (u->cmd_kind == UNIT_CMD_UNLOAD) {
             desired = unit_unload_tick(u, i, def, &goal_x, &goal_y);
         } else if (u->cmd_kind == UNIT_CMD_BUILD && u->build_target < 0 &&
@@ -14309,6 +14449,13 @@ static void Units_TickCombat(void) {
                     } else if (u->cmd_kind == UNIT_CMD_LOAD &&
                                (def->cap_flags & UNIT_CAP_TRANSPORT)) {
                         unit_pickup_arrived(u, def);
+                    } else if (u->post_set == UNIT_POST_FIGHT &&
+                               u->target < 0 &&
+                               (u->cmd_kind == UNIT_CMD_NONE ||
+                                u->cmd_kind == UNIT_CMD_PATROL)) {
+                        /* Back at its post, a patrol goes on. */
+                        u->post_set = UNIT_POST_NONE;
+                        unit_clear_path(u);
                     } else if (u->cmd_kind == UNIT_CMD_PATROL &&
                                u->target < 0) {
                         /* Swap legs only on arrival at the waypoint. A

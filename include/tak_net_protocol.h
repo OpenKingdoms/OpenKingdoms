@@ -126,7 +126,11 @@
  * 40: a hover attacker wakes on a landed shot only when it did not hurt
  * the other side more than twice its own, and counts its point reached
  * where the walk stops. 41: a shot that strikes its target bursts on the
- * target's body. 42: a blade takes no flyer in the air. */
+ * target's body. 42: a fight a unit takes on for itself ends at its
+ * maneuverleashlength from where it began and it walks back there, a
+ * patrol fights in any stance and goes on from where it broke off, a
+ * builder on patrol mends and helps build, and a blade takes no flyer
+ * in the air. */
 #define TAK_ENGINE_BUILD_ID           42
 
 #define TAK_NET_FRAME_HEADER          3u

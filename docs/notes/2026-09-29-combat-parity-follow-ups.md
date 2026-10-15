@@ -35,11 +35,9 @@ only what it reaches, and it answers only a shooter it reaches. The
 leash is `maneuverleashlength`, the maneuver stance's, so a unit holding
 position has none. An attack its player orders is followed as before.
 
-Maneuver is the offensive stance, which chases what it takes on. The
-engine reads the leash for return fire and for a search during a fight. Whether the original also
-turns a maneuvering unit back when a chase passes the leash is not
-established here, so a unit on maneuver still chases until its target
-dies or is lost.
+Maneuver is the offensive stance, which chases what it takes on as far
+as its leash and then walks back. The section on the leash at the end
+of this note has the rule.
 
 ## Melee is a weapon's type
 
@@ -112,3 +110,42 @@ Without `standingunitorder` a unit starts offensive and moves by
 unit answers a shooter and takes a new target at any distance. Any other
 `standingmoveorder` keeps the maneuver leash here. What its other values
 mean is not established here.
+
+## The leash, the walk back and the patrol (2026-10-15)
+
+A player reported that his units chased whatever ran from them to their
+death, that patrols were no help, and that ground units hit flyers.
+
+An idle unit on maneuver that finds a target gets two missions, a move
+back to where it stands and the attack on top of it. The attack carries
+`maneuverleashlength` and that point (legacy:181879-181947, called from
+the standby at legacy:13621-13633). Both attack missions end once the
+unit stands the leash or more from the point (legacy:11020 for a ranged
+weapon, legacy:11380 for a blade), and the move back then walks it
+there. On the way it takes on only what stands inside the leash round
+that point, and the fight it takes keeps the same point
+(legacy:10438-10443). A unit that roams gets the attack with no leash
+and no move back. One holding position gets neither, and only its
+weapons fire, at what they reach. A leash of 0 is no limit.
+
+A patrol looks with the same search between its legs and takes what it
+finds by the same two missions, whatever the stance, so a unit holding
+position on patrol closes in too. The point is where it left its route
+(legacy:10843-10851). A passive unit does not search. With nothing to
+fight, a builder on patrol looks inside its sight
+for a damaged ally standing still on the ground, or a frame of its own
+side, takes one of them at random and mends or helps build it, then
+goes on to the point it was making for (legacy:10861-10930,
+legacy:14708-14722, legacy:233526-233571). A computer player's builder
+takes only a finished building.
+
+A blade never takes a unit in the air. The search lets a melee weapon
+take only a unit on the ground (legacy:21164), its reach test refuses
+one in the air (legacy:246390-246403) and its attack ends when the
+target is in the air (legacy:11383). Other weapons take a flyer unless
+their file says `noairweapon`.
+
+The engine keeps the point, the leash and whether the unit is walking
+back on the unit, in the state hash and the unit record (version 13).
+D-040 says where it differs. The tests are in
+`src/render/test_line_of_fire.c`.

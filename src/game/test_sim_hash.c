@@ -445,6 +445,13 @@ static int test_every_subsystem_contributes(void) {
     POKE("hover point", g_units[0].hover_x = -200, g_units[0].hover_x = 0);
     POKE("hover point y", g_units[0].hover_y = 31, g_units[0].hover_y = 0);
     g_units[0].hover_state = 0;
+    POKE("fight post", g_units[0].post_set = UNIT_POST_FIGHT,
+         g_units[0].post_set = 0);
+    g_units[0].post_set = UNIT_POST_WORK;
+    POKE("post leash", g_units[0].post_leash = 500, g_units[0].post_leash = 0);
+    POKE("post point", g_units[0].post_x = 40, g_units[0].post_x = 0);
+    POKE("post point y", g_units[0].post_y = -9, g_units[0].post_y = 0);
+    g_units[0].post_set = 0;
     POKE("summons held for units on its spot",
          g_units[0].build_held = 1, g_units[0].build_held = 0);
     g_units[0].build_held = 1;
