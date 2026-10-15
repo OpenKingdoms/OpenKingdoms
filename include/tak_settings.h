@@ -17,10 +17,6 @@
 #define TAK_SETTING_SCREEN_W   "InGameScreenWidth"
 #define TAK_SETTING_SCREEN_H   "InGameScreenHeight"
 
-/* Use Crusades Units as the player last left it, kept with the game
- * options under the original's name (legacy:131655). */
-#define TAK_SETTING_CRUSADES   "CrusadesBalance"
-
 /* Read the file. Missing file is not an error. Returns 0 on success. */
 int  Settings_Load(void);
 
