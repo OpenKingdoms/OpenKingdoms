@@ -224,6 +224,14 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
         h = TAK_HashI32(h, u->build_wait);
     }
     h = TAK_HashI32(h, u->research_wait);
+    /* Only a unit with a post to walk back to, or a patrol to go on
+     * with, adds to the hash. */
+    if (u->post_set) {
+        h = TAK_HashI32(h, 0x900 | u->post_set);
+        h = TAK_HashI32(h, u->post_leash);
+        h = TAK_HashI32(h, u->post_x);
+        h = TAK_HashI32(h, u->post_y);
+    }
     /* The caster's own pool, separate from the player economy. */
     h = TAK_HashF32(h, u->mana);
     h = TAK_HashF32(h, u->mana_max);

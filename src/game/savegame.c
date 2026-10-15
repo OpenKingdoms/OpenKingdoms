@@ -386,7 +386,13 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 #define U_HOVER_EVENTS  (U_HOVER_STATE + 3u)
 #define U_HOVER_X       (U_HOVER_STATE + 4u)
 #define U_HOVER_Y       (U_HOVER_STATE + 8u)
-#define U_END           (U_HOVER_STATE + 12u)
+/* Version 13 on: a fight's post and leash, or the point a patrol goes on
+ * to after repairs. An older record reads back none. */
+#define U_POST_SET      (U_HOVER_STATE + 12u)
+#define U_POST_LEASH    (U_POST_SET + 1u)
+#define U_POST_X        (U_POST_SET + 3u)
+#define U_POST_Y        (U_POST_SET + 7u)
+#define U_END           (U_POST_SET + 11u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -603,7 +609,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 12
+#define VER_UNIT 13
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 4
@@ -1206,6 +1212,10 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_u8(r + U_HOVER_EVENTS, u->hover_events);
     tak_put_i32(r + U_HOVER_X, u->hover_x);
     tak_put_i32(r + U_HOVER_Y, u->hover_y);
+    tak_put_u8(r + U_POST_SET, u->post_set);
+    tak_put_u16(r + U_POST_LEASH, u->post_leash);
+    tak_put_i32(r + U_POST_X, u->post_x);
+    tak_put_i32(r + U_POST_Y, u->post_y);
     tak_put_u8(r + U_BUILD_ENDLESS, (uint8_t)((u->build_endless ? 1u : 0u) |
                                               (u->build_held ? 2u : 0u)));
     tak_put_u8(r + U_BUILD_TRIES, u->build_tries);
@@ -1463,6 +1473,10 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->hover_events = tak_get_u8(r + U_HOVER_EVENTS);
     u->hover_x = tak_get_i32(r + U_HOVER_X);
     u->hover_y = tak_get_i32(r + U_HOVER_Y);
+    u->post_set = tak_get_u8(r + U_POST_SET);
+    u->post_leash = tak_get_u16(r + U_POST_LEASH);
+    u->post_x = tak_get_i32(r + U_POST_X);
+    u->post_y = tak_get_i32(r + U_POST_Y);
     uint8_t summons = tak_get_u8(r + U_BUILD_ENDLESS);
     u->build_endless = (summons & 1u) ? 1 : 0;
     u->build_held = (summons & 2u) ? 1 : 0;

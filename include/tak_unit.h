@@ -811,6 +811,13 @@ typedef struct UnitMoveLeg {
 #define UNIT_ATTACK_ORDER 1
 #define UNIT_ATTACK_HELD  2
 
+/* Unit.post_set: a fight the unit took on for itself, which it walks
+ * back from to (post_x, post_y), or a patrolling builder's repair, after
+ * which its patrol goes on to (post_x, post_y). */
+#define UNIT_POST_NONE  0
+#define UNIT_POST_FIGHT 1
+#define UNIT_POST_WORK  2
+
 /* Unit.air_mode: an airborne flyer stepping out of a crowd, making for a
  * clear spot to land on, or circling while it finds none. */
 #define UNIT_AIR_NONE    0
@@ -1010,6 +1017,12 @@ typedef struct Unit {
      * took on for itself looks again (legacy:11485-11509). 0 when not
      * waiting. */
     uint8_t    research_wait;
+    /* UNIT_POST_*: where a fight it took on for itself began and how far
+     * from there it follows, 0 for no limit (legacy:181900-181947), or
+     * the point a patrol interrupted for repairs goes on to. */
+    uint8_t    post_set;
+    uint16_t   post_leash;
+    int32_t    post_x, post_y;
     /* A caster's own mana: a value and its cap (legacy unit+0xd8),
      * filled by manarechargerate per frame and spent per shot. */
     float      mana;

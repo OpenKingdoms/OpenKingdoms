@@ -1724,9 +1724,9 @@ Format per entry:
   A player's own attack order is never let go, and neither is a
   mission script's, whoever owns the unit. The computer's own orders
   are, since it has no other way to notice. A unit that cannot move,
-  or one holding position, also lets go of a target it picked as soon
-  as that target is out of its reach or inside its minrange, and
-  neither its search nor its return fire takes one there.
+  or one holding position and not on patrol, also lets go of a target
+  it picked as soon as that target is out of its reach or inside its
+  minrange, and neither its search nor its return fire takes one there.
 - Why: shots stop on what they fly into now, and the original fires
   into a hill without looking first. Its sight also shrinks uphill
   (D-014), which the engine does not copy yet, so here a unit sees and
@@ -2085,6 +2085,29 @@ Format per entry:
   legacy:30467-30502, legacy:235678-235762), the hover attack's step out
   (legacy:30636-30705) and the move to its point (legacy:30362-30364).
   The manual is silent.
+
+## D-040: A unit at its leash still fights what it reaches
+
+- Change: a fight a unit takes on for itself ends once it stands its
+  `maneuverleashlength` from where the fight began, as the original's
+  does, but only while the target is out of its reach. A target in
+  reach is fought on there. On the walk back it takes on what stands
+  inside the leash round that point, as the original's does, and also
+  anything its weapon reaches from where it stands. A hit it answers on
+  the way keeps the first point, where the original would start a new
+  fight from where the unit was hit and walk back to each point in turn.
+  A computer player's builder on patrol draws only among finished
+  buildings, where the original draws among everything and then passes
+  over what is not one.
+- Why: the owner asked that units fire at what they can reach and never
+  stand under fire doing nothing. One point per fight keeps the walk
+  back short and easy to read.
+- Citation: the leash ends the attack (legacy:11020, legacy:11380), the
+  walk back takes only what is inside it (legacy:10438-10443), a hit
+  starts a fight from where the unit stands (legacy:15170,
+  legacy:181879-181947) and the patrol's draw (legacy:10877-10884). The
+  manual is silent. docs/notes/2026-09-29-combat-parity-follow-ups.md
+  has the rule.
 
 ## R-008: A reel's soundtrack goes through the game's mixer
 

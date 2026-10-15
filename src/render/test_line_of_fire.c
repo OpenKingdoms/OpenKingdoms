@@ -40,7 +40,7 @@ enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_HOLDER, LF_ROVER, LF_PICKER, LF_SEEKER, LF_SEEKFAR, LF_ROAMER,
        LF_FLYPICK, LF_BLADEPICK, LF_BROAD, LF_SWIRL, LF_CANNON, LF_TORCH,
        LF_SWEEPER, LF_BOMBER, LF_STURDY, LF_TWISTER, LF_TORNADO,
-       LF_DEF_COUNT };
+       LF_ROVEROAM, LF_HAWK, LF_MASON, LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
 #define LF_SX   800
@@ -343,6 +343,19 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
         wp->wander_max_variation = k == LF_TWISTER ? 0 : 5;
         for (int a = 0; a < 3; a++) wp->wander_art[a] = -1;
     }
+
+    /* The maneuvering archer again, roaming. */
+    defs[LF_ROVEROAM] = defs[LF_ROVER];
+    strncpy(defs[LF_ROVEROAM].unitname, "TESTROVEROAM", sizeof(defs[LF_ROVEROAM].unitname) - 1);
+    defs[LF_ROVEROAM].has_standing_order = 0;
+    defs[LF_ROVEROAM].roams = 1;
+    /* An unarmed flyer, and a builder with no weapon that sees 250. */
+    lf_fill(&defs[LF_HAWK], "TESTHAWK", 2.0f, 500);
+    defs[LF_HAWK].can_fly = 1;
+    defs[LF_HAWK].cruise_alt = 100;
+    lf_fill(&defs[LF_MASON], "TESTMASON", 1.2f, 500);
+    defs[LF_MASON].cap_flags |= UNIT_CAP_BUILDER;
+    defs[LF_MASON].worker_time = 10.0f;
 
     FeatureDef fdefs[FD_COUNT];
     memset(fdefs, 0, sizeof fdefs);
@@ -2056,7 +2069,7 @@ static void lf_fog(GameWorld *w) {
  * see, the shooters let go of targets behind the ridge and go looking,
  * and the fog is state. Pinned, so every platform in CI has to
  * reach the same answer. */
-#define LF_FOG_VOLLEY_HASH 0x5c9fd4d9u
+#define LF_FOG_VOLLEY_HASH 0xc5bc2be9u
 
 static uint32_t lf_fog_volley_hash(int *out_hurt) {
     GameWorld *w = lf_world(1, 1);
@@ -2781,6 +2794,187 @@ TEST(a_unit_looks_again_only_inside_its_leash) {
     ASSERT_EQ_INT(1, roams);
 }
 
+/* A dummy 150 px east of a `def` walks 1400 px further on. Returns how
+ * far east of its post the unit got, and where it stands and what it
+ * holds after `ticks`. */
+static int32_t lf_chase_run(int def, int ticks, int32_t *out_x, int *out_target) {
+    if (!lf_world(0, 0)) return -1;
+    int a = Units_Spawn(def, 1, 0, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_SX + 150, LF_ROW);
+    if (a < 0 || t < 0) return -1;
+    for (int i = 0; i < 10; i++) Units_TickEngines();
+    if (lf_unit(a)->target != t) return -2;
+    Units_CommandMoveUnit(t, LF_SX + 1550, LF_ROW);
+    int32_t far = LF_SX;
+    for (int i = 0; i < ticks; i++) {
+        Units_TickEngines();
+        if (lf_unit(a)->world_x > far) far = lf_unit(a)->world_x;
+    }
+    *out_x = lf_unit(a)->world_x;
+    *out_target = lf_unit(a)->target;
+    lf_end();
+    return far - LF_SX;
+}
+
+/* A maneuvering unit follows a target it took on for itself no further
+ * than maneuverleashlength from where it stood, then walks back there.
+ * One that roams follows on (legacy:181879-181947, legacy:11020). */
+TEST(a_unit_gives_up_a_chase_at_its_leash_and_walks_back) {
+    int32_t rx = 0, ox = 0;
+    int rt = 0, ot = 0;
+    int32_t rover = lf_chase_run(LF_ROVER, 4000, &rx, &rt);
+    int32_t roam = lf_chase_run(LF_ROVEROAM, 4000, &ox, &ot);
+    printf("(rover out %d, back at %d holding %d, roamer out %d) ",
+           rover, rx - LF_SX, rt, roam);
+    ASSERT(rover >= 480 && rover <= 520);
+    ASSERT(rx >= LF_SX - 8 && rx <= LF_SX + 8);
+    ASSERT_EQ_INT(-1, rt);
+    ASSERT(roam > 1000);
+}
+
+/* Return fire takes the same post: the shooter dead, it walks back. */
+TEST(a_unit_that_answered_a_hit_walks_back_to_its_post) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int a = Units_Spawn(LF_ROVER, 1, 0, LF_SX, LF_ROW);
+    int s = lf_spawn(LF_BOLT, 2, LF_SX + 400, LF_ROW);
+    ASSERT(a >= 0 && s >= 0);
+    LfShot r = lf_fire(s, a, 300);
+    ASSERT(r.fired);
+    int answered = lf_unit(a)->target == s;
+    for (int i = 0; i < 600 && lf_unit(a)->world_x < LF_SX + 150; i++)
+        Units_TickEngines();
+    int32_t out = lf_unit(a)->world_x - LF_SX;
+    Units_DebugRemove(s);
+    for (int i = 0; i < 1200; i++) Units_TickEngines();
+    int32_t back = lf_unit(a)->world_x - LF_SX;
+    lf_end();
+    printf("(answered %d, out %d, back at %d) ", answered, out, back);
+    ASSERT(answered);
+    ASSERT(out >= 150);
+    ASSERT(back >= -8 && back <= 8);
+}
+
+/* A patrol from the post to 600 px east meets a dummy 150 px off its
+ * route, which walks 1300 px further off once the fight starts. The
+ * patroller follows it to its leash from where it left the route, walks
+ * back there and goes on to the end of the route (legacy:10843-10851).
+ * Returns 1 when it got there, with how far off the route it went and
+ * how near it came back to where it left. */
+static int lf_patrol_run(int def, int32_t *out_off, int32_t *out_back) {
+    if (!lf_world(0, 0)) return -1;
+    int p = Units_Spawn(def, 1, 0, LF_SX, LF_ROW);
+    int d = lf_spawn(LF_TARGET, 2, LF_SX + 300, LF_ROW - 150);
+    if (p < 0 || d < 0) return -1;
+    if (!Units_OrderPatrol(p, LF_SX + 600, LF_ROW)) return -1;
+    int i = 0;
+    for (; i < 1200 && lf_unit(p)->target != d; i++) Units_TickEngines();
+    if (lf_unit(p)->target != d) return -2;
+    int32_t lx = lf_unit(p)->world_x, ly = lf_unit(p)->world_y;
+    Units_CommandMoveUnit(d, LF_SX + 300, LF_ROW - 1450);
+    int32_t off = 0;
+    int64_t back2 = INT64_MAX;
+    int given_up = 0, reached = 0;
+    for (i = 0; i < 6000 && !reached; i++) {
+        Units_TickEngines();
+        const Unit *u = lf_unit(p);
+        if (u->cmd_kind != UNIT_CMD_PATROL) return -3;
+        if (LF_ROW - u->world_y > off) off = LF_ROW - u->world_y;
+        if (u->target < 0) given_up = 1;
+        if (given_up) {
+            int64_t dx = u->world_x - lx, dy = u->world_y - ly;
+            if (dx * dx + dy * dy < back2) back2 = dx * dx + dy * dy;
+        }
+        int64_t bx = u->world_x - (LF_SX + 600), by = u->world_y - LF_ROW;
+        if (given_up && bx * bx + by * by <= 100) reached = 1;
+    }
+    lf_end();
+    *out_off = off;
+    *out_back = back2 == INT64_MAX ? -1 : (int32_t)back2;
+    return reached;
+}
+
+TEST(a_patroller_breaks_off_at_its_leash_and_resumes_its_route) {
+    int32_t off = 0, back2 = 0, hoff = 0, hback2 = 0;
+    int rover = lf_patrol_run(LF_ROVER, &off, &back2);
+    /* Holding position or not, a patrol closes in (legacy:181900-181911). */
+    int holder = lf_patrol_run(LF_HOLDER, &hoff, &hback2);
+    printf("(rover %d off %d back %d, holder %d off %d back %d) ",
+           rover, off, back2, holder, hoff, hback2);
+    ASSERT_EQ_INT(1, rover);
+    ASSERT(off >= 400 && off <= 700);
+    ASSERT(back2 >= 0 && back2 <= 100);
+    ASSERT_EQ_INT(1, holder);
+    ASSERT(hoff >= 400 && hoff <= 700);
+    ASSERT(hback2 >= 0 && hback2 <= 100);
+}
+
+/* A builder on patrol mends a damaged building of its side it passes,
+ * then goes on with the patrol, and leaves an enemy's alone
+ * (legacy:10861-10930). */
+TEST(a_patrolling_builder_mends_what_it_passes_and_goes_on) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int m = Units_Spawn(LF_MASON, 1, 0, LF_SX, LF_ROW);
+    int own = Units_Spawn(LF_POST, 1, 0, LF_SX + 300, LF_ROW + 100);
+    int foe = Units_Spawn(LF_POST, 2, 1, LF_SX + 300, LF_ROW - 100);
+    ASSERT(m >= 0 && own >= 0 && foe >= 0);
+    ((Unit *)lf_unit(own))->health = 500;
+    ((Unit *)lf_unit(foe))->health = 500;
+    ASSERT_EQ_INT(1, Units_OrderPatrol(m, LF_SX + 600, LF_ROW));
+    int mended = 0, reached = 0, kind_after = -1;
+    for (int i = 0; i < 4000 && !reached; i++) {
+        Units_TickEngines();
+        const Unit *u = lf_unit(m);
+        if (!mended && lf_unit(own)->health >= 1000) mended = i + 1;
+        int64_t bx = u->world_x - (LF_SX + 600), by = u->world_y - LF_ROW;
+        if (mended && bx * bx + by * by <= 100) {
+            reached = i + 1;
+            kind_after = u->cmd_kind;
+        }
+    }
+    int foe_hp = lf_unit(foe)->health;
+    lf_end();
+    printf("(mended at %d, reached the end at %d) ", mended, reached);
+    ASSERT(mended > 0);
+    ASSERT(reached > mended);
+    ASSERT_EQ_INT(UNIT_CMD_PATROL, kind_after);
+    ASSERT_EQ_INT(500, foe_hp);
+}
+
+/* A blade never takes a flyer in the air, by its search or by an order,
+ * where a bow does (legacy:21164, legacy:246390-246403, legacy:11383). */
+TEST(a_blade_never_strikes_a_flyer_in_the_air) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    ((UnitDef *)Units_GetDef(LF_HAWK))->script_flies = 1;
+    int b = lf_spawn(LF_BLADEPICK, 1, LF_SX, LF_ROW);
+    int bow = lf_spawn(LF_ARCHER, 1, LF_SX, LF_ROW + 200);
+    int h = lf_spawn(LF_HAWK, 2, LF_SX + 80, LF_ROW);
+    ASSERT(b >= 0 && bow >= 0 && h >= 0);
+    ASSERT(Units_OrderPatrol(h, LF_SX + 140, LF_ROW));
+    for (int i = 0; i < 120; i++) Units_TickEngines();
+    ASSERT_EQ_INT(1, lf_unit(h)->flying);
+    Units_DebugSetAggro(b, UNIT_AGGRO_OFFENSIVE);
+    int held = 0;
+    for (int i = 0; i < 900; i++) {
+        Units_TickEngines();
+        if (lf_unit(b)->target == h) held++;
+    }
+    int hp = lf_unit(h)->health;
+    int blade_can = Units_WeaponCanTake(b, h);
+    int bow_can = Units_WeaponCanTake(bow, h);
+    Units_OrderAttack(b, h);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    int ordered = lf_unit(b)->target;
+    int kind = lf_unit(b)->cmd_kind;
+    lf_end();
+    printf("(held %d ticks, hawk at %d hp) ", held, hp);
+    ASSERT_EQ_INT(0, held);
+    ASSERT_EQ_INT(500, hp);
+    ASSERT_EQ_INT(0, blade_can);
+    ASSERT_EQ_INT(1, bow_can);
+    ASSERT_EQ_INT(-1, ordered);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, kind);
+}
+
 /* ── what the blast hook hears ─────────────────────────────────────── */
 
 TEST(a_rock_on_the_ground_tells_the_hook_where_and_whose) {
@@ -3255,6 +3449,11 @@ int main(int argc, char **argv) {
     RUN(a_flyer_never_looks_again_this_way);
     RUN(a_melee_unit_never_looks_again_this_way);
     RUN(a_unit_looks_again_only_inside_its_leash);
+    RUN(a_unit_gives_up_a_chase_at_its_leash_and_walks_back);
+    RUN(a_unit_that_answered_a_hit_walks_back_to_its_post);
+    RUN(a_patroller_breaks_off_at_its_leash_and_resumes_its_route);
+    RUN(a_patrolling_builder_mends_what_it_passes_and_goes_on);
+    RUN(a_blade_never_strikes_a_flyer_in_the_air);
     TEST_SUITE("An attack out of reach");
     RUN(an_attack_on_a_target_out_of_reach_is_kept);
     TEST_SUITE("The cell test");
