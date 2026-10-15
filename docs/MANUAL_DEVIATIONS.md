@@ -2041,11 +2041,15 @@ Format per entry:
 - Change: a shot fired at a unit strikes that unit when it passes
   within 24 px of the unit's body, leaves for where the unit stands
   when it is fired, and crosses the ground at its full weaponvelocity
-  however steep its line. A mind control shot now flies by the
-  original's rules instead. It leaves for where its target will be,
-  four fifths of the way through its flight, and strikes only a unit in
-  its own 16 px cell whose selection quad, turned with the unit, holds
-  it and whose model span holds its height. It flies at its
+  however steep its line. A shot that reaches its target this way
+  bursts on the nearest point of the target's model box, as the
+  original's bursts inside the unit's selection quad, so a splash
+  weapon's direct hit does its whole damage. A mind control shot now
+  flies by the original's rules instead. It leaves for where its
+  target will be, four fifths of the way through its flight, and
+  strikes only a unit in its own 16 px cell whose selection quad,
+  turned with the unit, holds it and whose model span holds its
+  height. It flies at its
   weaponvelocity along its line rather than across the ground, it is
   gone after its range at its speed across the ground, and it ends the
   frame its caster is seen dead or dying.

@@ -74,7 +74,11 @@ bottom and top, so a rock thrown high passes over a unit that walked in
 under its arc. Where the target is met, the cells on the way there are
 tested first, no more than 8 px apart, so a unit right behind a one
 cell wall or crest is not struck through it. The first thing met puts
-the shot where it happened. Only a shot
+the shot where it happened, except that a shot meeting its target by
+that reach bursts on the nearest point of the target's model box. The
+original's shot bursts inside the unit's selection quad, so its target
+takes a splash weapon's whole hit, the full 817 of a Rictus fireball on
+a swordsman. Only a shot
 fired at a point on the ground has a fuse at its aim point. One whose
 target dies flies on past where it was aimed to whatever it meets, and
 a splash does not go off over the place a dead flyer was.

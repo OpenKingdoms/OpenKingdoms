@@ -1011,6 +1011,22 @@ TEST(a_small_blast_on_a_unit_hits_it_alone) {
     lf_end();
 }
 
+/* A splash shot that strikes its target bursts on the target's body, as
+ * one struck inside a unit's quad does in the original, so the target
+ * takes the whole hit (legacy:245414-245424, 245164-245217). */
+TEST(a_splash_shot_that_strikes_its_target_bursts_on_it) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int s = lf_spawn(LF_CANNON, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_STURDY, 2, LF_TX, LF_ROW);
+    ASSERT(s >= 0 && t >= 0);
+    LfShot r = lf_fire(s, t, 300);
+    ASSERT(r.fired);
+    printf("(took %d, burst at x %d) ", 100000 - lf_unit(t)->health, (int)r.x);
+    ASSERT_EQ_INT(100000 - 2000, lf_unit(t)->health);
+    ASSERT_EQ_INT(LF_TX, r.x);
+    lf_end();
+}
+
 /* ── scenery ───────────────────────────────────────────────────────── */
 
 static int lf_place(GameWorld *w, int def, int cx, int cz) {
@@ -3274,6 +3290,7 @@ int main(int argc, char **argv) {
     RUN(a_blast_falls_off_like_the_originals);
     RUN(a_blast_reaches_half_its_area_to_the_side_of_a_unit);
     RUN(a_small_blast_on_a_unit_hits_it_alone);
+    RUN(a_splash_shot_that_strikes_its_target_bursts_on_it);
     TEST_SUITE("Scenery");
     RUN(a_cannon_fells_a_tree_to_its_stump);
     RUN(a_wall_drops_a_stage_then_to_rubble_that_stops_blocking);

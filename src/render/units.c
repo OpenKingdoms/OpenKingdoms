@@ -1804,19 +1804,27 @@ static void mind_control_strike(const Projectile *p, int victim_idx,
 static uint32_t unit_isqrt64(uint64_t v);
 static void unit_body_span(const Unit *v, int *base, int *bottom, int *top);
 
-/* How far a blast at (x, y, h) is from unit v: from the point to the
- * model's box, unturned and set on the unit where it stands, in whole
- * px, 0 inside it (legacy:245164-245209). */
-static int blast_unit_distance(const Unit *v, int32_t x, int32_t y, float h) {
+/* Unit v's model box, unturned and set on the unit where it stands, in
+ * whole px over x, height and y. */
+static void unit_body_box(const Unit *v, int64_t lo[3], int64_t hi[3]) {
     int base, bottom, top;
     unit_body_span(v, &base, &bottom, &top);
     const UnitDef *d = Units_GetDef(v->def_idx);
-    int64_t lo[3] = { v->world_x, bottom, v->world_y };
-    int64_t hi[3] = { v->world_x, top,    v->world_y };
+    lo[0] = hi[0] = v->world_x;
+    lo[1] = bottom;
+    hi[1] = top;
+    lo[2] = hi[2] = v->world_y;
     if (d) {
         lo[0] += d->body_min_x_px; hi[0] += d->body_max_x_px;
         lo[2] += d->body_min_z_px; hi[2] += d->body_max_z_px;
     }
+}
+
+/* How far a blast at (x, y, h) is from unit v: from the point to the
+ * model's box, in whole px, 0 inside it (legacy:245164-245209). */
+static int blast_unit_distance(const Unit *v, int32_t x, int32_t y, float h) {
+    int64_t lo[3], hi[3];
+    unit_body_box(v, lo, hi);
     int64_t pt[3] = { x, (int64_t)floorf(h), y };
     uint64_t sum = 0;
     for (int a = 0; a < 3; a++) {
@@ -2364,12 +2372,47 @@ static void shot_burst(Projectile *p, int idx) {
  * before the cell the way a target is. */
 #define SHOT_FUSE 100
 
+/* A shot that reaches its target at (px, py, ph) bursts on the nearest
+ * point of the model's box, as the original's bursts inside the unit's
+ * quad (legacy:245414-245424, :237007-237027). Cells on the way stop it. */
+static int shot_land_on_body(const Projectile *p, const Unit *t, int target,
+                             int32_t px, int32_t py, float ph, ShotBodyAt *at,
+                             const TAK_ShotBodies *bodies, int32_t *ox,
+                             int32_t *oy, float *oh, int *struck) {
+    GameWorld *gw = World_Get();
+    int64_t lo[3], hi[3];
+    unit_body_box(t, lo, hi);
+    int32_t qx = (int32_t)(px < lo[0] ? lo[0] : px > hi[0] ? hi[0] : px);
+    int32_t qy = (int32_t)(py < lo[2] ? lo[2] : py > hi[2] ? hi[2] : py);
+    float qh = ph < (float)lo[1] ? (float)lo[1]
+             : ph > (float)hi[1] ? (float)hi[1] : ph;
+    int32_t gx = qx > px ? qx - px : px - qx;
+    int32_t gy = qy > py ? qy - py : py - qy;
+    int m = (int)(((gx > gy ? gx : gy) + 7) / 8);
+    for (int c = 1; c <= m; c++) {
+        int32_t cx = px + (qx - px) * c / m;
+        int32_t cy = py + (qy - py) * c / m;
+        float ch = ph + (qh - ph) * (float)c / (float)m;
+        at->x = cx; at->y = cy;
+        int kind = ShotPath_Test(gw, cx, cy, (int)floorf(ch), p->player_id,
+                                 p->path_flags & 0x07u, bodies, struck);
+        if (kind == TAK_SHOT_FLY ||
+            (kind == TAK_SHOT_UNIT && *struck == target)) continue;
+        *ox = cx; *oy = cy; *oh = ch;
+        return kind;
+    }
+    *ox = qx; *oy = qy; *oh = qh;
+    *struck = target;
+    return TAK_SHOT_UNIT;
+}
+
 /* Walk from (x0, y0, h0) to (x1, y1, h1) in steps of at most 16 px
  * through the cell test (legacy:250425-250433). On each step the
  * intended target is met first, within 24 px of its body in 3D, or the
  * fuse when `fuse` is set, then the cell. The cells on the way to where
- * the target is met still stop the shot. A mind control shot has only
- * the cell (legacy:247736). Returns the TAK_SHOT_* kind that ended the
+ * the target is met still stop the shot, and one that reaches its
+ * target bursts on its body. A mind control shot has only the cell
+ * (legacy:247736). Returns the TAK_SHOT_* kind that ended the
  * walk, TAK_SHOT_UNIT with *struck the target when it was reached,
  * SHOT_FUSE, or TAK_SHOT_FLY when nothing did. *ox, *oy, *oh are where
  * it ended. */
@@ -2426,10 +2469,8 @@ static int shot_walk(const Projectile *p, int32_t x0, int32_t y0, float h0,
                     *ox = cx; *oy = cy; *oh = ch;
                     return kind;
                 }
-                /* It lands at its closest approach. */
-                *ox = px; *oy = py; *oh = ph;
-                *struck = target;
-                return TAK_SHOT_UNIT;
+                return shot_land_on_body(p, t, target, px, py, ph, &at,
+                                         &bodies, ox, oy, oh, struck);
             }
         } else if (fuse &&
                    point_segment_dist2_i32(p->dest_x, p->dest_y,
