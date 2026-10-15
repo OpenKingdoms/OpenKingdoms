@@ -40,7 +40,7 @@ enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_HOLDER, LF_ROVER, LF_PICKER, LF_SEEKER, LF_SEEKFAR, LF_ROAMER,
        LF_FLYPICK, LF_BLADEPICK, LF_BROAD, LF_SWIRL, LF_CANNON, LF_TORCH,
        LF_SWEEPER, LF_BOMBER, LF_STURDY, LF_TWISTER, LF_TORNADO,
-       LF_DEF_COUNT };
+       LF_HAWK, LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
 #define LF_SX   800
@@ -343,6 +343,11 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
         wp->wander_max_variation = k == LF_TWISTER ? 0 : 5;
         for (int a = 0; a < 3; a++) wp->wander_art[a] = -1;
     }
+
+    /* An unarmed flyer. */
+    lf_fill(&defs[LF_HAWK], "TESTHAWK", 2.0f, 500);
+    defs[LF_HAWK].can_fly = 1;
+    defs[LF_HAWK].cruise_alt = 100;
 
     FeatureDef fdefs[FD_COUNT];
     memset(fdefs, 0, sizeof fdefs);
@@ -2781,6 +2786,41 @@ TEST(a_unit_looks_again_only_inside_its_leash) {
     ASSERT_EQ_INT(1, roams);
 }
 
+/* A blade never takes a flyer in the air, by its search or by an order,
+ * where a bow does (legacy:21164, legacy:246390-246403, legacy:11383). */
+TEST(a_blade_never_strikes_a_flyer_in_the_air) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    ((UnitDef *)Units_GetDef(LF_HAWK))->script_flies = 1;
+    int b = lf_spawn(LF_BLADEPICK, 1, LF_SX, LF_ROW);
+    int bow = lf_spawn(LF_ARCHER, 1, LF_SX, LF_ROW + 200);
+    int h = lf_spawn(LF_HAWK, 2, LF_SX + 80, LF_ROW);
+    ASSERT(b >= 0 && bow >= 0 && h >= 0);
+    ASSERT(Units_OrderPatrol(h, LF_SX + 140, LF_ROW));
+    for (int i = 0; i < 120; i++) Units_TickEngines();
+    ASSERT_EQ_INT(1, lf_unit(h)->flying);
+    Units_DebugSetAggro(b, UNIT_AGGRO_OFFENSIVE);
+    int held = 0;
+    for (int i = 0; i < 900; i++) {
+        Units_TickEngines();
+        if (lf_unit(b)->target == h) held++;
+    }
+    int hp = lf_unit(h)->health;
+    int blade_can = Units_WeaponCanTake(b, h);
+    int bow_can = Units_WeaponCanTake(bow, h);
+    Units_OrderAttack(b, h);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    int ordered = lf_unit(b)->target;
+    int kind = lf_unit(b)->cmd_kind;
+    lf_end();
+    printf("(held %d ticks, hawk at %d hp) ", held, hp);
+    ASSERT_EQ_INT(0, held);
+    ASSERT_EQ_INT(500, hp);
+    ASSERT_EQ_INT(0, blade_can);
+    ASSERT_EQ_INT(1, bow_can);
+    ASSERT_EQ_INT(-1, ordered);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, kind);
+}
+
 /* ── what the blast hook hears ─────────────────────────────────────── */
 
 TEST(a_rock_on_the_ground_tells_the_hook_where_and_whose) {
@@ -3255,6 +3295,7 @@ int main(int argc, char **argv) {
     RUN(a_flyer_never_looks_again_this_way);
     RUN(a_melee_unit_never_looks_again_this_way);
     RUN(a_unit_looks_again_only_inside_its_leash);
+    RUN(a_blade_never_strikes_a_flyer_in_the_air);
     TEST_SUITE("An attack out of reach");
     RUN(an_attack_on_a_target_out_of_reach_is_kept);
     TEST_SUITE("The cell test");

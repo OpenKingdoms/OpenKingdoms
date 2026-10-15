@@ -11688,6 +11688,9 @@ static int64_t unit_body_gap_d2(const Unit *u, const Unit *t) {
 static int weapon_can_target_unit(const UnitWeapon *wp, const Unit *t) {
     if (!wp || !t) return 1;
     if (t->flying && wp->no_air_weapon) return 0;
+    /* A blade only takes what stands on the ground, whatever the weapon
+     * file says (legacy:21164, legacy:246390-246403). */
+    if (t->flying && weapon_is_melee(wp)) return 0;
     if (!t->flying && wp->to_air_weapon) return 0;
     if (wp->mind_control) {
         /* Mind control passes over what it cannot take and what its
@@ -12238,6 +12241,7 @@ static void tick_weapon_burst(Unit *u, int shooter_idx, int slot,
 static int unit_weapon_reaches(const Unit *u, const UnitDef *def, int slot,
                                const Unit *t) {
     const UnitWeapon *wp = &def->weapons[slot];
+    if (t->flying && weapon_is_melee(wp)) return 0;
     int64_t d2 = unit_reach_d2(u, t);
     if (weapon_is_melee(wp) && unit_body_gap_d2(u, t) == 0) d2 = 0;
     int64_t range = weapon_effective_range(wp);
