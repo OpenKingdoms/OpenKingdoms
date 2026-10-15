@@ -3091,6 +3091,8 @@ TEST(mp_room_builds_the_world_the_server_described) {
     memcpy(sg.map_name, "two castles", 12);
     sg.unit_cap = 700;
     sg.options = TAK_ROOMOPT_LINE_OF_SIGHT | TAK_ROOMOPT_POWER_CODES;
+    /* A joiner's own Use Crusades Units is not the room's. */
+    Settings_SetInt(TAK_SETTING_CRUSADES, 1);
     sg.slot[0].kind = TAK_NSLOT_HUMAN;
     sg.slot[0].side = TAK_SIDE_VERUNA;
     sg.slot[0].team = 2;
@@ -3117,6 +3119,8 @@ TEST(mp_room_builds_the_world_the_server_described) {
     ASSERT_EQ_INT(1, w->cfg.power_codes);
     ASSERT_EQ_INT(0, w->cfg.map_revealed);
     ASSERT_EQ_INT(0, w->cfg.monarch_expendable);
+    Settings_SetInt(TAK_SETTING_CRUSADES, 0);
+    ASSERT_EQ_INT(0, w->cfg.crusades_balance);
     ASSERT_EQ_INT(TAK_SLOT_HUMAN, (int)w->cfg.players[0].kind);
     ASSERT_EQ_INT(TAK_SIDE_VERUNA, w->cfg.players[0].side);
     ASSERT_EQ_INT(2, w->cfg.players[0].team);
@@ -4137,6 +4141,89 @@ TEST(the_lobbies_offer_the_remastered_battlefield) {
     ASSERT_EQ_INT(0, took);
     ASSERT_EQ_INT(TAK_EDIT_OPTIONS, (int)e.field);
     ASSERT_EQ_INT((int)(TAK_ROOMOPT_LINE_OF_SIGHT | TAK_ROOMOPT_REMASTERED), (int)e.value);
+}
+
+/* Use Crusades Units stays as the player last left it, as the original
+ * keeps it with its game options (legacy:131655, legacy:209311-209320):
+ * the next skirmish and a room the player hosts start with it, and a
+ * host's change in the room is kept too. */
+TEST(use_crusades_units_is_kept_for_the_next_battle) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+#ifdef _WIN32
+    _mkdir("crusades_scratch");
+#else
+    mkdir("crusades_scratch", 0755);
+#endif
+    Settings_SetDirectory("crusades_scratch");
+    remove(Settings_FilePath());
+    Settings_SetInt(TAK_SETTING_CRUSADES, 0);
+
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    int first = BattleSetup_Config()->crusades_balance;
+    BattleSetup_Press("CrusadesBalance");
+    BattleSetup_Shutdown();
+    /* A fresh start, from the file rather than from memory. */
+    Settings_SetInt(TAK_SETTING_CRUSADES, 0);
+    ASSERT_EQ_INT(0, Settings_Load());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    int next = BattleSetup_Config()->crusades_balance;
+    BattleSetup_Shutdown();
+
+    ASSERT_EQ_INT(0, SelectGame_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 707);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1000);
+    (void)SelectGame_Tick(&platform, 1.0f / 60.0f);
+    while (TAK_NetClient_TakeMessage(c, msg, sizeof msg) > 0) { }
+    SelectGame_HandleClick("HostGame");
+    TAK_MsgCreateRoom cr;
+    memset(&cr, 0, sizeof cr);
+    TAK_NetFrame f;
+    n = TAK_NetClient_TakeMessage(c, msg, sizeof msg);
+    int hosted = n > 0 && TAK_Net_Split(msg, n, &f) == 0 &&
+                 f.type == TAK_MSG_CREATE_ROOM &&
+                 TAK_Msg_CreateRoomDecode(&cr, f.payload, f.payload_len) == 0;
+    SelectGame_Shutdown();
+
+    /* The host turns it off in the room. */
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    n = mp_encode_room_hosted(msg, sizeof msg, 1, 707,
+                              TAK_ROOMOPT_LINE_OF_SIGHT | TAK_ROOMOPT_CRUSADES_BALANCE,
+                              500, 0);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1100);
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    mp_drain(c);
+    (void)Multiplayer_HandleClick("Crusades", widget_index_named(Multiplayer_Runtime(), "Crusades"));
+    TAK_MsgRoomEdit e;
+    memset(&e, 0, sizeof e);
+    int took = mp_take_edit(c, &e);
+    Multiplayer_Shutdown();
+    NetSession_Disconnect();
+    Settings_SetInt(TAK_SETTING_CRUSADES, 0);
+    ASSERT_EQ_INT(0, Settings_Load());
+    int kept = Settings_GetInt(TAK_SETTING_CRUSADES, -1);
+
+    Settings_SetInt(TAK_SETTING_CRUSADES, 0);
+    (void)Settings_Save();
+    Settings_SetDirectory(NULL);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+
+    printf("(off at first %d, next skirmish %d, hosted room %d, after the host's change %d) ",
+           first, next, (cr.options & TAK_ROOMOPT_CRUSADES_BALANCE) != 0, kept);
+    ASSERT_EQ_INT(0, first);
+    ASSERT_EQ_INT(1, next);
+    ASSERT_EQ_INT(1, hosted);
+    ASSERT((cr.options & TAK_ROOMOPT_CRUSADES_BALANCE) != 0);
+    ASSERT_EQ_INT(0, took);
+    ASSERT_EQ_INT((int)TAK_ROOMOPT_LINE_OF_SIGHT, (int)e.value);
+    ASSERT_EQ_INT(0, kept);
 }
 
 TEST(mp_room_host_sets_the_rules_the_cap_and_the_map) {
@@ -29715,6 +29802,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(mp_room_shows_why_the_server_said_no);
     RUN_UI_TEST(mp_room_host_sets_the_rules_the_cap_and_the_map);
     RUN_UI_TEST(the_lobbies_offer_the_remastered_battlefield);
+    RUN_UI_TEST(use_crusades_units_is_kept_for_the_next_battle);
     RUN_UI_TEST(mp_room_host_cycles_a_slot_by_its_name);
     RUN_UI_TEST(a_click_on_a_scroll_arrow_reaches_the_arrow);
     RUN_UI_TEST(select_game_scrolls_by_its_arrows);

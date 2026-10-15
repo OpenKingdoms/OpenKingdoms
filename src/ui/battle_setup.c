@@ -48,6 +48,7 @@
 #include "tak_net_protocol.h"
 #include "tak_map_browser.h"
 #include "tak_web_stats.h"
+#include "tak_settings.h"
 #include <SDL.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -598,6 +599,8 @@ int BattleSetup_Init(TAK_Platform *platform) {
     bs.pending_nextstate = -1;
     bs.plat = platform;
     BattleConfig_SetDefaults(&bs.cfg);
+    /* Use Crusades Units as the player last left it (legacy:131655). */
+    bs.cfg.crusades_balance = Settings_GetInt(TAK_SETTING_CRUSADES, 0) != 0;
 
     Palette terrain_palette;
     if (Palette_Load(&terrain_palette, "data/palettes/gameart.pal") == 0) {
@@ -1034,6 +1037,10 @@ static void bs_on_click(const char *clicked, int clicked_idx, int mx,
         /* Checkbox option */
         int *v = bs_cfg_field_by_widget(clicked);
         if (v) *v = !*v;
+        if (v == &bs.cfg.crusades_balance) {
+            Settings_SetInt(TAK_SETTING_CRUSADES, bs.cfg.crusades_balance);
+            Settings_Save();
+        }
     }
 }
 

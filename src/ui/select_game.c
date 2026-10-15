@@ -468,6 +468,7 @@ static void host_game(void) {
      * line of sight alone is a different battle. */
     BattleConfig defaults;
     BattleConfig_SetDefaults(&defaults);
+    defaults.crusades_balance = Settings_GetInt(TAK_SETTING_CRUSADES, 0) != 0;
     cr.unit_cap = (uint16_t)defaults.units_per_side;
     cr.options =
         (defaults.line_of_sight          ? TAK_ROOMOPT_LINE_OF_SIGHT    : 0u) |

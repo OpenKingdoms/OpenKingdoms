@@ -465,7 +465,14 @@ static int mp_on_click(SimpleScreen *s, const char *name, int widget_index) {
         for (int i = 0; i < MP_RULES; i++) {
             if (tak_stricmp(name, mp_rules[i].widget) != 0) continue;
             if (!mp_is_host()) { mp_say("Only the host changes the rules."); return 1; }
-            mp_edit_room(TAK_EDIT_OPTIONS, c->room.options ^ mp_rules[i].bit);
+            uint32_t options = c->room.options ^ mp_rules[i].bit;
+            mp_edit_room(TAK_EDIT_OPTIONS, options);
+            /* The host's Use Crusades Units is kept for the next game. */
+            if (mp_rules[i].bit == TAK_ROOMOPT_CRUSADES_BALANCE) {
+                Settings_SetInt(TAK_SETTING_CRUSADES,
+                                (options & TAK_ROOMOPT_CRUSADES_BALANCE) != 0);
+                Settings_Save();
+            }
             return 1;
         }
         if (tak_stricmp(name, "MaxUnits") == 0 ||
