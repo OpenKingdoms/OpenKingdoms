@@ -18,6 +18,16 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt);
 /* Free all battle setup screen resources. Call when leaving GAMESTATE_BATTLE_SETUP. */
 void BattleSetup_Shutdown(void);
 
+/* The game options the original keeps between battles, under its own
+ * key names in the section it reads them from, one for the skirmish
+ * screen and one for a game the player hosts (legacy:131635-131657,
+ * legacy:136553-136560, legacy:136645, legacy:136671). Load leaves a
+ * key never saved at what cfg holds. sides takes the lineup's two sides. */
+#define TAK_GAMEOPTS_SKIRMISH "Skirmish_GameOptions"
+#define TAK_GAMEOPTS_NETGAME  "Netgame_GameOptions"
+void BattleSetup_LoadGameOptions(BattleConfig *cfg, const char *section, int sides);
+void BattleSetup_SaveGameOptions(const BattleConfig *cfg, const char *section, int sides);
+
 /* Press Play on the next tick with the default lineup (--skirmish). */
 void BattleSetup_RequestAutoStart(void);
 /* What an automatic start plays: the map by its file key, else its

@@ -48,6 +48,7 @@
 #include "tak_net_protocol.h"
 #include "tak_map_browser.h"
 #include "tak_web_stats.h"
+#include "tak_settings.h"
 #include <SDL.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -598,6 +599,7 @@ int BattleSetup_Init(TAK_Platform *platform) {
     bs.pending_nextstate = -1;
     bs.plat = platform;
     BattleConfig_SetDefaults(&bs.cfg);
+    BattleSetup_LoadGameOptions(&bs.cfg, TAK_GAMEOPTS_SKIRMISH, 1);
 
     Palette terrain_palette;
     if (Palette_Load(&terrain_palette, "data/palettes/gameart.pal") == 0) {
@@ -651,6 +653,8 @@ void BattleSetup_Shutdown(void) {
     if (bs.browser_open) { SaveBrowser_Close(); bs.browser_open = 0; }
     if (bs.options_open) { Options_Shutdown(); bs.options_open = 0; }
     if (!bs.initialized) return;
+    /* The options are kept as the screen is left (legacy:136553-136560). */
+    BattleSetup_SaveGameOptions(&bs.cfg, TAK_GAMEOPTS_SKIRMISH, 1);
     for (int s = 0; s < TAK_SIDES_MAX; s++) {
         for (int c = 0; c < TAK_PLAYER_COLOR_COUNT; c++) {
             if (bs.teamlogo_frames[s][c]) tak_free(bs.teamlogo_frames[s][c]);
@@ -715,6 +719,69 @@ static int clamp_units(int v) {
     if (v < TAK_UNITS_PER_SIDE_MIN) return TAK_UNITS_PER_SIDE_MIN;
     if (v > TAK_UNITS_PER_SIDE_MAX) return TAK_UNITS_PER_SIDE_MAX;
     return v;
+}
+
+/* "<section>.<name>", the original's key in its section. */
+static const char *gameopt_key(char *buf, size_t cap, const char *section,
+                               const char *name) {
+    snprintf(buf, cap, "%s.%s", section, name);
+    return buf;
+}
+
+/* A saved side, or the lineup's own when it names none the skirmish
+ * plays. */
+static int gameopt_side(const char *key, int side) {
+    int saved = Settings_GetInt(key, -1);
+    if (saved < 0 || saved >= Sides_Count() || !Sides_IsPlayable(saved)) return side;
+    return Sides_Set(saved, TAK_SIDES_SKIRMISH, 0);
+}
+
+/* MonarchDeath and MappingOn hold the opposite of their boxes, Monarch
+ * Expendable and Map Revealed (legacy:139327, legacy:139333). */
+void BattleSetup_LoadGameOptions(BattleConfig *cfg, const char *section, int sides) {
+    if (!cfg || !section) return;
+    char k[96];
+    cfg->line_of_sight = Settings_GetInt(gameopt_key(k, sizeof k, section, "LosOn"),
+                                         cfg->line_of_sight) != 0;
+    cfg->map_revealed = Settings_GetInt(gameopt_key(k, sizeof k, section, "MappingOn"),
+                                        !cfg->map_revealed) == 0;
+    cfg->monarch_expendable = Settings_GetInt(gameopt_key(k, sizeof k, section, "MonarchDeath"),
+                                              !cfg->monarch_expendable) == 0;
+    cfg->random_start_locations =
+        Settings_GetInt(gameopt_key(k, sizeof k, section, "RandomStartLocations"),
+                        cfg->random_start_locations) != 0;
+    cfg->power_codes = Settings_GetInt(gameopt_key(k, sizeof k, section, "AllowCheating"),
+                                       cfg->power_codes) != 0;
+    cfg->crusades_balance = Settings_GetInt(gameopt_key(k, sizeof k, section, "CrusadesBalance"),
+                                            cfg->crusades_balance) != 0;
+    cfg->units_per_side = clamp_units(
+        Settings_GetInt(gameopt_key(k, sizeof k, section, "FavoriteUnitsPerPlayer"),
+                        cfg->units_per_side));
+    if (!sides) return;
+    cfg->players[0].side = gameopt_side(gameopt_key(k, sizeof k, section, "Side"),
+                                        cfg->players[0].side);
+    cfg->players[1].side = gameopt_side(gameopt_key(k, sizeof k, section, "EnemySide"),
+                                        cfg->players[1].side);
+}
+
+void BattleSetup_SaveGameOptions(const BattleConfig *cfg, const char *section, int sides) {
+    if (!cfg || !section) return;
+    char k[96];
+    Settings_SetInt(gameopt_key(k, sizeof k, section, "LosOn"), cfg->line_of_sight != 0);
+    Settings_SetInt(gameopt_key(k, sizeof k, section, "MappingOn"), cfg->map_revealed == 0);
+    Settings_SetInt(gameopt_key(k, sizeof k, section, "MonarchDeath"), cfg->monarch_expendable == 0);
+    Settings_SetInt(gameopt_key(k, sizeof k, section, "RandomStartLocations"),
+                    cfg->random_start_locations != 0);
+    Settings_SetInt(gameopt_key(k, sizeof k, section, "AllowCheating"), cfg->power_codes != 0);
+    Settings_SetInt(gameopt_key(k, sizeof k, section, "CrusadesBalance"), cfg->crusades_balance != 0);
+    Settings_SetInt(gameopt_key(k, sizeof k, section, "FavoriteUnitsPerPlayer"), cfg->units_per_side);
+    if (sides) {
+        Settings_SetInt(gameopt_key(k, sizeof k, section, "Side"), cfg->players[0].side);
+        /* The second seat's side, when it is open (legacy:137305-137307). */
+        if (cfg->players[1].kind != TAK_SLOT_CLOSED)
+            Settings_SetInt(gameopt_key(k, sizeof k, section, "EnemySide"), cfg->players[1].side);
+    }
+    Settings_Save();
 }
 
 /* Where a widget's art actually lands. Both scroll bars are authored with

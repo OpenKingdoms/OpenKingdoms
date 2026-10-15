@@ -35,6 +35,7 @@
 #include "tak_tdf.h"
 #include "tak_tnt.h"
 #include "tak_settings.h"
+#include "tak_battle_setup.h"
 #include "tak_tdf.h"
 #include "tak_unit.h"
 #include "tak_world.h"
@@ -275,6 +276,27 @@ static int mp_is_host(void) {
  * Play that the server would not allow says why rather than nothing. */
 static void mp_say(const char *text) {
     if (mp.rt) GUIRuntime_SetWidgetText(mp.rt, "HelpText", text ? text : "");
+}
+
+static void mp_rules_to_config(uint32_t options, BattleConfig *cfg);
+
+/* The rules and limit last kept, so a snapshot that changes neither
+ * writes nothing. */
+static uint32_t mp_kept_options, mp_kept_cap;
+
+/* The host's rules and unit limit, as the room holds them, are kept for
+ * the next game it hosts (legacy:136553-136560). A guest keeps nothing
+ * of the host's. */
+static void mp_keep_rules(const TAK_MsgRoomState *rs) {
+    if (!mp_is_host() || (rs->options == mp_kept_options &&
+                          rs->unit_cap == mp_kept_cap)) return;
+    mp_kept_options = rs->options;
+    mp_kept_cap = rs->unit_cap;
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    mp_rules_to_config(rs->options, &cfg);
+    if (rs->unit_cap > 0) cfg.units_per_side = (int)rs->unit_cap;
+    BattleSetup_SaveGameOptions(&cfg, TAK_GAMEOPTS_NETGAME, 0);
 }
 
 /* An edit the host makes to the room's own fields. Anyone else's press
@@ -636,6 +658,7 @@ static void mp_fill_row_from_slot(int widget, const GUIWidget *w,
 static void mp_fill_room_fields(void) {
     const TAK_MsgRoomState *rs = mp_room_state();
     if (!rs || !mp.rt) return;
+    mp_keep_rules(rs);
     for (int i = 0; i < MP_RULES; i++) {
         GUIRuntime_SetFrameOverride(mp.rt, mp_rules[i].widget,
                                     (rs->options & mp_rules[i].bit) ? 4 : 3);
@@ -737,6 +760,8 @@ static void mp_add_rows(SimpleScreen *s) {
 
 int Multiplayer_Init(TAK_Platform *platform) {
     memset(&mp, 0, sizeof(mp));
+    mp_kept_options = 0xffffffffu;
+    mp_kept_cap = 0xffffffffu;
     Translate_Free(&mp_tt);
     if (mp_font) Font_Free(mp_font);
     mp_font = NULL;
@@ -805,6 +830,18 @@ static void mp_map_kingdom(const char *map, char *out, size_t cap) {
     if (tdf) TDF_Close(tdf);
 }
 
+/* The room's rule bits as a battle's fields. */
+static void mp_rules_to_config(uint32_t options, BattleConfig *cfg) {
+    cfg->line_of_sight          = (options & TAK_ROOMOPT_LINE_OF_SIGHT) != 0;
+    cfg->map_revealed           = (options & TAK_ROOMOPT_MAP_REVEALED) != 0;
+    cfg->monarch_expendable     = (options & TAK_ROOMOPT_MONARCH_EXPEND) != 0;
+    cfg->random_start_locations = (options & TAK_ROOMOPT_RANDOM_STARTS) != 0;
+    cfg->power_codes            = (options & TAK_ROOMOPT_POWER_CODES) != 0;
+    cfg->slow_game              = (options & TAK_ROOMOPT_SLOW_GAME) != 0;
+    cfg->crusades_balance       = (options & TAK_ROOMOPT_CRUSADES_BALANCE) != 0;
+    cfg->remastered             = (options & TAK_ROOMOPT_REMASTERED) != 0;
+}
+
 /* The battle the server just described, in the terms a world is built
  * from. Every value here comes off the wire. One a machine picked for
  * itself is a desync waiting for the first tick. */
@@ -815,14 +852,7 @@ static void mp_config_from_start(const TAK_MsgStartGame *sg,
     cfg->seed = sg->seed;
     cfg->units_per_side = sg->unit_cap ? (int)sg->unit_cap
                                        : TAK_UNITS_PER_SIDE_DEFAULT;
-    cfg->line_of_sight          = (sg->options & TAK_ROOMOPT_LINE_OF_SIGHT) != 0;
-    cfg->map_revealed           = (sg->options & TAK_ROOMOPT_MAP_REVEALED) != 0;
-    cfg->monarch_expendable     = (sg->options & TAK_ROOMOPT_MONARCH_EXPEND) != 0;
-    cfg->random_start_locations = (sg->options & TAK_ROOMOPT_RANDOM_STARTS) != 0;
-    cfg->power_codes            = (sg->options & TAK_ROOMOPT_POWER_CODES) != 0;
-    cfg->slow_game              = (sg->options & TAK_ROOMOPT_SLOW_GAME) != 0;
-    cfg->crusades_balance       = (sg->options & TAK_ROOMOPT_CRUSADES_BALANCE) != 0;
-    cfg->remastered             = (sg->options & TAK_ROOMOPT_REMASTERED) != 0;
+    mp_rules_to_config(sg->options, cfg);
 
     for (int i = 0; i < TAK_MAX_PLAYERS && i < TAK_NET_SEATS; i++) {
         PlayerSlot *p = &cfg->players[i];

@@ -2777,9 +2777,10 @@ TEST(select_game_hosting_a_game_names_the_rules_it_plays_by) {
     TAK_MsgCreateRoom cr;
     ASSERT_EQ_INT(0, TAK_Msg_CreateRoomDecode(&cr, f.payload, f.payload_len));
 
-    /* The same rules this build would play a skirmish under. */
+    /* The rules the player last hosted under, the defaults until then. */
     BattleConfig defaults;
     BattleConfig_SetDefaults(&defaults);
+    BattleSetup_LoadGameOptions(&defaults, TAK_GAMEOPTS_NETGAME, 0);
     ASSERT_EQ_INT(defaults.units_per_side, (int)cr.unit_cap);
     ASSERT_EQ_INT(defaults.line_of_sight,
                   (cr.options & TAK_ROOMOPT_LINE_OF_SIGHT) != 0);
@@ -3091,6 +3092,13 @@ TEST(mp_room_builds_the_world_the_server_described) {
     memcpy(sg.map_name, "two castles", 12);
     sg.unit_cap = 700;
     sg.options = TAK_ROOMOPT_LINE_OF_SIGHT | TAK_ROOMOPT_POWER_CODES;
+    /* A joiner's own kept options are not the room's. */
+    BattleConfig mine;
+    BattleConfig_SetDefaults(&mine);
+    mine.crusades_balance = 1;
+    mine.map_revealed = 1;
+    mine.units_per_side = 300;
+    BattleSetup_SaveGameOptions(&mine, TAK_GAMEOPTS_NETGAME, 0);
     sg.slot[0].kind = TAK_NSLOT_HUMAN;
     sg.slot[0].side = TAK_SIDE_VERUNA;
     sg.slot[0].team = 2;
@@ -3117,6 +3125,9 @@ TEST(mp_room_builds_the_world_the_server_described) {
     ASSERT_EQ_INT(1, w->cfg.power_codes);
     ASSERT_EQ_INT(0, w->cfg.map_revealed);
     ASSERT_EQ_INT(0, w->cfg.monarch_expendable);
+    BattleConfig_SetDefaults(&mine);
+    BattleSetup_SaveGameOptions(&mine, TAK_GAMEOPTS_NETGAME, 0);
+    ASSERT_EQ_INT(0, w->cfg.crusades_balance);
     ASSERT_EQ_INT(TAK_SLOT_HUMAN, (int)w->cfg.players[0].kind);
     ASSERT_EQ_INT(TAK_SIDE_VERUNA, w->cfg.players[0].side);
     ASSERT_EQ_INT(2, w->cfg.players[0].team);
@@ -4137,6 +4148,163 @@ TEST(the_lobbies_offer_the_remastered_battlefield) {
     ASSERT_EQ_INT(0, took);
     ASSERT_EQ_INT(TAK_EDIT_OPTIONS, (int)e.field);
     ASSERT_EQ_INT((int)(TAK_ROOMOPT_LINE_OF_SIGHT | TAK_ROOMOPT_REMASTERED), (int)e.value);
+}
+
+/* The game options stay as the player last left them, as the original
+ * keeps them under its own names, one set for a skirmish and one for a
+ * game the player hosts (legacy:131635-131657, legacy:136553-136560):
+ * the next skirmish starts with them, a hosted room with the hosted set,
+ * and a host's change in the room is kept too. */
+static void go_put(const char *section, const char *name, int v) {
+    char k[96];
+    snprintf(k, sizeof k, "%s.%s", section, name);
+    Settings_SetInt(k, v);
+}
+
+static int go_get(const char *section, const char *name) {
+    char k[96];
+    snprintf(k, sizeof k, "%s.%s", section, name);
+    return Settings_GetInt(k, -1);
+}
+
+TEST(the_game_options_are_kept_for_the_next_battle) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+#ifdef _WIN32
+    _mkdir("gameoptions_scratch");
+#else
+    mkdir("gameoptions_scratch", 0755);
+#endif
+    Settings_SetDirectory("gameoptions_scratch");
+    remove(Settings_FilePath());
+    BattleConfig defaults;
+    BattleConfig_SetDefaults(&defaults);
+    BattleSetup_SaveGameOptions(&defaults, TAK_GAMEOPTS_SKIRMISH, 1);
+    BattleSetup_SaveGameOptions(&defaults, TAK_GAMEOPTS_NETGAME, 0);
+    /* What a last skirmish left: 700 units, Zhon against Veruna. */
+    go_put(TAK_GAMEOPTS_SKIRMISH, "FavoriteUnitsPerPlayer", 700);
+    go_put(TAK_GAMEOPTS_SKIRMISH, "Side", TAK_SIDE_ZHON);
+    go_put(TAK_GAMEOPTS_SKIRMISH, "EnemySide", TAK_SIDE_VERUNA);
+
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    BattleConfig first = *BattleSetup_Config();
+    static const char *boxes[] = { "LineOfSight", "Mapping", "MonarchDeath",
+                                   "StartLocations", "CheatCodes", "CrusadesBalance" };
+    for (int i = 0; i < 6; i++) BattleSetup_Press(boxes[i]);
+    BattleSetup_Shutdown();
+    /* A fresh start, from the file rather than from memory. */
+    static const char *keys[] = { "LosOn", "MappingOn", "MonarchDeath",
+                                  "RandomStartLocations", "AllowCheating",
+                                  "CrusadesBalance", "FavoriteUnitsPerPlayer",
+                                  "Side", "EnemySide" };
+    for (int i = 0; i < 9; i++) go_put(TAK_GAMEOPTS_SKIRMISH, keys[i], -1);
+    ASSERT_EQ_INT(0, Settings_Load());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    BattleConfig next = *BattleSetup_Config();
+    BattleSetup_Shutdown();
+    int saved_los = go_get(TAK_GAMEOPTS_SKIRMISH, "LosOn");
+    int saved_mapping = go_get(TAK_GAMEOPTS_SKIRMISH, "MappingOn");
+    int saved_death = go_get(TAK_GAMEOPTS_SKIRMISH, "MonarchDeath");
+
+    /* The hosted set is its own: the skirmish's choices are not in it. */
+    go_put(TAK_GAMEOPTS_NETGAME, "MappingOn", 0);
+    go_put(TAK_GAMEOPTS_NETGAME, "FavoriteUnitsPerPlayer", 900);
+    ASSERT_EQ_INT(0, SelectGame_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 707);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1000);
+    (void)SelectGame_Tick(&platform, 1.0f / 60.0f);
+    while (TAK_NetClient_TakeMessage(c, msg, sizeof msg) > 0) { }
+    SelectGame_HandleClick("HostGame");
+    TAK_MsgCreateRoom cr;
+    memset(&cr, 0, sizeof cr);
+    TAK_NetFrame f;
+    n = TAK_NetClient_TakeMessage(c, msg, sizeof msg);
+    int hosted = n > 0 && TAK_Net_Split(msg, n, &f) == 0 &&
+                 f.type == TAK_MSG_CREATE_ROOM &&
+                 TAK_Msg_CreateRoomDecode(&cr, f.payload, f.payload_len) == 0;
+    SelectGame_Shutdown();
+
+    /* The host turns Use Crusades Units off and the limit up. */
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    n = mp_encode_room_hosted(msg, sizeof msg, 1, 707,
+                              TAK_ROOMOPT_LINE_OF_SIGHT | TAK_ROOMOPT_CRUSADES_BALANCE,
+                              500, 0);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1100);
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    mp_drain(c);
+    (void)Multiplayer_HandleClick("Crusades", widget_index_named(Multiplayer_Runtime(), "Crusades"));
+    TAK_MsgRoomEdit e;
+    memset(&e, 0, sizeof e);
+    int took = mp_take_edit(c, &e);
+    GUIRuntime *mrt = Multiplayer_Runtime();
+    for (int i = 0; i < GUIRuntime_NumWidgets(mrt); i++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(mrt, i);
+        if (w && tak_stricmp(w->name, "incbutton") == 0 && w->rect.y < 240) {
+            (void)Multiplayer_HandleClick("incbutton", i);
+            break;
+        }
+    }
+    /* The server takes both and says so. */
+    n = mp_encode_room_hosted(msg, sizeof msg, 2, 707, TAK_ROOMOPT_LINE_OF_SIGHT,
+                              500 + TAK_UNITS_PER_SIDE_STEP, 0);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1200);
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    Multiplayer_Shutdown();
+    NetSession_Disconnect();
+    go_put(TAK_GAMEOPTS_NETGAME, "CrusadesBalance", 1);
+    ASSERT_EQ_INT(0, Settings_Load());
+    int kept_crusades = go_get(TAK_GAMEOPTS_NETGAME, "CrusadesBalance");
+    int kept_units = go_get(TAK_GAMEOPTS_NETGAME, "FavoriteUnitsPerPlayer");
+    int kept_skirmish = go_get(TAK_GAMEOPTS_SKIRMISH, "CrusadesBalance");
+
+    BattleSetup_SaveGameOptions(&defaults, TAK_GAMEOPTS_SKIRMISH, 1);
+    BattleSetup_SaveGameOptions(&defaults, TAK_GAMEOPTS_NETGAME, 0);
+    Settings_SetDirectory(NULL);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+
+    printf("(first: los %d revealed %d expendable %d random %d codes %d crusades %d, "
+           "%d units, sides %d %d. next: los %d revealed %d expendable %d random %d codes %d "
+           "crusades %d. hosted room options 0x%x cap %d. kept %d crusades, %d units) ",
+           first.line_of_sight, first.map_revealed, first.monarch_expendable,
+           first.random_start_locations, first.power_codes, first.crusades_balance,
+           first.units_per_side, first.players[0].side, first.players[1].side,
+           next.line_of_sight, next.map_revealed, next.monarch_expendable,
+           next.random_start_locations, next.power_codes, next.crusades_balance,
+           (unsigned)cr.options, (int)cr.unit_cap, kept_crusades, kept_units);
+    ASSERT_EQ_INT(defaults.line_of_sight, first.line_of_sight);
+    ASSERT_EQ_INT(0, first.crusades_balance);
+    ASSERT_EQ_INT(700, first.units_per_side);
+    ASSERT_EQ_INT(TAK_SIDE_ZHON, first.players[0].side);
+    ASSERT_EQ_INT(TAK_SIDE_VERUNA, first.players[1].side);
+    ASSERT_EQ_INT(!first.line_of_sight, next.line_of_sight);
+    ASSERT_EQ_INT(!first.map_revealed, next.map_revealed);
+    ASSERT_EQ_INT(!first.monarch_expendable, next.monarch_expendable);
+    ASSERT_EQ_INT(!first.random_start_locations, next.random_start_locations);
+    ASSERT_EQ_INT(!first.power_codes, next.power_codes);
+    ASSERT_EQ_INT(1, next.crusades_balance);
+    ASSERT_EQ_INT(700, next.units_per_side);
+    ASSERT_EQ_INT(TAK_SIDE_ZHON, next.players[0].side);
+    ASSERT_EQ_INT(TAK_SIDE_VERUNA, next.players[1].side);
+    /* The original's names hold the original's sense. */
+    ASSERT_EQ_INT(next.line_of_sight, saved_los);
+    ASSERT_EQ_INT(!next.map_revealed, saved_mapping);
+    ASSERT_EQ_INT(!next.monarch_expendable, saved_death);
+    ASSERT_EQ_INT(1, hosted);
+    ASSERT_EQ_INT((int)(defaults.line_of_sight ? TAK_ROOMOPT_LINE_OF_SIGHT : 0u) |
+                  (int)TAK_ROOMOPT_MAP_REVEALED, (int)cr.options);
+    ASSERT_EQ_INT(900, (int)cr.unit_cap);
+    ASSERT_EQ_INT(0, took);
+    ASSERT_EQ_INT((int)TAK_ROOMOPT_LINE_OF_SIGHT, (int)e.value);
+    ASSERT_EQ_INT(0, kept_crusades);
+    ASSERT_EQ_INT(500 + TAK_UNITS_PER_SIDE_STEP, kept_units);
+    ASSERT_EQ_INT(1, kept_skirmish);
 }
 
 TEST(mp_room_host_sets_the_rules_the_cap_and_the_map) {
@@ -29715,6 +29883,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(mp_room_shows_why_the_server_said_no);
     RUN_UI_TEST(mp_room_host_sets_the_rules_the_cap_and_the_map);
     RUN_UI_TEST(the_lobbies_offer_the_remastered_battlefield);
+    RUN_UI_TEST(the_game_options_are_kept_for_the_next_battle);
     RUN_UI_TEST(mp_room_host_cycles_a_slot_by_its_name);
     RUN_UI_TEST(a_click_on_a_scroll_arrow_reaches_the_arrow);
     RUN_UI_TEST(select_game_scrolls_by_its_arrows);
