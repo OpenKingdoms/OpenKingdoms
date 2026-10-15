@@ -1123,8 +1123,9 @@ static float unit_base_height(const GameWorld *w, const Unit *v) {
     return g + v->flight_alt;
 }
 
-float Units_DrawnAlt(const GameWorld *w, const Unit *u) {
-    if (!u) return 0.0f;
+/* A unit's altitude, over the sea for a flyer: the height a shot with
+ * no firing piece leaves from. */
+static float unit_air_alt(const GameWorld *w, const Unit *u) {
     const UnitDef *d = Units_GetDef(u->def_idx);
     float lift = 0.0f;
     if (w && d && d->can_fly) {
@@ -1132,6 +1133,23 @@ float Units_DrawnAlt(const GameWorld *w, const Unit *u) {
         if (w->water_height > g) lift = (float)(w->water_height - g);
     }
     return u->flight_alt + lift;
+}
+
+/* A floater, or an upright unit that hovers, rides its waterline under
+ * the sea and never under the ground (legacy:234287-234330,
+ * legacy:184112-184122). Drawing only. */
+static float unit_float_lift(const GameWorld *w, const Unit *u) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!w || !d || w->water_height <= 0) return 0.0f;
+    if (!(d->upright ? d->can_hover : d->floater)) return 0.0f;
+    int g = Terrain_SampleHeight(w, u->world_x, u->world_y);
+    int line = w->water_height - (int)d->waterline;
+    return line > g ? (float)(line - g) : 0.0f;
+}
+
+float Units_DrawnAlt(const GameWorld *w, const Unit *u) {
+    if (!u) return 0.0f;
+    return unit_air_alt(w, u) + unit_float_lift(w, u);
 }
 
 float Units_DebugStandHeight(int handle) {
@@ -1330,7 +1348,7 @@ static int spawn_projectile(int32_t x, int32_t y,
     /* A flyer fires from where it is drawn, over the sea when over water. */
     if (shooter)
         p->height += p->from_piece ? shooter->flight_alt
-                                   : Units_DrawnAlt(lw, shooter);
+                                   : unit_air_alt(lw, shooter);
     p->muzzle_height = p->height;
     proj_note_source(slot, shooter, source_weapon);
     if (source_weapon) {
@@ -6791,6 +6809,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->hover_attack_alt =
         (int16_t)TDF_ReadInt(tdf, "hoverattackaltitude", out->cruise_alt);
     out->floater        = TDF_ReadInt(tdf, "floater", 0);
+    out->can_hover      = (uint8_t)(TDF_ReadInt(tdf, "canhover", 0) & 1);
+    out->upright        = (uint8_t)(TDF_ReadInt(tdf, "upright", 0) & 1);
     out->amphibious     = (uint8_t)(TDF_ReadInt(tdf, "amphibious", 0) & 1);
     out->leash_length   = TDF_ReadInt(tdf, "maneuverleashlength", 0) & 0xffff;
     out->fire_at_will_random = (uint8_t)(TDF_ReadInt(tdf, "fireatwillrandom", 0) & 1);
