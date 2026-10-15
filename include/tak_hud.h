@@ -26,6 +26,10 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world);
  * and HUD interactions. */
 int  HUD_HitTest(int win_x, int win_y, TAK_Platform *plat);
 
+/* The words english/translate/unitmissions.tdf gives a key, or the key
+ * itself when it has none (legacy:267931). */
+const char *HUD_MissionWords(const char *key);
+
 /* ── Command-mode interaction (legacy click-then-click flow) ──
  *
  * Player clicks an action button → HUD enters a "pending command"

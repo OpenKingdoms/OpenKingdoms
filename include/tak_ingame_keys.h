@@ -64,4 +64,8 @@ typedef struct InGameSelectKey {
 
 InGameSelectKey InGame_SelectKey(const uint8_t *keys, const uint8_t *prev);
 
+/* Ctrl+D, with or without Shift: Keys.TDF's CTRL_D and CTRLSHIFT_D bind
+ * SelfDestruct. */
+int  InGame_SelfDestructKey(const uint8_t *keys, const uint8_t *prev);
+
 #endif /* TAK_INGAME_KEYS_H */

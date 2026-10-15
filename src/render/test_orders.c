@@ -62,6 +62,7 @@ static void oq_fill(UnitDef *d, const char *name, float velocity, int fx, int fz
     d->footprint_z = fz;
     d->build_cost = 100;
     d->buildtime = 100.0f;
+    d->selfd_countdown = 2;   /* a file without the line */
 }
 
 static GameWorld *oq_world(void) {
@@ -897,6 +898,106 @@ TEST(a_click_on_a_frame_sends_the_helpers_and_walks_the_rest) {
     ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(helper)->cmd_kind);
     ASSERT_EQ_INT(frame, (int)oq_unit(helper)->build_target);
     ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)oq_unit(s)->cmd_kind);
+    oq_end();
+}
+
+/* A guard joins the work on the frame the builder it guards builds,
+ * and guards it again once the frame is done (legacy:14157-14216). */
+TEST(a_guard_helps_its_builder_build_and_guards_again) {
+    double spent = 0.0;
+    int alone = oq_build_hall_with(1, &spent);
+    ASSERT(alone > 0 && alone < 2000);
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 50, OQ_CY);
+    int guard = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX + 50, OQ_CY);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_GUARD, guard, OQ_CX, OQ_CY, bd, -1, 0));
+    int frame = Units_BeginBuildingForUnit(bd, OQ_HALL, OQ_CX, OQ_CY);
+    ASSERT(frame >= 0);
+    oq_ticks(1);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(guard)->cmd_kind);
+    ASSERT_EQ_INT(frame, (int)oq_unit(guard)->build_target);
+    int t = 1;
+    while (t < 2000 && oq_unit(frame)->under_construction) { oq_ticks(1); t++; }
+    printf("(alone %d ticks, guarded %d) ", alone, t);
+    ASSERT(t * 4 < alone * 3);
+    oq_ticks(2);
+    ASSERT_EQ_INT(UNIT_CMD_GUARD, (int)oq_unit(guard)->cmd_kind);
+    ASSERT_EQ_INT(bd, (int)oq_unit(guard)->target);
+    oq_end();
+}
+
+/* A guard mends the unit it guards when that is damaged, joins the
+ * repair its charge is at, and guards again after each
+ * (legacy:14100-14155, legacy:14217-14255). */
+TEST(a_guard_mends_its_charge_and_joins_its_repairs) {
+    ASSERT_NOT_NULL(oq_world());
+    int s = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX, OQ_CY);
+    int guard = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX + 40, OQ_CY);
+    ASSERT(s >= 0 && guard >= 0);
+    Units_SetHealthPercent(s, 50);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_GUARD, guard, OQ_CX, OQ_CY, s, -1, 0));
+    oq_ticks(1);
+    ASSERT_EQ_INT(UNIT_CMD_REPAIR, (int)oq_unit(guard)->cmd_kind);
+    ASSERT_EQ_INT(s, (int)oq_unit(guard)->target);
+    int t = 0;
+    while (t < 3000 && oq_unit(s)->health < oq_unit(s)->max_health) { oq_ticks(1); t++; }
+    oq_ticks(2);
+    ASSERT_EQ_INT(oq_unit(s)->max_health, oq_unit(s)->health);
+    ASSERT_EQ_INT(UNIT_CMD_GUARD, (int)oq_unit(guard)->cmd_kind);
+    ASSERT_EQ_INT(s, (int)oq_unit(guard)->target);
+
+    int hall = Units_Spawn(OQ_HALL, 1, 0, OQ_CX, OQ_CY + 200);
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 60, OQ_CY + 230);
+    int helper = Units_Spawn(OQ_HELPER, 1, 0, OQ_CX + 60, OQ_CY + 230);
+    ASSERT(hall >= 0 && bd >= 0 && helper >= 0);
+    Units_SetHealthPercent(hall, 50);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_GUARD, helper, OQ_CX, OQ_CY, bd, -1, 0));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_REPAIR, bd, OQ_CX, OQ_CY, hall, -1, 0));
+    oq_ticks(1);
+    ASSERT_EQ_INT(UNIT_CMD_REPAIR, (int)oq_unit(helper)->cmd_kind);
+    ASSERT_EQ_INT(hall, (int)oq_unit(helper)->target);
+    oq_end();
+}
+
+/* A guard keeps five cells and its own footprint off its charge's
+ * footprint, a hall's three cells here (legacy:14011-14022). */
+TEST(a_guard_keeps_its_distance_from_a_building) {
+    ASSERT_NOT_NULL(oq_world());
+    int hall = Units_Spawn(OQ_HALL, 1, 0, OQ_CX, OQ_CY);
+    int g = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX + 500, OQ_CY);
+    ASSERT(hall >= 0 && g >= 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_GUARD, g, OQ_CX, OQ_CY, hall, -1, 0));
+    oq_ticks(1500);
+    int32_t d = oq_unit(g)->world_x - OQ_CX;
+    printf("(stands %d px off) ", d);
+    ASSERT(d >= 130 && d <= 144);
+    oq_end();
+}
+
+static void oq_chord(int mods, int key);
+
+/* Ctrl+D ends any unit of yours, a building too, two seconds and up to
+ * fourteen frames on, counted as your loss, and Ctrl+D again before
+ * then calls it off (legacy:122248-122294, legacy:9056-9088). */
+TEST(ctrl_d_self_destructs_a_building_and_again_calls_it_off) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    int hall = Units_Spawn(OQ_HALL, 1, 0, OQ_CX, OQ_CY);
+    int kept = Units_Spawn(OQ_HALL, 1, 0, OQ_CX + 200, OQ_CY);
+    ASSERT(hall >= 0 && kept >= 0);
+    Units_SelectSingle(hall);
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_D);
+    oq_ticks(119);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(hall)->alive);
+    oq_ticks(30);
+    ASSERT(oq_unit(hall)->alive != UNIT_ALIVE_ACTIVE);
+    ASSERT_EQ_INT(1, (int)w->stats[1].losses);
+    Units_SelectSingle(kept);
+    oq_chord(IG_CLICK_CTRL | IG_CLICK_SHIFT, SDL_SCANCODE_D);
+    oq_ticks(60);
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_D);
+    oq_ticks(200);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(kept)->alive);
     oq_end();
 }
 
@@ -2300,6 +2401,10 @@ int main(int argc, char **argv) {
     RUN(the_hammer_shows_only_for_a_helper_that_could_build_it);
     RUN(a_frame_nobody_selected_can_help_shows_no_select_hand);
     RUN(a_click_on_a_frame_sends_the_helpers_and_walks_the_rest);
+    RUN(a_guard_helps_its_builder_build_and_guards_again);
+    RUN(a_guard_mends_its_charge_and_joins_its_repairs);
+    RUN(a_guard_keeps_its_distance_from_a_building);
+    RUN(ctrl_d_self_destructs_a_building_and_again_calls_it_off);
     RUN(a_builder_goes_round_a_ridge_as_a_move_does);
     RUN(a_repairer_goes_round_a_ridge_as_a_move_does);
     RUN(a_builder_walking_out_of_a_pocket_keeps_its_frame);

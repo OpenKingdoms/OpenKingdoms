@@ -130,8 +130,10 @@
  * maneuverleashlength from where it began and it walks back there, a
  * patrol fights in any stance and goes on from where it broke off, a
  * builder on patrol mends and helps build, and a blade takes no flyer
- * in the air. */
-#define TAK_ENGINE_BUILD_ID           42
+ * in the air. 43: a guard attacks what hits the unit it guards, mends
+ * it, joins its build or repair, and keeps five cells off it, and
+ * Ctrl+D self destructs. */
+#define TAK_ENGINE_BUILD_ID           43
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

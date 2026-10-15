@@ -1575,6 +1575,9 @@ static void unit_on_damaged(Unit *victim, int shooter_handle) {
     if (shooter->alive != 1) return;
     if (!unit_players_are_enemies(victim->player_id, shooter->player_id))
         return;
+    /* What hit it last, which its guards answer (legacy:233765-233768). */
+    victim->hit_by = shooter->stable_id;
+    victim->hit_tick = g_sim_tick;
     /* A hit from what it passed over ends the skip (D-025). */
     if (victim->skip_id != 0 && victim->skip_id == shooter->stable_id) {
         victim->skip_id = 0;
@@ -4347,6 +4350,61 @@ int Units_OrderRepair(int handle, int target_handle) {
     return 1;
 }
 
+/* The original's repair test (legacy:233526-233553): a finished,
+ * damaged unit of a side at peace with the mender, standing still on
+ * the ground, and a mender that walks and repairs. */
+static int unit_may_mend(const Unit *u, const UnitDef *d, int h, int t) {
+    if (t < 0 || t >= g_unit_count || t == h) return 0;
+    const Unit *m = &g_units[t];
+    if (m->alive != UNIT_ALIVE_ACTIVE || m->under_construction ||
+        m->health >= m->max_health || m->flying || m->velocity != 0)
+        return 0;
+    return d && d->max_velocity > 0.0f && unit_def_can_repair(d) &&
+           !unit_players_are_enemies(u->player_id, m->player_id);
+}
+
+/* A guard first answers what has just hit its charge with an attack,
+ * whatever its own stance, then mends its charge or helps build it,
+ * then joins the build or repair its charge is at. Each goes ahead of
+ * the guard, which resumes once it is done (legacy:14035-14255,
+ * legacy:181888-181915). */
+static void guard_take_work(Unit *u, int h, const UnitDef *d) {
+    if (u->cmd_kind != UNIT_CMD_GUARD || u->target < 0 ||
+        u->target >= g_unit_count || u->leg_count >= UNIT_MOVE_LEGS_MAX)
+        return;
+    int c = u->target;
+    const Unit *charge = &g_units[c];
+    uint32_t charge_id = charge->stable_id;
+    int took = 0;
+    g_leg_taking = 1;
+    if (charge->hit_by && charge->hit_tick + 1 >= g_sim_tick &&
+        d->num_weapons > 0) {
+        int f = Units_FindByStableId(charge->hit_by);
+        int slot = u->weapon_slot < d->num_weapons ? u->weapon_slot : 0;
+        if (f >= 0 && g_units[f].alive == UNIT_ALIVE_ACTIVE &&
+            unit_players_are_enemies(u->player_id, g_units[f].player_id) &&
+            weapon_can_target_unit(&d->weapons[slot], &g_units[f]))
+            took = Units_OrderAttack(h, f);
+    }
+    if (!took && d->max_velocity > 0.0f) {
+        if (unit_may_mend(u, d, h, c) || Units_CanHelpBuild(h, c))
+            took = Units_OrderRepair(h, c);
+        else if (charge->cmd_kind == UNIT_CMD_BUILD &&
+                 Units_CanHelpBuild(h, charge->build_target))
+            took = Units_OrderRepair(h, charge->build_target);
+        else if (charge->cmd_kind == UNIT_CMD_REPAIR &&
+                 unit_may_mend(u, d, h, charge->target))
+            took = Units_OrderRepair(h, charge->target);
+    }
+    g_leg_taking = 0;
+    if (!took) return;
+    memmove(&u->legs[1], &u->legs[0], sizeof(u->legs[0]) * u->leg_count);
+    memset(&u->legs[0], 0, sizeof(u->legs[0]));
+    u->legs[0].kind = UNIT_LEG_GUARD;
+    u->legs[0].target = charge_id;
+    u->leg_count++;
+}
+
 int Units_OrderReclaim(int handle, int target_handle) {
     Unit *u = order_unit(handle);
     Unit *t = order_target(target_handle);
@@ -6965,6 +7023,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     if (TDF_ReadInt(tdf, "cantransport",   0)) out->cap_flags |= UNIT_CAP_TRANSPORT;
     if (TDF_ReadInt(tdf, "builder",        0)) out->cap_flags |= UNIT_CAP_BUILDER;
     out->builder_limited = (uint8_t)(TDF_ReadInt(tdf, "builderlimited", 0) & 1);
+    out->selfd_countdown =
+        (uint8_t)(TDF_ReadInt(tdf, "selfdestructcountdown", 2) & 7);
     if (TDF_ReadInt(tdf, "canreclaim",     0)) out->cap_flags |= UNIT_CAP_RECLAIM;
     if (TDF_ReadInt(tdf, "canresurrect",   0)) out->cap_flags |= UNIT_CAP_RESURRECT;
     if (TDF_ReadInt(tdf, "cananimate",     0)) out->cap_flags |= UNIT_CAP_ANIMATE;
@@ -9716,6 +9776,11 @@ static void build_stance_args(const Unit *u, const UnitDef *def,
     out[0] = (site_ang - hdg_ang) & 0xffff;
 }
 
+/* The death type a dying unit's scripts hear: 0 for a blow, 5 for a
+ * self destruct, which runs no Killed (legacy:227124-227127). */
+#define UNIT_DEATH_SELF_DESTRUCT 5
+static int g_death_kind;
+
 static void enter_state(Unit *u, UnitAnimState new_state) {
     if (u->anim_state == (uint8_t)new_state) return;
     /* Exit-old: kill scripts that don't belong to the new state. */
@@ -9776,12 +9841,13 @@ static void enter_state(Unit *u, UnitAnimState new_state) {
              * clamps it to 1..100 (legacy:227142, legacy:227241).
              * Death scripts branch on it. */
             int32_t args[3] = { unit_death_severity(u), 0, 0 };
-            u->killed_thread_slot = (int8_t)unit_start_script(
-                u, "Killed", args, 3);
+            if (g_death_kind != UNIT_DEATH_SELF_DESTRUCT)
+                u->killed_thread_slot = (int8_t)unit_start_script(
+                    u, "Killed", args, 3);
             /* Dying(kind) follows when the script exists: the fall
              * animation and the death cry live there, kind 0 for a
              * plain kill (legacy:227250-227256). */
-            int32_t dying_args[1] = { 0 };
+            int32_t dying_args[1] = { g_death_kind };
             (void)unit_start_script(u, "Dying", dying_args, 1);
             break;
         }
@@ -10114,6 +10180,52 @@ static void apply_killed_as(Unit *t, int t_idx, int bursts) {
 }
 
 static void apply_killed(Unit *t, int t_idx) { apply_killed_as(t, t_idx, 1); }
+
+/* A self destruct is death type 5: no Killed, so no body, the owner
+ * counts the loss and nobody the kill, and SELFDESTRUCTAS bursts as the
+ * death ends (legacy:227124-227127, 227331-227338). */
+static void apply_self_destructed(Unit *t, int t_idx) {
+    g_death_kind = UNIT_DEATH_SELF_DESTRUCT;
+    apply_killed_as(t, t_idx, 0);
+    g_death_kind = 0;
+    const UnitDef *d = Units_GetDef(t->def_idx);
+    if (!d || !(d->death_weapon_set & 2u)) return;
+    t->death_blast = 2;
+    if (t->alive == UNIT_ALIVE_DEAD) unit_death_blast(t, t_idx);
+}
+
+/* Ctrl+D (legacy:122248-122294). The count is selfdestructcountdown
+ * seconds and up to 14 frames more (legacy:9056-9088). It runs beside
+ * the unit's orders: the original keeps it on a list of its own and
+ * clears nothing to give it (legacy:180727-180741, 181669-181683). */
+int Units_ToggleSelfDestruct(const int *handles, int n) {
+    int counting = 0, changed = 0;
+    for (int k = 0; k < n; k++) {
+        const Unit *u = order_unit(handles[k]);
+        if (u && u->selfd_ticks) counting = 1;
+    }
+    for (int k = 0; k < n; k++) {
+        Unit *u = order_unit(handles[k]);
+        if (!u || (counting && !u->selfd_ticks)) continue;
+        if (counting) {
+            u->selfd_ticks = 0;
+        } else {
+            const UnitDef *d = Units_GetDef(u->def_idx);
+            int secs = d ? d->selfd_countdown : 2;
+            /* Two ticks to each of the original's frames. */
+            u->selfd_ticks = (uint16_t)(secs > 0
+                ? secs * 60 + 2 * (int)World_Rand(15) : 1);
+        }
+        changed++;
+    }
+    return changed;
+}
+
+int Units_SelfDestructing(int handle) {
+    return handle >= 0 && handle < g_unit_count &&
+           g_units[handle].alive == UNIT_ALIVE_ACTIVE &&
+           g_units[handle].selfd_ticks != 0;
+}
 
 static int unit_path_goal_changed(const Unit *u, int32_t gx, int32_t gy) {
     if (!u) return 1;
@@ -13759,6 +13871,21 @@ static UnitAnimState unit_board_tick(Unit *u, int idx, const UnitDef *def,
     return UNIT_ANIM_MOVING;
 }
 
+/* How near a guard keeps to its charge: the longer side of the
+ * charge's footprint, five cells and its own footprint
+ * (legacy:14011-14022). */
+static int64_t guard_reach_px(const Unit *g, const Unit *c) {
+    const UnitDef *cd = Units_GetDef(c->def_idx);
+    int cfx, cfz, gfx, gfz;
+    unit_occ_fp(c, &cfx, &cfz);
+    if (unit_def_is_structure(cd)) {
+        cfx = cd->footprint_x;
+        cfz = cd->footprint_z;
+    }
+    unit_occ_fp(g, &gfx, &gfz);
+    return (int64_t)((cfx > cfz ? cfx : cfz) + 5 + gfx) * 16;
+}
+
 /* A builder on patrol with nothing to fight mends a damaged ally or
  * helps raise one of its side's frames inside its sight, one drawn at
  * random from those standing still. A computer player's minds only its
@@ -13851,6 +13978,10 @@ static void Units_TickCombat(void) {
         /* Not built yet: the order is kept but nothing acts on it until
          * getbuilt runs, so a product cannot be walked off the pad. */
         if (u->under_construction) continue;
+        if (u->selfd_ticks && --u->selfd_ticks == 0) {
+            apply_self_destructed(u, i);
+            continue;
+        }
         flight_tick(u, def, flight_world);
         caster_mana_tick(u, def);
         caster_weapon_fallback(u, def);
@@ -13965,6 +14096,7 @@ static void Units_TickCombat(void) {
         if (unit_def_is_factory(def)) factory_tick(u, i, def);
         else if (u->cmd_kind == UNIT_CMD_NONE && u->leg_count > 0)
             unit_next_leg(u, i);
+        guard_take_work(u, i, def);
 
         /* A fight it took on for itself, maneuvering or answering fire,
          * may run the standard search again at the end of each wait of
@@ -14100,7 +14232,8 @@ static void Units_TickCombat(void) {
             int64_t dx = (int64_t)(t->world_x - u->world_x);
             int64_t dy = (int64_t)(t->world_y - u->world_y);
             target_d2 = dx*dx + dy*dy;
-            if (target_d2 > (int64_t)96 * 96) {
+            int64_t reach = guard_reach_px(u, t);
+            if (target_d2 > reach * reach) {
                 desired = UNIT_ANIM_MOVING;
                 goal_x = t->world_x;
                 goal_y = t->world_y;

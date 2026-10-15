@@ -2069,7 +2069,7 @@ static void lf_fog(GameWorld *w) {
  * see, the shooters let go of targets behind the ridge and go looking,
  * and the fog is state. Pinned, so every platform in CI has to
  * reach the same answer. */
-#define LF_FOG_VOLLEY_HASH 0xc5bc2be9u
+#define LF_FOG_VOLLEY_HASH 0x985c89b7u
 
 static uint32_t lf_fog_volley_hash(int *out_hurt) {
     GameWorld *w = lf_world(1, 1);
@@ -2854,6 +2854,32 @@ TEST(a_unit_that_answered_a_hit_walks_back_to_its_post) {
     ASSERT(back >= -8 && back <= 8);
 }
 
+/* A guard attacks what has just hit the unit it guards, and once that
+ * is gone it guards again (legacy:14035-14052, legacy:181888-181915). */
+TEST(a_guard_attacks_what_hits_the_unit_it_guards) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int c = lf_spawn(LF_TARGET, 1, LF_SX, LF_ROW);
+    int g = Units_Spawn(LF_ROVER, 1, 0, LF_SX - 60, LF_ROW);
+    int s = lf_spawn(LF_BOLT, 2, LF_SX + 400, LF_ROW);
+    ASSERT(c >= 0 && g >= 0 && s >= 0);
+    ASSERT_EQ_INT(1, Units_OrderGuard(g, c));
+    LfShot r = lf_fire(s, c, 300);
+    for (int i = 0; i < 2; i++) Units_TickEngines();
+    int hit = lf_unit(c)->health < lf_unit(c)->max_health;
+    int kind = lf_unit(g)->cmd_kind, target = lf_unit(g)->target;
+    Units_DebugRemove(s);
+    for (int i = 0; i < 30; i++) Units_TickEngines();
+    int back_kind = lf_unit(g)->cmd_kind, back_target = lf_unit(g)->target;
+    lf_end();
+    printf("(hit %d, guard order %d on %d, then %d on %d) ", hit, kind, target,
+           back_kind, back_target);
+    ASSERT(r.fired && hit);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, kind);
+    ASSERT_EQ_INT(s, target);
+    ASSERT_EQ_INT(UNIT_CMD_GUARD, back_kind);
+    ASSERT_EQ_INT(c, back_target);
+}
+
 /* A patrol from the post to 600 px east meets a dummy 150 px off its
  * route, which walks 1300 px further off once the fight starts. The
  * patroller follows it to its leash from where it left the route, walks
@@ -3451,6 +3477,7 @@ int main(int argc, char **argv) {
     RUN(a_unit_looks_again_only_inside_its_leash);
     RUN(a_unit_gives_up_a_chase_at_its_leash_and_walks_back);
     RUN(a_unit_that_answered_a_hit_walks_back_to_its_post);
+    RUN(a_guard_attacks_what_hits_the_unit_it_guards);
     RUN(a_patroller_breaks_off_at_its_leash_and_resumes_its_route);
     RUN(a_patrolling_builder_mends_what_it_passes_and_goes_on);
     RUN(a_blade_never_strikes_a_flyer_in_the_air);

@@ -538,6 +538,12 @@ static void hud_load_messages(void) {
     TDF_Close(tdf);
 }
 
+const char *HUD_MissionWords(const char *key) {
+    hud_load_messages();
+    const char *words = key ? Translate_Find(&g_missions, key) : NULL;
+    return words ? words : key;
+}
+
 /* ── Public API ────────────────────────────────────────────────────── */
 
 /* Cursor sprites for every targeting mode in the binding table, the

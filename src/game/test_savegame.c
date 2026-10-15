@@ -778,6 +778,11 @@ static int setup(const char *map_name) {
     g_units[1].post_leash = 500;
     g_units[1].post_x = 1234;
     g_units[1].post_y = -77;
+    /* And counts down to its self destruct. */
+    g_units[1].selfd_ticks = 131;
+    /* And remembers what hit it last. */
+    g_units[1].hit_by = 4242;
+    g_units[1].hit_tick = 9876;
     /* The bowman holds a summons of TARNECRO for a unit on its spot. */
     g_units[1].build_held = 1;
     g_units[1].build_def = 3;
@@ -1706,8 +1711,9 @@ static uint32_t rec_u32(const uint8_t *r, int at) {
  * drawn shot at 974, version 7 a builder's walk goal at 983,
  * version 8 the attack handler's wait at 991, version 9 the death blast
  * at 992, version 10 a summons without end at 993, version 11 a
- * flyer's air traffic at 1000, version 12 a hover attack at 1024 and
- * version 13 a fight's post at 1036. */
+ * flyer's air traffic at 1000, version 12 a hover attack at 1024,
+ * version 13 a fight's post at 1036, version 14 a self destruct's
+ * count at 1047 and version 15 what hit it last at 1049. */
 TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
@@ -1719,8 +1725,8 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
-    ASSERT_EQ_INT(13, (int)version);
-    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24 + 12 + 11,
+    ASSERT_EQ_INT(15, (int)version);
+    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24 + 12 + 11 + 2 + 8,
                   (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;
     /* The bowman's formation group at 487 and its second leg at 520. */
@@ -1790,6 +1796,11 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     ASSERT_EQ_INT(500, r1[1037] | (r1[1038] << 8));
     ASSERT_EQ_INT(1234, (int)rec_u32(r1, 1039));
     ASSERT_EQ_INT(-77, (int)rec_u32(r1, 1043));
+    /* The self destruct count at 1047. */
+    ASSERT_EQ_INT(131, r1[1047] | r1[1048] << 8);
+    /* What hit it last at 1049 and when at 1053. */
+    ASSERT_EQ_INT(4242, (int)rec_u32(r1, 1049));
+    ASSERT_EQ_INT(9876, (int)rec_u32(r1, 1053));
     ASSERT_EQ_INT(0, r0[1036]);
     Save_Close(r);
 }
