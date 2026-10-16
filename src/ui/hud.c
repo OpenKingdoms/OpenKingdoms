@@ -24,6 +24,7 @@
 #include "tak_memory.h"
 #include "tak_world.h"
 #include "tak_battle_config.h"
+#include "tak_fog.h"
 #include "tak_unit.h"
 #include "tak_command_emit.h"
 #include "tak_game_sound.h"
@@ -208,8 +209,9 @@ static const HUDButtonBinding g_button_bindings[] = {
     /* Three radio buttons, one per slot, and a click on any of them
      * is the whole order (legacy:151481-151530, legacy:153147-153180). */
     { "SpecialWeapon",   HUD_CMD_W_SET_SPEC,  -1 },
-    { "CloakOn",         HUD_CMD_CLOAK_ON,    -1 },
-    { "CloakOff",        HUD_CMD_CLOAK_OFF,   -1 },
+    /* The cloak's radio pair (legacy:151473-151590). */
+    { "Cloaked",         HUD_CMD_CLOAK_ON,    -1 },
+    { "Uncloaked",       HUD_CMD_CLOAK_OFF,   -1 },
     { "Active",          HUD_CMD_ACTIVATE,    -1 },
     { "Inactive",        HUD_CMD_DEACTIVATE,  -1 },
 };
@@ -1117,6 +1119,7 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
          * Frame 0 is the disabled slot. Leaving the others with no
          * override showed that dark slot until the mouse arrived. */
         int gate_state = Units_SelectedGateState();
+        int cloak_state = Units_SelectedCloakState();
         struct { const char *name; int active; } toggles[] = {
             { "Offensive",       aggro == UNIT_AGGRO_OFFENSIVE },
             { "Defensive",       aggro == UNIT_AGGRO_DEFENSIVE },
@@ -1124,6 +1127,9 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             /* The current gate state is the lit one (legacy:150430). */
             { "Active",          gate_state == 1 },
             { "Inactive",        gate_state == 0 },
+            /* And the cloak order the selection holds (legacy:150974-151000). */
+            { "Cloaked",         cloak_state == 1 },
+            { "Uncloaked",       cloak_state == 0 },
         };
         for (size_t i = 0; i < sizeof(toggles)/sizeof(toggles[0]); i++) {
             const GUIWidget *w = GUIRuntime_WidgetByName(g_rt, toggles[i].name);
@@ -1808,8 +1814,12 @@ int HUD_TriggerCommand(int mode) {
         case HUD_CMD_DEACTIVATE:
             hud_set_selected_gates(0);
             return 1;
+        case HUD_CMD_CLOAK_ON:
+        case HUD_CMD_CLOAK_OFF:
+            TAK_Cmd_EmitSelection(TAK_CMD_CLOAK, 0, 0, -1, 0,
+                                  mode == HUD_CMD_CLOAK_ON ? 1u : 0u);
+            return 1;
         default:
-            /* Cloak on/off: no per-unit state implemented yet. */
             return 0;
     }
 }
@@ -1845,8 +1855,10 @@ void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y,
              * the placing click will land. */
             Units_GroundUnderPoint(world_x, world_y, &world_x, &world_y);
             int facing = HUD_GetBuildFacing();
-            int valid = Units_IsBuildSiteClearFacing(g_build_def_idx, world_x,
-                                                     world_y, facing);
+            /* Judged by what the player sees, as the original's cursor
+             * is (legacy:39263-39305). */
+            int valid = Units_IsBuildSiteClearSeen(g_build_def_idx, world_x,
+                                                   world_y, facing, Fog_Viewer());
             g_ghost_x = world_x;
             g_ghost_y = world_y;
             g_ghost_valid = valid;

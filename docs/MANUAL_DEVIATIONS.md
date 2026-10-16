@@ -2109,6 +2109,20 @@ Format per entry:
   manual is silent. docs/notes/2026-09-29-combat-parity-follow-ups.md
   has the rule.
 
+## D-041: Ctrl+D asks before a self destruct starts
+
+- Change: when Ctrl+D would start the selection's self destruct, the
+  game's yes or no box asks first. Enter or Yes starts it, Escape or No
+  leaves the units be. Calling off a countdown already running asks
+  nothing. The clock stops under the box in single player and skirmish,
+  as it does under the in game menu, and runs on in a match.
+- Why: a player asked for it, since one slip of the keys ends an army.
+  The owner wants it.
+- Citation: the original starts the countdown at once
+  (legacy:122248-122294). The box is the shipped data/guis/yesno.gui,
+  the question form of the original's message dialog
+  (legacy:146759-146780). The manual is silent.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

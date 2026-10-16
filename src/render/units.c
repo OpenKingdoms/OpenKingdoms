@@ -399,6 +399,18 @@ static int ship_hull_blocked(const UnitDef *d, int self, float margin,
                              int32_t from_x, int32_t from_y);
 static int unit_start_script(Unit *u, const char *name,
                              const int32_t *args, int n_args);
+
+/* The cloak's waits, the original's frames doubled for the 60 Hz tick:
+ * after a shot (legacy:245900-245905), while it builds, mends, sweeps or
+ * raises (legacy:12259-12263, 12764-12768, 32139-32143, 32374-32378),
+ * with an enemy near (legacy:208655-208673) and short of mana
+ * (legacy:8724-8731). */
+#define CLOAK_FIRE_TICKS  1200
+#define CLOAK_WORK_TICKS   600
+#define CLOAK_NEAR_TICKS   180
+#define CLOAK_SHORT_TICKS  180
+
+static void cloak_hold(Unit *u, const UnitDef *def, int ticks);
 static int unit_water_depth_ok(const GameWorld *w, const UnitDef *def,
                                int32_t x, int32_t y);
 
@@ -498,6 +510,10 @@ static int unit_visible_to_local_player(const GameWorld *world,
     if (!u) return 0;
     if (!world) return 1;
     if (u->player_id == g_local_player) return 1;
+    /* A cloaked unit shows to its own player and a watcher alone
+     * (legacy:206815, legacy:208620-208625). */
+    if (u->cloaked && !Fog_SeesAll() && (int)u->player_id != Fog_Viewer())
+        return 0;
     return unit_seat_sees(world, Fog_Viewer(), u);
 }
 
@@ -702,6 +718,11 @@ static int unit_queue_pickup(int carrier, int rider, int queued) {
 
 static int unit_can_see_target(const Unit *viewer, const Unit *target) {
     if (!viewer || !target) return 0;
+    /* An enemy that cloaks ends an attack on it (legacy:11010-11013,
+     * legacy:11376-11379). */
+    if (target->cloaked &&
+        unit_players_are_enemies(viewer->player_id, target->player_id))
+        return 0;
     GameWorld *world = World_Get();
     if (!world || !world->cfg.line_of_sight) return 1;
     /* A target already held, or given by an order, is not re-checked
@@ -736,6 +757,9 @@ static int unit_seat_sees(const GameWorld *w, int seat, const Unit *t) {
  * (legacy:20639-20680). Return fire does not ask (unit_would_answer). */
 static int unit_side_sees(int player_id, const Unit *t) {
     if ((int)t->player_id == player_id) return 1;
+    /* A cloaked unit is seen by its own player alone, Line of Sight or
+     * not (legacy:206815, legacy:20536-20540). */
+    if (t->cloaked) return 0;
     const GameWorld *w = World_Get();
     /* With Line of Sight off the side's sight map is full
      * (legacy:167211-167219). See docs/notes/2026-09-15-line-of-sight-off.md
@@ -3817,6 +3841,8 @@ static void order_fresh(Unit *u) {
     u->air_hold = 0;
     u->build_endless = 0;
     u->build_held = 0;
+    u->build_unseen = 0;
+    u->build_facing = 0;
     u->move_group = 0;
     u->move_paced = 0;
     u->face_mode = UNIT_FACE_NONE;
@@ -5187,6 +5213,7 @@ static int unit_tick_raise(Unit *u, const UnitDef *def) {
      * supply fraction (legacy:13087); we have no such figure and take
      * it as 1. */
     u->raise_left -= 65536 / 2;
+    cloak_hold(u, def, CLOAK_WORK_TICKS);
     /* Once per original frame, which is every other tick here. */
     if (((u->raise_left / (65536 / 2)) & 1) == 0)
         raise_sparkles(u, (int)(u - g_units), def, rw, fi);
@@ -5717,10 +5744,21 @@ static int  unit_def_is_structure(const UnitDef *d);
 static void unit_occ_fp(const Unit *u, int *fx, int *fz);
 static int  unit_is_mobile_occupant(const Unit *u, const UnitDef *d);
 
+/* What a seat knows of a site, read at its centre: ground it never saw
+ * refuses it (0), and units are looked for only where it sees now (1),
+ * not under its fog (2). A viewer below 1 knows everything
+ * (legacy:218741-218768, 218797-218806). */
+static int site_seen(int viewer, int32_t wx, int32_t wy) {
+    const GameWorld *w = World_Get();
+    if (viewer < 1 || !w) return 1;
+    if (Fog_StateAtForPlayer(w, viewer, wx, wy) == TAK_FOG_UNEXPLORED) return 0;
+    return Fog_SeatSeesAt(w, viewer, wx, wy) ? 1 : 2;
+}
+
 /* The placement test at the cell the build would take. With walkers 0
  * a unit that walks, or its frame, does not refuse it. */
 static int build_site_test(int def_idx, int32_t wx, int32_t wy, int facing,
-                           int walkers) {
+                           int walkers, int viewer) {
     const UnitDef *d = Units_GetDef(def_idx);
     if (!d) return 0;
     facing = Units_DefFacing(def_idx, facing);
@@ -5746,6 +5784,8 @@ static int build_site_test(int def_idx, int32_t wx, int32_t wy, int facing,
     if (!site_ground_clear(world, d, yard, ycells, fx, fz, d->max_slope,
                            x0, y0))
         return 0;
+    int seen = site_seen(viewer, wx, wy);
+    if (!seen) return 0;
     /* A unit holds the cells nearest its centre, its footprint snapped
      * the way a building's is (legacy:184167), and the site is refused
      * only on a cell one holds (legacy:218800-218811). A unit beside the
@@ -5753,8 +5793,9 @@ static int build_site_test(int def_idx, int32_t wx, int32_t wy, int facing,
     int sc0 = x0 / 16, sc1 = sc0 + fx;
     int sr0 = y0 / 16, sr1 = sr0 + fz;
     int reach = unit_max_half_extent() + 16;
-    int nn = ugrid_candidates(x0 - reach, y0 - reach, x1 + reach, y1 + reach,
-                              g_site_near, TAK_MAX_UNITS);
+    int nn = seen == 1 ? ugrid_candidates(x0 - reach, y0 - reach, x1 + reach,
+                                          y1 + reach, g_site_near, TAK_MAX_UNITS)
+                       : 0;
     for (int k = 0; k < (nn < 0 ? g_unit_count : nn); k++) {
         const Unit *u = &g_units[nn < 0 ? k : g_site_near[k]];
         if (u->alive != 1) continue;
@@ -5794,7 +5835,13 @@ int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
  * 218185-218191, 218797-218811). */
 int Units_IsBuildSiteClearFacing(int def_idx, int32_t wx, int32_t wy, int facing) {
     return build_site_test(def_idx, wx, wy, facing,
-                           !build_def_walks(Units_GetDef(def_idx)));
+                           !build_def_walks(Units_GetDef(def_idx)), 0);
+}
+
+int Units_IsBuildSiteClearSeen(int def_idx, int32_t wx, int32_t wy, int facing,
+                               int viewer) {
+    return build_site_test(def_idx, wx, wy, facing,
+                           !build_def_walks(Units_GetDef(def_idx)), viewer);
 }
 
 int Units_IsBuildSiteFree(int def_idx, int32_t wx, int32_t wy) {
@@ -5804,7 +5851,7 @@ int Units_IsBuildSiteFree(int def_idx, int32_t wx, int32_t wy) {
 /* The frame goes up only where no unit stands (legacy:12088,
  * 219094-219160). */
 int Units_IsBuildSiteFreeFacing(int def_idx, int32_t wx, int32_t wy, int facing) {
-    return build_site_test(def_idx, wx, wy, facing, 1);
+    return build_site_test(def_idx, wx, wy, facing, 1, 0);
 }
 
 static int  unit_def_is_structure(const UnitDef *d);
@@ -6070,8 +6117,44 @@ static int builder_hold_summons(int h, int def_idx, int32_t x, int32_t y) {
     return 1;
 }
 
-int Units_OrderBuild(int builder_handle, int def_idx, int32_t world_x,
-                     int32_t world_y, int facing, int endless) {
+/* A site the builder's side does not see is walked to before it is
+ * judged, and the frame goes up there, as the original makes it only
+ * once its builder has arrived (legacy:12063-12124). An order there
+ * then tells the player nothing the cursor did not. */
+static int builder_hold_unseen(int h, int def_idx, int32_t x, int32_t y,
+                               int facing, int endless) {
+    Unit *u = order_unit(h);
+    const UnitDef *ud = u ? Units_GetDef(u->def_idx) : NULL;
+    const UnitDef *d = Units_GetDef(def_idx);
+    const GameWorld *w = World_Get();
+    if (!u || !ud || !d || !w || !(ud->cap_flags & UNIT_CAP_BUILDER) ||
+        !(ud->max_velocity > 0.0f))
+        return 0;
+    if (Fog_IsVisibleForPlayer(w, u->player_id, x, y)) return 0;
+    if (!build_site_test(def_idx, x, y, facing, !build_def_walks(d),
+                         u->player_id))
+        return 0;
+    order_fresh(u);
+    u->cmd_kind = UNIT_CMD_BUILD;
+    u->cmd_x = x;
+    u->cmd_y = y;
+    u->build_target = -1;
+    u->build_near_best = 0;
+    u->build_held = 1;
+    u->build_unseen = 1;
+    u->build_facing = (uint8_t)(facing & 3);
+    u->build_def = (int16_t)def_idx;
+    u->build_endless = (uint8_t)(endless && builder_may_summon(u, def_idx));
+    u->build_tries = 0;
+    u->build_wait = 0;
+    u->target = -1;
+    unit_set_build_goal_at(u, def_idx, x, y);
+    unit_clear_path(u);
+    return 1;
+}
+
+static int order_build_now(int builder_handle, int def_idx, int32_t world_x,
+                           int32_t world_y, int facing, int endless) {
     int held = 0;
     if (Units_BeginBuildingForUnitFacing(builder_handle, def_idx, world_x,
                                          world_y, facing) < 0) {
@@ -6090,6 +6173,34 @@ int Units_OrderBuild(int builder_handle, int def_idx, int32_t world_x,
         }
     }
     return 1;
+}
+
+int Units_OrderBuild(int builder_handle, int def_idx, int32_t world_x,
+                     int32_t world_y, int facing, int endless) {
+    if (builder_hold_unseen(builder_handle, def_idx, world_x, world_y, facing,
+                            endless))
+        return 1;
+    return order_build_now(builder_handle, def_idx, world_x, world_y, facing,
+                           endless);
+}
+
+/* A builder sent out of sight has reached its site: the order is given
+ * again there with the real test, and ends if that refuses it. */
+static void builder_unseen_arrive(Unit *u, int h, int in_reach) {
+    if (!in_reach) return;
+    int def = u->build_def, facing = u->build_facing, endless = u->build_endless;
+    int32_t x = u->cmd_x, y = u->cmd_y;
+    u->build_unseen = 0;
+    u->build_facing = 0;
+    u->build_held = 0;
+    u->build_endless = 0;
+    g_leg_taking = 1;
+    int ok = order_build_now(h, def, x, y, facing, endless);
+    g_leg_taking = 0;
+    if (!ok) {
+        u->cmd_kind = UNIT_CMD_NONE;
+        unit_clear_path(u);
+    }
 }
 
 /* ── Factory production queue + rally ───────────────────────────── */
@@ -6406,6 +6517,7 @@ static int builder_remove_builds(Unit *u, int def_idx, int count) {
         u->cmd_kind = UNIT_CMD_NONE;
         u->build_endless = 0;
         u->build_held = 0;
+        u->build_unseen = 0;
         u->target = -1;
         u->build_target = -1;
         u->cmd_x = u->world_x;
@@ -7019,7 +7131,16 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     if (TDF_ReadInt(tdf, "canattack",      0)) out->cap_flags |= UNIT_CAP_ATTACK;
     if (TDF_ReadInt(tdf, "canguard",       0)) out->cap_flags |= UNIT_CAP_GUARD;
     if (TDF_ReadInt(tdf, "canpatrol",      0)) out->cap_flags |= UNIT_CAP_PATROL;
-    if (TDF_ReadInt(tdf, "cancloak",       0)) out->cap_flags |= UNIT_CAP_CLOAK;
+    /* The original reads no cancloak: cloakcost above 0 lets a unit
+     * cloak (legacy:9760, legacy:162957). */
+    out->cloak_cost_per_sec = TDF_ReadFloat(tdf, "cloakcost", 0.0f);
+    out->cloak_cost_moving_per_sec =
+        TDF_ReadFloat(tdf, "cloakcostmoving", out->cloak_cost_per_sec);
+    out->min_cloak_distance = TDF_ReadInt(tdf, "mincloakdistance", 0);
+    if (out->cloak_cost_per_sec > 0.0f && out->min_cloak_distance == 0)
+        out->min_cloak_distance = 80;
+    out->init_cloaked = (uint8_t)(TDF_ReadInt(tdf, "init_cloaked", 0) & 1);
+    if (out->cloak_cost_per_sec > 0.0f) out->cap_flags |= UNIT_CAP_CLOAK;
     if (TDF_ReadInt(tdf, "cantransport",   0)) out->cap_flags |= UNIT_CAP_TRANSPORT;
     if (TDF_ReadInt(tdf, "builder",        0)) out->cap_flags |= UNIT_CAP_BUILDER;
     out->builder_limited = (uint8_t)(TDF_ReadInt(tdf, "builderlimited", 0) & 1);
@@ -8748,6 +8869,9 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
      * sets its placed units' own share. */
     u->mana_max       = def->max_mana > 0 ? (float)def->max_mana : 0.0f;
     u->mana           = 0.0f;
+    /* init_cloaked is the cloak order a new unit starts with
+     * (legacy:226668). */
+    u->cloak_want     = def->init_cloaked;
     u->cmd_x          = 0;
     u->cmd_y          = 0;
     u->patrol_x       = world_x;
@@ -12013,6 +12137,7 @@ static void fire_weapon_shot_now(Unit *u, int shooter_idx, int slot,
     if (target_handle < 0 || target_handle >= g_unit_count) return;
     Unit *t = &g_units[target_handle];
     if (t->alive != UNIT_ALIVE_ACTIVE) return;
+    cloak_hold(u, Units_GetDef(u->def_idx), CLOAK_FIRE_TICKS);
     /* A spell is a shot that costs mana, once however many a burst holds. */
     if (wp->mana_per_shot > 0 && burst_ordinal == 0) BattleRecord_Cast(u->player_id);
 
@@ -12289,6 +12414,7 @@ static void flame_particle(const Projectile *p, int idx) {
 static void fire_ground_shot_now(Unit *u, int shooter_idx, int slot,
                                  const UnitWeapon *wp) {
     if (!u || !wp) return;
+    cloak_hold(u, Units_GetDef(u->def_idx), CLOAK_FIRE_TICKS);
     if (wp->mana_per_shot > 0) BattleRecord_Cast(u->player_id);
     start_fire_script(u, slot);
     const GameWorld *sw = World_Get();
@@ -13336,6 +13462,94 @@ static void caster_mana_tick(Unit *u, const UnitDef *def) {
     if (u->mana > u->mana_max) u->mana = u->mana_max;
 }
 
+static int unit_def_can_cloak(const UnitDef *d) {
+    return d && (d->cloak_cost_per_sec > 0.0f || d->init_cloaked);
+}
+
+/* No cloak for the next ticks, or longer if it already waits longer. */
+static void cloak_hold(Unit *u, const UnitDef *def, int ticks) {
+    if (!unit_def_can_cloak(def)) return;
+    if (u->cloak_wait < ticks) u->cloak_wait = (uint16_t)ticks;
+}
+
+static int g_cloak_near[TAK_MAX_UNITS];
+
+/* An enemy its side sees, built and not cloaked itself, inside
+ * mincloakdistance (legacy:20826-20845, legacy:20536-20540). */
+static int cloak_enemy_near(const Unit *u, const UnitDef *def) {
+    int r = def->min_cloak_distance;
+    if (r <= 0) return 0;
+    int n = ugrid_candidates(u->world_x - r, u->world_y - r,
+                             u->world_x + r, u->world_y + r,
+                             g_cloak_near, TAK_MAX_UNITS);
+    int64_t r2 = (int64_t)r * r;
+    for (int k = 0; k < (n < 0 ? g_unit_count : n); k++) {
+        const Unit *t = &g_units[n < 0 ? k : g_cloak_near[k]];
+        if (t->alive != UNIT_ALIVE_ACTIVE || t->under_construction || t->cloaked)
+            continue;
+        if (!unit_players_are_enemies(u->player_id, t->player_id)) continue;
+        int64_t dx = (int64_t)t->world_x - u->world_x;
+        int64_t dy = (int64_t)t->world_y - u->world_y;
+        if (dx * dx + dy * dy > r2) continue;
+        if (unit_side_sees(u->player_id, t)) return 1;
+    }
+    return 0;
+}
+
+/* The cloak each tick (legacy:8700-8736): wanted and out of its wait,
+ * it costs the unit's own mana, cloakcostmoving while it moves, and on
+ * running short it waits. Anything else and it is off. */
+static void cloak_tick(Unit *u, const UnitDef *def) {
+    if (!u->cloak_want && !u->cloaked && !u->cloak_wait) return;
+    if (u->cloak_wait) u->cloak_wait--;
+    int on = 0;
+    if (u->cloak_want) {
+        if (cloak_enemy_near(u, def)) cloak_hold(u, def, CLOAK_NEAR_TICKS);
+        if (!u->cloak_wait) {
+            int moving = u->velocity != 0 || u->cur_speed_ppt > 0.0f;
+            float cost = (moving ? def->cloak_cost_moving_per_sec
+                                 : def->cloak_cost_per_sec) / 60.0f;
+            if (cost <= u->mana) {
+                u->mana -= cost;
+                on = 1;
+            } else {
+                cloak_hold(u, def, CLOAK_SHORT_TICKS);
+            }
+        }
+    }
+    u->cloaked = (uint8_t)on;
+}
+
+/* The order sets the unit's wish and runs StartCloaking or StopCloaking
+ * (legacy:9757-9779). */
+int Units_OrderCloak(int handle, int on) {
+    Unit *u = order_unit(handle);
+    const UnitDef *d = u ? Units_GetDef(u->def_idx) : NULL;
+    if (!u || !d || !(d->cloak_cost_per_sec > 0.0f)) return 0;
+    on = on ? 1 : 0;
+    if (u->cloak_want == on) return 1;
+    u->cloak_want = (uint8_t)on;
+    unit_start_script(u, on ? "StartCloaking" : "StopCloaking", NULL, 0);
+    return 1;
+}
+
+int Units_SelectedCloakState(void) {
+    int want = 0, rest = 0;
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (h < 0 || h >= g_unit_count) continue;
+        const Unit *u = &g_units[h];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != g_local_player) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || !(d->cloak_cost_per_sec > 0.0f)) continue;
+        if (u->cloak_want) want++;
+        else rest++;
+    }
+    if (!want && !rest) return -1;
+    if (want && rest) return 2;
+    return want ? 1 : 0;
+}
+
 /* What a caster can put toward a shot: its own reserve when the def
  * carries maxmana, the seat's pool otherwise (legacy:245908). */
 static float caster_mana_available(const Unit *u, const UnitDef *def) {
@@ -13984,6 +14198,7 @@ static void Units_TickCombat(void) {
         }
         flight_tick(u, def, flight_world);
         caster_mana_tick(u, def);
+        cloak_tick(u, def);
         caster_weapon_fallback(u, def);
         self_heal_tick(u, def);
 
@@ -14225,6 +14440,7 @@ static void Units_TickCombat(void) {
         if (u->cmd_kind != UNIT_CMD_BUILD) {
             u->build_endless = 0;
             u->build_held = 0;
+            u->build_unseen = 0;
         }
 
         if (u->cmd_kind == UNIT_CMD_GUARD && u->target >= 0) {
@@ -14443,7 +14659,9 @@ static void Units_TickCombat(void) {
             int reach = !(def->max_velocity > 0.0f) ||
                         builder_in_reach(u, def, u->build_def, u->cmd_x,
                                          u->cmd_y);
-            builder_summon_next(u, i, reach);
+            if (u->build_held && u->build_unseen)
+                builder_unseen_arrive(u, i, reach);
+            else builder_summon_next(u, i, reach);
             /* While it waits it walks to the site (legacy:12063-12070). */
             if (u->cmd_kind == UNIT_CMD_BUILD && u->build_target < 0 &&
                 !reach) {
@@ -14679,6 +14897,7 @@ static void Units_TickCombat(void) {
                                  ? def->worker_time : 1.0f;
                     float prev = u->reclaim_accum;
                     u->reclaim_accum += worker;
+                    cloak_hold(u, def, CLOAK_WORK_TICKS);
                     if (u->reclaim_accum > hp_max) u->reclaim_accum = hp_max;
                     if (ffd->energy > 0.0f) {
                         float paid = ffd->energy *
@@ -14745,6 +14964,7 @@ static void Units_TickCombat(void) {
                             }
                         }
                         rt->build_hp_accum += hp_per_tick_f;
+                        cloak_hold(u, def, CLOAK_WORK_TICKS);
                         int hp_per_tick = (int)floorf(rt->build_hp_accum);
                         if (hp_per_tick > 0) {
                             rt->build_hp_accum -= (float)hp_per_tick;
@@ -14762,6 +14982,7 @@ static void Units_TickCombat(void) {
                         float hp_per_tick_f =
                             ((float)hp_max * worker) / (reclaim_time * 60.0f);
                         rt->build_hp_accum += hp_per_tick_f;
+                        cloak_hold(u, def, CLOAK_WORK_TICKS);
                         int hp_per_tick = (int)floorf(rt->build_hp_accum);
                         if (hp_per_tick > 0) {
                             rt->build_hp_accum -= (float)hp_per_tick;
@@ -14836,6 +15057,7 @@ static void Units_TickCombat(void) {
                 float hp_per_tick_f = (((float)hp_max * worker) /
                                       (buildtime * 60.0f)) * progress_scale;
                 bt->build_hp_accum += hp_per_tick_f;
+                cloak_hold(u, def, CLOAK_WORK_TICKS);
                 if (btd && bt->under_construction)
                     build_sparkles(bt, (int)(bt - g_units), btd);
                 int hp_per_tick = (int)floorf(bt->build_hp_accum);
@@ -16060,6 +16282,9 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
     if (whiteout) {
         alpha_mul = (uint32_t)u->magic_death_fade * 255u / UNIT_MAGIC_DEATH_TICKS;
     }
+    /* A cloaked unit draws see through for whoever sees it at all
+     * (legacy:197442-197457). */
+    if (u->cloaked) alpha_mul /= 2u;
 
     /* Per-piece transforms for THIS unit. Animation gives each unit its
      * own piece state, so this is recomputed per unit. */
@@ -16953,6 +17178,20 @@ static void render_selection_rings(const struct GameWorld *world, TAK_Platform *
         }
         #undef DASHES
         #undef DASH_SEG
+        /* Your own cloaked unit shows how near an enemy may come
+         * (legacy:180534-180536). */
+        if (def && u->cloaked && u->player_id == g_local_player &&
+            def->min_cloak_distance > 0) {
+            SDL_FPoint pts[49];
+            float cr = (float)def->min_cloak_distance;
+            for (int k = 0; k <= 48; k++) {
+                float a = (float)k / 48.0f * 6.2831853f;
+                pts[k].x = fx + tak_cosf(a) * cr;
+                pts[k].y = fy + tak_sinf(a) * cr * tilt;
+            }
+            SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+            SDL_RenderDrawLinesF(r, pts, 49);
+        }
     }
 }
 

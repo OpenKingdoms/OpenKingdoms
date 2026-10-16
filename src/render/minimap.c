@@ -15,11 +15,15 @@
  * Placement comes from the HUD: the minimap fills the sidebar column
  * above the sidebar panel art, the slot legacy leaves for it. The
  * in-game .gui authors no widget there, the engine owns the radar
- * surface (:207443-208600).
+ * surface (:207443-208600). Tab puts the same radar over the whole play
+ * area, its blips shaped by the kind of unit (:207379-207425,
+ * :208481-208500).
  */
 
 #include "tak_minimap.h"
+#include "tak_gaf.h"
 #include "tak_gpu.h"
+#include "tak_palette.h"
 #include "tak_world.h"
 #include "tak_memory.h"
 #include "tak_fog.h"
@@ -38,6 +42,88 @@ static struct {
     int          fog_w, fog_h;
     uint8_t     *fog_px;
 } mm;
+
+/* Tab's full screen radar (legacy:208746-208770), which only Tab
+ * puts away. */
+static int g_mm_large;
+
+void Minimap_SetLarge(int on) { g_mm_large = on ? 1 : 0; }
+int  Minimap_IsLarge(void) { return g_mm_large; }
+
+/* The large radar's blips from anims/blips.gaf, five shapes by the kind
+ * of unit, each with a frame per player colour (legacy:207767-207826,
+ * legacy:208481-208500). */
+#define MM_BLIP_KINDS   5
+#define MM_BLIP_COLOURS 10
+static struct {
+    GPU_Texture *tex[MM_BLIP_KINDS][MM_BLIP_COLOURS];
+    int          w[MM_BLIP_KINDS], h[MM_BLIP_KINDS];
+    int          ox[MM_BLIP_KINDS], oy[MM_BLIP_KINDS];
+    uint32_t     gen;
+    int          tried;
+} mb;
+
+static void blips_free(TAK_Platform *plat) {
+    for (int k = 0; k < MM_BLIP_KINDS; k++)
+        for (int c = 0; c < MM_BLIP_COLOURS; c++) {
+            if (mb.tex[k][c] && plat) GPU_FreeTexture(plat, mb.tex[k][c]);
+            mb.tex[k][c] = NULL;
+        }
+    mb.tried = 0;
+}
+
+static void blips_load(TAK_Platform *plat) {
+    if (mb.tried && mb.gen == plat->renderer_gen) return;
+    /* Textures of a renderer that is gone are dropped, not freed. */
+    if (mb.gen != plat->renderer_gen) memset(mb.tex, 0, sizeof mb.tex);
+    else blips_free(plat);
+    mb.tried = 1;
+    mb.gen = plat->renderer_gen;
+    /* The blips' colours are the fx palette's, where frame c's fill is
+     * player colour c. */
+    Palette pal;
+    if (Palette_LoadPCX(&pal, "data/palettes/fx.pcx") != 0) return;
+    GAFFile *gaf = NULL;
+    if (GAF_Open(&gaf, "data/anims/blips.gaf") != 0 || !gaf) return;
+    uint32_t table[256];
+    SDL_PixelFormat *fmt = SDL_AllocFormat(SDL_PIXELFORMAT_RGBA32);
+    if (!fmt) { GAF_Close(gaf); return; }
+    Palette_BuildRGBATable(&pal, fmt, table, 9);
+    SDL_FreeFormat(fmt);
+    for (int k = 0; k < MM_BLIP_KINDS; k++) {
+        char name[16];
+        snprintf(name, sizeof name, "radblips0%d", k + 1);
+        int entry = GAF_FindSequence(gaf, name);
+        if (entry < 0) continue;
+        for (int c = 0; c < MM_BLIP_COLOURS; c++) {
+            FrameHeader *fh = NULL;
+            if (GAF_GetFrameInfo(gaf, (uint32_t)entry, c, &fh) != 0 || !fh) break;
+            uint32_t *px = GAF_DecodeFrameRGBA(gaf, fh, table);
+            if (!px) continue;
+            mb.tex[k][c] = GPU_UploadRGBA(plat, px, fh->width, fh->height);
+            tak_free(px);
+            if (!mb.tex[k][c]) continue;
+            GPU_SetTextureFilter(mb.tex[k][c], 0);
+            GPU_SetTextureBlend(mb.tex[k][c], 1);
+            mb.w[k] = fh->width;
+            mb.h[k] = fh->height;
+            mb.ox[k] = fh->offset_x;
+            mb.oy[k] = fh->offset_y;
+        }
+    }
+    GAF_Close(gaf);
+}
+
+/* The blip a unit takes on the large radar: a building that builds, a
+ * building, a flyer, a floater, anything else (legacy:208481-208500). */
+static int blip_kind(const UnitDef *d) {
+    if (!d) return 0;
+    if (!(d->max_velocity > 0.0f))
+        return (d->cap_flags & UNIT_CAP_BUILDER) ? 3 : 1;
+    if (d->can_fly) return 4;
+    if (d->floater) return 2;
+    return 0;
+}
 
 int Minimap_Init(TAK_Platform *plat) {
     if (!plat) return -1;
@@ -86,6 +172,9 @@ int Minimap_Init(TAK_Platform *plat) {
  * Returns 0 when there's no minimap or no slot. */
 static int minimap_slot_rect(TAK_Platform *plat, SDL_Rect *out) {
     if (!plat || !mm.tex) return 0;
+    /* The large radar fills the play area, the screen less the sidebar
+     * and the bottom strip (legacy:207379-207425). */
+    if (g_mm_large) return HUD_GetViewportRect(plat, out);
     return HUD_GetMinimapRect(plat, out);
 }
 
@@ -152,6 +241,40 @@ static int minimap_shows_unit(const GameWorld *world, const Unit *u) {
     int me = Units_LocalPlayer();
     if (world && me >= 1 && me <= TAK_MAX_PLAYERS && world->console.radar[me]) return 1;
     return Units_IsVisibleToLocalPlayer(u);
+}
+
+/* The large radar's blips, at the art's own size on the canvas. */
+static void minimap_draw_unit_blips(TAK_Platform *plat, const GameWorld *world,
+                                    const SDL_Rect *map) {
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    if (!units || count <= 0) return;
+    blips_load(plat);
+    SDL_Rect play_win, play_canvas;
+    float scale = 1.0f;
+    if (HUD_GetViewportRect(plat, &play_win) && HUD_GetViewportCanvasRect(&play_canvas) &&
+        play_canvas.w > 0)
+        scale = (float)play_win.w / (float)play_canvas.w;
+    SDL_Rect clip_was;
+    int clipped = SDL_RenderIsClipEnabled(plat->renderer);
+    SDL_RenderGetClipRect(plat->renderer, &clip_was);
+    SDL_RenderSetClipRect(plat->renderer, map);
+    for (int i = 0; i < count; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE) continue;
+        if (!minimap_shows_unit(world, u)) continue;
+        int k = blip_kind(Units_GetDef(u->def_idx));
+        int c = u->team_color_idx;
+        if (c < 0 || c >= MM_BLIP_COLOURS || !mb.tex[k][c]) continue;
+        int mx = map->x + (int)((int64_t)u->world_x * map->w / world->map_pixels_w);
+        int my = map->y + (int)((int64_t)u->world_y * map->h / world->map_pixels_h);
+        SDL_Rect dst = { mx - (int)((float)mb.ox[k] * scale),
+                         my - (int)((float)mb.oy[k] * scale),
+                         (int)((float)mb.w[k] * scale + 0.5f),
+                         (int)((float)mb.h[k] * scale + 0.5f) };
+        GPU_DrawToWindow(plat, mb.tex[k][c], NULL, &dst);
+    }
+    SDL_RenderSetClipRect(plat->renderer, clipped ? &clip_was : NULL);
 }
 
 static void minimap_draw_unit_dots(TAK_Platform *plat, const GameWorld *world,
@@ -378,7 +501,8 @@ void Minimap_Draw(TAK_Platform *plat) {
         }
     }
 
-    minimap_draw_unit_dots(plat, world, &dst);
+    if (g_mm_large) minimap_draw_unit_blips(plat, world, &dst);
+    else minimap_draw_unit_dots(plat, world, &dst);
 
     /* Camera-viewport indicator: clipped to the minimap rect so a
      * very small viewport doesn't visually detach into a stray box,
@@ -407,10 +531,13 @@ int Minimap_PointToWorld(TAK_Platform *plat, int win_x, int win_y, int clamp,
     if (!plat || !out_x || !out_y || !mm.tex) return 0;
     const GameWorld *world = World_Get();
     if (!world || !world->loaded) return 0;
-    SDL_Rect dst;
+    SDL_Rect dst, slot;
     if (!minimap_compute_rect(plat, &dst) || dst.w < 1 || dst.h < 1) return 0;
-    int inside = win_x >= dst.x && win_x < dst.x + dst.w &&
-                 win_y >= dst.y && win_y < dst.y + dst.h;
+    /* The whole large radar reads as the map, its margins held to the
+     * map's edge (legacy:243931-243965). */
+    const SDL_Rect *area = (g_mm_large && minimap_slot_rect(plat, &slot)) ? &slot : &dst;
+    int inside = win_x >= area->x && win_x < area->x + area->w &&
+                 win_y >= area->y && win_y < area->y + area->h;
     if (!inside && !clamp) return 0;
     if (win_x < dst.x) win_x = dst.x;
     if (win_x > dst.x + dst.w - 1) win_x = dst.x + dst.w - 1;
@@ -423,6 +550,9 @@ int Minimap_PointToWorld(TAK_Platform *plat, int win_x, int win_y, int clamp,
 }
 
 void Minimap_Shutdown(TAK_Platform *plat) {
+    g_mm_large = 0;
+    if (mb.gen == (plat ? plat->renderer_gen : 0u)) blips_free(plat);
+    memset(&mb, 0, sizeof mb);
     if (mm.fog_tex) SDL_DestroyTexture(mm.fog_tex);
     mm.fog_tex = NULL;
     tak_free(mm.fog_px);

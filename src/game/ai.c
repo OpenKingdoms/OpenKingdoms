@@ -1433,6 +1433,9 @@ static int32_t ai_approx_dist(int64_t dx, int64_t dy) {
 }
 
 static int ai_visible_to(const GameWorld *world, int p, const Unit *t) {
+    /* The computer never picks a cloaked enemy (legacy:15401,
+     * legacy:17732). */
+    if (t->cloaked && (int)t->player_id != p) return 0;
     if (!world->cfg.line_of_sight) return 1;
     return Fog_IsVisibleForPlayer(world, p, t->world_x, t->world_y);
 }

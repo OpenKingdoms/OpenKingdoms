@@ -143,6 +143,8 @@ typedef enum TAK_CommandType {
     /* Ctrl+D: the units start their self destruct, or stop it when any
      * of them already counts down. */
     TAK_CMD_SELF_DESTRUCT,
+    /* arg: 1 the units cloak, 0 they stop (legacy:9757-9779). */
+    TAK_CMD_CLOAK,
 
     TAK_CMD_COUNT
 } TAK_CommandType;

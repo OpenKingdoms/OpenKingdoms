@@ -132,8 +132,9 @@
  * builder on patrol mends and helps build, and a blade takes no flyer
  * in the air. 43: a guard attacks what hits the unit it guards, mends
  * it, joins its build or repair, and keeps five cells off it, and
- * Ctrl+D self destructs. */
-#define TAK_ENGINE_BUILD_ID           43
+ * Ctrl+D self destructs. 44: units with a cloak cost cloak, and a
+ * builder sent to a site its side cannot see checks it on arrival. */
+#define TAK_ENGINE_BUILD_ID           44
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

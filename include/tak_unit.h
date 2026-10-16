@@ -585,6 +585,15 @@ typedef struct UnitDef {
     /* `selfdestructcountdown`: seconds a self destruct counts down, 2
      * when the file has none (legacy:163089-163095). */
     uint8_t      selfd_countdown;
+    /* The cloak (legacy:162947-162963): mana a second still and moving,
+     * the latter cloakcost when the file has none, the distance an
+     * enemy keeps it off at, 80 when unset (legacy:163619-163620), and
+     * whether a new unit wants it. cloakcost above 0 is what lets a unit
+     * cloak (legacy:9760). */
+    float        cloak_cost_per_sec;
+    float        cloak_cost_moving_per_sec;
+    int32_t      min_cloak_distance;
+    uint8_t      init_cloaked;
 
     /* Per-player-color baked meshes. NULL until first spawn with
      * that color; Mesh_Bake fills it lazily. */
@@ -991,6 +1000,11 @@ typedef struct Unit {
     /* Ticks left before a self destruct ends the unit, 0 for none. It
      * counts down beside whatever orders the unit holds. */
     uint16_t   selfd_ticks;
+    /* The cloak: wanted by its player's order, hidden now, and the ticks
+     * before it may hide again (legacy:8700-8736, legacy:9757-9779). */
+    uint8_t    cloak_want;
+    uint8_t    cloaked;
+    uint16_t   cloak_wait;
     /* The last enemy unit that hit this one, by stable id, 0 for none,
      * and the engine tick of that hit, for its guards to answer. */
     uint32_t   hit_by;
@@ -1023,6 +1037,11 @@ typedef struct Unit {
      * build_def goes up at cmd_x, cmd_y once they leave, looked for as
      * build_endless's next is (legacy:12088-12124). */
     uint8_t    build_held;
+    /* With build_held: a site its side did not see when ordered. The
+     * builder walks there first and the site is judged on arrival, the
+     * building turned to build_facing (legacy:12063-12124). */
+    uint8_t    build_unseen;
+    uint8_t    build_facing;
     /* Ticks left in the attack handler's wait, after which a fight it
      * took on for itself looks again (legacy:11485-11509). 0 when not
      * waiting. */
@@ -1934,6 +1953,12 @@ int               Units_CanHelpBuild(int helper, int frame);
 int               Units_ToggleSelfDestruct(const int *handles, int n);
 /* 1 while the unit counts down to its self destruct. */
 int               Units_SelfDestructing(int handle);
+/* The cloak order, on or off, for a unit that can cloak. Returns 1 when
+ * it was taken. */
+int               Units_OrderCloak(int handle, int on);
+/* The cloak order the local player's selection holds: 1 all of it
+ * wants the cloak, 0 none of it, 2 some, -1 none of it can cloak. */
+int               Units_SelectedCloakState(void);
 /* Any selected unit of the local player's that could help that frame. */
 int               Units_SelectionCanHelpBuild(int frame);
 
@@ -2113,6 +2138,12 @@ int               Units_IsBuildSiteClear(int def_idx,
 int               Units_IsBuildSiteClearFacing(int def_idx,
                                                 int32_t world_x, int32_t world_y,
                                                 int facing);
+/* The cursor's test as a seat knows the site: ground it never saw is
+ * refused, and units count only where it sees now (legacy:39263-39305,
+ * 218741-218806). A viewer below 1 sees everything. */
+int               Units_IsBuildSiteClearSeen(int def_idx,
+                                              int32_t world_x, int32_t world_y,
+                                              int facing, int viewer);
 /* The cursor's test above looks for units only on a building's cells.
  * A def that walks has an open yard and is placed over units
  * (legacy:163272-163292, 218800-218811). The frame itself goes up only
