@@ -136,8 +136,9 @@
  * builder sent to a site its side cannot see checks it on arrival.
  * 45: a unit turns onto its target only by turninplacerate or as a
  * hover attacker and fires within its aim tolerance, and freeze and
- * stone shots turn a unit to a statue on a roll. */
-#define TAK_ENGINE_BUILD_ID           45
+ * stone shots turn a unit to a statue on a roll. 46: a unit's script
+ * reads IN_WATER as 1 while it moves below the sea. */
+#define TAK_ENGINE_BUILD_ID           46
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

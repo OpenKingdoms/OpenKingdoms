@@ -53,6 +53,7 @@
 #include "tak_palette.h"
 #include "tak_ui.h"
 #include "tak_view_shake.h"
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1181,6 +1182,13 @@ static float unit_float_lift(const GameWorld *w, const Unit *u) {
 float Units_DrawnAlt(const GameWorld *w, const Unit *u) {
     if (!u) return 0.0f;
     return unit_air_alt(w, u) + unit_float_lift(w, u);
+}
+
+/* A ghost and a cloaked unit both draw in the original's translucent
+ * mode (legacy:197442-197457). */
+int Units_DrawnAlpha(const Unit *u) {
+    const UnitDef *d = u ? Units_GetDef(u->def_idx) : NULL;
+    return u && (u->cloaked || (d && d->ghost)) ? 128 : 255;
 }
 
 float Units_DebugStandHeight(int handle) {
@@ -6910,7 +6918,9 @@ uint32_t Units_GetTeamColorRGBA(int idx) {
 static float    *g_scratch_xy    = NULL;
 static uint32_t *g_scratch_color = NULL;
 static float    *g_scratch_uv    = NULL;
-static float    *g_scratch_wz    = NULL;   /* per-vertex world Z, for depth sort */
+static float    *g_scratch_wy    = NULL;   /* per-vertex height over the map */
+/* 1 where a vertex of a unit standing in the sea lies under it. */
+static uint8_t  *g_scratch_wet   = NULL;
 /* Per-vertex legacy height key: whole model-space Y units, the same
  * quantity the legacy rasteriser interpolates and depth-tests
  * (legacy:197697). Base offset dropped, only the order matters. */
@@ -7116,6 +7126,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->floater        = TDF_ReadInt(tdf, "floater", 0);
     out->can_hover      = (uint8_t)(TDF_ReadInt(tdf, "canhover", 0) & 1);
     out->upright        = (uint8_t)(TDF_ReadInt(tdf, "upright", 0) & 1);
+    out->ghost          = (uint8_t)(TDF_ReadInt(tdf, "ghost", 0) & 1);
     out->amphibious     = (uint8_t)(TDF_ReadInt(tdf, "amphibious", 0) & 1);
     out->leash_length   = TDF_ReadInt(tdf, "maneuverleashlength", 0) & 0xffff;
     out->fire_at_will_random = (uint8_t)(TDF_ReadInt(tdf, "fireatwillrandom", 0) & 1);
@@ -8020,23 +8031,26 @@ static int ensure_scratch(int need_verts, int need_idx) {
         float    *xy = (float *)tak_malloc(sizeof(float) * 2 * (size_t)new_cap);
         uint32_t *cl = (uint32_t *)tak_malloc(sizeof(uint32_t) * (size_t)new_cap);
         float    *uv = (float *)tak_malloc(sizeof(float) * 2 * (size_t)new_cap);
-        float    *wz = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
+        float    *wy = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
         float    *hk = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
-        if (!xy || !cl || !uv || !wz || !hk) {
+        uint8_t  *wt = (uint8_t *)tak_malloc((size_t)new_cap);
+        if (!xy || !cl || !uv || !wy || !hk || !wt) {
             if (xy) tak_free(xy);
             if (cl) tak_free(cl);
             if (uv) tak_free(uv);
-            if (wz) tak_free(wz);
+            if (wy) tak_free(wy);
             if (hk) tak_free(hk);
+            if (wt) tak_free(wt);
             return -1;
         }
         if (g_scratch_xy)    tak_free(g_scratch_xy);
         if (g_scratch_color) tak_free(g_scratch_color);
         if (g_scratch_uv)    tak_free(g_scratch_uv);
-        if (g_scratch_wz)    tak_free(g_scratch_wz);
+        if (g_scratch_wy)    tak_free(g_scratch_wy);
         if (g_scratch_hkey)  tak_free(g_scratch_hkey);
-        g_scratch_xy = xy; g_scratch_color = cl; g_scratch_uv = uv; g_scratch_wz = wz;
-        g_scratch_hkey = hk;
+        if (g_scratch_wet)   tak_free(g_scratch_wet);
+        g_scratch_xy = xy; g_scratch_color = cl; g_scratch_uv = uv; g_scratch_wy = wy;
+        g_scratch_hkey = hk; g_scratch_wet = wt;
         g_scratch_vcap = new_cap;
     }
     /* Node xform scratch — sized to the largest mesh seen. */
@@ -8066,11 +8080,15 @@ static int ensure_scratch(int need_verts, int need_idx) {
     return 0;
 }
 
+static void tall_features_free(void);
+
 static void scratch_free(void) {
+    tall_features_free();
     if (g_scratch_xy)    { tak_free(g_scratch_xy);    g_scratch_xy    = NULL; }
     if (g_scratch_color) { tak_free(g_scratch_color); g_scratch_color = NULL; }
     if (g_scratch_uv)    { tak_free(g_scratch_uv);    g_scratch_uv    = NULL; }
-    if (g_scratch_wz)    { tak_free(g_scratch_wz);    g_scratch_wz    = NULL; }
+    if (g_scratch_wy)    { tak_free(g_scratch_wy);    g_scratch_wy    = NULL; }
+    if (g_scratch_wet)   { tak_free(g_scratch_wet);   g_scratch_wet   = NULL; }
     if (g_scratch_hkey)  { tak_free(g_scratch_hkey);  g_scratch_hkey  = NULL; }
     if (g_scratch_idx)        { tak_free(g_scratch_idx);        g_scratch_idx        = NULL; }
     if (g_scratch_tri)        { tak_free(g_scratch_tri);        g_scratch_tri        = NULL; }
@@ -9650,8 +9668,14 @@ static int32_t cob_host_call_function(void *user, int fn_id,
             if (u->facing)
                 return (int32_t)(Units_BuildHeading(u->def_idx) * 65536.0f / 6.2831853f);
             return (int32_t)(u->heading * 65536.0f / 6.2831853f);
-        case 28: /* IN_WATER */
-            return 0;
+        case 28: { /* IN_WATER: a mover below the sea (legacy:185197-185206) */
+            const GameWorld *ww = World_Get();
+            if (!ww || ww->water_height <= 0 || !def || !(def->max_velocity > 0.0f))
+                return 0;
+            float y = (float)Terrain_SampleHeight(ww, u->world_x, u->world_y) +
+                      Units_DrawnAlt(ww, u);
+            return y < (float)ww->water_height;
+        }
         case 29: /* CURRENT_SPEED */
             return u->velocity >= 0 ? u->velocity : -u->velocity;
         case 30:
@@ -9683,6 +9707,11 @@ static int32_t cob_host_call_function(void *user, int fn_id,
                 fn_id, n_args);
     }
     return 0;
+}
+
+int32_t Units_DebugScriptPort(int handle, int port) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    return cob_host_call_function(&g_units[handle], port, 1, &(int32_t){ port });
 }
 
 int Units_DebugInvokeScript(const char *script_name) {
@@ -15888,6 +15917,10 @@ static int g_draw_order[TAK_MAX_UNITS];
 
 static uint8_t g_debug_run_size[TAK_MAX_UNITS];
 
+static int64_t draw_depth(const Unit *u) {
+    return ((int64_t)(u->flying != 0) << 32) + u->world_y;
+}
+
 static int build_draw_order(const struct GameWorld *world) {
     /* Frustum cull pass: only keep units whose footprint is inside the
      * viewport (expanded by a margin for the unit's projected size).
@@ -15923,12 +15956,13 @@ static int build_draw_order(const struct GameWorld *world) {
         g_draw_order[n++] = i;
     }
     /* Insertion sort by world_y (smaller world_y → drawn first → at
-     * the back). Stable: ties keep their spawn-order layering. */
+     * the back), flyers after every walker (legacy:210713-210733).
+     * Stable: ties keep their spawn-order layering. */
     for (int i = 1; i < n; i++) {
         int key = g_draw_order[i];
-        int32_t key_y = g_units[key].world_y;
+        int64_t key_y = draw_depth(&g_units[key]);
         int j = i - 1;
-        while (j >= 0 && g_units[g_draw_order[j]].world_y > key_y) {
+        while (j >= 0 && draw_depth(&g_units[g_draw_order[j]]) > key_y) {
             g_draw_order[j + 1] = g_draw_order[j];
             j--;
         }
@@ -16431,6 +16465,20 @@ int Units_FactoryBuildSpot(int factory_handle,
     return unit_factory_build_spot(f, out_x, out_y);
 }
 
+/* The sea level the run being transformed is tinted under, or 0 when
+ * no unit in it stands in the sea. */
+static float g_wet_sea = 0.0f;
+
+/* The underwater remap (the .blu table) darkens a colour toward the
+ * sea's green blue. All four sides' unit palettes carry the same table,
+ * which averages these three channel scales. */
+static uint32_t underwater_colour(uint32_t c) {
+    uint32_t r = ((c & 0xFFu) * 145u) >> 8;
+    uint32_t g = (((c >> 8) & 0xFFu) * 185u) >> 8;
+    uint32_t b = (((c >> 16) & 0xFFu) * 189u) >> 8;
+    return (c & 0xFF000000u) | r | (g << 8) | (b << 16);
+}
+
 /* Transform one unit's mesh into the scratch buffers at vertex offset
  * `v_off`: per-piece COB transform, heading rotation, projection, plus
  * the per-vertex height key the draw order needs. */
@@ -16451,18 +16499,22 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
     const float cr = tak_cosf(u->roll),  sr = tak_sinf(u->roll);
     const int   V  = m->vert_count;
 
-    /* A body being built draws opaque or not at all (legacy:197474). */
-    uint32_t alpha_mul = 255;
+    /* A body being built draws opaque or not at all (legacy:197474).
+     * A ghost or a cloaked unit draws half see through. */
+    uint32_t alpha_mul = (uint32_t)Units_DrawnAlpha(u);
     /* The whiteout: the model rasterised as one solid block of white
      * (legacy:197033-197035) and blended out with the fade
      * (legacy:211265-211295). */
     const int whiteout = u->magic_death != 0;
     if (whiteout) {
-        alpha_mul = (uint32_t)u->magic_death_fade * 255u / UNIT_MAGIC_DEATH_TICKS;
+        alpha_mul = alpha_mul * u->magic_death_fade / UNIT_MAGIC_DEATH_TICKS;
     }
-    /* A cloaked unit draws see through for whoever sees it at all
-     * (legacy:197442-197457). */
-    if (u->cloaked) alpha_mul /= 2u;
+
+    /* A unit standing below the sea is drawn through the underwater
+     * remap wherever it lies under the surface (legacy:197018-197027). */
+    const float sea = (float)world->water_height;
+    const int wet = world->water_height > 0 && uh < sea;
+    if (wet) g_wet_sea = sea;
 
     /* Per-piece transforms for THIS unit. Animation gives each unit its
      * own piece state, so this is recomputed per unit. */
@@ -16477,7 +16529,8 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
         if (x->hidden) {
             g_scratch_xy[2 * i + 0] = 0.0f;
             g_scratch_xy[2 * i + 1] = 0.0f;
-            g_scratch_wz[i]         = 0.0f;
+            g_scratch_wy[i]         = 0.0f;
+            g_scratch_wet[i]        = 0;
             g_scratch_hkey[i]       = 0.0f;
             g_scratch_color[i]      = 0;
             g_scratch_uv[2 * i + 0] = 0.0f;
@@ -16512,8 +16565,9 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
         const float wz = uz + rz * ta;
         g_scratch_xy[2 * i + 0] = wx - cam_x;
         g_scratch_xy[2 * i + 1] = wz - cam_y - wy * tilt;
-        g_scratch_wz[i]         = wz;
+        g_scratch_wy[i]         = wy;
         g_scratch_hkey[i]       = model_height_key(my);
+        g_scratch_wet[i]        = (uint8_t)(wet && wy <= sea);
         /* Colour is RGBA8888 little-endian (A in the high byte). */
         uint32_t c = m->colors[v];
         if (whiteout) c |= 0x00FFFFFFu;
@@ -16522,6 +16576,7 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
             a = (a * alpha_mul) / 255u;
             c = (c & 0x00FFFFFFu) | (a << 24);
         }
+        if (g_scratch_wet[i]) c = underwater_colour(c);
         g_scratch_color[i] = c;
         g_scratch_uv[2 * i + 0] = m->uvs[2 * v + 0];
         g_scratch_uv[2 * i + 1] = m->uvs[2 * v + 1];
@@ -16588,6 +16643,13 @@ static int build_unit_tri_list(const UnitMesh *m, int v_off) {
  * Backfaces are tested per copy (legacy:197804), since copies can face
  * different ways. A lone copy is culled up front, which keeps its
  * stretches as long as they can be. */
+/* Tall scenery drawn among the units, defined with the features below. */
+static void collect_tall_features(const struct GameWorld *world);
+static void flush_tall_features(TAK_Platform *plat, int row);
+static int  tall_feature_before(int row);
+static int  unit_draw_row(const Unit *u);
+static void note_drawn_box(const UnitMesh *m, int v_off);
+
 /* Set for the run being emitted when its units are in the whiteout:
  * the triangles go out untextured, one block of the vertex white. */
 static int g_submit_solid_white = 0;
@@ -16595,12 +16657,58 @@ static int g_submit_solid_white = 0;
 static void submit_intangible_mass(TAK_Platform *plat, const UnitMesh *m,
                                    const Unit *u, const UnitDef *def, int n_verts);
 
+/* A new vertex `t` of the way from `a` to `b`, in colour `c`. */
+static int split_vert(int n, int a, int b, float t, uint32_t c) {
+    g_scratch_xy[2 * n + 0] = g_scratch_xy[2 * a + 0] + t * (g_scratch_xy[2 * b + 0] - g_scratch_xy[2 * a + 0]);
+    g_scratch_xy[2 * n + 1] = g_scratch_xy[2 * a + 1] + t * (g_scratch_xy[2 * b + 1] - g_scratch_xy[2 * a + 1]);
+    g_scratch_uv[2 * n + 0] = g_scratch_uv[2 * a + 0] + t * (g_scratch_uv[2 * b + 0] - g_scratch_uv[2 * a + 0]);
+    g_scratch_uv[2 * n + 1] = g_scratch_uv[2 * a + 1] + t * (g_scratch_uv[2 * b + 1] - g_scratch_uv[2 * a + 1]);
+    g_scratch_color[n] = c;
+    return n;
+}
+
+/* Writes a triangle's indices at `w`, cut along the sea level when it
+ * crosses it so the part under the surface alone takes the underwater
+ * colour, the line the original's per pixel test draws. Cut vertices
+ * go at `*nv`. Returns the new index count. */
+static int emit_tri(int i0, int i1, int i2, int w, int *nv) {
+    const int v[3] = { i0, i1, i2 };
+    const int wet = g_scratch_wet[i0] + g_scratch_wet[i1] + g_scratch_wet[i2];
+    if (wet == 0 || wet == 3 || *nv + 4 > 65535 || *nv + 4 > g_scratch_vcap ||
+        w + 9 > g_scratch_icap) {
+        g_scratch_idx[w++] = (uint16_t)i0;
+        g_scratch_idx[w++] = (uint16_t)i1;
+        g_scratch_idx[w++] = (uint16_t)i2;
+        return w;
+    }
+    /* The one vertex alone on its side, then the other two in winding. */
+    int k = 0;
+    while ((g_scratch_wet[v[k]] != 0) == (wet == 2)) k++;
+    const int a = v[k], b = v[(k + 1) % 3], c = v[(k + 2) % 3];
+    const float ta = (g_wet_sea - g_scratch_wy[a]) / (g_scratch_wy[b] - g_scratch_wy[a]);
+    const float tc = (g_wet_sea - g_scratch_wy[a]) / (g_scratch_wy[c] - g_scratch_wy[a]);
+    /* A prim is one colour, so the dry end's colour is the dry side's. */
+    const uint32_t dry = g_scratch_wet[a] ? g_scratch_color[b] : g_scratch_color[a];
+    const uint32_t a_col = g_scratch_wet[a] ? underwater_colour(dry) : dry;
+    const uint32_t o_col = g_scratch_wet[a] ? dry : underwater_colour(dry);
+    const int pa = split_vert((*nv)++, a, b, ta, a_col);
+    const int qa = split_vert((*nv)++, a, c, tc, a_col);
+    const int po = split_vert((*nv)++, a, b, ta, o_col);
+    const int qo = split_vert((*nv)++, a, c, tc, o_col);
+    const uint16_t tris[9] = { (uint16_t)a,  (uint16_t)pa, (uint16_t)qa,
+                               (uint16_t)po, (uint16_t)b,  (uint16_t)c,
+                               (uint16_t)po, (uint16_t)c,  (uint16_t)qo };
+    memcpy(&g_scratch_idx[w], tris, sizeof(tris));
+    return w + 9;
+}
+
 static void emit_height_ordered(TAK_Platform *plat, const UnitMesh *m,
                                 int n_inst, int total_verts) {
     const int V = m->vert_count;
     int kept = build_unit_tri_list_ex(m, 0, n_inst == 1);
     if (kept > 1) qsort(g_scratch_tri, kept, sizeof(TriSort), tri_cmp_far_first);
     int s = 0;
+    int nv = total_verts;
     while (s < kept) {
         int e = s + 1;
         while (e < kept && g_scratch_tri[e].batch == g_scratch_tri[s].batch) e++;
@@ -16612,9 +16720,7 @@ static void emit_height_ordered(TAK_Platform *plat, const UnitMesh *m,
                 const int i1 = g_scratch_tri[t].i1 + v_off;
                 const int i2 = g_scratch_tri[t].i2 + v_off;
                 if (!tri_faces_camera(i0, i1, i2)) continue;
-                g_scratch_idx[w++] = (uint16_t)i0;
-                g_scratch_idx[w++] = (uint16_t)i1;
-                g_scratch_idx[w++] = (uint16_t)i2;
+                w = emit_tri(i0, i1, i2, w, &nv);
             }
         }
         if (w > 0) {
@@ -16622,7 +16728,7 @@ static void emit_height_ordered(TAK_Platform *plat, const UnitMesh *m,
                 g_submit_solid_white ? NULL
                     : m->batches[g_scratch_tri[s].batch].atlas_tex,
                 g_scratch_xy, g_scratch_color, g_scratch_uv,
-                total_verts, g_scratch_idx, w);
+                nv, g_scratch_idx, w);
         }
         s = e;
     }
@@ -16667,12 +16773,15 @@ static void submit_run(TAK_Platform *plat, const struct GameWorld *world,
         const int total_verts   = chunk_n * V;
         const int max_total_idx = chunk_n * m->tri_count * 3;
 
-        if (ensure_scratch(total_verts, max_total_idx) != 0) continue;
+        /* Room for the cuts along the sea level a wet run needs. */
+        if (ensure_scratch(total_verts + 2048, max_total_idx + 6144) != 0) continue;
 
         /* ── Transform every unit's verts into the merged buffer. ── */
+        g_wet_sea = 0.0f;
         for (int ci = 0; ci < chunk_n; ci++) {
-            transform_unit_verts(m, world, &g_units[unit_indices[chunk_start + ci]],
-                                 y_scale, ci * V);
+            const Unit *u = &g_units[unit_indices[chunk_start + ci]];
+            transform_unit_verts(m, world, u, y_scale, ci * V);
+            if (!u->flying) note_drawn_box(m, ci * V);
         }
 
         /* ── One ordered pass over every triangle in the run. ────
@@ -17126,7 +17235,8 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
         if (x->hidden) {
             g_scratch_xy[2 * v + 0] = 0.0f;
             g_scratch_xy[2 * v + 1] = 0.0f;
-            g_scratch_wz[v]         = 0.0f;
+            g_scratch_wy[v]         = 0.0f;
+            g_scratch_wet[v]        = 0;
             g_scratch_hkey[v]       = 0.0f;
             g_scratch_color[v]      = 0;
             g_scratch_uv[2 * v + 0] = 0.0f;
@@ -17148,7 +17258,8 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
         const float wz = uz + rz * ta;
         g_scratch_xy[2 * v + 0] = wx - cam_x;
         g_scratch_xy[2 * v + 1] = wz - cam_y - wy * tilt;
-        g_scratch_wz[v]         = wz;
+        g_scratch_wy[v]         = wy;
+        g_scratch_wet[v]        = 0;
         g_scratch_hkey[v]       = model_height_key(my);
         /* Blend authored vertex colour with the tint and the ghost
          * alpha. RGB = mix(authored, tint, 0.5); A = authored.A * alpha255. */
@@ -17188,12 +17299,16 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
     memset(g_debug_run_size, 0, sizeof(g_debug_run_size));
     if (n <= 0) return;
 
+    collect_tall_features(world);
     int run_start = 0;
     while (run_start < n) {
         const Unit *u0 = &g_units[g_draw_order[run_start]];
+        flush_tall_features(plat, unit_draw_row(u0));
         int run_end = run_start + 1;
         while (run_end < n) {
             const Unit *uk = &g_units[g_draw_order[run_end]];
+            /* A tall feature between the two rows goes down between them. */
+            if (tall_feature_before(unit_draw_row(uk))) break;
             if (uk->def_idx        != u0->def_idx)        break;
             if (uk->team_color_idx != u0->team_color_idx) break;
             /* A whiteout draws untextured, so it is its own run. */
@@ -17212,6 +17327,7 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
                    g_draw_order + run_start, run_end - run_start);
         run_start = run_end;
     }
+    flush_tall_features(plat, INT_MAX);
 }
 
 /* How many units shared the coalesced run this one was drawn in on the
@@ -17489,7 +17605,8 @@ static void submit_static_mesh_run(TAK_Platform *plat,
                 if (x->hidden) {
                     g_scratch_xy[2*i+0] = 0.0f;
                     g_scratch_xy[2*i+1] = 0.0f;
-                    g_scratch_wz[i]     = 0.0f;
+                    g_scratch_wy[i]     = 0.0f;
+                    g_scratch_wet[i]    = 0;
                     g_scratch_hkey[i]   = 0.0f;
                     g_scratch_color[i]  = 0;
                     g_scratch_uv[2*i+0] = 0.0f;
@@ -17516,7 +17633,8 @@ static void submit_static_mesh_run(TAK_Platform *plat,
                 const float wz = uz + rz * ta;
                 g_scratch_xy[2*i+0] = wx - cam_x;
                 g_scratch_xy[2*i+1] = wz - cam_y - wy * tilt;
-                g_scratch_wz[i]     = wz;
+                g_scratch_wy[i]     = wy;
+                g_scratch_wet[i]    = 0;
                 g_scratch_hkey[i]   = model_height_key(by);
                 g_scratch_color[i]  = m->colors[v];
                 g_scratch_uv[2*i+0] = m->uvs[2*v+0];
@@ -18438,6 +18556,40 @@ static void render_feature_at_work(const struct GameWorld *world, SDL_Renderer *
     }
 }
 
+/* Where feature `i`'s sprite is anchored on screen. 0 when it is off
+ * screen or on unexplored ground and so not drawn. */
+static int feature_screen_anchor(const struct GameWorld *world, int i,
+                                 int *out_sx, int *out_sy) {
+    /* Anchor the sprite at the centre of the feature's footprint
+     * (in tile space). The sprite's authored offset_x/_y is the
+     * hotspot relative to that anchor — usually the foot-centre,
+     * which is exactly what a top-down RTS expects so the sprite
+     * sits on the cell that its TNT entry occupies. Tile = 16 wpx
+     * to match the rest of the engine. */
+    int fp_x = 1, fp_z = 1;
+    Features_InstanceFootprint(world, i, &fp_x, &fp_z);
+    int wx = world->features[i].tile_x * 16 + fp_x * 8;
+    int wy = world->features[i].tile_z * 16 + fp_z * 8;
+    int sx = wx - world->cam_x;
+    /* Features lift with the ground the same way units do: legacy
+     * subtracts the mean of the cell's four corner heights over 2
+     * (legacy:211150-211153). Without it a sacred pad sits lower
+     * on screen than the lodestone standing on it. */
+    int sy = wy - world->cam_y
+           - (int)((float)Terrain_SampleHeight(world, wx, wy) * g_tan_tilt);
+    if (sx < -128 || sy < -128 ||
+        sx > world->viewport_w + 128 ||
+        sy > world->viewport_h + 128) return 0;
+    if (Fog_StateAt(world, wx, wy) == TAK_FOG_UNEXPLORED) return 0;
+    *out_sx = sx;
+    *out_sy = sy;
+    return 1;
+}
+
+static int feature_frame_now(const FeatureSprite *fs) {
+    return fs->num_frames > 1 ? (int)((g_construct_anim_tick / 4) % fs->num_frames) : 0;
+}
+
 static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
     if (!world || !plat || !plat->renderer) return;
     if (!world->features || world->feature_count <= 0) return;
@@ -18448,28 +18600,8 @@ static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
         /* A feature with `object` is a model, drawn with the corpse
          * pass (legacy:127098). */
         if (fd && fd->object[0]) continue;
-
-        /* Anchor the sprite at the centre of the feature's footprint
-         * (in tile space). The sprite's authored offset_x/_y is the
-         * hotspot relative to that anchor — usually the foot-centre,
-         * which is exactly what a top-down RTS expects so the sprite
-         * sits on the cell that its TNT entry occupies. Tile = 16 wpx
-         * to match the rest of the engine. */
-        int fp_x = 1, fp_z = 1;
-        Features_InstanceFootprint(world, i, &fp_x, &fp_z);
-        int wx = world->features[i].tile_x * 16 + fp_x * 8;
-        int wy = world->features[i].tile_z * 16 + fp_z * 8;
-        int sx = wx - world->cam_x;
-        /* Features lift with the ground the same way units do: legacy
-         * subtracts the mean of the cell's four corner heights over 2
-         * (legacy:211150-211153). Without it a sacred pad sits lower
-         * on screen than the lodestone standing on it. */
-        int sy = wy - world->cam_y
-               - (int)((float)Terrain_SampleHeight(world, wx, wy) * g_tan_tilt);
-        if (sx < -128 || sy < -128 ||
-            sx > world->viewport_w + 128 ||
-            sy > world->viewport_h + 128) continue;
-        if (Fog_StateAt(world, wx, wy) == TAK_FOG_UNEXPLORED) continue;
+        int sx = 0, sy = 0;
+        if (!feature_screen_anchor(world, i, &sx, &sy)) continue;
 
         if (!fd) {
             /* Unresolved feature: red dot so we can see which TNT cells
@@ -18498,9 +18630,7 @@ static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
             render_feature_at_work(world, r, fd, mf, sx, sy);
             continue;
         }
-        int frame_idx = fs->num_frames > 1
-            ? (int)((g_construct_anim_tick / 4) % fs->num_frames)
-            : 0;
+        int frame_idx = feature_frame_now(fs);
         /* The shadow sprite goes down first, under the feature itself
          * (legacy:211159-211176). */
         if (g_shadows_on && fd->seqname_shad[0] && !fd->no_shadow) {
@@ -18514,6 +18644,141 @@ static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
         }
         blit_feature_frame(r, fs, frame_idx, sx, sy, 0);
     }
+}
+
+/* ── Tall scenery over the units behind it ───────────────────────────
+ *
+ * The original draws scenery under 10 high with the ground, and taller
+ * scenery row by row among the units: one map row's walkers, then that
+ * row's tall features, then the next row (legacy:210555-210570,
+ * legacy:210619-210628, legacy:210650-210686), and flyers after every
+ * row (legacy:210713-210733). The height kept is the low byte of the
+ * feature's `height` (legacy:127053-127054). The classic view lays all
+ * scenery under the fog before any unit, so a tall feature goes down
+ * again, body only, over each unit that stood behind it. */
+typedef struct TallFeature {
+    int            row;       /* map row of the anchor cell */
+    int            idx;       /* world->features index, for ties */
+    int            sx, sy;
+    int            frame;
+    FeatureSprite *fs;
+    SDL_Rect       rect;      /* where the sprite lands */
+} TallFeature;
+static TallFeature *g_tall;
+static int          g_tall_cap, g_tall_count, g_tall_next;
+/* Screen boxes of the walkers drawn so far this frame. */
+static SDL_Rect     g_drawn_box[TAK_MAX_UNITS];
+static int          g_drawn_count;
+
+static int tall_cmp(const void *a, const void *b) {
+    const TallFeature *x = (const TallFeature *)a, *y = (const TallFeature *)b;
+    if (x->row != y->row) return x->row < y->row ? -1 : 1;
+    return x->idx < y->idx ? -1 : (x->idx > y->idx);
+}
+
+static void tall_features_free(void) {
+    if (g_tall) tak_free(g_tall);
+    g_tall = NULL;
+    g_tall_cap = g_tall_count = g_tall_next = 0;
+}
+
+/* The tall features on screen this frame, in row order. */
+static void collect_tall_features(const struct GameWorld *world) {
+    g_tall_count = g_tall_next = 0;
+    g_drawn_count = 0;
+    if (!world->features || world->feature_count <= 0) return;
+    const int x0 = world->cam_x - 384, x1 = world->cam_x + world->viewport_w + 384;
+    const int y0 = world->cam_y - 384, y1 = world->cam_y + world->viewport_h + 384;
+    for (int i = 0; i < world->feature_count; i++) {
+        const struct MapFeature *mf = &world->features[i];
+        if (mf->tile_x * 16 < x0 || mf->tile_x * 16 > x1 ||
+            mf->tile_z * 16 < y0 || mf->tile_z * 16 > y1) continue;
+        const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+        if (!fd || fd->object[0] || (fd->height & 0xff) < 10) continue;
+        if (mf->fx == FEATURE_FX_DYING || mf->fx == FEATURE_FX_BURNING) continue;
+        int sx = 0, sy = 0;
+        if (!feature_screen_anchor(world, i, &sx, &sy)) continue;
+        FeatureSprite *fs = load_feature_sprite(fd->filename, fd->seqname,
+                                                 world->features_rgba);
+        if (!fs || fs->num_frames <= 0) continue;
+        int f = feature_frame_now(fs);
+        if (!fs->frame_pixels[f]) continue;
+        if (g_tall_count >= g_tall_cap) {
+            int cap = g_tall_cap ? g_tall_cap * 2 : 256;
+            TallFeature *grown = (TallFeature *)tak_malloc(sizeof(TallFeature) * (size_t)cap);
+            if (!grown) return;
+            if (g_tall) {
+                memcpy(grown, g_tall, sizeof(TallFeature) * (size_t)g_tall_count);
+                tak_free(g_tall);
+            }
+            g_tall = grown;
+            g_tall_cap = cap;
+        }
+        TallFeature *t = &g_tall[g_tall_count++];
+        t->row = mf->tile_z;
+        t->idx = i;
+        t->sx = sx;
+        t->sy = sy;
+        t->frame = f;
+        t->fs = fs;
+        t->rect.x = sx - fs->frame_off_x[f];
+        t->rect.y = sy - fs->frame_off_y[f];
+        t->rect.w = fs->frame_w[f];
+        t->rect.h = fs->frame_h[f];
+    }
+    if (g_tall_count > 1) qsort(g_tall, (size_t)g_tall_count, sizeof(TallFeature), tall_cmp);
+}
+
+/* Lays the tall features of every row before `row` over the walkers
+ * drawn so far, clipped to each walker's box so nothing else moves. */
+static void flush_tall_features(TAK_Platform *plat, int row) {
+    SDL_Renderer *r = plat->renderer;
+    SDL_Rect prev;
+    const SDL_bool clipped = SDL_RenderIsClipEnabled(r);
+    SDL_RenderGetClipRect(r, &prev);
+    int changed = 0;
+    for (; g_tall_next < g_tall_count && g_tall[g_tall_next].row < row; g_tall_next++) {
+        const TallFeature *t = &g_tall[g_tall_next];
+        for (int k = 0; k < g_drawn_count; k++) {
+            SDL_Rect cut;
+            if (!SDL_IntersectRect(&t->rect, &g_drawn_box[k], &cut)) continue;
+            if (clipped && !SDL_IntersectRect(&cut, &prev, &cut)) continue;
+            SDL_RenderSetClipRect(r, &cut);
+            blit_feature_frame(r, t->fs, t->frame, t->sx, t->sy, 0);
+            changed = 1;
+        }
+    }
+    if (changed) SDL_RenderSetClipRect(r, clipped ? &prev : NULL);
+}
+
+/* The map row a unit is drawn in, flyers after every row. */
+static int unit_draw_row(const Unit *u) {
+    return u->flying ? INT_MAX : u->world_y >> 4;
+}
+
+/* 1 while a tall feature of a row before `row` is still to go down. */
+static int tall_feature_before(int row) {
+    return g_tall_next < g_tall_count && g_tall[g_tall_next].row < row;
+}
+
+/* Notes where a walker just went, when a tall feature may cover it. */
+static void note_drawn_box(const UnitMesh *m, int v_off) {
+    if (g_tall_next >= g_tall_count || g_drawn_count >= TAK_MAX_UNITS) return;
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    for (int v = 0; v < m->vert_count; v++) {
+        if (g_scratch_node_xform[m->vert_node_idx[v]].hidden) continue;
+        const float x = g_scratch_xy[2 * (v_off + v)], y = g_scratch_xy[2 * (v_off + v) + 1];
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+    }
+    if (x0 > x1) return;
+    SDL_Rect *b = &g_drawn_box[g_drawn_count++];
+    b->x = (int)floorf(x0);
+    b->y = (int)floorf(y0);
+    b->w = (int)ceilf(x1) - b->x + 1;
+    b->h = (int)ceilf(y1) - b->y + 1;
 }
 
 /* ── Ground shadows ──────────────────────────────────────────────────
