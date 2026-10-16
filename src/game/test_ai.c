@@ -3110,14 +3110,22 @@ static int test_ai_fighters_gather_into_numbered_groups(void) {
     ASSERT_TRUE(TAK_SimHash_AI(TAK_SIM_HASH_SEED) == before);
 
     /* Three of the first four fall. One of four is a third or less of
-     * what went out, so group 21 is spent and its last member is
-     * nobody's, idle in the field, and comes home. */
+     * what went out, so group 21 is spent. On quiet ground away from
+     * home what is left of it holds there (A-012). */
     for (int k = 1; k < 4; k++) {
         g_units[first[k]].alive = 0;
         TAK_AI_ForgetUnit(first[k]);
     }
     g_units[first[0]].cmd_kind = UNIT_CMD_NONE;
     hf_run_ticks(&w, 180, 1);
+    ASSERT_EQ_INT(21, TAK_AI_DebugGroupOf(first[0]));
+    ASSERT_EQ_INT(3, TAK_AI_DebugGroupMode(2, 21));
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[first[0]].cmd_kind);
+
+    /* Without it the last member is nobody's, idle in the field, and
+     * comes home. */
+    TAK_AI_DebugSetTactics(2, TAK_AI_TACTIC_ALL & ~TAK_AI_TACTIC_HOLD);
+    hf_run_ticks(&w, 240, 1);
     ASSERT_EQ_INT(0, TAK_AI_DebugGroupOf(first[0]));
     ASSERT_EQ_INT(0, TAK_AI_DebugGroupMode(2, 21));
     ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[first[0]].cmd_kind);
@@ -3335,6 +3343,33 @@ static int test_htn_footing_steps_out_of_a_fire(void) {
     return 0;
 }
 
+/* A-012. A group in the field answers a threat first, covers its
+ * builder until the work ends, and then presses on only at a target it
+ * sees and outweighs by a fifth, or after the long wait. Else it holds. */
+static int test_htn_group_holds_or_presses_on(void) {
+    AiGroupState g;
+    memset(&g, 0, sizeof(g));
+    g.errand_done = 1;
+    g.next_known = 1;
+    g.value = 60;
+    g.enemy_at_next = 50;
+    ASSERT_EQ_INT(AI_TASK_HOLD_GROUND, AI_Htn_GroupTask(&g, NULL));
+    g.next_seen = 1;
+    ASSERT_EQ_INT(AI_TASK_STRIKE, AI_Htn_GroupTask(&g, NULL));
+    g.enemy_at_next = 51;
+    ASSERT_EQ_INT(AI_TASK_HOLD_GROUND, AI_Htn_GroupTask(&g, NULL));
+    g.siege_due = 1;
+    ASSERT_EQ_INT(AI_TASK_STRIKE, AI_Htn_GroupTask(&g, NULL));
+    g.escorting = 1;
+    g.errand_done = 0;
+    ASSERT_EQ_INT(AI_TASK_ESCORT, AI_Htn_GroupTask(&g, NULL));
+    g.threat = 1;
+    const char *why = NULL;
+    ASSERT_EQ_INT(AI_TASK_DEFEND, AI_Htn_GroupTask(&g, &why));
+    ASSERT_TRUE(strcmp("answer the threat", why) == 0);
+    return 0;
+}
+
 static struct MapFeature g_mock_feats[2];
 
 /* A builder of seat 2 that can sweep, idle beside its troop. */
@@ -3473,6 +3508,117 @@ static int test_ai_an_unnamed_fighter_weighs_as_its_peers(void) {
     return 0;
 }
 
+/* A-012. With the pads near home taken, the seat goes on to the far
+ * ones up to the profile's limit, as the original sends a spare builder
+ * to any safe unclaimed site (legacy:16503), and the fighters gathering
+ * at home go with it (legacy:16320-16328). Without it the seat sits on
+ * the two pads it has. */
+static int test_ai_settles_the_far_pads_with_cover(void) {
+    for (int variant = 0; variant < 2; variant++) {
+        GameWorld w;
+        setup_ai_progression_fixture(&w);
+        if (variant) TAK_AI_DebugSetTactics(2, TAK_AI_TACTIC_ALL & ~TAK_AI_TACTIC_EXPAND);
+        w.start_positions[0].player = 2;
+        w.start_positions[0].x = 40;
+        w.start_positions[0].z = 128;
+        w.num_start_positions = 1;
+        g_mock_max_mana = 1000;
+        g_defs[1].yardmap_sacred = 1;
+        g_defs[1].footprint_x = 2;
+        g_defs[1].footprint_z = 2;
+        g_buildable_counts[0] = 1;
+        g_sacred_registered = 1;
+        g_sacred_def.sacred_site = 2.0f;
+        g_sacred_def.footprint_x = 2;
+        g_sacred_def.footprint_z = 2;
+        /* Two pads at home, two far out east. */
+        static struct MapFeature pads[4];
+        static const int pad_x[4] = { 44, 36, 200, 214 };
+        memset(pads, 0, sizeof(pads));
+        for (int k = 0; k < 4; k++) {
+            pads[k].tile_x = (int16_t)pad_x[k];
+            pads[k].tile_z = 128;
+        }
+        w.features = pads;
+        w.feature_count = 4;
+        int32_t bx = 40 * 16, by = 128 * 16;
+        g_units[0].world_x = bx;
+        g_units[0].world_y = by;
+        for (int k = 0; k < 2; k++) {
+            int l = hf_add_unit(2, 1, pad_x[k] * 16 + 16, 128 * 16 + 16);
+            ASSERT_TRUE(l > 0);
+        }
+        int troop[2];
+        for (int k = 0; k < 2; k++)
+            troop[k] = hf_add_unit(2, 3, bx + 64 + 16 * k, by + 48);
+
+        TAK_AI_TickSkirmish(&w);
+        if (variant) {
+            printf("[without: %d builds] ", g_begin_calls);
+            ASSERT_EQ_INT(0, g_begin_calls);
+            ASSERT_EQ_INT(21, TAK_AI_DebugGroupOf(troop[0]));
+            ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[troop[0]].cmd_kind);
+            continue;
+        }
+        ASSERT_EQ_INT(1, g_begin_calls);
+        ASSERT_EQ_INT(0, g_last_builder);
+        ASSERT_EQ_INT(1, g_last_build_def);
+        ASSERT_EQ_INT(200 * 16 + 16, g_last_build_x);
+        for (int k = 0; k < 2; k++) {
+            ASSERT_EQ_INT(2, TAK_AI_DebugGroupOf(troop[k]));
+            ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[troop[k]].cmd_kind);
+            /* Past the pad from home, clear of the site. */
+            ASSERT_TRUE(g_units[troop[k]].cmd_x > g_last_build_x + 96);
+        }
+        ASSERT_EQ_INT(1, TAK_AI_DebugCount(2, TAK_AI_COUNT_ESCORTS));
+    }
+    return 0;
+}
+
+/* A-012. A group whose target falls in the field holds the ground it
+ * won while it sees nothing to go on to, and presses on from where it
+ * stands to a target it can see and take, as the original's group picks
+ * its next from its own position (legacy:18343). */
+static int test_ai_a_group_that_wins_holds_or_presses_on(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    g_visible = 0;
+    int32_t bx = hf_start_x[2] * 16, by = hf_start_z[2] * 16;
+    int m[3];
+    m[0] = hf_troop(2);
+    for (int k = 1; k < 3; k++)
+        m[k] = hf_add_unit(2, HF_TROOP, bx + 40 + 16 * k, by + 16);
+    int foe = hf_add_unit(3, HF_TROOP, 1600, 1600);
+    TAK_AI_DebugSetWaveTarget(2, foe);
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_EQ_INT(2, TAK_AI_DebugGroupMode(2, 21));
+
+    /* They reach it and it falls. */
+    for (int k = 0; k < 3; k++) {
+        g_units[m[k]].world_x = 1600 + 16 * k;
+        g_units[m[k]].world_y = 1640;
+        g_units[m[k]].cmd_kind = UNIT_CMD_NONE;
+    }
+    g_units[foe].alive = 0;
+    TAK_AI_ForgetUnit(foe);
+    hf_run_ticks(&w, 120, 1);
+    ASSERT_EQ_INT(3, TAK_AI_DebugGroupMode(2, 21));
+    for (int k = 0; k < 3; k++) {
+        ASSERT_EQ_INT(21, TAK_AI_DebugGroupOf(m[k]));
+        ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[m[k]].cmd_kind);
+    }
+
+    /* Once it can see an enemy it is strong enough for, it goes. */
+    g_visible = 1;
+    hf_run_ticks(&w, 180, 1);
+    ASSERT_EQ_INT(2, TAK_AI_DebugGroupMode(2, 21));
+    ASSERT_EQ_INT(1, TAK_AI_DebugCount(2, TAK_AI_COUNT_PRESSED));
+    for (int k = 0; k < 3; k++)
+        ASSERT_TRUE(g_units[m[k]].cmd_kind != UNIT_CMD_NONE);
+    return 0;
+}
+
 int main(void) {
     /* These cases step the AI at whole seconds and expect every seat. */
     TAK_AI_DebugSetStagger(0);
@@ -3556,6 +3702,9 @@ int main(void) {
     if (test_ai_steps_out_of_a_fire_that_hurts() != 0) return 1;
     if (test_ai_steps_out_toward_the_unit_it_attacks() != 0) return 1;
     if (test_ai_an_unnamed_fighter_weighs_as_its_peers() != 0) return 1;
+    if (test_htn_group_holds_or_presses_on() != 0) return 1;
+    if (test_ai_settles_the_far_pads_with_cover() != 0) return 1;
+    if (test_ai_a_group_that_wins_holds_or_presses_on() != 0) return 1;
 
     puts("test_ai: ok");
     return 0;

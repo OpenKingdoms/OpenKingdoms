@@ -43,6 +43,8 @@ enum {
     TAK_AI_COUNT_EJECTED, TAK_AI_COUNT_SPENT, TAK_AI_COUNT_BUILDER_RETREATS,
     TAK_AI_COUNT_HELD, TAK_AI_COUNT_STRAGGLERS, TAK_AI_COUNT_REINFORCED,
     TAK_AI_COUNT_SQUAD_WAITS, TAK_AI_COUNT_SWEEPS, TAK_AI_COUNT_FIRE_STEPS,
+    TAK_AI_COUNT_ESCORTS, TAK_AI_COUNT_PRESSED, TAK_AI_COUNT_HOLDS,
+    TAK_AI_COUNT_REGROUPED,
     TAK_AI_COUNT_KINDS
 };
 int  TAK_AI_DebugCount(int player_id, int kind);
@@ -58,7 +60,9 @@ const char *TAK_AI_DebugWaveReason(int player_id);
 #define TAK_AI_TACTIC_SWEEP     16  /* sweep the rubble a unit is stuck at (A-011) */
 #define TAK_AI_TACTIC_FIRE      32  /* step out of a fire that hurts (A-011) */
 #define TAK_AI_TACTIC_MIX       64  /* a varied build (A-012) */
-#define TAK_AI_TACTIC_ALL       127
+#define TAK_AI_TACTIC_EXPAND    128 /* settle every free pad, escorted (A-012) */
+#define TAK_AI_TACTIC_HOLD      256 /* press on or hold the ground (A-012) */
+#define TAK_AI_TACTIC_ALL       511
 void TAK_AI_DebugSetTactics(int player_id, int mask);
 /* Every computer seat thinks on the same tick of the second, as
  * before the seats were spread, for tests written against that. */
