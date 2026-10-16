@@ -53,6 +53,7 @@
 #include "tak_palette.h"
 #include "tak_ui.h"
 #include "tak_view_shake.h"
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8079,7 +8080,10 @@ static int ensure_scratch(int need_verts, int need_idx) {
     return 0;
 }
 
+static void tall_features_free(void);
+
 static void scratch_free(void) {
+    tall_features_free();
     if (g_scratch_xy)    { tak_free(g_scratch_xy);    g_scratch_xy    = NULL; }
     if (g_scratch_color) { tak_free(g_scratch_color); g_scratch_color = NULL; }
     if (g_scratch_uv)    { tak_free(g_scratch_uv);    g_scratch_uv    = NULL; }
@@ -15913,6 +15917,10 @@ static int g_draw_order[TAK_MAX_UNITS];
 
 static uint8_t g_debug_run_size[TAK_MAX_UNITS];
 
+static int64_t draw_depth(const Unit *u) {
+    return ((int64_t)(u->flying != 0) << 32) + u->world_y;
+}
+
 static int build_draw_order(const struct GameWorld *world) {
     /* Frustum cull pass: only keep units whose footprint is inside the
      * viewport (expanded by a margin for the unit's projected size).
@@ -15948,12 +15956,13 @@ static int build_draw_order(const struct GameWorld *world) {
         g_draw_order[n++] = i;
     }
     /* Insertion sort by world_y (smaller world_y → drawn first → at
-     * the back). Stable: ties keep their spawn-order layering. */
+     * the back), flyers after every walker (legacy:210713-210733).
+     * Stable: ties keep their spawn-order layering. */
     for (int i = 1; i < n; i++) {
         int key = g_draw_order[i];
-        int32_t key_y = g_units[key].world_y;
+        int64_t key_y = draw_depth(&g_units[key]);
         int j = i - 1;
-        while (j >= 0 && g_units[g_draw_order[j]].world_y > key_y) {
+        while (j >= 0 && draw_depth(&g_units[g_draw_order[j]]) > key_y) {
             g_draw_order[j + 1] = g_draw_order[j];
             j--;
         }
@@ -16634,6 +16643,13 @@ static int build_unit_tri_list(const UnitMesh *m, int v_off) {
  * Backfaces are tested per copy (legacy:197804), since copies can face
  * different ways. A lone copy is culled up front, which keeps its
  * stretches as long as they can be. */
+/* Tall scenery drawn among the units, defined with the features below. */
+static void collect_tall_features(const struct GameWorld *world);
+static void flush_tall_features(TAK_Platform *plat, int row);
+static int  tall_feature_before(int row);
+static int  unit_draw_row(const Unit *u);
+static void note_drawn_box(const UnitMesh *m, int v_off);
+
 /* Set for the run being emitted when its units are in the whiteout:
  * the triangles go out untextured, one block of the vertex white. */
 static int g_submit_solid_white = 0;
@@ -16763,8 +16779,9 @@ static void submit_run(TAK_Platform *plat, const struct GameWorld *world,
         /* ── Transform every unit's verts into the merged buffer. ── */
         g_wet_sea = 0.0f;
         for (int ci = 0; ci < chunk_n; ci++) {
-            transform_unit_verts(m, world, &g_units[unit_indices[chunk_start + ci]],
-                                 y_scale, ci * V);
+            const Unit *u = &g_units[unit_indices[chunk_start + ci]];
+            transform_unit_verts(m, world, u, y_scale, ci * V);
+            if (!u->flying) note_drawn_box(m, ci * V);
         }
 
         /* ── One ordered pass over every triangle in the run. ────
@@ -17282,12 +17299,16 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
     memset(g_debug_run_size, 0, sizeof(g_debug_run_size));
     if (n <= 0) return;
 
+    collect_tall_features(world);
     int run_start = 0;
     while (run_start < n) {
         const Unit *u0 = &g_units[g_draw_order[run_start]];
+        flush_tall_features(plat, unit_draw_row(u0));
         int run_end = run_start + 1;
         while (run_end < n) {
             const Unit *uk = &g_units[g_draw_order[run_end]];
+            /* A tall feature between the two rows goes down between them. */
+            if (tall_feature_before(unit_draw_row(uk))) break;
             if (uk->def_idx        != u0->def_idx)        break;
             if (uk->team_color_idx != u0->team_color_idx) break;
             /* A whiteout draws untextured, so it is its own run. */
@@ -17306,6 +17327,7 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
                    g_draw_order + run_start, run_end - run_start);
         run_start = run_end;
     }
+    flush_tall_features(plat, INT_MAX);
 }
 
 /* How many units shared the coalesced run this one was drawn in on the
@@ -18534,6 +18556,40 @@ static void render_feature_at_work(const struct GameWorld *world, SDL_Renderer *
     }
 }
 
+/* Where feature `i`'s sprite is anchored on screen. 0 when it is off
+ * screen or on unexplored ground and so not drawn. */
+static int feature_screen_anchor(const struct GameWorld *world, int i,
+                                 int *out_sx, int *out_sy) {
+    /* Anchor the sprite at the centre of the feature's footprint
+     * (in tile space). The sprite's authored offset_x/_y is the
+     * hotspot relative to that anchor — usually the foot-centre,
+     * which is exactly what a top-down RTS expects so the sprite
+     * sits on the cell that its TNT entry occupies. Tile = 16 wpx
+     * to match the rest of the engine. */
+    int fp_x = 1, fp_z = 1;
+    Features_InstanceFootprint(world, i, &fp_x, &fp_z);
+    int wx = world->features[i].tile_x * 16 + fp_x * 8;
+    int wy = world->features[i].tile_z * 16 + fp_z * 8;
+    int sx = wx - world->cam_x;
+    /* Features lift with the ground the same way units do: legacy
+     * subtracts the mean of the cell's four corner heights over 2
+     * (legacy:211150-211153). Without it a sacred pad sits lower
+     * on screen than the lodestone standing on it. */
+    int sy = wy - world->cam_y
+           - (int)((float)Terrain_SampleHeight(world, wx, wy) * g_tan_tilt);
+    if (sx < -128 || sy < -128 ||
+        sx > world->viewport_w + 128 ||
+        sy > world->viewport_h + 128) return 0;
+    if (Fog_StateAt(world, wx, wy) == TAK_FOG_UNEXPLORED) return 0;
+    *out_sx = sx;
+    *out_sy = sy;
+    return 1;
+}
+
+static int feature_frame_now(const FeatureSprite *fs) {
+    return fs->num_frames > 1 ? (int)((g_construct_anim_tick / 4) % fs->num_frames) : 0;
+}
+
 static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
     if (!world || !plat || !plat->renderer) return;
     if (!world->features || world->feature_count <= 0) return;
@@ -18544,28 +18600,8 @@ static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
         /* A feature with `object` is a model, drawn with the corpse
          * pass (legacy:127098). */
         if (fd && fd->object[0]) continue;
-
-        /* Anchor the sprite at the centre of the feature's footprint
-         * (in tile space). The sprite's authored offset_x/_y is the
-         * hotspot relative to that anchor — usually the foot-centre,
-         * which is exactly what a top-down RTS expects so the sprite
-         * sits on the cell that its TNT entry occupies. Tile = 16 wpx
-         * to match the rest of the engine. */
-        int fp_x = 1, fp_z = 1;
-        Features_InstanceFootprint(world, i, &fp_x, &fp_z);
-        int wx = world->features[i].tile_x * 16 + fp_x * 8;
-        int wy = world->features[i].tile_z * 16 + fp_z * 8;
-        int sx = wx - world->cam_x;
-        /* Features lift with the ground the same way units do: legacy
-         * subtracts the mean of the cell's four corner heights over 2
-         * (legacy:211150-211153). Without it a sacred pad sits lower
-         * on screen than the lodestone standing on it. */
-        int sy = wy - world->cam_y
-               - (int)((float)Terrain_SampleHeight(world, wx, wy) * g_tan_tilt);
-        if (sx < -128 || sy < -128 ||
-            sx > world->viewport_w + 128 ||
-            sy > world->viewport_h + 128) continue;
-        if (Fog_StateAt(world, wx, wy) == TAK_FOG_UNEXPLORED) continue;
+        int sx = 0, sy = 0;
+        if (!feature_screen_anchor(world, i, &sx, &sy)) continue;
 
         if (!fd) {
             /* Unresolved feature: red dot so we can see which TNT cells
@@ -18594,9 +18630,7 @@ static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
             render_feature_at_work(world, r, fd, mf, sx, sy);
             continue;
         }
-        int frame_idx = fs->num_frames > 1
-            ? (int)((g_construct_anim_tick / 4) % fs->num_frames)
-            : 0;
+        int frame_idx = feature_frame_now(fs);
         /* The shadow sprite goes down first, under the feature itself
          * (legacy:211159-211176). */
         if (g_shadows_on && fd->seqname_shad[0] && !fd->no_shadow) {
@@ -18610,6 +18644,141 @@ static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
         }
         blit_feature_frame(r, fs, frame_idx, sx, sy, 0);
     }
+}
+
+/* ── Tall scenery over the units behind it ───────────────────────────
+ *
+ * The original draws scenery under 10 high with the ground, and taller
+ * scenery row by row among the units: one map row's walkers, then that
+ * row's tall features, then the next row (legacy:210555-210570,
+ * legacy:210619-210628, legacy:210650-210686), and flyers after every
+ * row (legacy:210713-210733). The height kept is the low byte of the
+ * feature's `height` (legacy:127053-127054). The classic view lays all
+ * scenery under the fog before any unit, so a tall feature goes down
+ * again, body only, over each unit that stood behind it. */
+typedef struct TallFeature {
+    int            row;       /* map row of the anchor cell */
+    int            idx;       /* world->features index, for ties */
+    int            sx, sy;
+    int            frame;
+    FeatureSprite *fs;
+    SDL_Rect       rect;      /* where the sprite lands */
+} TallFeature;
+static TallFeature *g_tall;
+static int          g_tall_cap, g_tall_count, g_tall_next;
+/* Screen boxes of the walkers drawn so far this frame. */
+static SDL_Rect     g_drawn_box[TAK_MAX_UNITS];
+static int          g_drawn_count;
+
+static int tall_cmp(const void *a, const void *b) {
+    const TallFeature *x = (const TallFeature *)a, *y = (const TallFeature *)b;
+    if (x->row != y->row) return x->row < y->row ? -1 : 1;
+    return x->idx < y->idx ? -1 : (x->idx > y->idx);
+}
+
+static void tall_features_free(void) {
+    if (g_tall) tak_free(g_tall);
+    g_tall = NULL;
+    g_tall_cap = g_tall_count = g_tall_next = 0;
+}
+
+/* The tall features on screen this frame, in row order. */
+static void collect_tall_features(const struct GameWorld *world) {
+    g_tall_count = g_tall_next = 0;
+    g_drawn_count = 0;
+    if (!world->features || world->feature_count <= 0) return;
+    const int x0 = world->cam_x - 384, x1 = world->cam_x + world->viewport_w + 384;
+    const int y0 = world->cam_y - 384, y1 = world->cam_y + world->viewport_h + 384;
+    for (int i = 0; i < world->feature_count; i++) {
+        const struct MapFeature *mf = &world->features[i];
+        if (mf->tile_x * 16 < x0 || mf->tile_x * 16 > x1 ||
+            mf->tile_z * 16 < y0 || mf->tile_z * 16 > y1) continue;
+        const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+        if (!fd || fd->object[0] || (fd->height & 0xff) < 10) continue;
+        if (mf->fx == FEATURE_FX_DYING || mf->fx == FEATURE_FX_BURNING) continue;
+        int sx = 0, sy = 0;
+        if (!feature_screen_anchor(world, i, &sx, &sy)) continue;
+        FeatureSprite *fs = load_feature_sprite(fd->filename, fd->seqname,
+                                                 world->features_rgba);
+        if (!fs || fs->num_frames <= 0) continue;
+        int f = feature_frame_now(fs);
+        if (!fs->frame_pixels[f]) continue;
+        if (g_tall_count >= g_tall_cap) {
+            int cap = g_tall_cap ? g_tall_cap * 2 : 256;
+            TallFeature *grown = (TallFeature *)tak_malloc(sizeof(TallFeature) * (size_t)cap);
+            if (!grown) return;
+            if (g_tall) {
+                memcpy(grown, g_tall, sizeof(TallFeature) * (size_t)g_tall_count);
+                tak_free(g_tall);
+            }
+            g_tall = grown;
+            g_tall_cap = cap;
+        }
+        TallFeature *t = &g_tall[g_tall_count++];
+        t->row = mf->tile_z;
+        t->idx = i;
+        t->sx = sx;
+        t->sy = sy;
+        t->frame = f;
+        t->fs = fs;
+        t->rect.x = sx - fs->frame_off_x[f];
+        t->rect.y = sy - fs->frame_off_y[f];
+        t->rect.w = fs->frame_w[f];
+        t->rect.h = fs->frame_h[f];
+    }
+    if (g_tall_count > 1) qsort(g_tall, (size_t)g_tall_count, sizeof(TallFeature), tall_cmp);
+}
+
+/* Lays the tall features of every row before `row` over the walkers
+ * drawn so far, clipped to each walker's box so nothing else moves. */
+static void flush_tall_features(TAK_Platform *plat, int row) {
+    SDL_Renderer *r = plat->renderer;
+    SDL_Rect prev;
+    const SDL_bool clipped = SDL_RenderIsClipEnabled(r);
+    SDL_RenderGetClipRect(r, &prev);
+    int changed = 0;
+    for (; g_tall_next < g_tall_count && g_tall[g_tall_next].row < row; g_tall_next++) {
+        const TallFeature *t = &g_tall[g_tall_next];
+        for (int k = 0; k < g_drawn_count; k++) {
+            SDL_Rect cut;
+            if (!SDL_IntersectRect(&t->rect, &g_drawn_box[k], &cut)) continue;
+            if (clipped && !SDL_IntersectRect(&cut, &prev, &cut)) continue;
+            SDL_RenderSetClipRect(r, &cut);
+            blit_feature_frame(r, t->fs, t->frame, t->sx, t->sy, 0);
+            changed = 1;
+        }
+    }
+    if (changed) SDL_RenderSetClipRect(r, clipped ? &prev : NULL);
+}
+
+/* The map row a unit is drawn in, flyers after every row. */
+static int unit_draw_row(const Unit *u) {
+    return u->flying ? INT_MAX : u->world_y >> 4;
+}
+
+/* 1 while a tall feature of a row before `row` is still to go down. */
+static int tall_feature_before(int row) {
+    return g_tall_next < g_tall_count && g_tall[g_tall_next].row < row;
+}
+
+/* Notes where a walker just went, when a tall feature may cover it. */
+static void note_drawn_box(const UnitMesh *m, int v_off) {
+    if (g_tall_next >= g_tall_count || g_drawn_count >= TAK_MAX_UNITS) return;
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    for (int v = 0; v < m->vert_count; v++) {
+        if (g_scratch_node_xform[m->vert_node_idx[v]].hidden) continue;
+        const float x = g_scratch_xy[2 * (v_off + v)], y = g_scratch_xy[2 * (v_off + v) + 1];
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+    }
+    if (x0 > x1) return;
+    SDL_Rect *b = &g_drawn_box[g_drawn_count++];
+    b->x = (int)floorf(x0);
+    b->y = (int)floorf(y0);
+    b->w = (int)ceilf(x1) - b->x + 1;
+    b->h = (int)ceilf(y1) - b->y + 1;
 }
 
 /* ── Ground shadows ──────────────────────────────────────────────────
