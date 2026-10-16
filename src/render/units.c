@@ -364,6 +364,7 @@ static int ugrid_random_enemy(const Unit *u, int self_idx, int64_t radius,
 /* Forward — `apply_killed` is defined further down with the combat
  * state-machine code; the projectile tick needs to call it on hits. */
 static void apply_killed(Unit *t, int t_idx);
+static void apply_turned(Unit *t, int t_idx, int frozen);
 
 /* Kill credit — XP to the killer unit plus the victim's mogriumbounty
  * to the killer's mana pool. No self/team credit (legacy :227321). */
@@ -1837,6 +1838,34 @@ static void mind_control_strike(const Projectile *p, int victim_idx,
     Units_Capture(victim_idx, p->player_id);
 }
 
+/* A stone or ice hit (legacy:247865-247896, legacy:247964-247996). It
+ * never wounds. A unit of another player that can move, is no monarch,
+ * can be turned and is built rolls as mind control does, and a roll
+ * under the threshold turns it. */
+static void turn_strike(const Projectile *p, int victim_idx, int scale_pct) {
+    Unit *v = &g_units[victim_idx];
+    if (v->alive != UNIT_ALIVE_ACTIVE) return;
+    if (v->player_id == p->player_id) return;
+    const UnitDef *vd = Units_GetDef(v->def_idx);
+    if (!vd || vd->bmcode == 0 || vd->commander) return;
+    int frozen = p->mind_control == UNIT_SPELL_FROZEN;
+    if (frozen ? vd->cant_be_frozen : vd->cant_be_stoned) return;
+    if (v->under_construction) return;
+    shot_tally_harm(p->shooter, 0, 1);
+    int threshold = Units_CaptureThreshold(Units_GetVeteranLevel(victim_idx));
+    threshold = threshold * scale_pct / 100;
+    if ((int)World_Rand(100) >= threshold) return;
+    credit_kill(p->shooter, (int)p->player_id, v);
+    apply_turned(v, victim_idx, frozen);
+}
+
+static void spell_strike(const Projectile *p, int victim_idx, int scale_pct) {
+    if (p->mind_control == UNIT_SPELL_MIND)
+        mind_control_strike(p, victim_idx, scale_pct);
+    else
+        turn_strike(p, victim_idx, scale_pct);
+}
+
 /* A unit struck by a weapon whose areaofeffect is under this takes the
  * whole hit and the blast goes no further (legacy:245029). */
 #define BLAST_DIRECT_BELOW 17
@@ -1893,7 +1922,7 @@ static void apply_projectile_area_damage(const Projectile *p) {
         if (d >= (aoe >> 1)) continue;
         if (p->mind_control) {
             /* The roll takes the falloff damage would (legacy:245224). */
-            mind_control_strike(p, ui, Units_ComputeSplashDamage(
+            spell_strike(p, ui, Units_ComputeSplashDamage(
                 100, aoe, p->edge_effectiveness, d));
             continue;
         }
@@ -2072,7 +2101,7 @@ static void projectile_detonate_at(Projectile *p, int idx) {
     if (p->area_of_effect >= BLAST_DIRECT_BELOW || struck < 0) {
         apply_projectile_area_damage(p);
     } else if (p->mind_control) {
-        mind_control_strike(p, struck, 100);
+        spell_strike(p, struck, 100);
     } else {
         Unit *v = &g_units[struck];
         unit_take_hit(v, p->shooter, (int)p->player_id,
@@ -2380,7 +2409,7 @@ static void shot_strike_unit(Projectile *p, int idx, int vi) {
     if (p->mind_control) {
         /* A direct hit rolls at full strength and replaces the damage
          * (legacy:245361). */
-        if (enemy) mind_control_strike(p, vi, 100);
+        if (enemy) spell_strike(p, vi, 100);
         return;
     }
     unit_take_hit(v, p->shooter, (int)p->player_id,
@@ -2972,8 +3001,9 @@ static void tick_projectiles(void) {
         }
         if (--p->ttl_ticks <= 0) { p->alive = 0; continue; }
         /* A mind control shot whose caster is dead or dying takes this
-         * step and is gone (legacy:247710-247713). */
-        int last = p->mind_control && !shot_caster_stands(p);
+         * step and is gone (legacy:247710-247713). A stone or ice shot
+         * once away flies on (legacy:247803-247818). */
+        int last = p->mind_control == UNIT_SPELL_MIND && !shot_caster_stands(p);
         /* Beams already dealt their damage at fire — hold, don't move. */
         if (p->is_beam) {
             if (p->visual_kind == UNIT_PROJECTILE_VIS_FLAME) flame_particle(p, i);
@@ -3071,7 +3101,7 @@ static void tick_projectiles(void) {
                     if (p->mind_control) {
                         /* A direct hit rolls at full strength and
                          * replaces the damage (legacy:245361). */
-                        mind_control_strike(p, p->target, 100);
+                        spell_strike(p, p->target, 100);
                         p->alive = 0;
                         continue;
                     }
@@ -7211,6 +7241,20 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         }
     }
 
+    /* A monarch, and anything not bmcode 1, can be neither stoned nor
+     * frozen (legacy:163161-163180). */
+    copy_bounded(out->stone, sizeof(out->stone),
+                 TDF_ReadString(tdf, "stone", ""));
+    out->cant_be_stoned = (uint8_t)(TDF_ReadInt(tdf, "cantbestoned", 0) & 1);
+    out->cant_be_frozen = (uint8_t)(TDF_ReadInt(tdf, "cantbefrozen", 0) & 1);
+    if (!out->cant_be_frozen)
+        copy_bounded(out->frozen, sizeof(out->frozen),
+                     TDF_ReadString(tdf, "frozen", ""));
+    if (out->commander || out->bmcode != 1) {
+        out->cant_be_stoned = 1;
+        out->cant_be_frozen = 1;
+    }
+
     TDF_PopSection(tdf);   /* leave UNITINFO */
 
     /* Parse up to 3 inline [WEAPONn] sections, then the two death
@@ -7333,7 +7377,17 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
             (int16_t)TDF_ReadInt(tdf, "hoverattackaltitude", 0);
         w->drop_key = (uint8_t)(TDF_ReadInt(tdf, "dropped", 0) & 1);
         w->dropped        = ascii_contains_ci(w->subtype, "dropped") ? 1 : 0;
-        w->mind_control   = ascii_contains_ci(w->subtype, "mindcontrol") ? 1 : 0;
+        /* The mind control family: one flight, three hits. Stone is a
+         * Line of Sight subtype only, ice also a Remote Effect one
+         * (legacy:249797-249826, legacy:249896-249916). */
+        w->mind_control = 0;
+        if (ascii_contains_ci(w->subtype, "mindcontrol"))
+            w->mind_control = UNIT_SPELL_MIND;
+        else if (ascii_contains_ci(w->subtype, "turntofrozen"))
+            w->mind_control = UNIT_SPELL_FROZEN;
+        else if (ascii_contains_ci(w->subtype, "turntostone") &&
+                 ascii_contains_ci(w->type, "line of sight"))
+            w->mind_control = UNIT_SPELL_STONE;
         /* Only `type = Ballistic` gets the gravity behaviour; Guided,
          * Line of Sight and Wandering fly flat (legacy:249725-249983).
          * `subtype = Dropped` is its own legacy behaviour object
@@ -9918,6 +9972,8 @@ static void build_stance_args(const Unit *u, const UnitDef *def,
 /* The death type a dying unit's scripts hear: 0 for a blow, 5 for a
  * self destruct, which runs no Killed (legacy:227124-227127). */
 #define UNIT_DEATH_SELF_DESTRUCT 5
+#define UNIT_DEATH_STONE        14
+#define UNIT_DEATH_FROZEN       15
 static int g_death_kind;
 
 static void enter_state(Unit *u, UnitAnimState new_state) {
@@ -9975,6 +10031,10 @@ static void enter_state(Unit *u, UnitAnimState new_state) {
             break;
         }
         case UNIT_ANIM_DYING: {
+            /* Stone and ice run neither script (legacy:227124,
+             * legacy:227241-227256). */
+            if (g_death_kind == UNIT_DEATH_STONE ||
+                g_death_kind == UNIT_DEATH_FROZEN) break;
             /* Killed(severity, corpse type, flags). Legacy derives
              * severity from overkill against maximum hitpoints and
              * clamps it to 1..100 (legacy:227142, legacy:227241).
@@ -10090,13 +10150,9 @@ static int unit_read_corpse_type(Unit *u) {
  * a corpse smaller than the building it came from ends up centred on
  * it (legacy:227423). The body keeps the unit's exact spot, facing and
  * team colour (legacy:227429, 128220-128232). */
-static void unit_leave_corpse(const Unit *u) {
+static void unit_place_body(const Unit *u, const UnitDef *d, int fidx) {
     GameWorld *w = World_Get();
-    if (!w) return;
-    const UnitDef *d = Units_GetDef(u->def_idx);
-    if (!d) return;
-    int fidx = corpse_feature_for(d, u->corpse_type);
-    if (fidx < 0) return;
+    if (!w || !d || fidx < 0) return;
     int fp_x = (d->footprint_x > 0) ? d->footprint_x : 1;
     int fp_z = (d->footprint_z > 0) ? d->footprint_z : 1;
     int cell_x = Occ_TileOf(u->world_x - fp_x * 8) + d->corpse_adjust_x;
@@ -10128,6 +10184,20 @@ static void unit_leave_corpse(const Unit *u) {
     const FeatureDef *fd = Features_GetByIndex(fidx);
     fprintf(stderr, "Corpse: %s left %s at cell %d,%d\n",
             d->unitname, fd ? fd->name : "?", cell_x, cell_z);
+}
+
+static void unit_leave_corpse(const Unit *u) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    unit_place_body(u, d, corpse_feature_for(d, u->corpse_type));
+}
+
+/* A unit turned to stone or ice leaves the statue its file names where
+ * a corpse would lie (legacy:227340-227345, legacy:227395-227423). */
+static void unit_leave_statue(const Unit *u, int frozen) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    const char *name = d ? (frozen ? d->frozen : d->stone) : "";
+    if (!name[0]) return;
+    unit_place_body(u, d, Features_FindByName(name));
 }
 
 /* What a finished unit pays into its player's income. A building
@@ -10319,6 +10389,27 @@ static void apply_killed_as(Unit *t, int t_idx, int bursts) {
 }
 
 static void apply_killed(Unit *t, int t_idx) { apply_killed_as(t, t_idx, 1); }
+
+/* Turned to stone or ice the unit is gone at once: no Killed, no Dying,
+ * no death weapon and no corpse, and its statue stands in its place
+ * (legacy:233775-233785, legacy:227124, legacy:227241-227256,
+ * legacy:227340-227353). */
+static void apply_turned(Unit *t, int t_idx, int frozen) {
+    if (t->alive != UNIT_ALIVE_ACTIVE) return;
+    g_death_kind = frozen ? UNIT_DEATH_FROZEN : UNIT_DEATH_STONE;
+    apply_killed_as(t, t_idx, 0);
+    g_death_kind = 0;
+    if (t->alive == UNIT_ALIVE_DYING) {
+        if (t->cob) {
+            Cob_KillAllThreads(t->cob);
+            Cob_EngineFree(t->cob);
+            tak_free(t->cob);
+            t->cob = NULL;
+        }
+        t->alive = UNIT_ALIVE_DEAD;
+    }
+    unit_leave_statue(t, frozen);
+}
 
 /* A self destruct is death type 5: no Killed, so no body, the owner
  * counts the loss and nobody the kill, and SELFDESTRUCTAS bursts as the
@@ -11995,13 +12086,21 @@ static int weapon_can_target_unit(const UnitWeapon *wp, const Unit *t) {
     if (t->flying && weapon_is_melee(wp)) return 0;
     if (!t->flying && wp->to_air_weapon) return 0;
     if (wp->mind_control) {
-        /* Mind control passes over what it cannot take and what its
-         * damage table zeroes (legacy:15151, legacy:15160). */
         const UnitDef *td = Units_GetDef(t->def_idx);
         if (t->under_construction) return 0;
-        if (td && td->cant_be_captured) return 0;
-        if (td && weapon_damage_for_category(wp, td->damage_category) <= 0)
+        if (wp->mind_control == UNIT_SPELL_MIND) {
+            /* Mind control passes over what it cannot take and what its
+             * damage table zeroes (legacy:15151, legacy:15160). */
+            if (td && td->cant_be_captured) return 0;
+            if (td && weapon_damage_for_category(wp, td->damage_category) <= 0)
+                return 0;
+        } else if (td && (wp->mind_control == UNIT_SPELL_STONE
+                              ? td->cant_be_stoned : td->cant_be_frozen)) {
+            /* Stone and ice pass over what cannot be turned, a building
+             * or a monarch among them (legacy:21149-21156,
+             * legacy:186273-186278). */
             return 0;
+        }
     }
     return 1;
 }

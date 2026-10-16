@@ -40,7 +40,7 @@ enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_HOLDER, LF_ROVER, LF_PICKER, LF_SEEKER, LF_SEEKFAR, LF_ROAMER,
        LF_FLYPICK, LF_BLADEPICK, LF_BROAD, LF_SWIRL, LF_CANNON, LF_TORCH,
        LF_SWEEPER, LF_BOMBER, LF_STURDY, LF_TWISTER, LF_TORNADO,
-       LF_ROVEROAM, LF_HAWK, LF_MASON, LF_DEF_COUNT };
+       LF_ROVEROAM, LF_HAWK, LF_MASON, LF_FREEZER, LF_ICEMAN, LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
 #define LF_SX   800
@@ -98,7 +98,7 @@ static void lf_heights(GameWorld *w, int x0, int x1, int y0, int y1, int h) {
 
 /* The feature defs: index 0 is the rock every older case places. */
 enum { FD_ROCK = 0, FD_TREE, FD_TREEDEAD, FD_SMUDGE, FD_TREEBURNT, FD_WALL,
-       FD_WALLA, FD_WALLB, FD_LONGTREE, FD_COUNT };
+       FD_WALLA, FD_WALLB, FD_LONGTREE, FD_ICE, FD_COUNT };
 
 static void lf_feature(FeatureDef *f, const char *name, int fp, int height,
                        int blocking, int damage, const char *dead) {
@@ -239,8 +239,11 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     wp->area_of_effect = 48;
     wp->edge_effectiveness = 1.0f;
 
-    /* A post one cell square with no weapon. */
+    /* A post one cell square with no weapon. As a structure it can be
+     * neither stoned nor frozen. */
     lf_fill(&defs[LF_POST], "TESTPOST", 0.0f, 1000);
+    defs[LF_POST].cant_be_stoned = 1;
+    defs[LF_POST].cant_be_frozen = 1;
 
     /* A thrown bone that is a melee weapon by its type alone, reach 50
      * like the goblin's. */
@@ -356,6 +359,23 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     lf_fill(&defs[LF_MASON], "TESTMASON", 1.2f, 500);
     defs[LF_MASON].cap_flags |= UNIT_CAP_BUILDER;
     defs[LF_MASON].worker_time = 10.0f;
+    /* A freeze beam, and a walker that freezes into TESTICE. */
+    lf_fill(&defs[LF_FREEZER], "TESTFREEZE", 1.2f, 300);
+    wp = lf_weapon(&defs[LF_FREEZER], "TESTFREEZEW", "Line of Sight", 800, 550, 1);
+    strncpy(wp->subtype, "turntofrozen", sizeof(wp->subtype) - 1);
+    wp->mind_control = UNIT_SPELL_FROZEN;
+    wp->los_kind = 3;
+    wp->is_los = 1;
+    wp->reload_ticks = 30;
+    lf_fill(&defs[LF_ICEMAN], "TESTICEMAN", 1.2f, 1000);
+    strncpy(defs[LF_ICEMAN].frozen, "TESTICE", sizeof(defs[LF_ICEMAN].frozen) - 1);
+    {
+        /* The quad a shot of the mind control family must meet. */
+        const int32_t q[4][2] = { { -12 * 65536, 12 * 65536 }, { 12 * 65536, 12 * 65536 },
+                                  { 12 * 65536, -12 * 65536 }, { -12 * 65536, -12 * 65536 } };
+        memcpy(defs[LF_ICEMAN].body_quad, q, sizeof(q));
+        defs[LF_ICEMAN].body_quad_set = 1;
+    }
 
     FeatureDef fdefs[FD_COUNT];
     memset(fdefs, 0, sizeof fdefs);
@@ -380,6 +400,7 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     /* A tree whose burn outlasts its spark, as a mod could author. */
     fdefs[FD_LONGTREE] = fdefs[FD_TREE];
     strncpy(fdefs[FD_LONGTREE].name, "TESTLONGTREE", 39);
+    lf_feature(&fdefs[FD_ICE], "TESTICE", 1, 30, 1, 10, "");
     if (Features_DebugSetDefs(fdefs, FD_COUNT) != FD_COUNT) return NULL;
     /* The original's tree: a death of 10 pictures and a burn of 37, two
      * frames each, its flames 30 and 31 (AraTree01, mediflame, megaflame). */
@@ -2618,6 +2639,88 @@ TEST(a_weapon_gives_the_attack_order_and_unitstandorders_the_stances) {
     ASSERT_EQ_INT(1, whip_stances);
 }
 
+/* A walker that names its statues and carries a freeze beam, a
+ * structure, a monarch, and a walker that cannot be frozen. */
+static const char LF_FBI_ICY[] =
+    "[UNITINFO]\n{\n\tUnitName=FBIICY;\n\tbmcode=1;\n\tfrozen=ICYFROZEN;\n"
+    "\tstone=ICYSTONE;\n}\n"
+    "[WEAPON1]\n{\n\tname=Freeze;\n\ttype=line of sight;\n"
+    "\tsubtype=turntofrozen;\n}\n";
+static const char LF_FBI_FORT[] =
+    "[UNITINFO]\n{\n\tUnitName=FBIFORT;\n\tbmcode=0;\n\tfrozen=FORTICE;\n}\n";
+static const char LF_FBI_LORD[] =
+    "[UNITINFO]\n{\n\tUnitName=FBILORD;\n\tbmcode=1;\n\tcommander=1;\n}\n";
+static const char LF_FBI_WARM[] =
+    "[UNITINFO]\n{\n\tUnitName=FBIWARM;\n\tbmcode=1;\n\tcantbefrozen=1;\n"
+    "\tfrozen=WARMICE;\n}\n";
+
+TEST(the_unit_file_names_its_statues_and_who_can_be_turned) {
+    VFS_Shutdown();
+    lf_mkdir(LF_FBI_DIR);
+    TestHPIEntry e[] = {
+        { "units/fbiicy.fbi", LF_FBI_ICY, 100, 0 },
+        { "units/fbifort.fbi", LF_FBI_FORT, 100, 0 },
+        { "units/fbilord.fbi", LF_FBI_LORD, 100, 0 },
+        { "units/fbiwarm.fbi", LF_FBI_WARM, 100, 0 },
+    };
+    ASSERT_EQ_INT(0, test_write_hpi(LF_FBI_DIR "/a.hpi", e, 4));
+    int loaded = (VFS_Init(LF_FBI_DIR, NULL) == 0) ? Units_LoadDefs() : -1;
+    UnitDef icy, fort, lord, warm;
+    memset(&icy, 0, sizeof icy);
+    memset(&fort, 0, sizeof fort);
+    memset(&lord, 0, sizeof lord);
+    memset(&warm, 0, sizeof warm);
+    const UnitDef *d;
+    if ((d = Units_GetDef(Units_FindDefByName("FBIICY"))) != NULL) icy = *d;
+    if ((d = Units_GetDef(Units_FindDefByName("FBIFORT"))) != NULL) fort = *d;
+    if ((d = Units_GetDef(Units_FindDefByName("FBILORD"))) != NULL) lord = *d;
+    if ((d = Units_GetDef(Units_FindDefByName("FBIWARM"))) != NULL) warm = *d;
+    VFS_Shutdown();
+    Units_FreeDefs();
+    remove(LF_FBI_DIR "/a.hpi");
+    lf_rmdir(LF_FBI_DIR);
+    ASSERT_EQ_INT(4, loaded);
+    ASSERT_EQ_STR("ICYFROZEN", icy.frozen);
+    ASSERT_EQ_STR("ICYSTONE", icy.stone);
+    ASSERT_EQ_INT(0, icy.cant_be_frozen);
+    ASSERT_EQ_INT(0, icy.cant_be_stoned);
+    ASSERT_EQ_INT(UNIT_SPELL_FROZEN, icy.weapons[0].mind_control);
+    ASSERT_EQ_INT(1, fort.cant_be_frozen);
+    ASSERT_EQ_INT(1, fort.cant_be_stoned);
+    ASSERT_EQ_INT(1, lord.cant_be_frozen);
+    ASSERT_EQ_INT(1, lord.cant_be_stoned);
+    ASSERT_EQ_INT(1, warm.cant_be_frozen);
+    ASSERT_EQ_STR("", warm.frozen);
+}
+
+/* A freeze beam never wounds. Its roll turns a walker into the ice
+ * statue its file names, the kill counted, and it passes over what
+ * cannot be frozen (legacy:247963-247996, legacy:21149-21156). */
+TEST(a_freeze_beam_turns_a_walker_to_ice_and_passes_over_the_rest) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int a = lf_spawn(LF_FREEZER, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_ICEMAN, 2, LF_SX + 200, LF_ROW);
+    int post = lf_spawn(LF_POST, 2, LF_SX, LF_ROW + 300);
+    ASSERT(a >= 0 && t >= 0 && post >= 0);
+    int takes_post = Units_CanAttackTarget(a, post);
+    ASSERT(Units_OrderAttack(a, t));
+    int hurt = 0;
+    for (int i = 0; i < 900 && lf_unit(t)->alive == UNIT_ALIVE_ACTIVE; i++) {
+        Units_TickEngines();
+        if (lf_unit(t)->health < 1000) hurt = 1;
+    }
+    int statue = -1;
+    for (int k = 0; k < w->feature_count; k++)
+        if (w->features[k].global_idx == FD_ICE) statue = k;
+    int alive = lf_unit(t)->alive;
+    lf_end();
+    ASSERT_EQ_INT(0, takes_post);
+    ASSERT_EQ_INT(0, hurt);
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, alive);
+    ASSERT(statue >= 0);
+}
+
 /* A unit holding position shoots what comes into reach and lets it go
  * when it walks off. One that maneuvers goes after it. */
 static int32_t lf_after_walk_off(int def, int *out_target) {
@@ -3505,6 +3608,8 @@ int main(int argc, char **argv) {
     RUN(a_unit_is_born_with_its_standing_order);
     RUN(the_unit_file_gives_the_standing_order);
     RUN(a_weapon_gives_the_attack_order_and_unitstandorders_the_stances);
+    RUN(the_unit_file_names_its_statues_and_who_can_be_turned);
+    RUN(a_freeze_beam_turns_a_walker_to_ice_and_passes_over_the_rest);
     RUN(a_unit_holding_position_does_not_chase);
     RUN(a_fight_of_its_own_looks_again_once_a_wait);
     RUN(a_unit_holding_position_or_ordered_never_looks_again);

@@ -246,7 +246,10 @@ typedef struct UnitWeapon {
     uint8_t is_gravity;       /* type = Ballistic → arced flight */
     uint8_t dropped;          /* subtype = Dropped → no launch impulse */
     /* subtype = mindcontrol: the hit rolls to take the unit over and
-     * deals no damage (legacy:249801, legacy:247761). */
+     * deals no damage (legacy:249801, legacy:247761). A turntostone or
+     * turntofrozen shot flies the same way and its roll turns the unit
+     * to stone or ice (legacy:249811-249826, legacy:247868-247996).
+     * One of UNIT_SPELL_*, 0 for any other weapon. */
     uint8_t mind_control;
     /* A hover attacker's standoff and height with this weapon, 0 to take
      * the unit's (legacy:250022-250024), and the `dropped` key, which
@@ -264,6 +267,10 @@ typedef struct UnitWeapon {
     char    icon_selected[32];  /* buttonimageselected — active weapon */
     char    icon_disabled[32];  /* buttonimagedisabled — out of mana   */
 } UnitWeapon;
+
+#define UNIT_SPELL_MIND   1
+#define UNIT_SPELL_STONE  2
+#define UNIT_SPELL_FROZEN 3
 
 /* In-flight projectile spawned when a weapon fires. Travels toward
  * the target unit (or its last-known position) at weapon velocity;
@@ -407,6 +414,11 @@ typedef struct UnitDef {
     char     corpse[TAK_UNITDEF_OBJ_MAX];
     int32_t  corpse_adjust_x;
     int32_t  corpse_adjust_z;
+    /* `stone` and `frozen` name the statue a unit turned to stone or
+     * ice leaves, placed as its corpse is (legacy:163161-163176,
+     * legacy:227395-227416). */
+    char     stone[TAK_UNITDEF_OBJ_MAX];
+    char     frozen[TAK_UNITDEF_OBJ_MAX];
     /* `animatetype`: the unit an animator raises out of an animatable
      * feature, where a resurrector brings back the unit the corpse
      * came from (legacy:163138-163145, 13061-13072). */
@@ -489,6 +501,10 @@ typedef struct UnitDef {
     /* cantbecaptured (legacy:163021): mind control neither aims at
      * this unit nor takes it. */
     int32_t  cant_be_captured;
+    /* cantbestoned and cantbefrozen, forced on for a monarch and for
+     * anything that is not bmcode 1 (legacy:163161-163180). */
+    uint8_t  cant_be_stoned;
+    uint8_t  cant_be_frozen;
     int32_t  transported_size; /* transportedsize override when carried */
     int32_t  transport_distance; /* transportdistance; load/unload radius */
     char     movement_class[32];/* movementclass key into moveinfo.tdf */
