@@ -364,6 +364,7 @@ static int ugrid_random_enemy(const Unit *u, int self_idx, int64_t radius,
 /* Forward — `apply_killed` is defined further down with the combat
  * state-machine code; the projectile tick needs to call it on hits. */
 static void apply_killed(Unit *t, int t_idx);
+static void apply_turned(Unit *t, int t_idx, int frozen);
 
 /* Kill credit — XP to the killer unit plus the victim's mogriumbounty
  * to the killer's mana pool. No self/team credit (legacy :227321). */
@@ -1837,6 +1838,34 @@ static void mind_control_strike(const Projectile *p, int victim_idx,
     Units_Capture(victim_idx, p->player_id);
 }
 
+/* A stone or ice hit (legacy:247865-247896, legacy:247964-247996). It
+ * never wounds. A unit of another player that can move, is no monarch,
+ * can be turned and is built rolls as mind control does, and a roll
+ * under the threshold turns it. */
+static void turn_strike(const Projectile *p, int victim_idx, int scale_pct) {
+    Unit *v = &g_units[victim_idx];
+    if (v->alive != UNIT_ALIVE_ACTIVE) return;
+    if (v->player_id == p->player_id) return;
+    const UnitDef *vd = Units_GetDef(v->def_idx);
+    if (!vd || vd->bmcode == 0 || vd->commander) return;
+    int frozen = p->mind_control == UNIT_SPELL_FROZEN;
+    if (frozen ? vd->cant_be_frozen : vd->cant_be_stoned) return;
+    if (v->under_construction) return;
+    shot_tally_harm(p->shooter, 0, 1);
+    int threshold = Units_CaptureThreshold(Units_GetVeteranLevel(victim_idx));
+    threshold = threshold * scale_pct / 100;
+    if ((int)World_Rand(100) >= threshold) return;
+    credit_kill(p->shooter, (int)p->player_id, v);
+    apply_turned(v, victim_idx, frozen);
+}
+
+static void spell_strike(const Projectile *p, int victim_idx, int scale_pct) {
+    if (p->mind_control == UNIT_SPELL_MIND)
+        mind_control_strike(p, victim_idx, scale_pct);
+    else
+        turn_strike(p, victim_idx, scale_pct);
+}
+
 /* A unit struck by a weapon whose areaofeffect is under this takes the
  * whole hit and the blast goes no further (legacy:245029). */
 #define BLAST_DIRECT_BELOW 17
@@ -1893,7 +1922,7 @@ static void apply_projectile_area_damage(const Projectile *p) {
         if (d >= (aoe >> 1)) continue;
         if (p->mind_control) {
             /* The roll takes the falloff damage would (legacy:245224). */
-            mind_control_strike(p, ui, Units_ComputeSplashDamage(
+            spell_strike(p, ui, Units_ComputeSplashDamage(
                 100, aoe, p->edge_effectiveness, d));
             continue;
         }
@@ -2072,7 +2101,7 @@ static void projectile_detonate_at(Projectile *p, int idx) {
     if (p->area_of_effect >= BLAST_DIRECT_BELOW || struck < 0) {
         apply_projectile_area_damage(p);
     } else if (p->mind_control) {
-        mind_control_strike(p, struck, 100);
+        spell_strike(p, struck, 100);
     } else {
         Unit *v = &g_units[struck];
         unit_take_hit(v, p->shooter, (int)p->player_id,
@@ -2380,7 +2409,7 @@ static void shot_strike_unit(Projectile *p, int idx, int vi) {
     if (p->mind_control) {
         /* A direct hit rolls at full strength and replaces the damage
          * (legacy:245361). */
-        if (enemy) mind_control_strike(p, vi, 100);
+        if (enemy) spell_strike(p, vi, 100);
         return;
     }
     unit_take_hit(v, p->shooter, (int)p->player_id,
@@ -2972,8 +3001,9 @@ static void tick_projectiles(void) {
         }
         if (--p->ttl_ticks <= 0) { p->alive = 0; continue; }
         /* A mind control shot whose caster is dead or dying takes this
-         * step and is gone (legacy:247710-247713). */
-        int last = p->mind_control && !shot_caster_stands(p);
+         * step and is gone (legacy:247710-247713). A stone or ice shot
+         * once away flies on (legacy:247803-247818). */
+        int last = p->mind_control == UNIT_SPELL_MIND && !shot_caster_stands(p);
         /* Beams already dealt their damage at fire — hold, don't move. */
         if (p->is_beam) {
             if (p->visual_kind == UNIT_PROJECTILE_VIS_FLAME) flame_particle(p, i);
@@ -3071,7 +3101,7 @@ static void tick_projectiles(void) {
                     if (p->mind_control) {
                         /* A direct hit rolls at full strength and
                          * replaces the damage (legacy:245361). */
-                        mind_control_strike(p, p->target, 100);
+                        spell_strike(p, p->target, 100);
                         p->alive = 0;
                         continue;
                     }
@@ -3587,6 +3617,19 @@ int Units_IsArmed(int handle) {
     if (handle < 0 || handle >= g_unit_count) return 0;
     const UnitDef *d = Units_GetDef(g_units[handle].def_idx);
     return d && d->num_weapons > 0;
+}
+
+/* The attack order goes to a unit whose file has a [WEAPON1]. The
+ * original never reads canattack (legacy:163567-163568, legacy:150633,
+ * legacy:150713-150721). */
+int Units_DefTakesAttack(const UnitDef *d) {
+    return d && d->num_weapons > 0;
+}
+
+/* The stance buttons follow unitstandorders (legacy:163025,
+ * legacy:150422-150429, legacy:150870-150917). */
+int Units_DefHasStances(const UnitDef *d) {
+    return d && d->unit_stand_orders;
 }
 
 int Units_CanWalk(int handle) {
@@ -7120,6 +7163,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->acceleration   = TDF_ReadFloat(tdf, "acceleration", 0.0f);
     out->brake_rate     = TDF_ReadFloat(tdf, "brakerate",    0.0f);
     out->turn_rate      = TDF_ReadFloat(tdf, "turnrate",     0.0f);
+    out->turn_in_place_rate = TDF_ReadFloat(tdf, "turninplacerate", 0.0f);
 
     /* Capability flags drive per-unit action button visibility.
      * The decomp reads these from the same UNITINFO section as the
@@ -7153,6 +7197,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     if (TDF_ReadInt(tdf, "canload",        0)) out->cap_flags |= UNIT_CAP_LOAD;
     if (TDF_ReadInt(tdf, "weaponswitching",0)) out->cap_flags |= UNIT_CAP_W_SWITCH;
     if (TDF_ReadInt(tdf, "cancapture",     0)) out->cap_flags |= UNIT_CAP_CAPTURE;
+    out->unit_stand_orders =
+        (uint8_t)(TDF_ReadInt(tdf, "unitstandorders", 1) != 0);
     out->cant_be_captured = TDF_ReadInt(tdf, "cantbecaptured", 0) ? 1 : 0;
     out->heal_time = TDF_ReadFloat(tdf, "healtime", 0.0f);
     if (out->heal_time < 0.0f) out->heal_time = 0.0f;
@@ -7194,6 +7240,20 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         for (int i = 0; i < cells; i++) {
             if (out->yardmap[i] & TAK_YARD_SACRED) { out->yardmap_sacred = 1; break; }
         }
+    }
+
+    /* A monarch, and anything not bmcode 1, can be neither stoned nor
+     * frozen (legacy:163161-163180). */
+    copy_bounded(out->stone, sizeof(out->stone),
+                 TDF_ReadString(tdf, "stone", ""));
+    out->cant_be_stoned = (uint8_t)(TDF_ReadInt(tdf, "cantbestoned", 0) & 1);
+    out->cant_be_frozen = (uint8_t)(TDF_ReadInt(tdf, "cantbefrozen", 0) & 1);
+    if (!out->cant_be_frozen)
+        copy_bounded(out->frozen, sizeof(out->frozen),
+                     TDF_ReadString(tdf, "frozen", ""));
+    if (out->commander || out->bmcode != 1) {
+        out->cant_be_stoned = 1;
+        out->cant_be_frozen = 1;
     }
 
     TDF_PopSection(tdf);   /* leave UNITINFO */
@@ -7238,6 +7298,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
                      TDF_ReadString(tdf, "soundhit", ""));
         w->range          = TDF_ReadInt(tdf, "range", 0);
         w->min_range      = TDF_ReadInt(tdf, "minrange", 0);
+        w->aim_tolerance  = TDF_ReadInt(tdf, "aimtolerance", 0) & 0xffff;
         w->area_of_effect = TDF_ReadInt(tdf, "areaofeffect", 0);
         w->edge_effectiveness = TDF_ReadFloat(tdf, "edgeeffectiveness", 0.0f);
         if (w->edge_effectiveness < 0.0f) w->edge_effectiveness = 0.0f;
@@ -7318,7 +7379,17 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
             (int16_t)TDF_ReadInt(tdf, "hoverattackaltitude", 0);
         w->drop_key = (uint8_t)(TDF_ReadInt(tdf, "dropped", 0) & 1);
         w->dropped        = ascii_contains_ci(w->subtype, "dropped") ? 1 : 0;
-        w->mind_control   = ascii_contains_ci(w->subtype, "mindcontrol") ? 1 : 0;
+        /* The mind control family: one flight, three hits. Stone is a
+         * Line of Sight subtype only, ice also a Remote Effect one
+         * (legacy:249797-249826, legacy:249896-249916). */
+        w->mind_control = 0;
+        if (ascii_contains_ci(w->subtype, "mindcontrol"))
+            w->mind_control = UNIT_SPELL_MIND;
+        else if (ascii_contains_ci(w->subtype, "turntofrozen"))
+            w->mind_control = UNIT_SPELL_FROZEN;
+        else if (ascii_contains_ci(w->subtype, "turntostone") &&
+                 ascii_contains_ci(w->type, "line of sight"))
+            w->mind_control = UNIT_SPELL_STONE;
         /* Only `type = Ballistic` gets the gravity behaviour; Guided,
          * Line of Sight and Wandering fly flat (legacy:249725-249983).
          * `subtype = Dropped` is its own legacy behaviour object
@@ -9903,6 +9974,8 @@ static void build_stance_args(const Unit *u, const UnitDef *def,
 /* The death type a dying unit's scripts hear: 0 for a blow, 5 for a
  * self destruct, which runs no Killed (legacy:227124-227127). */
 #define UNIT_DEATH_SELF_DESTRUCT 5
+#define UNIT_DEATH_STONE        14
+#define UNIT_DEATH_FROZEN       15
 static int g_death_kind;
 
 static void enter_state(Unit *u, UnitAnimState new_state) {
@@ -9960,6 +10033,10 @@ static void enter_state(Unit *u, UnitAnimState new_state) {
             break;
         }
         case UNIT_ANIM_DYING: {
+            /* Stone and ice run neither script (legacy:227124,
+             * legacy:227241-227256). */
+            if (g_death_kind == UNIT_DEATH_STONE ||
+                g_death_kind == UNIT_DEATH_FROZEN) break;
             /* Killed(severity, corpse type, flags). Legacy derives
              * severity from overkill against maximum hitpoints and
              * clamps it to 1..100 (legacy:227142, legacy:227241).
@@ -10075,13 +10152,9 @@ static int unit_read_corpse_type(Unit *u) {
  * a corpse smaller than the building it came from ends up centred on
  * it (legacy:227423). The body keeps the unit's exact spot, facing and
  * team colour (legacy:227429, 128220-128232). */
-static void unit_leave_corpse(const Unit *u) {
+static void unit_place_body(const Unit *u, const UnitDef *d, int fidx) {
     GameWorld *w = World_Get();
-    if (!w) return;
-    const UnitDef *d = Units_GetDef(u->def_idx);
-    if (!d) return;
-    int fidx = corpse_feature_for(d, u->corpse_type);
-    if (fidx < 0) return;
+    if (!w || !d || fidx < 0) return;
     int fp_x = (d->footprint_x > 0) ? d->footprint_x : 1;
     int fp_z = (d->footprint_z > 0) ? d->footprint_z : 1;
     int cell_x = Occ_TileOf(u->world_x - fp_x * 8) + d->corpse_adjust_x;
@@ -10113,6 +10186,20 @@ static void unit_leave_corpse(const Unit *u) {
     const FeatureDef *fd = Features_GetByIndex(fidx);
     fprintf(stderr, "Corpse: %s left %s at cell %d,%d\n",
             d->unitname, fd ? fd->name : "?", cell_x, cell_z);
+}
+
+static void unit_leave_corpse(const Unit *u) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    unit_place_body(u, d, corpse_feature_for(d, u->corpse_type));
+}
+
+/* A unit turned to stone or ice leaves the statue its file names where
+ * a corpse would lie (legacy:227340-227345, legacy:227395-227423). */
+static void unit_leave_statue(const Unit *u, int frozen) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    const char *name = d ? (frozen ? d->frozen : d->stone) : "";
+    if (!name[0]) return;
+    unit_place_body(u, d, Features_FindByName(name));
 }
 
 /* What a finished unit pays into its player's income. A building
@@ -10304,6 +10391,27 @@ static void apply_killed_as(Unit *t, int t_idx, int bursts) {
 }
 
 static void apply_killed(Unit *t, int t_idx) { apply_killed_as(t, t_idx, 1); }
+
+/* Turned to stone or ice the unit is gone at once: no Killed, no Dying,
+ * no death weapon and no corpse, and its statue stands in its place
+ * (legacy:233775-233785, legacy:227124, legacy:227241-227256,
+ * legacy:227340-227353). */
+static void apply_turned(Unit *t, int t_idx, int frozen) {
+    if (t->alive != UNIT_ALIVE_ACTIVE) return;
+    g_death_kind = frozen ? UNIT_DEATH_FROZEN : UNIT_DEATH_STONE;
+    apply_killed_as(t, t_idx, 0);
+    g_death_kind = 0;
+    if (t->alive == UNIT_ALIVE_DYING) {
+        if (t->cob) {
+            Cob_KillAllThreads(t->cob);
+            Cob_EngineFree(t->cob);
+            tak_free(t->cob);
+            t->cob = NULL;
+        }
+        t->alive = UNIT_ALIVE_DEAD;
+    }
+    unit_leave_statue(t, frozen);
+}
 
 /* A self destruct is death type 5: no Killed, so no body, the owner
  * counts the loss and nobody the kill, and SELFDESTRUCTAS bursts as the
@@ -11490,19 +11598,65 @@ static void unit_avoid_offset(const GameWorld *w, const Unit *u,
 double g_walk_prof_ms[4];
 double g_walk_calls;
 #define WALK_MARK(k) do { if (g_cmb_prof_on) { double t_ = eng_now_ms(); g_walk_prof_ms[k] += t_ - walk_t; walk_t = t_; } } while (0)
-/* Turn toward a heading at turnrate, as a walk turns (legacy:183472). */
-static void unit_turn_toward(Unit *u, const UnitDef *def, float want) {
+/* A heading the walk holds while it moves, set by a hover attacker
+ * turned onto its target. */
+static int   g_walk_face_on;
+static float g_walk_face;
+
+/* Turn toward a heading by a rate in 65536ths of a turn per 30 Hz frame,
+ * at once when the rate is 0. */
+static void unit_turn_at(Unit *u, float rate, float want) {
     float delta = want - u->heading;
     while (delta >  3.14159265f) delta -= 6.2831853f;
     while (delta < -3.14159265f) delta += 6.2831853f;
-    if (def->turn_rate > 0.0f) {
-        float step = def->turn_rate * (6.2831853f / 65536.0f) * 0.5f;
+    if (rate > 0.0f) {
+        float step = rate * (6.2831853f / 65536.0f) * 0.5f;
         if (delta >  step) delta =  step;
         if (delta < -step) delta = -step;
     }
     u->heading += delta;
     while (u->heading >  3.14159265f) u->heading -= 6.2831853f;
     while (u->heading < -3.14159265f) u->heading += 6.2831853f;
+}
+
+/* Turn toward a heading at turnrate, as a walk turns (legacy:183472). */
+static void unit_turn_toward(Unit *u, const UnitDef *def, float want) {
+    unit_turn_at(u, def->turn_rate, want);
+}
+
+/* A unit that turns its body onto what it shoots: a walker with a
+ * turninplacerate or a flyer that hover attacks. Any other leaves the
+ * aim to its script (legacy:249301-249306). */
+static int unit_faces_target(const UnitDef *def) {
+    if (!def || def->max_velocity <= 0.0f) return 0;
+    if (def->can_fly) return def->hover_attack != 0;
+    return def->turn_in_place_rate > 0.0f;
+}
+
+/* One tick of that turn toward the bearing (dx, dy): in place at
+ * turninplacerate on the ground (legacy:183434-183436), at turnrate in
+ * the air (legacy:184017). */
+static void unit_face_toward(Unit *u, const UnitDef *def,
+                             int64_t dx, int64_t dy) {
+    if ((dx == 0 && dy == 0) || !unit_faces_target(def)) return;
+    unit_turn_at(u, def->can_fly ? def->turn_rate : def->turn_in_place_rate,
+                 tak_atan2f((float)dx, -(float)dy));
+}
+
+/* Such a unit fires only with its body within the weapon's AimTolerance
+ * of the target, and never more than 0x200 off it
+ * (legacy:249365-249377). Its aim script waits for that too, so a unit
+ * still turning does not start one each tick. */
+static int unit_body_on_target(const Unit *u, const UnitDef *def,
+                               const UnitWeapon *wp, int32_t x, int32_t y) {
+    int32_t dx = x - u->world_x, dy = y - u->world_y;
+    if (!unit_faces_target(def) || (dx == 0 && dy == 0)) return 1;
+    int32_t tol = wp->aim_tolerance > 0x200 ? wp->aim_tolerance : 0x200;
+    int32_t want = (int32_t)(tak_atan2f((float)dx, -(float)dy)
+                             * 65536.0f / 6.2831853f);
+    int32_t hdg = (int32_t)(u->heading * 65536.0f / 6.2831853f);
+    int32_t err = (int16_t)(uint16_t)((hdg - want) & 0xffff);
+    return (err < 0 ? -err : err) <= tol;
 }
 
 /* A melee attacker walking at its target, which only stops once the
@@ -11634,7 +11788,9 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     {
         float dx = (float)(ax - u->world_x);
         float dy = (float)(ay - u->world_y);
-        if (dx != 0.0f || dy != 0.0f) {
+        if (g_walk_face_on) {
+            unit_turn_at(u, def->turn_rate, g_walk_face);
+        } else if (dx != 0.0f || dy != 0.0f) {
             float delta = tak_atan2f(dx, -dy) - u->heading;
             while (delta >  3.14159265f) delta -= 6.2831853f;
             while (delta < -3.14159265f) delta += 6.2831853f;
@@ -11673,7 +11829,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         float accel_ppt = def->acceleration > 0.0f ? def->acceleration * 0.25f
                                                    : max_ppt;
         float brake_ppt = brake_pf * 0.25f;
-        int he = unit_heading_err_units(u, sx, sy);
+        int he = g_walk_face_on ? 0 : unit_heading_err_units(u, sx, sy);
         float turn_dist = def->turn_rate > 0.0f
                         ? v_pf * (float)he / def->turn_rate : 0.0f;
         float stop_dist = brake_pf > 0.0f
@@ -11688,9 +11844,16 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         if (v < 0.0f) v = 0.0f;
     }
 
-    /* Move along the heading (legacy:183366-183372). */
+    /* Move along the heading (legacy:183366-183372). A flyer holding a
+     * heading moves straight at its point (legacy:183869-184070). */
     float dir_x = tak_sinf(u->heading);
     float dir_y = -tak_cosf(u->heading);
+    if (g_walk_face_on) {
+        float sx = (float)(ax - u->world_x), sy = (float)(ay - u->world_y);
+        float len = sqrtf(sx * sx + sy * sy);
+        dir_x = len > 0.0f ? sx / len : 0.0f;
+        dir_y = len > 0.0f ? sy / len : 0.0f;
+    }
     float fx = u->subpixel_x + dir_x * v;
     float fy = u->subpixel_y + dir_y * v;
     int32_t mx = (int32_t)floorf(fx);
@@ -11980,13 +12143,21 @@ static int weapon_can_target_unit(const UnitWeapon *wp, const Unit *t) {
     if (t->flying && weapon_is_melee(wp)) return 0;
     if (!t->flying && wp->to_air_weapon) return 0;
     if (wp->mind_control) {
-        /* Mind control passes over what it cannot take and what its
-         * damage table zeroes (legacy:15151, legacy:15160). */
         const UnitDef *td = Units_GetDef(t->def_idx);
         if (t->under_construction) return 0;
-        if (td && td->cant_be_captured) return 0;
-        if (td && weapon_damage_for_category(wp, td->damage_category) <= 0)
+        if (wp->mind_control == UNIT_SPELL_MIND) {
+            /* Mind control passes over what it cannot take and what its
+             * damage table zeroes (legacy:15151, legacy:15160). */
+            if (td && td->cant_be_captured) return 0;
+            if (td && weapon_damage_for_category(wp, td->damage_category) <= 0)
+                return 0;
+        } else if (td && (wp->mind_control == UNIT_SPELL_STONE
+                              ? td->cant_be_stoned : td->cant_be_frozen)) {
+            /* Stone and ice pass over what cannot be turned, a building
+             * or a monarch among them (legacy:21149-21156,
+             * legacy:186273-186278). */
             return 0;
+        }
     }
     return 1;
 }
@@ -13354,10 +13525,9 @@ static void hover_attack_tick(Unit *u, int h, const UnitDef *def,
         *goal_y = py;
         return;
     }
-    /* At its point it faces the target and holds there. */
+    /* At its point it turns onto the target and holds there. */
     *desired = UNIT_ANIM_ATTACKING;
-    if (dx != 0 || dy != 0)
-        u->heading = tak_atan2f((float)dx, -(float)dy);
+    unit_face_toward(u, def, dx, dy);
 }
 
 /* A shot from the weapon in hand at the unit's target or its ground
@@ -13386,6 +13556,7 @@ static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
         (ground || u->target < 0 || u->target >= g_unit_count ||
          weapon_can_target_unit(&def->weapons[slot],
                                 &g_units[u->target])) &&
+        unit_body_on_target(u, def, &def->weapons[slot], aim_x, aim_y) &&
         weapon_aim_ready(u, slot, aim_key, aim_x, aim_y, ws)) {
         const UnitWeapon *wp = &def->weapons[slot];
 
@@ -14602,15 +14773,10 @@ static void Units_TickCombat(void) {
                 goal_x = t->world_x;
                 goal_y = t->world_y;
             }
-            /* Face the target only once in reach. On the approach the
-             * walker owns the heading: forcing it here sent a unit
-             * along the target bearing instead of its waypoint, so it
-             * ground against whatever stood in between and never
-             * arrived. Immobile units never swing their base; their
-             * pieces aim through the COB AimWeapon script. */
-            if (target_in_range && (dx != 0 || dy != 0) &&
-                def->max_velocity > 0.0f)
-                u->heading = tak_atan2f((float)dx, -(float)dy);
+            /* Turn onto the target only once in reach: on the approach
+             * the walker owns the heading. A unit with no turn in place
+             * leaves the aim to its pieces, as a structure does. */
+            if (target_in_range) unit_face_toward(u, def, dx, dy);
         } else if (u->cmd_kind == UNIT_CMD_ATTACK_GROUND &&
                    def->num_weapons > 0 && hover_attacks(u, def, NULL)) {
             hovering = 1;
@@ -14635,9 +14801,7 @@ static void Units_TickCombat(void) {
                 goal_x = u->cmd_x;
                 goal_y = u->cmd_y;
             }
-            if (target_in_range && (dx != 0 || dy != 0) &&
-                def->max_velocity > 0.0f)
-                u->heading = tak_atan2f((float)dx, -(float)dy);
+            if (target_in_range) unit_face_toward(u, def, dx, dy);
         } else if (u->cmd_kind == UNIT_CMD_MOVE) {
             desired = UNIT_ANIM_MOVING;
             goal_x = u->cmd_x;
@@ -14773,9 +14937,23 @@ static void Units_TickCombat(void) {
                 /* Keep walk thread alive — many scripts loop once and
                  * RETURN; restart while still moving. */
                 ensure_thread(u, "walk", &u->walk_thread_slot, NULL, 0);
-                int arrived = walk_tick(u, def, goal_x, goal_y);
                 /* A hover attacker's weapons stay on its target as it
-                 * flies (legacy:30223-30253). */
+                 * flies (legacy:30223-30253), and it holds itself turned
+                 * onto it while it moves (legacy:249301-249306). */
+                if (hovering && target_in_range && unit_faces_target(def)) {
+                    int32_t fx = u->cmd_x, fy = u->cmd_y;
+                    if (u->target >= 0 && u->target < g_unit_count) {
+                        fx = g_units[u->target].world_x;
+                        fy = g_units[u->target].world_y;
+                    }
+                    if (fx != u->world_x || fy != u->world_y) {
+                        g_walk_face_on = 1;
+                        g_walk_face = tak_atan2f((float)(fx - u->world_x),
+                                                 -(float)(fy - u->world_y));
+                    }
+                }
+                int arrived = walk_tick(u, def, goal_x, goal_y);
+                g_walk_face_on = 0;
                 if (hovering && target_in_range) unit_fire_tick(u, i, def);
                 if (arrived) {
                     u->velocity = 0; u->cur_speed_ppt = 0.0f;

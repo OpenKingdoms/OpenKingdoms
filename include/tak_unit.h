@@ -200,6 +200,10 @@ typedef struct UnitWeapon {
     int32_t wander_max_variation;
     int32_t wander_step_fp;
     int32_t to_air_weapon;    /* toairweapon targeting flag */
+    /* AimTolerance: how far off its target a unit that turns to shoot
+     * may face and still fire, never under 0x200 (legacy:250064,
+     * legacy:249365-249377). */
+    int32_t aim_tolerance;
     int32_t no_air_weapon;    /* noairweapon targeting flag */
     int32_t no_radar;         /* noradar projectile/minimap flag */
     int32_t range;            /* world pixels */
@@ -246,7 +250,10 @@ typedef struct UnitWeapon {
     uint8_t is_gravity;       /* type = Ballistic → arced flight */
     uint8_t dropped;          /* subtype = Dropped → no launch impulse */
     /* subtype = mindcontrol: the hit rolls to take the unit over and
-     * deals no damage (legacy:249801, legacy:247761). */
+     * deals no damage (legacy:249801, legacy:247761). A turntostone or
+     * turntofrozen shot flies the same way and its roll turns the unit
+     * to stone or ice (legacy:249811-249826, legacy:247868-247996).
+     * One of UNIT_SPELL_*, 0 for any other weapon. */
     uint8_t mind_control;
     /* A hover attacker's standoff and height with this weapon, 0 to take
      * the unit's (legacy:250022-250024), and the `dropped` key, which
@@ -264,6 +271,10 @@ typedef struct UnitWeapon {
     char    icon_selected[32];  /* buttonimageselected — active weapon */
     char    icon_disabled[32];  /* buttonimagedisabled — out of mana   */
 } UnitWeapon;
+
+#define UNIT_SPELL_MIND   1
+#define UNIT_SPELL_STONE  2
+#define UNIT_SPELL_FROZEN 3
 
 /* In-flight projectile spawned when a weapon fires. Travels toward
  * the target unit (or its last-known position) at weapon velocity;
@@ -407,6 +418,11 @@ typedef struct UnitDef {
     char     corpse[TAK_UNITDEF_OBJ_MAX];
     int32_t  corpse_adjust_x;
     int32_t  corpse_adjust_z;
+    /* `stone` and `frozen` name the statue a unit turned to stone or
+     * ice leaves, placed as its corpse is (legacy:163161-163176,
+     * legacy:227395-227416). */
+    char     stone[TAK_UNITDEF_OBJ_MAX];
+    char     frozen[TAK_UNITDEF_OBJ_MAX];
     /* `animatetype`: the unit an animator raises out of an animatable
      * feature, where a resurrector brings back the unit the corpse
      * came from (legacy:163138-163145, 13061-13072). */
@@ -489,6 +505,10 @@ typedef struct UnitDef {
     /* cantbecaptured (legacy:163021): mind control neither aims at
      * this unit nor takes it. */
     int32_t  cant_be_captured;
+    /* cantbestoned and cantbefrozen, forced on for a monarch and for
+     * anything that is not bmcode 1 (legacy:163161-163180). */
+    uint8_t  cant_be_stoned;
+    uint8_t  cant_be_frozen;
     int32_t  transported_size; /* transportedsize override when carried */
     int32_t  transport_distance; /* transportdistance; load/unload radius */
     char     movement_class[32];/* movementclass key into moveinfo.tdf */
@@ -508,17 +528,21 @@ typedef struct UnitDef {
     float    acceleration;
     float    brake_rate;
     float    turn_rate;
+    /* turninplacerate, the turn of a walker standing still. One with
+     * none never turns its body onto what it shoots (legacy:162866,
+     * legacy:249301-249306). */
+    float    turn_in_place_rate;
 
     /* Capability bitmask — drives which action buttons appear when
-     * this unit is selected (matches decomp at the legacy reference
-     * line 150627+ where flag 0x264 maps to the dialog's per-button
-     * visibility bytes). FBI fields parsed: canmove, canstop,
-     * canattack, canguard, canpatrol, cancloak, cantransport,
-     * builder. Each bit set ↔ button should appear. */
+     * this unit is selected (legacy:150627+, where each bit of the
+     * def's flag word lights its button). FBI fields parsed: canmove,
+     * canstop, canattack, canguard, canpatrol, cancloak, cantransport,
+     * builder. The ATTACK and stance buttons go by Units_DefTakesAttack
+     * and Units_DefHasStances instead. */
     uint32_t cap_flags;
 #define UNIT_CAP_MOVE      (1u << 0)
 #define UNIT_CAP_STOP      (1u << 1)
-#define UNIT_CAP_ATTACK    (1u << 2)
+#define UNIT_CAP_ATTACK    (1u << 2)   /* canattack, for the def hash only */
 #define UNIT_CAP_GUARD     (1u << 3)
 #define UNIT_CAP_PATROL    (1u << 4)
 #define UNIT_CAP_CLOAK     (1u << 5)
@@ -531,6 +555,9 @@ typedef struct UnitDef {
 #define UNIT_CAP_W_SWITCH  (1u << 12)  /* weaponswitching — Pri/Sec/Special */
 #define UNIT_CAP_CAPTURE   (1u << 14)  /* cancapture (legacy:163056)  */
 #define UNIT_CAP_ANIMATE   (1u << 13)  /* cananimate (legacy:163045)  */
+    /* unitstandorders: the stance buttons show unless it is 0
+     * (legacy:163025). */
+    uint8_t  unit_stand_orders;
 
     /* Mana economy fields. The legacy engine treats two FBI pairs
      * as additive contributions to the owning player's pool:
@@ -1907,6 +1934,10 @@ int               Units_WeaponCanTake(int handle, int target_handle);
  * how many of them carry a weapon at all. */
 int               Units_SelectionCanAttack(int target_handle, int *armed);
 int               Units_IsArmed(int handle);
+/* The order buttons a def shows: ATTACK for a unit with a weapon, the
+ * stances unless its file sets unitstandorders = 0. */
+int               Units_DefTakesAttack(const UnitDef *d);
+int               Units_DefHasStances(const UnitDef *d);
 int               Units_CanWalk(int handle);
 /* 0 for a unit the player cannot select: none there, dead, or still
  * being built, which the original never selects. */

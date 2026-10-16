@@ -1036,7 +1036,7 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
                             Units_SelectedGateState() >= 0);
         struct { const char *name; int show; } vis[] = {
             { "MOVE",            (caps & UNIT_CAP_MOVE)      != 0 },
-            { "ATTACK",          (caps & UNIT_CAP_ATTACK)    != 0 },
+            { "ATTACK",          own && Units_DefTakesAttack(seldef_cap) },
             { "GUARD",           (caps & UNIT_CAP_GUARD)     != 0 },
             { "PATROL",          (caps & UNIT_CAP_PATROL)    != 0 },
             { "STOP",            (caps & UNIT_CAP_STOP)      != 0 },
@@ -1049,9 +1049,9 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             { "Uncloaked",       (caps & UNIT_CAP_CLOAK)     != 0 },
             { "Active",          onoff },
             { "Inactive",        onoff },
-            { "Offensive",       (caps & UNIT_CAP_ATTACK)    != 0 },
-            { "Defensive",       (caps & UNIT_CAP_ATTACK)    != 0 },
-            { "Passive",         (caps & UNIT_CAP_ATTACK)    != 0 },
+            { "Offensive",       own && Units_DefHasStances(seldef_cap) },
+            { "Defensive",       own && Units_DefHasStances(seldef_cap) },
+            { "Passive",         own && Units_DefHasStances(seldef_cap) },
             { "PrimaryWeapon",   (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 1 },
             { "SecondaryWeapon", (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 2 },
             { "SpecialWeapon",   (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 3 },

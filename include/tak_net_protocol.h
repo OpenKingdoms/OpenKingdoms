@@ -133,8 +133,11 @@
  * in the air. 43: a guard attacks what hits the unit it guards, mends
  * it, joins its build or repair, and keeps five cells off it, and
  * Ctrl+D self destructs. 44: units with a cloak cost cloak, and a
- * builder sent to a site its side cannot see checks it on arrival. */
-#define TAK_ENGINE_BUILD_ID           44
+ * builder sent to a site its side cannot see checks it on arrival.
+ * 45: a unit turns onto its target only by turninplacerate or as a
+ * hover attacker and fires within its aim tolerance, and freeze and
+ * stone shots turn a unit to a statue on a roll. */
+#define TAK_ENGINE_BUILD_ID           45
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
