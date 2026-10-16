@@ -57,7 +57,8 @@ const char *TAK_AI_DebugWaveReason(int player_id);
 #define TAK_AI_TACTIC_SQUAD     8   /* march in step (A-010) */
 #define TAK_AI_TACTIC_SWEEP     16  /* sweep the rubble a unit is stuck at (A-011) */
 #define TAK_AI_TACTIC_FIRE      32  /* step out of a fire that hurts (A-011) */
-#define TAK_AI_TACTIC_ALL       63
+#define TAK_AI_TACTIC_MIX       64  /* a varied build (A-012) */
+#define TAK_AI_TACTIC_ALL       127
 void TAK_AI_DebugSetTactics(int player_id, int mask);
 /* Every computer seat thinks on the same tick of the second, as
  * before the seats were spread, for tests written against that. */
@@ -81,9 +82,11 @@ int  TAK_AI_DebugFindSite(int actor_idx, int build_def, int32_t *x, int32_t *y);
 /* Whether the AI counts this def as a production structure, so a
  * census reports what the AI itself sees. */
 int  TAK_AI_DebugIsProductionStructure(int def_idx);
-/* Test seam: a profile limit or weight for one definition. */
+/* Test seam: a profile limit or weight for one definition, and the
+ * weight a seat draws a definition by. */
 void TAK_AI_DebugSetLimit(int def_idx, int limit);
 void TAK_AI_DebugSetWeight(int def_idx, float weight);
+float TAK_AI_DebugWeightOf(int player_id, int def_idx);
 
 /* A unit slot about to take a new unit: drop any wave target or threat
  * that still names it. Units_Spawn calls this. */

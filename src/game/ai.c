@@ -27,12 +27,20 @@
 #include <string.h>
 
 /* AI profile: data/ai/*.txt console-cmd lines `weight <unit> <0-100>`
- * / `limit <unit> <n|-1>` (digs:ai). Unlisted types default 50 / -1. */
+ * / `limit <unit> <n|-1>` (digs:ai). Unlisted types default 50 / -1,
+ * an unlisted fighter its peers' weight (A-012). */
 #define AI_MAX_DEFS 512
 static float   g_ai_weight[AI_MAX_DEFS];
 static int32_t g_ai_limit[AI_MAX_DEFS];
+/* Whether a weight line named the type, and what a type no line names
+ * weighs instead: the mean of the named fighters in a list it is in. */
+static uint8_t g_ai_listed[AI_MAX_DEFS];
+static float   g_ai_peer_weight[AI_MAX_DEFS];
 static int     g_ai_profile_loaded = 0;
 static uint32_t g_ai_rng = 0x2A5F19C7u;
+
+/* Seats told to fight without some of A-007 to A-012, for measuring. */
+static int g_ai_tactics_off[TAK_MAX_PLAYERS + 1];
 
 static uint32_t ai_rand(uint32_t n) {
     g_ai_rng = g_ai_rng * 1664525u + 1013904223u;   /* deterministic LCG */
@@ -51,18 +59,55 @@ static int ai_stricmp(const char *a, const char *b) {
 
 void TAK_AI_ResetProfile(void) { g_ai_profile_loaded = 0; }
 
+static int ai_def_is_mobile_combat(const UnitDef *def);
+
+/* An unnamed fighter weighs the mean of the named fighters in its build
+ * list. The original gives it 100 (legacy:19792), which makes Veruna's
+ * unnamed Centaur most of what a castle trains. Ours (A-012). */
+static void ai_profile_peers(void) {
+    for (int i = 0; i < AI_MAX_DEFS; i++) g_ai_peer_weight[i] = g_ai_weight[i];
+    static uint8_t set[AI_MAX_DEFS];
+    memset(set, 0, sizeof(set));
+    int defs = Units_GetDefCount();
+    if (defs > AI_MAX_DEFS) defs = AI_MAX_DEFS;
+    for (int d = 0; d < defs; d++) {
+        int kids[32];
+        int n = Units_GetBuildables(d, kids, 32);
+        int32_t sum = 0;
+        int named = 0;
+        for (int k = 0; k < n; k++) {
+            if (kids[k] < 0 || kids[k] >= AI_MAX_DEFS || !g_ai_listed[kids[k]]) continue;
+            if (!ai_def_is_mobile_combat(Units_GetDef(kids[k]))) continue;
+            sum += (int32_t)g_ai_weight[kids[k]];
+            named++;
+        }
+        if (named == 0) continue;
+        /* A whole number, the same on every machine. */
+        for (int k = 0; k < n; k++) {
+            int c = kids[k];
+            if (c < 0 || c >= AI_MAX_DEFS || g_ai_listed[c] || set[c]) continue;
+            if (!ai_def_is_mobile_combat(Units_GetDef(c))) continue;
+            g_ai_peer_weight[c] = (float)(sum / named);
+            set[c] = 1;
+        }
+    }
+}
+
 static void ai_profile_load(void) {
     if (g_ai_profile_loaded) return;
     g_ai_profile_loaded = 1;
     for (int i = 0; i < AI_MAX_DEFS; i++) {
         g_ai_weight[i] = 50.0f;
         g_ai_limit[i]  = -1;
+        g_ai_listed[i] = 0;
     }
     void *data = NULL;
     uint32_t size = 0;
     if (VFS_ReadFile("data/ai/default.txt", &data, &size) != 0 || !data) {
-        if (VFS_ReadFile("ai/default.txt", &data, &size) != 0 || !data)
+        if (VFS_ReadFile("ai/default.txt", &data, &size) != 0 || !data) {
+            ai_profile_peers();
             return;
+        }
     }
     char *txt = (char *)tak_malloc(size + 1);
     if (!txt) { tak_free(data); return; }
@@ -82,6 +127,7 @@ static void ai_profile_load(void) {
             if (val < 0.0f) val = 0.0f;
             if (val > 100.0f) val = 100.0f;
             g_ai_weight[def] = val;
+            g_ai_listed[def] = 1;
             n_weights++;
         } else if (ai_stricmp(cmd, "limit") == 0) {
             g_ai_limit[def] = (int32_t)val;
@@ -89,8 +135,18 @@ static void ai_profile_load(void) {
         }
     }
     tak_free(txt);
+    ai_profile_peers();
     fprintf(stderr, "AI profile: %d weights, %d limits\n",
             n_weights, n_limits);
+}
+
+/* The weight a seat prices and draws a type by. */
+static float ai_weight_of(int player_id, int def_idx) {
+    if (def_idx < 0 || def_idx >= AI_MAX_DEFS) return 50.0f;
+    if (!g_ai_listed[def_idx] && player_id >= 0 && player_id <= TAK_MAX_PLAYERS &&
+        !(g_ai_tactics_off[player_id] & TAK_AI_TACTIC_MIX))
+        return g_ai_peer_weight[def_idx];
+    return g_ai_weight[def_idx];
 }
 
 /* The thinking seat's units by type, counted once a think over the
@@ -234,8 +290,7 @@ static int32_t ai_build_score(const Unit *units, int unit_count,
  * (legacy:21281-21294). */
 static int32_t ai_desirability(const Unit *units, int unit_count,
                                int player_id, int def_idx) {
-    int32_t w = (def_idx >= 0 && def_idx < AI_MAX_DEFS)
-              ? (int32_t)g_ai_weight[def_idx] : 50;
+    int32_t w = (int32_t)ai_weight_of(player_id, def_idx);
     if (w <= 0) return 0;
     return w * ai_build_score(units, unit_count, player_id, def_idx) / 100;
 }
@@ -910,9 +965,6 @@ static int g_ai_orders[TAK_MAX_PLAYERS + 1][TAK_MAX_PLAYERS + 1][2];
 static int g_ai_defence_orders[TAK_MAX_PLAYERS + 1];
 static int g_ai_last_tick = -1;
 static uint32_t g_ai_seed = 0x2A5F19C7u;
-
-/* Seats told to fight without A-007, for measuring. Debug only. */
-static int g_ai_tactics_off[TAK_MAX_PLAYERS + 1];
 
 /* ── Groups ──────────────────────────────────────────────────────────
  *
@@ -2747,7 +2799,14 @@ void TAK_AI_DebugSetLimit(int def_idx, int limit) {
 
 void TAK_AI_DebugSetWeight(int def_idx, float weight) {
     ai_profile_load();
-    if (def_idx >= 0 && def_idx < AI_MAX_DEFS) g_ai_weight[def_idx] = weight;
+    if (def_idx < 0 || def_idx >= AI_MAX_DEFS) return;
+    g_ai_weight[def_idx] = weight;
+    g_ai_listed[def_idx] = 1;
+}
+
+float TAK_AI_DebugWeightOf(int player_id, int def_idx) {
+    ai_profile_load();
+    return ai_weight_of(player_id, def_idx);
 }
 
 /* A walking producer: Zhon summons its whole army from beast handlers
@@ -2826,8 +2885,9 @@ static int32_t ai_action_cost(const Unit *units, int unit_count, int p,
     if (def_idx < 0 || def_idx >= AI_MAX_DEFS) return -1;
     const UnitDef *d = Units_GetDef(def_idx);
     if (!d) return -1;
-    int w = (int)g_ai_weight[def_idx];
-    if (g_ai_weight[def_idx] <= 0.0f) return -1;
+    float wf = ai_weight_of(p, def_idx);
+    int w = (int)wf;
+    if (wf <= 0.0f) return -1;
     if (w < 1) w = 1;
     if (!ai_limit_allows(units, unit_count, p, def_idx)) return -1;
     /* What no draw would take is not the plan's to price. A mana

@@ -140,6 +140,7 @@ const UnitDef *Units_GetDef(int idx) {
     if (idx < 0 || idx >= MOCK_DEFS) return NULL;
     return &g_defs[idx];
 }
+int Units_GetDefCount(void) { return MOCK_DEFS; }
 
 GameWorld *World_Get(void) { return (GameWorld *)g_world; }
 

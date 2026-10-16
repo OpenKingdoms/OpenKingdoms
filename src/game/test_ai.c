@@ -165,6 +165,7 @@ const UnitDef *Units_GetDef(int idx) {
     if (idx < 0 || idx >= MOCK_DEFS) return NULL;
     return &g_defs[idx];
 }
+int Units_GetDefCount(void) { return MOCK_DEFS; }
 
 GameWorld *World_Get(void) { return (GameWorld *)g_world; }
 
@@ -3446,6 +3447,32 @@ static int test_ai_steps_out_toward_the_unit_it_attacks(void) {
     return 0;
 }
 
+/* A-012. A fighter the profile does not name weighs what the named
+ * fighters in its build list weigh on average, so a castle's unnamed
+ * Centaur is not most of what it trains. The original gives such a
+ * type 100 (legacy:19792), and with the bit off it keeps our old 50. */
+static int test_ai_an_unnamed_fighter_weighs_as_its_peers(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    for (int d = 4; d <= 5; d++) {
+        g_defs[d] = g_defs[3];
+        g_buildables[2][d - 3] = d;
+    }
+    strcpy(g_defs[4].unitname, "VERCEN");
+    strcpy(g_defs[5].unitname, "VERKNIGH");
+    g_buildable_counts[2] = 3;
+    g_mock_profile = "weight TARTROOP 8\nweight VERKNIGH 4\n";
+    TAK_AI_ResetProfile();
+    ASSERT_EQ_INT(6, (int)TAK_AI_DebugWeightOf(2, 4));
+    ASSERT_EQ_INT(8, (int)TAK_AI_DebugWeightOf(2, 3));
+    ASSERT_EQ_INT(4, (int)TAK_AI_DebugWeightOf(2, 5));
+    /* A type that is no fighter keeps the default. */
+    ASSERT_EQ_INT(50, (int)TAK_AI_DebugWeightOf(2, 2));
+    TAK_AI_DebugSetTactics(2, TAK_AI_TACTIC_ALL & ~TAK_AI_TACTIC_MIX);
+    ASSERT_EQ_INT(50, (int)TAK_AI_DebugWeightOf(2, 4));
+    return 0;
+}
+
 int main(void) {
     /* These cases step the AI at whole seconds and expect every seat. */
     TAK_AI_DebugSetStagger(0);
@@ -3528,6 +3555,7 @@ int main(void) {
     if (test_ai_sweeps_the_rubble_a_unit_is_stuck_at() != 0) return 1;
     if (test_ai_steps_out_of_a_fire_that_hurts() != 0) return 1;
     if (test_ai_steps_out_toward_the_unit_it_attacks() != 0) return 1;
+    if (test_ai_an_unnamed_fighter_weighs_as_its_peers() != 0) return 1;
 
     puts("test_ai: ok");
     return 0;
