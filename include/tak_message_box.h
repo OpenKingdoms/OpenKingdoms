@@ -19,6 +19,9 @@
  * returns it: a message that cannot be drawn still has to be read
  * before the screen underneath takes another press. */
 int  MessageBox_Open(const char *text);
+/* The same box as a question, data/guis/yesno.gui. MessageBox_Tick then
+ * answers 1 for Yes and 2 for No. */
+int  MessageBox_OpenYesNo(const char *text);
 void MessageBox_Close(void);
 int  MessageBox_IsOpen(void);
 const char *MessageBox_Text(void);
@@ -29,8 +32,8 @@ struct GUIRuntime *MessageBox_Runtime(void);
 int  MessageBox_Rect(const char *name, SDL_Rect *out);
 
 /* Draw it and take a press. `mx`/`my` are canvas coordinates, -1 when
- * the pointer is outside. Returns 1 when the player has read it, and
- * the box is closed by then. */
+ * the pointer is outside. Returns 1 when the player has read it, or 2
+ * for No on a question, and the box is closed by then. */
 int  MessageBox_Tick(int mx, int my, int mouse_down,
                      int enter_edge, int esc_edge);
 

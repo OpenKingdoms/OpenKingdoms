@@ -978,7 +978,8 @@ static void oq_chord(int mods, int key);
 
 /* Ctrl+D ends any unit of yours, a building too, two seconds and up to
  * fourteen frames on, counted as your loss, and Ctrl+D again before
- * then calls it off (legacy:122248-122294, legacy:9056-9088). */
+ * then calls it off (legacy:122248-122294, legacy:9056-9088). A start
+ * asks first, Escape says no and Enter yes, which is our own addition. */
 TEST(ctrl_d_self_destructs_a_building_and_again_calls_it_off) {
     GameWorld *w = oq_world();
     ASSERT_NOT_NULL(w);
@@ -987,6 +988,13 @@ TEST(ctrl_d_self_destructs_a_building_and_again_calls_it_off) {
     ASSERT(hall >= 0 && kept >= 0);
     Units_SelectSingle(hall);
     oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_D);
+    oq_ticks(10);
+    ASSERT_EQ_INT(0, Units_SelfDestructing(hall));
+    oq_chord(0, SDL_SCANCODE_ESCAPE);
+    oq_ticks(10);
+    ASSERT_EQ_INT(0, Units_SelfDestructing(hall));
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_D);
+    oq_chord(0, SDL_SCANCODE_RETURN);
     oq_ticks(119);
     ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(hall)->alive);
     oq_ticks(30);
@@ -994,7 +1002,9 @@ TEST(ctrl_d_self_destructs_a_building_and_again_calls_it_off) {
     ASSERT_EQ_INT(1, (int)w->stats[1].losses);
     Units_SelectSingle(kept);
     oq_chord(IG_CLICK_CTRL | IG_CLICK_SHIFT, SDL_SCANCODE_D);
+    oq_chord(0, SDL_SCANCODE_RETURN);
     oq_ticks(60);
+    ASSERT_EQ_INT(1, Units_SelfDestructing(kept));
     oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_D);
     oq_ticks(200);
     ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(kept)->alive);

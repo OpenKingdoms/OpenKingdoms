@@ -18,6 +18,7 @@
 #include "tak_terrain.h"
 #include "tak_unit.h"
 #include "tak_minimap.h"
+#include "tak_message_box.h"
 #include "tak_camera.h"
 #include "tak_ui.h"
 #include "tak_debug_panel.h"
@@ -79,6 +80,10 @@ static struct {
     uint8_t mm_look;
     /* A dialog is up and the clock has stopped. */
     uint8_t paused;
+    /* Ctrl+D's question is up, and whether the clock ran before it. */
+    uint8_t sd_ask;
+    uint8_t sd_was_paused;
+    uint8_t sd_prev_enter, sd_prev_esc;
     uint8_t catching_up;   /* this frame ran extra ticks to catch the match up */
     /* Who played each seat at the last tick, and the line that says a
      * seat changed hands, with the tick it changed on. */
@@ -1074,7 +1079,7 @@ static void ig_select_key(const GameWorld *world, InGameSelectKey k) {
 /* Ctrl+D (legacy:122248-122294): the selection starts its self
  * destruct, or stops it when any of it counts down already, and a start
  * says so in the message list. */
-static void ig_self_destruct(void) {
+static void ig_self_destruct_now(void) {
     int n = 0;
     const int *sel = Units_GetSelection(&n);
     int counting = 0;
@@ -1085,6 +1090,66 @@ static void ig_self_destruct(void) {
     if (!counting)
         Chat_Push(HUD_MissionWords("SELF DESTRUCT ENGAGED"), CHAT_TYPE_ORDER,
                   Chat_LocalSlot(), SDL_GetTicks());
+}
+
+/* Our own addition: a start asks first, in the game's yes or no box,
+ * and a stop does not. The clock stops under it where the in game menu
+ * stops it, and a match runs on. */
+static void ig_self_destruct(const uint8_t *keys) {
+    int n = 0;
+    const int *sel = Units_GetSelection(&n);
+    for (int k = 0; k < n; k++)
+        if (g_units_get_player(sel[k]) == Units_LocalPlayer() &&
+            Units_SelfDestructing(sel[k])) {
+            ig_self_destruct_now();
+            return;
+        }
+    if (Units_SelectionOwnedCount() == 0) return;
+    if (MessageBox_OpenYesNo("Self destruct the selected units?") != 0 &&
+        !MessageBox_IsOpen())
+        return;
+    ig.sd_ask = 1;
+    /* A key already down when it opens answers nothing. */
+    ig.sd_prev_enter = (uint8_t)(keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER]);
+    ig.sd_prev_esc = keys[SDL_SCANCODE_ESCAPE];
+    ig.sd_was_paused = ig.paused;
+    if (!TAK_Match_IsLive()) ig.paused = 1;
+}
+
+/* The question takes a frame's keys and canvas mouse. Returns 1 while
+ * it stands. */
+static int ig_self_destruct_ask(const uint8_t *keys, int focus, int mx, int my,
+                                int down) {
+    if (!ig.sd_ask) return 0;
+    int enter = focus && (keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER]);
+    int esc = focus && keys[SDL_SCANCODE_ESCAPE];
+    int enter_edge = enter && !ig.sd_prev_enter;
+    int esc_edge = esc && !ig.sd_prev_esc;
+    ig.sd_prev_enter = (uint8_t)enter;
+    ig.sd_prev_esc = (uint8_t)esc;
+    int answer = MessageBox_Tick(mx, my, down, enter_edge, esc_edge);
+    if (!answer) return 1;
+    ig.sd_ask = 0;
+    if (!TAK_Match_IsLive()) ig.paused = ig.sd_was_paused;
+    if (answer == 1) ig_self_destruct_now();
+    /* The press that answered is not a click on the battle. */
+    ig.prev_left = 1;
+    return 0;
+}
+
+/* The same over the battle, with SDL's mouse. */
+static int ig_self_destruct_ask_frame(TAK_Platform *platform, const Uint8 *keys) {
+    if (!ig.sd_ask) return 0;
+    int mx = -1, my = -1, down = 0;
+    if (platform->has_focus) {
+        int wx = 0, wy = 0;
+        uint32_t buttons = SDL_GetMouseState(&wx, &wy);
+        down = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
+        if (!TAK_Platform_MapMouseToCanvas(platform, wx, wy, &mx, &my)) {
+            mx = -1; my = -1;
+        }
+    }
+    return ig_self_destruct_ask(keys, platform->has_focus, mx, my, down);
 }
 
 /* Cancel: an armed command goes first and the selection survives
@@ -1223,6 +1288,12 @@ void InGame_DebugKeyChord(int mods, int scancode) {
 }
 
 static void ig_debug_keys(const uint8_t *frame_keys, const char *text_in) {
+    /* Ctrl+D's question owns the keys while it stands. */
+    if (ig.sd_ask) {
+        (void)ig_self_destruct_ask(frame_keys, 1, -1, -1, 0);
+        memcpy(ig.prev_keys, frame_keys, sizeof(ig.prev_keys));
+        return;
+    }
     /* The briefing owns the keys while it is up, as it owns the frame. */
     if (Briefing_IsOpen()) {
         if (ig_briefing_keys(1, frame_keys)) {
@@ -1684,7 +1755,7 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
     if (has_focus) {
         InGameSelectKey sk = InGame_SelectKey(keys, ig.prev_keys);
         if (sk.kind != IG_SELECT_NONE) ig_select_key(world, sk);
-        if (InGame_SelfDestructKey(keys, ig.prev_keys)) ig_self_destruct();
+        if (InGame_SelfDestructKey(keys, ig.prev_keys)) ig_self_destruct(keys);
     }
 #undef IG_PRESSED
 }
@@ -1868,7 +1939,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     int console_keys = ig_console_keys(platform->has_focus, keys,
                                        platform->text_in);
     if (platform->has_focus && !console_keys && keys[SDL_SCANCODE_F1] &&
-        !ig.prev_keys[SDL_SCANCODE_F1] && !InGameMenu_IsOpen()) {
+        !ig.prev_keys[SDL_SCANCODE_F1] && !InGameMenu_IsOpen() && !ig.sd_ask) {
         (void)InGameMenu_Open();
     }
     /* A campaign mission opens under its briefing, and the clock waits
@@ -1893,6 +1964,15 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         UI_Present(platform);
         memcpy(ig.prev_keys, keys, sizeof(ig.prev_keys));
         return next;
+    }
+    /* Ctrl+D's question owns the keys and the mouse while it stands,
+     * and the frame that answers it. */
+    if (ig.sd_ask) {
+        (void)ig_self_destruct_ask_frame(platform, keys);
+        SDL_ShowCursor(SDL_ENABLE);
+        UI_Present(platform);
+        memcpy(ig.prev_keys, keys, sizeof(ig.prev_keys));
+        return GAMESTATE_IN_GAME;
     }
 
     /* Custom cursor when a command mode is active and the mouse is
@@ -2137,6 +2217,7 @@ void InGame_Shutdown(void) {
     DebugPanel_Shutdown();
     EndScreen_Close();
     InGameMenu_Close();
+    if (ig.sd_ask) MessageBox_Close();
     Briefing_Close();
     Chat_Shutdown();
     if (ig.banner_font) {
