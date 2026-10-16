@@ -13860,10 +13860,11 @@ TEST(a_harpy_takes_a_swordsman_standing_or_walking_across) {
     corpse_shutdown(&platform);
     ASSERT(ok);
     ASSERT(set);
-    /* Pinned. A shot lands slower than the Harpy reloads, so a second is
-     * in the air when the first takes a still target. A walking one is
-     * taken by the first, fired from the hover attack's 200 px, in all
-     * but one seed, where the second shot takes it. */
+    /* Pinned. Every target is taken. A still one is taken by the first
+     * of one to three shots, a second often already in the air as it
+     * lands. A walking one is taken by the first shot, fired from the
+     * hover attack's 200 px once the Harpy faces it, in all but one
+     * seed, where the second shot takes it. */
     ASSERT_EQ_INT(4, still);
     ASSERT_EQ_INT(8, still_shots);
     ASSERT_EQ_INT(4, walking);
