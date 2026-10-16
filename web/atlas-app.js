@@ -1269,7 +1269,7 @@
     var orig = e.pkg === A.SOD ? S.byId.get((e.orig || []).filter(function (id) { var x = S.byId.get(id); return x && S.live.has(x.pkg); })[0] || e.orig[0]) : e;
     var sod = e.pkg === A.SOD ? e : S.byId.get(e.rm);
     if (!sod) return;
-    var labels = $('vlabels').children;
+    var labels = $('vlabels').querySelectorAll('b');
     labels[0].textContent = orig ? 'Original · ' + (orig.seq || orig.name) : 'Original';
     labels[1].textContent = 'Stars of Darien · ' + sod.name;
     msg('Fetching the Stars of Darien model.');

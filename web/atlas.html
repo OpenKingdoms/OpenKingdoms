@@ -192,7 +192,9 @@
   .v-msg { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 20px; color: var(--ink-2); pointer-events: none; }
   .v-msg span { background: color-mix(in srgb, var(--panel) 90%, transparent); padding: 8px 12px; border-radius: 8px; max-width: 90%; }
   .vlabels { position: absolute; top: 56px; left: 0; right: 0; display: flex; pointer-events: none; }
-  .vlabels span { flex: 1; text-align: center; font-size: 12px; font-weight: 600; color: #f1e7cf; text-shadow: 0 1px 3px #000; }
+  .vlabels span { flex: 1; text-align: center; min-width: 0; padding: 0 6px; }
+  .vlabels b { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--ink);
+               background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--line); border-radius: 7px; padding: 3px 8px; }
   .frames { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); flex: none; }
   .frames input[type=range] { flex: 1; accent-color: var(--gold-2); min-width: 60px; }
   .frames .fi { font-variant-numeric: tabular-nums; color: var(--ink-2); min-width: 70px; text-align: right; font-size: 12.5px; }
@@ -342,7 +344,7 @@
     <aside class="detail panel" id="detail" aria-label="Preview and details">
       <div class="viewer d2 idle" id="viewer">
         <canvas id="v2d"></canvas><canvas id="v3d"></canvas>
-        <div class="vlabels" id="vlabels" hidden><span>Original</span><span>Stars of Darien</span></div>
+        <div class="vlabels" id="vlabels" hidden><span><b>Original</b></span><span><b>Stars of Darien</b></span></div>
         <div class="vt tl" id="vt-mode"><div class="seg" id="mode" role="group" aria-label="View"></div></div>
         <div class="vt tr">
           <button class="icon small" type="button" id="v-bg" aria-label="Background" title="Background: checks, dark, light"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 3h9v9H3zM12 12h9v9h-9z"/><path d="M12 3h9v9h-9zM3 12h9v9H3z" opacity=".35"/></svg></button>
