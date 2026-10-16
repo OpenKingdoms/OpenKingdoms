@@ -9461,12 +9461,9 @@ TEST(render_probe_models) {
 
     ntri = Units_DebugSubmitOrder(keep, world, order, keys, order_cap);
     ASSERT(ntri > 0);
-    /* Keys must come out non-decreasing: that IS the height-key rule,
-     * and it is what stops the keep's walls painting over its tower. */
-    int ascending = 1, base_tris = 0, base_before_pole = 0;
+    int base_tris = 0, base_before_pole = 0;
     int at_pole = -1;
     for (int t = 0; t < ntri; t++) {
-        if (t > 0 && keys[t] < keys[t - 1]) ascending = 0;
         if (order[t] == base) {
             base_tris++;
             if (at_pole < 0) base_before_pole++;
@@ -9474,15 +9471,33 @@ TEST(render_probe_models) {
         if (at_pole < 0 && order[t] == pole) at_pole = t;
     }
     fprintf(stderr, "probe: ARAKEEP %d tris, pole at %d, %d/%d Base tris "
-            "before it, ascending=%d\n",
-            ntri, at_pole, base_before_pole, base_tris, ascending);
-    ASSERT(ascending);
+            "before it\n", ntri, at_pole, base_before_pole, base_tris);
     ASSERT(base_tris > 0);
     /* The whole keep lives in one 120-prim Base node, so authored order
      * alone cannot layer it. The flag pole tops the model out, so most
      * of Base must already be down before the pole goes on. */
     ASSERT(at_pole > 0);
     ASSERT(base_before_pole * 2 > base_tris);
+
+    /* A building's faces show where the original's per pixel height key
+     * puts them (legacy:265317) at nearly every pixel, the Veruna
+     * bastion's front walls over the fins inside it among them. */
+    {
+        int bastion_def = Units_FindDefByName("VERTOWER");
+        ASSERT(bastion_def >= 0);
+        int bastion = Units_Spawn(bastion_def, 1, 2, cx + 420, cy + 420);
+        ASSERT(bastion >= 0);
+        static const char *bn[] = { "ARAKEEP", "ARACASTL", "VERTOWER" };
+        const int bh[] = { keep, castle, bastion };
+        for (int i = 0; i < 3; i++) {
+            int covered = 0;
+            int wrong = Units_DebugOrderMismatch(bh[i], world, &covered);
+            fprintf(stderr, "probe: %s %d of %d px off the height key\n", bn[i], wrong,
+                    covered);
+            ASSERT(covered > 1000);
+            ASSERT(wrong >= 0 && wrong * 10 < covered);
+        }
+    }
 
     InGame_Shutdown();
     Loading_Shutdown();
