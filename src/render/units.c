@@ -1774,6 +1774,8 @@ int Units_Capture(int handle, int player_id) {
     uint8_t building = old->under_construction;
     float build_hp = old->build_hp_accum;
     int facing = old->facing;
+    uint8_t flying = old->flying;
+    float flight_alt = old->flight_alt;
 
     /* The new unit is made before the old one goes, so a seat at its
      * unit limit takes nothing (legacy:228975). The cells change hands
@@ -1795,6 +1797,11 @@ int Units_Capture(int handle, int player_id) {
     nu->armor_pct = old->armor_pct;
     nu->under_construction = building;
     nu->build_hp_accum = build_hp;
+    /* The new unit keeps the movement mode and height it had, so a flyer
+     * taken in the air stays up (legacy:228969, legacy:226947). */
+    nu->flying = flying;
+    nu->flight_alt = flight_alt;
+    if (flying) occ_sync_mobile(made);
     /* The old unit leaves with no death script and no body: the
      * original skips Killed for this removal (legacy:227130). */
     unit_remove_now(handle);

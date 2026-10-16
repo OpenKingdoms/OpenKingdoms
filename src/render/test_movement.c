@@ -1543,6 +1543,33 @@ TEST(flyers_without_flight_scripts_part_and_land) {
     mv_end();
 }
 
+/* A Harpy taken over in the air is still up at its height: the unit made
+ * in its place keeps the movement mode and the place it had
+ * (legacy:228969, legacy:226947), and comes down from there like any
+ * idle flyer. */
+TEST(a_flyer_taken_over_in_the_air_is_still_up) {
+    ASSERT_NOT_NULL(mv_world());
+    int harpy = mv_add_harpy();
+    ASSERT(harpy >= 0);
+    int h = Units_Spawn(harpy, 1, 0, 1000, 1500);
+    ASSERT(h >= 0);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    Units_OrderMove(h, 2600, 1500);
+    for (int t = 0; t < 600 && mv_unit(h)->flight_alt < 200.0f; t++)
+        Units_TickEngines();
+    ASSERT_EQ_INT(1, (int)mv_unit(h)->flying);
+    float alt = mv_unit(h)->flight_alt;
+    int n = Units_Capture(h, 2);
+    ASSERT(n >= 0);
+    printf("(up at %.0f, taken over at %.0f flying %d) ", (double)alt,
+           (double)mv_unit(n)->flight_alt, (int)mv_unit(n)->flying);
+    ASSERT_EQ_INT(1, (int)mv_unit(n)->flying);
+    ASSERT(mv_unit(n)->flight_alt >= alt - 1.0f);
+    Units_TickEngines();
+    ASSERT(mv_unit(n)->flight_alt >= alt - 10.0f);
+    mv_end();
+}
+
 /* Eight Harpies packed closer than their footprints patrol to one point
  * and back. On patrol they never land, so only the step outs part them
  * (legacy:26180, legacy:32733-32880): pairs that share cells in the air
@@ -2434,6 +2461,7 @@ int main(int argc, char **argv) {
     TEST_SUITE("Flyers");
     RUN(flyers_sent_to_one_place_do_not_stack);
     RUN(flyers_without_flight_scripts_part_and_land);
+    RUN(a_flyer_taken_over_in_the_air_is_still_up);
     RUN(a_patrolling_flock_spreads_out);
     RUN(flyers_side_by_side_step_apart);
     RUN(a_flyer_lands_clear_and_holds_its_ground);
