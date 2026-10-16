@@ -1062,7 +1062,8 @@ static void draw_features(const GameWorld *world, const float planes[6][4]) {
         if (fd->object[0]) {
             if (Fog_StateAt(world, mf->world_x, mf->world_y) == TAK_FOG_UNEXPLORED) continue;
             int c = (mf->color_idx >= 0 && mf->color_idx <= 11) ? mf->color_idx : 0;
-            const GpuModel *m = ModelStore_Get(fd->object, c);
+            const GpuModel *m = ModelStore_GetPainted(fd->object, c,
+                                                      Units_FeaturePaint(fd));
             if (!m) continue;
             float h = (float)Terrain_SampleHeight(world, mf->world_x, mf->world_y);
             float centre[3] = { (float)mf->world_x, h + m->height_px * 0.5f, (float)mf->world_y };

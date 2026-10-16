@@ -123,6 +123,8 @@ static int parse_feature_tdf(const char *vfs_path) {
                 f->resurrectable    = TDF_ReadInt(t, "resurrectable", 0);
                 f->animatable       = TDF_ReadInt(t, "animatable",    0);
                 f->is_building      = TDF_ReadInt(t, "isbuilding",    0);
+                f->is_stone  = (uint8_t)(TDF_ReadInt(t, "isstone",  0) & 1);
+                f->is_frozen = (uint8_t)(TDF_ReadInt(t, "isfrozen", 0) & 1);
                 /* Death and fire (legacy:127184-127401). sparktime is
                  * seconds, scaled by 30 into the original's frames and
                  * kept to 16 bits. */

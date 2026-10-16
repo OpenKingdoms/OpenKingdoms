@@ -34,6 +34,7 @@
 #include "tak_view.h"
 #include "tak_view3d.h"
 #include "tak_model_store.h"
+#include "tak_tex_atlas.h"
 #include "tak_sim_hash.h"
 #include "tak_gl3d.h"
 #include "tak_world.h"
@@ -2482,6 +2483,51 @@ TEST(the_3d_pointer_picks_a_flyer_where_it_is_drawn) {
 }
 
 /* An argument runs only the cases whose name contains it. */
+/* A statue is its unit's model with every face painted with its side's
+ * stone or ice, in both views (legacy:127100-127122,
+ * legacy:197875-197886). */
+static int painted_with(const UnitMesh *m, const GPU_Texture *tex) {
+    if (!m || m->batch_count <= 0) return 0;
+    for (int b = 0; b < m->batch_count; b++)
+        if (m->batches[b].atlas_tex != tex) return 0;
+    return 1;
+}
+
+TEST(a_statue_is_painted_with_its_sides_stone_or_ice) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int fz = Features_FindByName("arabow_frozen");
+    int fs = Features_FindByName("arabow_stone");
+    if (fz < 0 || fs < 0) {
+        SKIP_MARK("no statues in this data");
+        shutdown_all(&platform);
+        return;
+    }
+    const char *ice = Units_FeaturePaint(Features_GetByIndex(fz));
+    const char *stone = Units_FeaturePaint(Features_GetByIndex(fs));
+    SDL_FRect uv;
+    const GPU_Texture *ice_tex = ice ? TexAtlas_GetByName(ice, 0, &uv) : NULL;
+    UnitMesh *flat = Units_BakeObjectMeshPainted("arabow", 0, ice);
+    int flat_iced = painted_with(flat, ice_tex);
+    Units_FreeBakedMesh(flat);
+    int view3d = InGame_SetView3D(1) == 1;
+    const GpuModel *plain = view3d ? ModelStore_Get("arabow", 0) : NULL;
+    const GpuModel *iced = view3d ? ModelStore_GetPainted("arabow", 0, ice) : NULL;
+    int model_iced = iced && iced != plain && painted_with(iced->mesh, ice_tex);
+    shutdown_all(&platform);
+    ASSERT_NOT_NULL(ice);
+    ASSERT_NOT_NULL(stone);
+    ASSERT_EQ_STR("creonice", ice);
+    ASSERT_EQ_STR("basiliskstone", stone);
+    ASSERT_NOT_NULL(ice_tex);
+    ASSERT(flat_iced);
+    if (!view3d) SKIP_MARK("no GL context");
+    else ASSERT(model_iced);
+}
+
 #define RUN_NAMED(name) do { \
         if (argc < 2 || strstr(#name, argv[1])) RUN(name); \
     } while (0)
@@ -2527,6 +2573,7 @@ int main(int argc, char **argv) {
     RUN_NAMED(an_artists_piece_follows_the_script_by_name);
     RUN_NAMED(the_3d_view_stands_an_artists_model_where_a_sprite_feature_lies);
     RUN_NAMED(the_3d_view_draws_scenery_dying_and_burning);
+    RUN_NAMED(a_statue_is_painted_with_its_sides_stone_or_ice);
     RUN_NAMED(a_model_in_the_game_folder_is_found_without_a_data_folder);
     RUN_NAMED(a_unit_under_half_built_is_an_intangible_mass_in_3d);
     TEST_REPORT();

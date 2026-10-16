@@ -1416,7 +1416,14 @@ void              Units_RenderBuildGhostFacing(struct TAK_Platform *plat,
  * result and frees it with Units_FreeBakedMesh. NULL when the model is
  * missing. */
 UnitMesh         *Units_BakeObjectMesh(const char *object_name, int color_idx);
+/* The same with every face painted with one texture, a statue's. */
+UnitMesh         *Units_BakeObjectMeshPainted(const char *object_name,
+                                              int color_idx, const char *paint);
 void              Units_FreeBakedMesh(UnitMesh *m);
+/* The texture a stone or ice statue is painted with, NULL for any
+ * other feature. */
+struct FeatureDef;
+const char       *Units_FeaturePaint(const struct FeatureDef *fd);
 
 /* Compose every node's transform for a mesh from a unit's piece state,
  * or from rest when pieces is NULL. out holds m->node_count entries.

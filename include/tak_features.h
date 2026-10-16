@@ -51,6 +51,10 @@ typedef struct FeatureDef {
     int      resurrectable;   /* a raiser may target it (legacy:127369) */
     int      animatable;      /* an animator may target it (legacy:127372) */
     int      is_building;     /* isbuilding (legacy:127378) */
+    /* isstone and isfrozen: a statue, its model painted all over with
+     * its side's stone or ice (legacy:127377-127380, 211211-211215). */
+    uint8_t  is_stone;
+    uint8_t  is_frozen;
     /* `featuredead`: what this feature leaves behind when it is
      * destroyed. Kept as a name and resolved on use, because the
      * feature it names may load after this one (legacy:127524). */

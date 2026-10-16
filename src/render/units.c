@@ -7658,6 +7658,8 @@ typedef struct BakeState {
     int          batch_count;
     const uint32_t *palette;     /* terrain_rgba, color_idx -> RGBA */
     int          team_color_idx; /* 0..11; selects atlas variant */
+    /* A statue's paint: every face takes this texture (legacy:197875-197886). */
+    const char  *paint;
     /* Authored-order sequence: incremented per emitted triangle in
      * 3DO tree-walk order; written into UnitMesh.tri_seq. */
     uint32_t     seq_counter;
@@ -7702,8 +7704,9 @@ static void bake_discover(const Obj3DNode *n, BakeState *bs) {
 
         GPU_Texture *atlas = NULL;
         SDL_FRect uv = { 0, 0, 0, 0 };
-        if (prim->texture_name[0] != '\0') {
-            atlas = TexAtlas_GetByName(prim->texture_name, bs->team_color_idx, &uv);
+        const char *tex = bs->paint ? bs->paint : prim->texture_name;
+        if (tex[0] != '\0') {
+            atlas = TexAtlas_GetByName(tex, bs->team_color_idx, &uv);
         }
         int b = batch_find_or_add(bs, atlas, &uv);
         if (b < 0) continue;
@@ -7777,8 +7780,9 @@ static void bake_emit(const Obj3DNode *n,
 
         GPU_Texture *atlas = NULL;
         SDL_FRect uv_rect = { 0, 0, 0, 0 };
-        if (prim->texture_name[0] != '\0') {
-            atlas = TexAtlas_GetByName(prim->texture_name, bs->team_color_idx, &uv_rect);
+        const char *tex = bs->paint ? bs->paint : prim->texture_name;
+        if (tex[0] != '\0') {
+            atlas = TexAtlas_GetByName(tex, bs->team_color_idx, &uv_rect);
         }
         int b = batch_find_or_add(bs, atlas, &uv_rect);
         if (b < 0) continue;
@@ -7917,8 +7921,8 @@ static void bake_emit(const Obj3DNode *n,
     }
 }
 
-static UnitMesh *Mesh_Bake(const Obj3DFile *obj, const uint32_t *palette,
-                            int color_idx)
+static UnitMesh *Mesh_BakePainted(const Obj3DFile *obj, const uint32_t *palette,
+                                   int color_idx, const char *paint)
 {
     if (!obj || !obj->root) return NULL;
 
@@ -7926,6 +7930,7 @@ static UnitMesh *Mesh_Bake(const Obj3DFile *obj, const uint32_t *palette,
     memset(&bs, 0, sizeof(bs));
     bs.palette = palette;
     bs.team_color_idx = color_idx;
+    bs.paint = (paint && paint[0]) ? paint : NULL;
 
     /* Pass 1 — discover. Per-node selection-mesh skip via marker. */
     bake_discover(obj->root, &bs);
@@ -7991,6 +7996,11 @@ static UnitMesh *Mesh_Bake(const Obj3DFile *obj, const uint32_t *palette,
         m->batches[b].index_count = bs.tri_count_batch[b] * 3;
     }
     return m;
+}
+
+static UnitMesh *Mesh_Bake(const Obj3DFile *obj, const uint32_t *palette,
+                            int color_idx) {
+    return Mesh_BakePainted(obj, palette, color_idx, NULL);
 }
 
 static void Mesh_Free(UnitMesh *m) {
@@ -17885,6 +17895,21 @@ static float corpse_ground_height(const struct GameWorld *world,
     return (float)h;
 }
 
+/* The picture a statue is painted with: its side's stoneanim or
+ * frozenanim, the side found by the first three letters of its object,
+ * the first side when none matches (legacy:127100-127122). NULL for a
+ * feature that is no statue. */
+const char *Units_FeaturePaint(const FeatureDef *fd) {
+    if (!fd || (!fd->is_stone && !fd->is_frozen)) return NULL;
+    char prefix[4] = { 0 };
+    memcpy(prefix, fd->object, 3);
+    int side = Sides_FindByPrefix(prefix);
+    const TakSideInfo *si = Sides_Get(side >= 0 ? side : 0);
+    if (!si) return NULL;
+    const char *paint = fd->is_stone ? si->stoneanim : si->frozenanim;
+    return paint[0] ? paint : NULL;
+}
+
 static const UnitMesh *corpse_model_mesh(int feat_idx, int color_idx) {
     const FeatureDef *fd = Features_GetByIndex(feat_idx);
     if (!fd || !fd->object[0]) return NULL;
@@ -17916,7 +17941,8 @@ static const UnitMesh *corpse_model_mesh(int feat_idx, int color_idx) {
     }
     GameWorld *world = World_Get();
     const uint32_t *palette = world ? world->terrain_rgba : NULL;
-    UnitMesh *m = Mesh_Bake(obj, palette, color_idx);
+    UnitMesh *m = Mesh_BakePainted(obj, palette, color_idx,
+                                   Units_FeaturePaint(fd));
     Obj3D_Close(obj);
     if (!m) { ca->failed[color_idx] = 1; return NULL; }
     ca->mesh_per_color[color_idx] = m;
@@ -19567,6 +19593,11 @@ void Units_Render(const struct GameWorld *world, TAK_Platform *plat) {
 /* ── Accessors for a second view (tak_unit.h) ────────────────────── */
 
 UnitMesh *Units_BakeObjectMesh(const char *object_name, int color_idx) {
+    return Units_BakeObjectMeshPainted(object_name, color_idx, NULL);
+}
+
+UnitMesh *Units_BakeObjectMeshPainted(const char *object_name, int color_idx,
+                                      const char *paint) {
     if (!object_name || !object_name[0]) return NULL;
     if (color_idx < 0 || color_idx > 11) color_idx = 0;
     char obj_lc[TAK_UNITDEF_OBJ_MAX];
@@ -19576,7 +19607,8 @@ UnitMesh *Units_BakeObjectMesh(const char *object_name, int color_idx) {
     Obj3DFile *obj = NULL;
     if (Obj3D_Load(&obj, path) != 0 || !obj) return NULL;
     GameWorld *world = World_Get();
-    UnitMesh *m = Mesh_Bake(obj, world ? world->terrain_rgba : NULL, color_idx);
+    UnitMesh *m = Mesh_BakePainted(obj, world ? world->terrain_rgba : NULL,
+                                   color_idx, paint);
     Obj3D_Close(obj);
     return m;
 }

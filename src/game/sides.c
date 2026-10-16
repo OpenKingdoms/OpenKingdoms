@@ -80,6 +80,12 @@ static void sd_read_side(TDFFile *tdf, TakSideInfo *s) {
             TDF_ReadString(tdf, "resurrectsparklyanim", ""));
     sd_copy(s->buildpalette, sizeof(s->buildpalette),
             TDF_ReadString(tdf, "buildpalette", ""));
+    if (TDF_ReadString(tdf, "stonegaf", "")[0])
+        sd_copy(s->stoneanim, sizeof(s->stoneanim),
+                TDF_ReadString(tdf, "stoneanim", ""));
+    if (TDF_ReadString(tdf, "frozengaf", "")[0])
+        sd_copy(s->frozenanim, sizeof(s->frozenanim),
+                TDF_ReadString(tdf, "frozenanim", ""));
     s->music_track_count = sd_read_tracks(TDF_ReadString(tdf, "musictracks", ""),
                                           s->music_tracks, 16);
 }
