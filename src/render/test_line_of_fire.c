@@ -3291,7 +3291,6 @@ TEST(a_patrolling_builder_mends_what_it_passes_and_goes_on) {
  * where a bow does (legacy:21164, legacy:246390-246403, legacy:11383). */
 TEST(a_blade_never_strikes_a_flyer_in_the_air) {
     ASSERT_NOT_NULL(lf_world(0, 0));
-    ((UnitDef *)Units_GetDef(LF_HAWK))->script_flies = 1;
     int b = lf_spawn(LF_BLADEPICK, 1, LF_SX, LF_ROW);
     int bow = lf_spawn(LF_ARCHER, 1, LF_SX, LF_ROW + 200);
     int h = lf_spawn(LF_HAWK, 2, LF_SX + 80, LF_ROW);

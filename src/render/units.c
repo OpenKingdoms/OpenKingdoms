@@ -8332,8 +8332,6 @@ int Units_LoadDefsFor(int crusades_balance) {
         Cob_Load(&d.cob_script, cob_path);   /* NULL on miss — that's OK */
         d.script_launches = (uint8_t)cob_sets_launch_port(d.cob_script);
         if (d.script_launches) launchers++;
-        d.script_flies = d.cob_script &&
-                         Cob_FindScript(d.cob_script, "BeginFlight") >= 0;
         if (src) src[g_def_count] = paths[i];
         g_defs[g_def_count++] = d;
         g_def_gen++;
@@ -8582,9 +8580,8 @@ static void unit_occ_fp(const Unit *u, int *fx, int *fz) {
 
 static int unit_is_mobile_occupant(const Unit *u, const UnitDef *d) {
     if (!d) return 0;
-    /* A flyer holds its cells only once landed (legacy:218217-218250).
-     * One without the flight pair never lands and holds none. */
-    if (d->can_fly && (u->flying || !d->script_flies)) return 0;
+    /* A flyer holds its cells only once landed (legacy:218217-218250). */
+    if (d->can_fly && u->flying) return 0;
     return u->alive == UNIT_ALIVE_ACTIVE;
 }
 
@@ -12267,8 +12264,8 @@ static int64_t unit_body_gap_d2(const Unit *u, const Unit *t) {
 /* Air is a state, not a type. The original tests the target's current
  * movement mode (legacy:249578-249586): noairweapon refuses a unit
  * that is airborne, toairweapon refuses one that is not. A flyer on
- * the ground, or a ghost ship resting on the water, is a ground
- * target for a galley's cannon. */
+ * the ground, or a ghost ship at rest, is a ground target for a
+ * galley's cannon. */
 static int weapon_can_target_unit(const UnitWeapon *wp, const Unit *t) {
     if (!wp || !t) return 1;
     if (t->flying && wp->no_air_weapon) return 0;
@@ -12910,18 +12907,13 @@ static int unit_sfx_occupy_state(const Unit *u, const UnitDef *def,
  * the script's own watcher runs the wing loop while the occupy state
  * says airborne. The climb is part of the mover's 3D step toward the
  * cruise height (legacy:190500, :241337), so it runs at walking speed. */
-/* Airborne is a state the unit has to enter, and only through the
- * flight pair: BeginFlight flips the mission's mode from ground to air
- * (legacy:24117-24131) and only the landing path ever sets the ground
- * mode it flips from (legacy:24387). A unit whose script carries no
- * BeginFlight never runs that state machine and so never reads as
- * airborne. Seventeen of the twenty-two units with canfly have the
- * pair. The five without are the ghost ship, the two Taros priests,
- * the Veruna ball and the bird: they hover at their cruise height and
- * stay surface targets, which is why a war galley's cannon, a weapon
- * flagged noairweapon, can shell a ghost ship. */
+/* Every unit with canfly flies and lands. The flight missions follow
+ * the canfly bit alone (legacy:162986-162987), and BeginFlight flips the
+ * mode to air whether or not the script answers the call
+ * (legacy:24120-24131), so the five without the flight pair, the
+ * Veruna dirigible among them, take off and land like the rest. */
 static int unit_def_has_flight(const UnitDef *def) {
-    return def && def->can_fly && def->script_flies;
+    return def && def->can_fly;
 }
 
 /* D-026: a flyer that took off holds its weapons until it reaches its
@@ -12944,27 +12936,21 @@ static int unit_climbing(const Unit *u, const UnitDef *def) {
 
 static void flight_tick(Unit *u, const UnitDef *def, const GameWorld *w) {
     if (!def->can_fly) return;
-    float target;
-    if (!unit_def_has_flight(def)) {
-        u->flying = 0;
-        target = (float)def->cruise_alt;   /* hovers, never takes off */
-    } else {
-        /* Takeoff follows the original's missions: moving, and an
-         * ordered attack, lift the unit at once (legacy:25786). One
-         * that picked its own target stays down while it can already
-         * reach it (legacy:26770-26803). Once up it stays up until it
-         * runs out of orders and targets and finds clear ground to
-         * land on, which flyer_air_tick decides. */
-        int lift = (u->anim_state == UNIT_ANIM_MOVING) ||
-                   (u->cmd_kind != UNIT_CMD_NONE &&
-                    (u->cmd_kind != UNIT_CMD_ATTACK || u->attack_explicit));
-        if (!u->flying && lift) {
-            u->flying = 1;
-            unit_start_script(u, "BeginFlight", NULL, 0);
-            occ_sync_mobile((int)(u - g_units));   /* leaves its cells */
-        }
-        target = u->flying ? flyer_height(u, def) : 0.0f;
+    /* Takeoff follows the original's missions: moving, and an ordered
+     * attack, lift the unit at once (legacy:25786). One that picked its
+     * own target stays down while it can already reach it
+     * (legacy:26770-26803). Once up it stays up until it runs out of
+     * orders and targets and finds clear ground to land on, which
+     * flyer_air_tick decides. */
+    int lift = (u->anim_state == UNIT_ANIM_MOVING) ||
+               (u->cmd_kind != UNIT_CMD_NONE &&
+                (u->cmd_kind != UNIT_CMD_ATTACK || u->attack_explicit));
+    if (!u->flying && lift) {
+        u->flying = 1;
+        unit_start_script(u, "BeginFlight", NULL, 0);
+        occ_sync_mobile((int)(u - g_units));   /* leaves its cells */
     }
+    float target = u->flying ? flyer_height(u, def) : 0.0f;
     int occ = unit_sfx_occupy_state(u, def, w);
     if (u->sfx_occupy != occ) {
         int32_t arg = occ;
@@ -13418,15 +13404,15 @@ static int hover_attack_alt(const Unit *u, const UnitDef *def) {
 }
 
 /* A flyer with hoverattack attacks this way unless the weapon in hand
- * is `dropped` (legacy:30040-30052). One with the flight pair does once
- * it is up. A unit target must be one it can shoot at. */
+ * is `dropped` (legacy:30040-30052), once it is up. A unit target must
+ * be one it can shoot at. */
 static int hover_attacks(const Unit *u, const UnitDef *def, const Unit *t) {
     if (!def->can_fly || !def->hover_attack || def->num_weapons <= 0)
         return 0;
     const UnitWeapon *wp = &def->weapons[hover_slot(u, def)];
     if (wp->drop_key) return 0;
     if (t && !weapon_can_target_unit(wp, t)) return 0;
-    return u->flying || !unit_def_has_flight(def);
+    return u->flying;
 }
 
 static void hover_reset(Unit *u) {
@@ -15853,7 +15839,6 @@ int Units_DebugSetDefs(const UnitDef *defs, int count) {
         /* Owned resources are this module's to make, never the
          * caller's: a synthetic def has none. */
         g_defs[i].cob_script = NULL;
-        g_defs[i].script_flies = 0;
         g_defs[i].yardmap = NULL;
         for (int c = 0; c < 12; c++) g_defs[i].mesh_per_color[c] = NULL;
     }
@@ -15895,7 +15880,6 @@ int Units_DebugSetDefScript(int def_idx, const uint32_t *code, int words,
     if (d->cob_script) Cob_Free(d->cob_script);
     d->cob_script = cs;
     d->script_launches = (uint8_t)cob_sets_launch_port(cs);
-    d->script_flies = Cob_FindScript(cs, "BeginFlight") >= 0;
     g_def_gen++;
     return 0;
 }

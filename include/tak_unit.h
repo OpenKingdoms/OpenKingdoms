@@ -681,9 +681,6 @@ typedef struct UnitDef {
     /* The script releases the shot itself, by setting port 23 during
      * FireWeapon (legacy:223397-223400). Found by reading the script. */
     uint8_t  script_launches;
-    /* The script has BeginFlight, so the unit takes off and lands
-     * (legacy:24117). Found by reading the script. */
-    uint8_t  script_flies;
 
     /* COB script bundle (Phase D). Loaded eagerly per-def. */
     CobScript *cob_script;

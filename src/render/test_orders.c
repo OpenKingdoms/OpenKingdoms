@@ -2440,9 +2440,6 @@ TEST(the_computers_summons_site_is_one_no_unit_stands_on) {
 TEST(a_flyer_in_the_air_stands_on_no_site) {
     ASSERT_NOT_NULL(oq_world());
     int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
-    UnitDef *fd = (UnitDef *)Units_GetDef(OQ_FLYER);
-    ASSERT_NOT_NULL(fd);
-    fd->script_flies = 1;
     int f = Units_Spawn(OQ_FLYER, 1, 0, sx, sy);
     ASSERT(f >= 0);
     oq_lift(f, 1);
@@ -2459,9 +2456,6 @@ TEST(a_flyer_in_the_air_stands_on_no_site) {
 TEST(a_summons_under_a_flyer_in_the_air_goes_up_at_once) {
     ASSERT_NOT_NULL(oq_world());
     int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
-    UnitDef *fd = (UnitDef *)Units_GetDef(OQ_FLYER);
-    ASSERT_NOT_NULL(fd);
-    fd->script_flies = 1;
     int f = Units_Spawn(OQ_FLYER, 1, 0, sx, sy);
     int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx - 64, sy);
     ASSERT(f >= 0 && bd >= 0);

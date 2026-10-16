@@ -1242,19 +1242,13 @@ Format per entry:
   cell of an air layer. A second flyer over the cell goes on the
   holder's list and the holder on its, and the cell passes to one of
   them at random, so a third sees the holder and those on its list that
-  cover the cell (legacy:218336-218512). The five units with `canfly`
-  and no BeginFlight in their scripts, the ghost ship, the two Taros
-  priests, the Veruna ball and the bird, take no part. They hover as
-  surface units here, as before, and hold no ground cells. One smaller
-  difference goes with it. A move ends on its ring round the point as
+  cover the cell (legacy:218336-218512). One smaller difference goes
+  with it. A move ends on its ring round the point as
   clicked, where the original first moves the point onto its
   footprint's cell lattice, at most 8 px away (legacy:25075-25083).
 - Why: the pairs give the original's count for a pair and for a flock
   without an air layer in the world or a draw from the generator for
-  every shared cell. The five hoverers stay as the engine already had
-  them, which keeps their place as targets for weapons that cannot hit
-  the air. The original's missions switch them to air movement too
-  (legacy:24117-24134). The lattice step moves a point by less than the
+  every shared cell. The lattice step moves a point by less than the
   ring's smallest size.
 - Citation: the manual describes no rule for it. The original's rules
   are in docs/notes/2026-10-04-air-traffic.md.
@@ -1744,8 +1738,7 @@ Format per entry:
 
 - Change: a flyer that has taken off to attack or to move does not fire
   until it reaches its cruise height. A flyer that stays on the ground
-  fires from there as before, and one with no flight scripts, which
-  hovers at its cruise height from the start, is not affected.
+  fires from there as before.
 - Why: some flyers fire from a piece at or under their feet. The Zhon
   hunter's lightning leaves a point 5 px under her. Fired in the first
   ticks of her climb, the shot started under the ground and burst

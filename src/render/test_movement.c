@@ -1500,6 +1500,49 @@ TEST(flyers_sent_to_one_place_do_not_stack) {
     mv_end();
 }
 
+/* The Veruna dirigible has canfly and no BeginFlight in its script. It
+ * flies and lands like any flyer (legacy:162986-162987,
+ * legacy:24120-24131), so six sent to one point part in the air and come
+ * down on cells of their own. */
+TEST(flyers_without_flight_scripts_part_and_land) {
+    ASSERT_NOT_NULL(mv_world());
+    int harpy = mv_add_harpy();
+    ASSERT(harpy >= 0);
+    UnitDef defs[MV_DEF_COUNT + 2];
+    for (int i = 0; i <= MV_DEF_COUNT; i++) defs[i] = *Units_GetDef(i);
+    defs[MV_DEF_COUNT + 1] = defs[MV_DEF_COUNT];
+    strncpy(defs[MV_DEF_COUNT + 1].unitname, "TESTBALL",
+            sizeof(defs[0].unitname) - 1);
+    ASSERT_EQ_INT(MV_DEF_COUNT + 2, Units_DebugSetDefs(defs, MV_DEF_COUNT + 2));
+    int ball = MV_DEF_COUNT + 1;
+    #define MV_BALL_N 6
+    int h[MV_BALL_N];
+    for (int i = 0; i < MV_BALL_N; i++) {
+        h[i] = Units_Spawn(ball, 1, 0, 1000 + (i % 3) * 48, 1500 + (i / 3) * 48);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    for (int i = 0; i < MV_BALL_N; i++) Units_OrderMove(h[i], 2000, 1600);
+    int flew = 0;
+    for (int t = 0; t < 3600; t++) {
+        Units_TickEngines();
+        for (int i = 0; i < MV_BALL_N; i++) flew |= mv_unit(h[i])->flying;
+    }
+    int down = 0;
+    for (int i = 0; i < MV_BALL_N; i++) {
+        const Unit *u = mv_unit(h[i]);
+        if (!u->flying && u->flight_alt <= 0.0f) down++;
+    }
+    int rest = mv_flyer_overlaps(h, MV_BALL_N, NULL);
+    printf("(flew %d, %d of %d down, %d pairs share cells) ", flew, down,
+           MV_BALL_N, rest);
+    ASSERT_EQ_INT(1, flew);
+    ASSERT_EQ_INT(MV_BALL_N, down);
+    ASSERT_EQ_INT(0, rest);
+    #undef MV_BALL_N
+    mv_end();
+}
+
 /* Eight Harpies packed closer than their footprints patrol to one point
  * and back. On patrol they never land, so only the step outs part them
  * (legacy:26180, legacy:32733-32880): pairs that share cells in the air
@@ -1676,7 +1719,7 @@ TEST(a_ground_crowd_packs_as_it_did) {
 #define MV_ISLAND   120     /* the island's height, dry over the sea */
 #define MV_SHALLOW   60     /* wet, but above an amphibious flyer's floor */
 
-enum { MV_FLY_DRAG = MV_DEF_SEA_COUNT, MV_FLY_HUNT, MV_FLY_AMPH, MV_FLY_HOVER,
+enum { MV_FLY_DRAG = MV_DEF_SEA_COUNT, MV_FLY_HUNT, MV_FLY_AMPH,
        MV_FLY_COUNT };
 
 static void mv_fill_flyer(UnitDef *d, const char *name, int max_wd,
@@ -1714,14 +1757,11 @@ static GameWorld *mv_island(void) {
     mv_fill_flyer(&defs[MV_FLY_DRAG], "TESTDRAG", 0, 0);
     mv_fill_flyer(&defs[MV_FLY_HUNT], "TESTHUNT", 10000, 0);
     mv_fill_flyer(&defs[MV_FLY_AMPH], "TESTAMPH", 30, 1);
-    /* No flight pair: it hovers at its cruise height, as the ghost ship. */
-    mv_fill_flyer(&defs[MV_FLY_HOVER], "TESTHOVR", 10000, 0);
-    defs[MV_FLY_HOVER].cruise_alt = 50;
     if (Units_DebugSetDefs(defs, MV_FLY_COUNT) != MV_FLY_COUNT) return NULL;
     static const uint32_t ret[] = { 0x10065000u };
     static const char *const names[] = { "BeginFlight", "BeginLanding" };
     static const uint32_t offsets[] = { 0, 0 };
-    for (int d = MV_FLY_DRAG; d < MV_FLY_HOVER; d++)
+    for (int d = MV_FLY_DRAG; d < MV_FLY_COUNT; d++)
         if (Units_DebugSetDefScript(d, ret, 1, names, offsets, 2) != 0) return NULL;
     return w;
 }
@@ -1991,8 +2031,7 @@ TEST(a_flyer_never_lands_on_sea_it_had_not_explored) {
 }
 
 /* Over the sea a flyer cruises cruisealt over the water, not over the
- * sea floor, and one that hovers hovers over the surface
- * (legacy:190499-190507). Over land nothing changes. */
+ * sea floor (legacy:190499-190507). Over land nothing changes. */
 TEST(a_flyer_cruises_over_the_sea_not_the_sea_floor) {
     GameWorld *w = mv_island();
     ASSERT_NOT_NULL(w);
@@ -2008,12 +2047,6 @@ TEST(a_flyer_cruises_over_the_sea_not_the_sea_floor) {
     ASSERT(ground < MV_WATER);
     ASSERT(Units_DebugStandHeight(h) >= (float)(MV_WATER + 150));
     ASSERT((float)ground + Units_DrawnAlt(w, u) >= (float)(MV_WATER + 150));
-    int hov = Units_Spawn(MV_FLY_HOVER, 1, 0, 1200, 1500);
-    ASSERT(hov >= 0);
-    mv_run(120);
-    ASSERT(Units_DebugStandHeight(hov) >= (float)(MV_WATER + 50));
-    ASSERT((float)Terrain_SampleHeight(w, 1200, 1500) +
-           Units_DrawnAlt(w, mv_unit(hov)) >= (float)(MV_WATER + 50));
     /* On the island a landed flyer stands on the ground. */
     int down = Units_Spawn(MV_FLY_DRAG, 1, 0, 2600, 900);
     ASSERT(down >= 0);
@@ -2400,6 +2433,7 @@ int main(int argc, char **argv) {
     RUN(a_ground_crowd_packs_as_it_did);
     TEST_SUITE("Flyers");
     RUN(flyers_sent_to_one_place_do_not_stack);
+    RUN(flyers_without_flight_scripts_part_and_land);
     RUN(a_patrolling_flock_spreads_out);
     RUN(flyers_side_by_side_step_apart);
     RUN(a_flyer_lands_clear_and_holds_its_ground);
