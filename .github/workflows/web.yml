@@ -68,7 +68,7 @@ jobs:
           done
 
       - name: Build
-        run: cmake --build build-wasm --parallel --target tak-re test_trig test_sim_probe test_click_map test_camera3d
+        run: cmake --build build-wasm --parallel --target tak-re atlas-dec test_trig test_sim_probe test_click_map test_camera3d
 
       # The browser is one of the platforms a room holds together, so
       # it has to reach the same bits from the same arithmetic. The
@@ -154,6 +154,12 @@ jobs:
           cp web/counts.js web/privacy.html web/stats.html site/
           mkdir -p site/mods
           cp web/mods/registry.json web/mods/ok-registry-test-1.0.zip site/mods/
+          # The Asset Atlas, its decoders from this build, and the lists it
+          # reads: the remaster's models and the community notes.
+          cp web/atlas.html web/atlas.js web/atlas-3d.js web/atlas-app.js web/atlas-worker.js site/
+          cp build-wasm/src/atlas-dec.js build-wasm/src/atlas-dec.wasm site/
+          mkdir -p site/atlas
+          cp web/atlas/remaster.json web/atlas/community.json site/atlas/
           cp web/CNAME site/CNAME
           # Which deploy this is. The page carries it and version.txt
           # names the current one, so a cached or open page from an older
