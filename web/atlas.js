@@ -376,12 +376,8 @@
     return { units: units, features: features, title: title, replaceable: e.k === '3do' || features.length > 0 };
   }
 
-  /* Links each original model and feature picture to the remaster's model
-     for it, the way Stars of Darien looks one up (docs/STUDIO.md, Drop-in
-     models): a unit by its unit name then its model name, a feature by its
-     name, then its sequence name, then its model name. Sets e.rm to the
-     remaster entry's id, e.rmable when one could exist, and e.title. On a
-     remaster entry, e.orig lists the originals it stands for. */
+  /* Links originals to the remaster's model as Stars of Darien looks one up
+   (docs/STUDIO.md, Drop-in models). Sets rm, rmable and title, and orig. */
   function linkRemasters(entries, book, sodEntries) {
     var units = Object.create(null), feats = Object.create(null), byId = Object.create(null);
     (sodEntries || []).forEach(function (s) {
@@ -447,10 +443,8 @@
     return 'data/palettes/' + (k || 'gameart') + '.pcx';
   }
 
-  /* Where the picture an okPaint material names comes from, as the
-     remaster's engine finds it (ok_embed.c okx_sprite_by_name and
-     okx_texture_by_name): {seq, file, pcx, corner} for the page to find,
-     or null. */
+  /* Where an okPaint picture comes from, as ok_embed.c okx_sprite_by_name
+   and okx_texture_by_name find one, or null. */
   function paintSource(spec, book) {
     if (!spec || !spec.name) return null;
     var world = lower(spec.world);
@@ -491,10 +485,8 @@
     return lower(parts.filter(Boolean).join(' \u0001 '));
   }
 
-  /* Entries matching every word of the query and every filter. filters:
-     kind 'texture'|'model'|'', source 'official'|'custom'|'remaster'|'',
-     remaster 'has'|'needs'|'', rating 0..5 (at least), pkgs a set of
-     package keys or null. hay(e) and rate(e) come from the page. */
+  /* Entries with every word of q that pass the filters: kind, source,
+   remaster, rating, pkgs. */
   function search(entries, q, filters, hay, rate, pkgOf) {
     var words = tokens(q), f = filters || {};
     var out = [];
@@ -577,10 +569,8 @@
     return JSON.stringify({ okAtlasNotes: 1, exported: (now || new Date()).toISOString(), notes: out }, null, 1) + '\n';
   }
 
-  /* Merges incoming notes into mine. A note you do not have is added.
-     Where both have one, the text and the rating come from whichever was
-     edited later, and the tags of both are kept. Returns {notes, added,
-     changed}; mine is not touched. */
+  /* A note mine lacks is added, the later edit's text and rating win, and
+   tags are joined. Returns {notes, added, changed}, mine untouched. */
   function mergeNotes(mine, incoming) {
     var out = Object.create(null), added = 0, changed = 0, k;
     for (k in mine) out[k] = mine[k];
@@ -688,11 +678,8 @@
 
   /* ── GLB ──────────────────────────────────────────────────────────── */
 
-  /* A glTF binary from groups of triangles: [{name, node, pos (Float32Array
-     xyz in model space), uv, png (Uint8Array or null), color [r,g,b,a],
-     alpha}]. opts.nodes is the piece tree [{name, parent, t: [x,y,z]}],
-     each piece offset from its parent, so a 3DO keeps its pieces and their
-     names. opts.scale turns model units into the file's. */
+  /* A glTF binary from triangle groups, each a primitive on a piece of
+   opts.nodes, so a 3DO keeps its pieces and their names. */
   function writeGlb(groups, opts) {
     opts = opts || {};
     var scale = opts.scale || 1;

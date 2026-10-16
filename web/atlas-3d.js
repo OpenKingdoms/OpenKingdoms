@@ -77,10 +77,8 @@
     return n;
   }
 
-  /* A 3DO as the decoder baked it (atlas_dec.c atlas_3do): one group per
-     texture, flat colour faces in one group coloured from the palette.
-     textures maps a texture name to {w, h, rgba} or null; palette is 256
-     RGBA words as the decoder builds them. */
+  /* A 3DO as atlas_dec.c bakes it: a group a texture, flat faces coloured
+   from the palette. */
   function from3do(d, textures, palette) {
     var by = {}, order = [];
     for (var t = 0; t < d.tris; t++) {
@@ -153,10 +151,8 @@
     return [m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14]];
   }
 
-  /* Reads a glTF binary into a model. opts.scale turns its units into
-     world pixels (16 for Stars of Darien's cells, 1 for the engine's).
-     opts.image(bytes, mime) resolves a texture source. opts.paint(spec)
-     resolves the picture an okPaint material names, or null. */
+  /* A glTF binary as a model in world pixels (opts.scale), its pictures
+   by opts.image and okPaint ones by opts.paint. */
   function fromGlb(bytes, opts) {
     opts = opts || {};
     var parsed = readGlb(bytes);
@@ -259,10 +255,8 @@
     return { json: json, bin: bin };
   }
 
-  /* The picture an okPaint material asks for, made the way the remaster's
-     GlbLoader.Paint makes it: clear texels filled from their neighbours
-     when bleed, colour times gain, opaque unless alpha is mask, the outer
-     ring cleared for border. img is {w, h, rgba}, rows top down. */
+  /* An okPaint picture made as GlbLoader.Paint makes it: bleed, gain,
+   alpha and border. */
   function paintPicture(img, spec) {
     var w = img.w, h = img.h, n = w * h, src = img.rgba;
     var rgb = new Float32Array(n * 3), known = new Uint8Array(n), have = 0, i, c;

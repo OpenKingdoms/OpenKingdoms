@@ -249,10 +249,8 @@ function picture(key, path, fmt) {
   return { w: w, h: hh, rgba: rgba };
 }
 
-/* The first frame of a picture a remaster model is painted with, made as
-   the remaster's engine makes it (ok_embed.c paint_indices): the
-   palette's own colours, clear at the frame's clear index and, for a
-   texture, at the colour of its first texel. */
+/* A picture for painting a remaster model, made as ok_embed.c
+   paint_indices makes it. */
 function paintFrame(key, path, ei, pcx, corner) {
   var h = load(key, path);
   if (!h) return null;

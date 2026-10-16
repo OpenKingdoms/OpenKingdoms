@@ -364,7 +364,7 @@
   /* Opens a set of files: mounts them, indexes what is new or changed and,
      when the set is a whole game folder, prunes what is no longer there. */
   function useSource(src) {
-    if (S.busy) return Promise.resolve();
+    if (S.busy) { toast('Still reading the last folder. Try again when it is done.'); return Promise.resolve(); }
     S.busy = true;
     S.source = src;
     var painted = S.live.size > 0;
@@ -451,7 +451,9 @@
         S.indexes.set(p.key, ix);
         var stored = Object.assign({}, rec);
         S.pkgs.set(p.key, Object.assign(rec, { file: p.file, files: p.files }));
-        return Promise.all([DB.put('pkgs', p.key, stored), DB.put('index', p.key, ix), DB.delPrefix('thumbs', THUMB_V + ':' + p.key + '|')]);
+        /* A model drawn from now on finds this archive's textures. */
+        var tex = r.links.textures.length ? call('texmap', { map: texmap() }) : null;
+        return Promise.all([DB.put('pkgs', p.key, stored), DB.put('index', p.key, ix), DB.delPrefix('thumbs', THUMB_V + ':' + p.key + '|'), tex]);
       }, function (e) {
         toast(p.rel + ' could not be indexed: ' + e.message);
       }).then(function () {
