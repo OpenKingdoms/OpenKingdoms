@@ -3354,6 +3354,32 @@ TEST(a_flyer_on_the_ground_takes_off_before_it_shoots) {
     ASSERT_EQ_INT(1, flew);
 }
 
+/* A swordsman boarding a flying transport keeps walking to it once it
+ * lifts: the board order names a friend, which carries no weapon test
+ * (legacy:10505-10580). */
+TEST(a_blade_boards_a_flying_transport) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    UnitDef *td = (UnitDef *)Units_GetDef(LF_HAWK);
+    td->cap_flags |= UNIT_CAP_TRANSPORT;
+    td->transport_capacity = 4;
+    td->transport_distance = 150;
+    int t = lf_spawn(LF_HAWK, 1, LF_SX, LF_ROW);
+    int b = lf_spawn(LF_BLADEPICK, 1, LF_SX + 100, LF_ROW);
+    ASSERT(t >= 0 && b >= 0);
+    int one[1] = { t };
+    ASSERT_EQ_INT(1, Units_OrderLoadGroup(one, 1, b, 0));
+    int flew = 0, aboard = 0;
+    for (int i = 0; i < 600 && !aboard; i++) {
+        Units_TickEngines();
+        flew |= lf_unit(t)->flying;
+        aboard = lf_unit(b)->alive == UNIT_ALIVE_TRANSPORTED;
+    }
+    lf_end();
+    printf("(flew %d, aboard %d) ", flew, aboard);
+    ASSERT_EQ_INT(1, flew);
+    ASSERT_EQ_INT(1, aboard);
+}
+
 /* ── what the blast hook hears ─────────────────────────────────────── */
 
 TEST(a_rock_on_the_ground_tells_the_hook_where_and_whose) {
@@ -3843,6 +3869,7 @@ int main(int argc, char **argv) {
     RUN(a_patrolling_builder_mends_what_it_passes_and_goes_on);
     RUN(a_blade_never_strikes_a_flyer_in_the_air);
     RUN(a_flyer_on_the_ground_takes_off_before_it_shoots);
+    RUN(a_blade_boards_a_flying_transport);
     TEST_SUITE("An attack out of reach");
     RUN(an_attack_on_a_target_out_of_reach_is_kept);
     TEST_SUITE("The cell test");

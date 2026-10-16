@@ -14729,12 +14729,13 @@ static void Units_TickCombat(void) {
             /* Whatever put the target there, an order, a patrol's pick
              * or a return of fire, the weapon must still be able to hit
              * it: a flyer that takes off leaves a noair weapon's reach
-             * (legacy:249578-249586). Guard, repair, reclaim and load
-             * targets are friends and carry no such test. */
+             * (legacy:249578-249586). Guard, repair, reclaim, load and
+             * board targets are friends and carry no such test. */
             if (u->cmd_kind != UNIT_CMD_GUARD &&
                 u->cmd_kind != UNIT_CMD_REPAIR &&
                 u->cmd_kind != UNIT_CMD_RECLAIM &&
                 u->cmd_kind != UNIT_CMD_LOAD &&
+                u->cmd_kind != UNIT_CMD_BOARD &&
                 u->target >= 0 && u->target < g_unit_count && def->num_weapons > 0) {
                 int slot = u->weapon_slot;
                 if (slot < 0 || slot >= def->num_weapons) slot = 0;

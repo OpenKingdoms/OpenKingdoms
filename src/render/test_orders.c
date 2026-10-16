@@ -1750,8 +1750,7 @@ TEST(the_shift_overlay_draws_only_while_shift_is_held) {
     oq_end();
 }
 
-/* A flyer in the air, as its takeoff leaves it (test-only mutation).
- * The model has no script, so the next tick sets it down as a hoverer. */
+/* A flyer in the air, as its takeoff leaves it (test-only mutation). */
 static void oq_lift(int h, int flying) {
     Unit *u = (Unit *)oq_unit(h);
     u->flight_alt = 120.0f;
