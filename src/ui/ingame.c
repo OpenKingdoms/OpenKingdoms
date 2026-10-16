@@ -44,6 +44,7 @@
 #include "tak_view.h"
 #include "tak_view3d.h"
 #include "tak_view_shake.h"
+#include "tak_features.h"
 #include "tak_mission_script.h"
 #include "tak_briefing.h"
 #include "tak_music.h"
@@ -926,15 +927,38 @@ static void InGame_DrawView3DNotice(TAK_Platform *platform) {
 }
 
 /* A released drag box: with Load armed and one transport selected, a
- * pickup of every unit in it (legacy:238654-238692), else a box select. */
+ * pickup of every unit in it (legacy:238654-238692). With Clear armed,
+ * sweep every feature in the box: each unit in the selection makes its
+ * own choice per feature (raise if it can, reclaim otherwise). Without
+ * a command armed, box-select. */
 void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                       int shift_held) {
     GameWorld *world = World_Get();
     if (!world || !world->loaded) return;
-    if (HUD_GetCommandMode() == HUD_CMD_LOAD &&
+    int cmd = HUD_GetCommandMode();
+    if (cmd == HUD_CMD_LOAD &&
         TAK_Cmd_EmitLoadInRect(x0, y0, x1, y1, shift_held) >= 0) {
         if (shift_held) ig.shift_hold = 1;
         else HUD_ClearCommandMode();
+        return;
+    }
+    if (cmd == HUD_CMD_CLEAR) {
+        int32_t fx[256], fy[256];
+        int nf = Features_CollectSweepableInRect(world,
+                     x0, y0, x1, y1, fx, fy, 256);
+        for (int i = 0; i < nf; i++) {
+            int32_t gx = fx[i], gy = fy[i];
+            Units_GroundUnderPoint(fx[i], fy[i], &gx, &gy);
+            /* First command replaces the queue (or appends when shift
+             * is held); every subsequent one queues behind it so units
+             * work through the whole area. */
+            uint16_t q = (i > 0 || shift_held) ? TAK_CMD_ARG_QUEUE : 0;
+            TAK_Cmd_EmitSelection(TAK_CMD_RECLAIM_FEATURE,
+                                  gx, gy, -1, 0, q);
+        }
+        if (nf > 0) ig_play_order_ack(world, "default");
+        fprintf(stderr, "Sweep area: %d features\n", nf);
+        if (!shift_held) HUD_ClearCommandMode();
         return;
     }
     int n = Units_SelectInRect(x0, y0, x1, y1, shift_held);
