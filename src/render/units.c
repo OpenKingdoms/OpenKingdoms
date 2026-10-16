@@ -6910,7 +6910,9 @@ uint32_t Units_GetTeamColorRGBA(int idx) {
 static float    *g_scratch_xy    = NULL;
 static uint32_t *g_scratch_color = NULL;
 static float    *g_scratch_uv    = NULL;
-static float    *g_scratch_wz    = NULL;   /* per-vertex world Z, for depth sort */
+static float    *g_scratch_wy    = NULL;   /* per-vertex height over the map */
+/* 1 where a vertex of a unit standing in the sea lies under it. */
+static uint8_t  *g_scratch_wet   = NULL;
 /* Per-vertex legacy height key: whole model-space Y units, the same
  * quantity the legacy rasteriser interpolates and depth-tests
  * (legacy:197697). Base offset dropped, only the order matters. */
@@ -8020,23 +8022,26 @@ static int ensure_scratch(int need_verts, int need_idx) {
         float    *xy = (float *)tak_malloc(sizeof(float) * 2 * (size_t)new_cap);
         uint32_t *cl = (uint32_t *)tak_malloc(sizeof(uint32_t) * (size_t)new_cap);
         float    *uv = (float *)tak_malloc(sizeof(float) * 2 * (size_t)new_cap);
-        float    *wz = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
+        float    *wy = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
         float    *hk = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
-        if (!xy || !cl || !uv || !wz || !hk) {
+        uint8_t  *wt = (uint8_t *)tak_malloc((size_t)new_cap);
+        if (!xy || !cl || !uv || !wy || !hk || !wt) {
             if (xy) tak_free(xy);
             if (cl) tak_free(cl);
             if (uv) tak_free(uv);
-            if (wz) tak_free(wz);
+            if (wy) tak_free(wy);
             if (hk) tak_free(hk);
+            if (wt) tak_free(wt);
             return -1;
         }
         if (g_scratch_xy)    tak_free(g_scratch_xy);
         if (g_scratch_color) tak_free(g_scratch_color);
         if (g_scratch_uv)    tak_free(g_scratch_uv);
-        if (g_scratch_wz)    tak_free(g_scratch_wz);
+        if (g_scratch_wy)    tak_free(g_scratch_wy);
         if (g_scratch_hkey)  tak_free(g_scratch_hkey);
-        g_scratch_xy = xy; g_scratch_color = cl; g_scratch_uv = uv; g_scratch_wz = wz;
-        g_scratch_hkey = hk;
+        if (g_scratch_wet)   tak_free(g_scratch_wet);
+        g_scratch_xy = xy; g_scratch_color = cl; g_scratch_uv = uv; g_scratch_wy = wy;
+        g_scratch_hkey = hk; g_scratch_wet = wt;
         g_scratch_vcap = new_cap;
     }
     /* Node xform scratch — sized to the largest mesh seen. */
@@ -8070,7 +8075,8 @@ static void scratch_free(void) {
     if (g_scratch_xy)    { tak_free(g_scratch_xy);    g_scratch_xy    = NULL; }
     if (g_scratch_color) { tak_free(g_scratch_color); g_scratch_color = NULL; }
     if (g_scratch_uv)    { tak_free(g_scratch_uv);    g_scratch_uv    = NULL; }
-    if (g_scratch_wz)    { tak_free(g_scratch_wz);    g_scratch_wz    = NULL; }
+    if (g_scratch_wy)    { tak_free(g_scratch_wy);    g_scratch_wy    = NULL; }
+    if (g_scratch_wet)   { tak_free(g_scratch_wet);   g_scratch_wet   = NULL; }
     if (g_scratch_hkey)  { tak_free(g_scratch_hkey);  g_scratch_hkey  = NULL; }
     if (g_scratch_idx)        { tak_free(g_scratch_idx);        g_scratch_idx        = NULL; }
     if (g_scratch_tri)        { tak_free(g_scratch_tri);        g_scratch_tri        = NULL; }
@@ -16442,6 +16448,20 @@ int Units_FactoryBuildSpot(int factory_handle,
     return unit_factory_build_spot(f, out_x, out_y);
 }
 
+/* The sea level the run being transformed is tinted under, or 0 when
+ * no unit in it stands in the sea. */
+static float g_wet_sea = 0.0f;
+
+/* The underwater remap (the .blu table) darkens a colour toward the
+ * sea's green blue. All four sides' unit palettes carry the same table,
+ * which averages these three channel scales. */
+static uint32_t underwater_colour(uint32_t c) {
+    uint32_t r = ((c & 0xFFu) * 145u) >> 8;
+    uint32_t g = (((c >> 8) & 0xFFu) * 185u) >> 8;
+    uint32_t b = (((c >> 16) & 0xFFu) * 189u) >> 8;
+    return (c & 0xFF000000u) | r | (g << 8) | (b << 16);
+}
+
 /* Transform one unit's mesh into the scratch buffers at vertex offset
  * `v_off`: per-piece COB transform, heading rotation, projection, plus
  * the per-vertex height key the draw order needs. */
@@ -16475,6 +16495,12 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
      * (legacy:197442-197457). */
     if (u->cloaked) alpha_mul /= 2u;
 
+    /* A unit standing below the sea is drawn through the underwater
+     * remap wherever it lies under the surface (legacy:197018-197027). */
+    const float sea = (float)world->water_height;
+    const int wet = world->water_height > 0 && uh < sea;
+    if (wet) g_wet_sea = sea;
+
     /* Per-piece transforms for THIS unit. Animation gives each unit its
      * own piece state, so this is recomputed per unit. */
     compose_node_xforms(m, u->cob ? u->cob->pieces : NULL, g_scratch_node_xform);
@@ -16488,7 +16514,8 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
         if (x->hidden) {
             g_scratch_xy[2 * i + 0] = 0.0f;
             g_scratch_xy[2 * i + 1] = 0.0f;
-            g_scratch_wz[i]         = 0.0f;
+            g_scratch_wy[i]         = 0.0f;
+            g_scratch_wet[i]        = 0;
             g_scratch_hkey[i]       = 0.0f;
             g_scratch_color[i]      = 0;
             g_scratch_uv[2 * i + 0] = 0.0f;
@@ -16523,8 +16550,9 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
         const float wz = uz + rz * ta;
         g_scratch_xy[2 * i + 0] = wx - cam_x;
         g_scratch_xy[2 * i + 1] = wz - cam_y - wy * tilt;
-        g_scratch_wz[i]         = wz;
+        g_scratch_wy[i]         = wy;
         g_scratch_hkey[i]       = model_height_key(my);
+        g_scratch_wet[i]        = (uint8_t)(wet && wy <= sea);
         /* Colour is RGBA8888 little-endian (A in the high byte). */
         uint32_t c = m->colors[v];
         if (whiteout) c |= 0x00FFFFFFu;
@@ -16533,6 +16561,7 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
             a = (a * alpha_mul) / 255u;
             c = (c & 0x00FFFFFFu) | (a << 24);
         }
+        if (g_scratch_wet[i]) c = underwater_colour(c);
         g_scratch_color[i] = c;
         g_scratch_uv[2 * i + 0] = m->uvs[2 * v + 0];
         g_scratch_uv[2 * i + 1] = m->uvs[2 * v + 1];
@@ -16606,12 +16635,58 @@ static int g_submit_solid_white = 0;
 static void submit_intangible_mass(TAK_Platform *plat, const UnitMesh *m,
                                    const Unit *u, const UnitDef *def, int n_verts);
 
+/* A new vertex `t` of the way from `a` to `b`, in colour `c`. */
+static int split_vert(int n, int a, int b, float t, uint32_t c) {
+    g_scratch_xy[2 * n + 0] = g_scratch_xy[2 * a + 0] + t * (g_scratch_xy[2 * b + 0] - g_scratch_xy[2 * a + 0]);
+    g_scratch_xy[2 * n + 1] = g_scratch_xy[2 * a + 1] + t * (g_scratch_xy[2 * b + 1] - g_scratch_xy[2 * a + 1]);
+    g_scratch_uv[2 * n + 0] = g_scratch_uv[2 * a + 0] + t * (g_scratch_uv[2 * b + 0] - g_scratch_uv[2 * a + 0]);
+    g_scratch_uv[2 * n + 1] = g_scratch_uv[2 * a + 1] + t * (g_scratch_uv[2 * b + 1] - g_scratch_uv[2 * a + 1]);
+    g_scratch_color[n] = c;
+    return n;
+}
+
+/* Writes a triangle's indices at `w`, cut along the sea level when it
+ * crosses it so the part under the surface alone takes the underwater
+ * colour, the line the original's per pixel test draws. Cut vertices
+ * go at `*nv`. Returns the new index count. */
+static int emit_tri(int i0, int i1, int i2, int w, int *nv) {
+    const int v[3] = { i0, i1, i2 };
+    const int wet = g_scratch_wet[i0] + g_scratch_wet[i1] + g_scratch_wet[i2];
+    if (wet == 0 || wet == 3 || *nv + 4 > 65535 || *nv + 4 > g_scratch_vcap ||
+        w + 9 > g_scratch_icap) {
+        g_scratch_idx[w++] = (uint16_t)i0;
+        g_scratch_idx[w++] = (uint16_t)i1;
+        g_scratch_idx[w++] = (uint16_t)i2;
+        return w;
+    }
+    /* The one vertex alone on its side, then the other two in winding. */
+    int k = 0;
+    while ((g_scratch_wet[v[k]] != 0) == (wet == 2)) k++;
+    const int a = v[k], b = v[(k + 1) % 3], c = v[(k + 2) % 3];
+    const float ta = (g_wet_sea - g_scratch_wy[a]) / (g_scratch_wy[b] - g_scratch_wy[a]);
+    const float tc = (g_wet_sea - g_scratch_wy[a]) / (g_scratch_wy[c] - g_scratch_wy[a]);
+    /* A prim is one colour, so the dry end's colour is the dry side's. */
+    const uint32_t dry = g_scratch_wet[a] ? g_scratch_color[b] : g_scratch_color[a];
+    const uint32_t a_col = g_scratch_wet[a] ? underwater_colour(dry) : dry;
+    const uint32_t o_col = g_scratch_wet[a] ? dry : underwater_colour(dry);
+    const int pa = split_vert((*nv)++, a, b, ta, a_col);
+    const int qa = split_vert((*nv)++, a, c, tc, a_col);
+    const int po = split_vert((*nv)++, a, b, ta, o_col);
+    const int qo = split_vert((*nv)++, a, c, tc, o_col);
+    const uint16_t tris[9] = { (uint16_t)a,  (uint16_t)pa, (uint16_t)qa,
+                               (uint16_t)po, (uint16_t)b,  (uint16_t)c,
+                               (uint16_t)po, (uint16_t)c,  (uint16_t)qo };
+    memcpy(&g_scratch_idx[w], tris, sizeof(tris));
+    return w + 9;
+}
+
 static void emit_height_ordered(TAK_Platform *plat, const UnitMesh *m,
                                 int n_inst, int total_verts) {
     const int V = m->vert_count;
     int kept = build_unit_tri_list_ex(m, 0, n_inst == 1);
     if (kept > 1) qsort(g_scratch_tri, kept, sizeof(TriSort), tri_cmp_far_first);
     int s = 0;
+    int nv = total_verts;
     while (s < kept) {
         int e = s + 1;
         while (e < kept && g_scratch_tri[e].batch == g_scratch_tri[s].batch) e++;
@@ -16623,9 +16698,7 @@ static void emit_height_ordered(TAK_Platform *plat, const UnitMesh *m,
                 const int i1 = g_scratch_tri[t].i1 + v_off;
                 const int i2 = g_scratch_tri[t].i2 + v_off;
                 if (!tri_faces_camera(i0, i1, i2)) continue;
-                g_scratch_idx[w++] = (uint16_t)i0;
-                g_scratch_idx[w++] = (uint16_t)i1;
-                g_scratch_idx[w++] = (uint16_t)i2;
+                w = emit_tri(i0, i1, i2, w, &nv);
             }
         }
         if (w > 0) {
@@ -16633,7 +16706,7 @@ static void emit_height_ordered(TAK_Platform *plat, const UnitMesh *m,
                 g_submit_solid_white ? NULL
                     : m->batches[g_scratch_tri[s].batch].atlas_tex,
                 g_scratch_xy, g_scratch_color, g_scratch_uv,
-                total_verts, g_scratch_idx, w);
+                nv, g_scratch_idx, w);
         }
         s = e;
     }
@@ -16678,9 +16751,11 @@ static void submit_run(TAK_Platform *plat, const struct GameWorld *world,
         const int total_verts   = chunk_n * V;
         const int max_total_idx = chunk_n * m->tri_count * 3;
 
-        if (ensure_scratch(total_verts, max_total_idx) != 0) continue;
+        /* Room for the cuts along the sea level a wet run needs. */
+        if (ensure_scratch(total_verts + 2048, max_total_idx + 6144) != 0) continue;
 
         /* ── Transform every unit's verts into the merged buffer. ── */
+        g_wet_sea = 0.0f;
         for (int ci = 0; ci < chunk_n; ci++) {
             transform_unit_verts(m, world, &g_units[unit_indices[chunk_start + ci]],
                                  y_scale, ci * V);
@@ -17137,7 +17212,8 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
         if (x->hidden) {
             g_scratch_xy[2 * v + 0] = 0.0f;
             g_scratch_xy[2 * v + 1] = 0.0f;
-            g_scratch_wz[v]         = 0.0f;
+            g_scratch_wy[v]         = 0.0f;
+            g_scratch_wet[v]        = 0;
             g_scratch_hkey[v]       = 0.0f;
             g_scratch_color[v]      = 0;
             g_scratch_uv[2 * v + 0] = 0.0f;
@@ -17159,7 +17235,8 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
         const float wz = uz + rz * ta;
         g_scratch_xy[2 * v + 0] = wx - cam_x;
         g_scratch_xy[2 * v + 1] = wz - cam_y - wy * tilt;
-        g_scratch_wz[v]         = wz;
+        g_scratch_wy[v]         = wy;
+        g_scratch_wet[v]        = 0;
         g_scratch_hkey[v]       = model_height_key(my);
         /* Blend authored vertex colour with the tint and the ghost
          * alpha. RGB = mix(authored, tint, 0.5); A = authored.A * alpha255. */
@@ -17500,7 +17577,8 @@ static void submit_static_mesh_run(TAK_Platform *plat,
                 if (x->hidden) {
                     g_scratch_xy[2*i+0] = 0.0f;
                     g_scratch_xy[2*i+1] = 0.0f;
-                    g_scratch_wz[i]     = 0.0f;
+                    g_scratch_wy[i]     = 0.0f;
+                    g_scratch_wet[i]    = 0;
                     g_scratch_hkey[i]   = 0.0f;
                     g_scratch_color[i]  = 0;
                     g_scratch_uv[2*i+0] = 0.0f;
@@ -17527,7 +17605,8 @@ static void submit_static_mesh_run(TAK_Platform *plat,
                 const float wz = uz + rz * ta;
                 g_scratch_xy[2*i+0] = wx - cam_x;
                 g_scratch_xy[2*i+1] = wz - cam_y - wy * tilt;
-                g_scratch_wz[i]     = wz;
+                g_scratch_wy[i]     = wy;
+                g_scratch_wet[i]    = 0;
                 g_scratch_hkey[i]   = model_height_key(by);
                 g_scratch_color[i]  = m->colors[v];
                 g_scratch_uv[2*i+0] = m->uvs[2*v+0];
