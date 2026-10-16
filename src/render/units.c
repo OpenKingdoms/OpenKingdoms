@@ -3817,6 +3817,8 @@ static void order_fresh(Unit *u) {
     u->air_hold = 0;
     u->build_endless = 0;
     u->build_held = 0;
+    u->build_unseen = 0;
+    u->build_facing = 0;
     u->move_group = 0;
     u->move_paced = 0;
     u->face_mode = UNIT_FACE_NONE;
@@ -5717,10 +5719,21 @@ static int  unit_def_is_structure(const UnitDef *d);
 static void unit_occ_fp(const Unit *u, int *fx, int *fz);
 static int  unit_is_mobile_occupant(const Unit *u, const UnitDef *d);
 
+/* What a seat knows of a site, read at its centre: ground it never saw
+ * refuses it (0), and units are looked for only where it sees now (1),
+ * not under its fog (2). A viewer below 1 knows everything
+ * (legacy:218741-218768, 218797-218806). */
+static int site_seen(int viewer, int32_t wx, int32_t wy) {
+    const GameWorld *w = World_Get();
+    if (viewer < 1 || !w) return 1;
+    if (Fog_StateAtForPlayer(w, viewer, wx, wy) == TAK_FOG_UNEXPLORED) return 0;
+    return Fog_SeatSeesAt(w, viewer, wx, wy) ? 1 : 2;
+}
+
 /* The placement test at the cell the build would take. With walkers 0
  * a unit that walks, or its frame, does not refuse it. */
 static int build_site_test(int def_idx, int32_t wx, int32_t wy, int facing,
-                           int walkers) {
+                           int walkers, int viewer) {
     const UnitDef *d = Units_GetDef(def_idx);
     if (!d) return 0;
     facing = Units_DefFacing(def_idx, facing);
@@ -5746,6 +5759,8 @@ static int build_site_test(int def_idx, int32_t wx, int32_t wy, int facing,
     if (!site_ground_clear(world, d, yard, ycells, fx, fz, d->max_slope,
                            x0, y0))
         return 0;
+    int seen = site_seen(viewer, wx, wy);
+    if (!seen) return 0;
     /* A unit holds the cells nearest its centre, its footprint snapped
      * the way a building's is (legacy:184167), and the site is refused
      * only on a cell one holds (legacy:218800-218811). A unit beside the
@@ -5753,8 +5768,9 @@ static int build_site_test(int def_idx, int32_t wx, int32_t wy, int facing,
     int sc0 = x0 / 16, sc1 = sc0 + fx;
     int sr0 = y0 / 16, sr1 = sr0 + fz;
     int reach = unit_max_half_extent() + 16;
-    int nn = ugrid_candidates(x0 - reach, y0 - reach, x1 + reach, y1 + reach,
-                              g_site_near, TAK_MAX_UNITS);
+    int nn = seen == 1 ? ugrid_candidates(x0 - reach, y0 - reach, x1 + reach,
+                                          y1 + reach, g_site_near, TAK_MAX_UNITS)
+                       : 0;
     for (int k = 0; k < (nn < 0 ? g_unit_count : nn); k++) {
         const Unit *u = &g_units[nn < 0 ? k : g_site_near[k]];
         if (u->alive != 1) continue;
@@ -5794,7 +5810,13 @@ int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
  * 218185-218191, 218797-218811). */
 int Units_IsBuildSiteClearFacing(int def_idx, int32_t wx, int32_t wy, int facing) {
     return build_site_test(def_idx, wx, wy, facing,
-                           !build_def_walks(Units_GetDef(def_idx)));
+                           !build_def_walks(Units_GetDef(def_idx)), 0);
+}
+
+int Units_IsBuildSiteClearSeen(int def_idx, int32_t wx, int32_t wy, int facing,
+                               int viewer) {
+    return build_site_test(def_idx, wx, wy, facing,
+                           !build_def_walks(Units_GetDef(def_idx)), viewer);
 }
 
 int Units_IsBuildSiteFree(int def_idx, int32_t wx, int32_t wy) {
@@ -5804,7 +5826,7 @@ int Units_IsBuildSiteFree(int def_idx, int32_t wx, int32_t wy) {
 /* The frame goes up only where no unit stands (legacy:12088,
  * 219094-219160). */
 int Units_IsBuildSiteFreeFacing(int def_idx, int32_t wx, int32_t wy, int facing) {
-    return build_site_test(def_idx, wx, wy, facing, 1);
+    return build_site_test(def_idx, wx, wy, facing, 1, 0);
 }
 
 static int  unit_def_is_structure(const UnitDef *d);
@@ -6070,8 +6092,44 @@ static int builder_hold_summons(int h, int def_idx, int32_t x, int32_t y) {
     return 1;
 }
 
-int Units_OrderBuild(int builder_handle, int def_idx, int32_t world_x,
-                     int32_t world_y, int facing, int endless) {
+/* A site the builder's side does not see is walked to before it is
+ * judged, and the frame goes up there, as the original makes it only
+ * once its builder has arrived (legacy:12063-12124). An order there
+ * then tells the player nothing the cursor did not. */
+static int builder_hold_unseen(int h, int def_idx, int32_t x, int32_t y,
+                               int facing, int endless) {
+    Unit *u = order_unit(h);
+    const UnitDef *ud = u ? Units_GetDef(u->def_idx) : NULL;
+    const UnitDef *d = Units_GetDef(def_idx);
+    const GameWorld *w = World_Get();
+    if (!u || !ud || !d || !w || !(ud->cap_flags & UNIT_CAP_BUILDER) ||
+        !(ud->max_velocity > 0.0f))
+        return 0;
+    if (Fog_IsVisibleForPlayer(w, u->player_id, x, y)) return 0;
+    if (!build_site_test(def_idx, x, y, facing, !build_def_walks(d),
+                         u->player_id))
+        return 0;
+    order_fresh(u);
+    u->cmd_kind = UNIT_CMD_BUILD;
+    u->cmd_x = x;
+    u->cmd_y = y;
+    u->build_target = -1;
+    u->build_near_best = 0;
+    u->build_held = 1;
+    u->build_unseen = 1;
+    u->build_facing = (uint8_t)(facing & 3);
+    u->build_def = (int16_t)def_idx;
+    u->build_endless = (uint8_t)(endless && builder_may_summon(u, def_idx));
+    u->build_tries = 0;
+    u->build_wait = 0;
+    u->target = -1;
+    unit_set_build_goal_at(u, def_idx, x, y);
+    unit_clear_path(u);
+    return 1;
+}
+
+static int order_build_now(int builder_handle, int def_idx, int32_t world_x,
+                           int32_t world_y, int facing, int endless) {
     int held = 0;
     if (Units_BeginBuildingForUnitFacing(builder_handle, def_idx, world_x,
                                          world_y, facing) < 0) {
@@ -6090,6 +6148,34 @@ int Units_OrderBuild(int builder_handle, int def_idx, int32_t world_x,
         }
     }
     return 1;
+}
+
+int Units_OrderBuild(int builder_handle, int def_idx, int32_t world_x,
+                     int32_t world_y, int facing, int endless) {
+    if (builder_hold_unseen(builder_handle, def_idx, world_x, world_y, facing,
+                            endless))
+        return 1;
+    return order_build_now(builder_handle, def_idx, world_x, world_y, facing,
+                           endless);
+}
+
+/* A builder sent out of sight has reached its site: the order is given
+ * again there with the real test, and ends if that refuses it. */
+static void builder_unseen_arrive(Unit *u, int h, int in_reach) {
+    if (!in_reach) return;
+    int def = u->build_def, facing = u->build_facing, endless = u->build_endless;
+    int32_t x = u->cmd_x, y = u->cmd_y;
+    u->build_unseen = 0;
+    u->build_facing = 0;
+    u->build_held = 0;
+    u->build_endless = 0;
+    g_leg_taking = 1;
+    int ok = order_build_now(h, def, x, y, facing, endless);
+    g_leg_taking = 0;
+    if (!ok) {
+        u->cmd_kind = UNIT_CMD_NONE;
+        unit_clear_path(u);
+    }
 }
 
 /* ── Factory production queue + rally ───────────────────────────── */
@@ -6406,6 +6492,7 @@ static int builder_remove_builds(Unit *u, int def_idx, int count) {
         u->cmd_kind = UNIT_CMD_NONE;
         u->build_endless = 0;
         u->build_held = 0;
+        u->build_unseen = 0;
         u->target = -1;
         u->build_target = -1;
         u->cmd_x = u->world_x;
@@ -14225,6 +14312,7 @@ static void Units_TickCombat(void) {
         if (u->cmd_kind != UNIT_CMD_BUILD) {
             u->build_endless = 0;
             u->build_held = 0;
+            u->build_unseen = 0;
         }
 
         if (u->cmd_kind == UNIT_CMD_GUARD && u->target >= 0) {
@@ -14443,7 +14531,9 @@ static void Units_TickCombat(void) {
             int reach = !(def->max_velocity > 0.0f) ||
                         builder_in_reach(u, def, u->build_def, u->cmd_x,
                                          u->cmd_y);
-            builder_summon_next(u, i, reach);
+            if (u->build_held && u->build_unseen)
+                builder_unseen_arrive(u, i, reach);
+            else builder_summon_next(u, i, reach);
             /* While it waits it walks to the site (legacy:12063-12070). */
             if (u->cmd_kind == UNIT_CMD_BUILD && u->build_target < 0 &&
                 !reach) {

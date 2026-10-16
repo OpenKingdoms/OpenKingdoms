@@ -24,6 +24,7 @@
 #include "tak_memory.h"
 #include "tak_world.h"
 #include "tak_battle_config.h"
+#include "tak_fog.h"
 #include "tak_unit.h"
 #include "tak_command_emit.h"
 #include "tak_game_sound.h"
@@ -1845,8 +1846,10 @@ void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y,
              * the placing click will land. */
             Units_GroundUnderPoint(world_x, world_y, &world_x, &world_y);
             int facing = HUD_GetBuildFacing();
-            int valid = Units_IsBuildSiteClearFacing(g_build_def_idx, world_x,
-                                                     world_y, facing);
+            /* Judged by what the player sees, as the original's cursor
+             * is (legacy:39263-39305). */
+            int valid = Units_IsBuildSiteClearSeen(g_build_def_idx, world_x,
+                                                   world_y, facing, Fog_Viewer());
             g_ghost_x = world_x;
             g_ghost_y = world_y;
             g_ghost_valid = valid;

@@ -1361,12 +1361,11 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
                     /* The click is answered now
                      * (legacy:243684-243688), and a site the
                      * building cannot take answers no. That is the
-                     * same test the ghost is drawn with and the
-                     * same one the executor applies on its tick,
-                     * read here as presentation rather than as a
-                     * second authority: the order is still not
-                     * given until the tick runs it. */
-                    if (!Units_IsBuildSiteClearFacing(bdef, bx, by, facing)) {
+                     * test the ghost is drawn with, what the player
+                     * sees, read as presentation: the tick judges
+                     * the site for real. */
+                    if (!Units_IsBuildSiteClearSeen(bdef, bx, by, facing,
+                                                    Fog_Viewer())) {
                         GameSound_PlayUI("notoktobuild");
                         fprintf(stderr, "Build: site refused at (%d,%d)\n",
                                 bx, by);

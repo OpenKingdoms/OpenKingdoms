@@ -1023,6 +1023,11 @@ typedef struct Unit {
      * build_def goes up at cmd_x, cmd_y once they leave, looked for as
      * build_endless's next is (legacy:12088-12124). */
     uint8_t    build_held;
+    /* With build_held: a site its side did not see when ordered. The
+     * builder walks there first and the site is judged on arrival, the
+     * building turned to build_facing (legacy:12063-12124). */
+    uint8_t    build_unseen;
+    uint8_t    build_facing;
     /* Ticks left in the attack handler's wait, after which a fight it
      * took on for itself looks again (legacy:11485-11509). 0 when not
      * waiting. */
@@ -2113,6 +2118,12 @@ int               Units_IsBuildSiteClear(int def_idx,
 int               Units_IsBuildSiteClearFacing(int def_idx,
                                                 int32_t world_x, int32_t world_y,
                                                 int facing);
+/* The cursor's test as a seat knows the site: ground it never saw is
+ * refused, and units count only where it sees now (legacy:39263-39305,
+ * 218741-218806). A viewer below 1 sees everything. */
+int               Units_IsBuildSiteClearSeen(int def_idx,
+                                              int32_t world_x, int32_t world_y,
+                                              int facing, int viewer);
 /* The cursor's test above looks for units only on a building's cells.
  * A def that walks has an open yard and is placed over units
  * (legacy:163272-163292, 218800-218811). The frame itself goes up only
