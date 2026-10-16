@@ -779,7 +779,7 @@ static void draw_ground_pieces(const GameWorld *world, const float planes[6][4])
         float alpha = 1.0f;
         if (u->magic_death)
             alpha = (float)u->magic_death_fade / (float)UNIT_MAGIC_DEATH_TICKS;
-        if (u->cloaked) alpha *= 0.5f;
+        alpha *= (float)Units_DrawnAlpha(u) / 255.0f;
         if (body)
             draw_model_part(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0, 0,
                             (float)u->world_x, h, (float)u->world_y, u->heading, u->pitch, u->roll,
@@ -790,12 +790,16 @@ static void draw_ground_pieces(const GameWorld *world, const float planes[6][4])
     GL3D_SetDepthWrite(1);
 }
 
-static void draw_units(const GameWorld *world, const float planes[6][4]) {
+/* `see_through` picks the pass: the solid units, or the ghosts, which go
+ * last so whatever stands behind them shows through. */
+static void draw_units(const GameWorld *world, const float planes[6][4], int see_through) {
     int count = 0;
     const Unit *units = Units_GetActive(&count);
     for (int i = 0; i < count; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) continue;
+        const int drawn_alpha = Units_DrawnAlpha(u);
+        if ((drawn_alpha < 255) != see_through) continue;
         /* A frame's body shows past half built, its mass while it is
          * being built (legacy:197474-197489). */
         const int body = Units_NanoframeBodyShown(u);
@@ -809,12 +813,10 @@ static void draw_units(const GameWorld *world, const float planes[6][4]) {
         float h = (float)Terrain_SampleHeight(world, u->world_x, u->world_y) + Units_DrawnAlt(world, u);
         float c[3] = { (float)u->world_x, h + m->height_px * 0.5f, (float)u->world_y };
         if (!Camera3D_SphereInFrustum(planes, c, m->radius_px)) continue;
-        float alpha = 1.0f;
+        float alpha = (float)drawn_alpha / 255.0f;
         if (u->magic_death) {
-            alpha = (float)u->magic_death_fade / (float)UNIT_MAGIC_DEATH_TICKS;
+            alpha *= (float)u->magic_death_fade / (float)UNIT_MAGIC_DEATH_TICKS;
         }
-        /* See through while cloaked (legacy:197442-197457). */
-        if (u->cloaked) alpha *= 0.5f;
         const int part = View3D_GroundPiecesOf(def, m) ? V3_PART_STANDING : V3_PART_ALL;
         /* With no body the mass still blends over its front surface only. */
         if (!body) GL3D_SetColorWrite(0);
@@ -1553,11 +1555,12 @@ static void v3_render(const GameWorld *world, TAK_Platform *plat,
     draw_features(world, planes);
     draw_selection_rings(world);
     draw_cloak_rings(world);
-    draw_units(world, planes);
+    draw_units(world, planes, 0);
     draw_build_ghost(world);
     draw_effects(world, planes);
     draw_beams(world);
     draw_water(world);
+    draw_units(world, planes, 1);
     GL3D_EndFrame();
 
     double freq = (double)SDL_GetPerformanceFrequency();

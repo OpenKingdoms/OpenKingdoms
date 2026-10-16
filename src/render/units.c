@@ -1183,6 +1183,13 @@ float Units_DrawnAlt(const GameWorld *w, const Unit *u) {
     return unit_air_alt(w, u) + unit_float_lift(w, u);
 }
 
+/* A ghost and a cloaked unit both draw in the original's translucent
+ * mode (legacy:197442-197457). */
+int Units_DrawnAlpha(const Unit *u) {
+    const UnitDef *d = u ? Units_GetDef(u->def_idx) : NULL;
+    return u && (u->cloaked || (d && d->ghost)) ? 128 : 255;
+}
+
 float Units_DebugStandHeight(int handle) {
     if (handle < 0 || handle >= g_unit_count) return -1.0f;
     return unit_base_height(World_Get(), &g_units[handle]);
@@ -7118,6 +7125,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->floater        = TDF_ReadInt(tdf, "floater", 0);
     out->can_hover      = (uint8_t)(TDF_ReadInt(tdf, "canhover", 0) & 1);
     out->upright        = (uint8_t)(TDF_ReadInt(tdf, "upright", 0) & 1);
+    out->ghost          = (uint8_t)(TDF_ReadInt(tdf, "ghost", 0) & 1);
     out->amphibious     = (uint8_t)(TDF_ReadInt(tdf, "amphibious", 0) & 1);
     out->leash_length   = TDF_ReadInt(tdf, "maneuverleashlength", 0) & 0xffff;
     out->fire_at_will_random = (uint8_t)(TDF_ReadInt(tdf, "fireatwillrandom", 0) & 1);
@@ -16482,18 +16490,16 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
     const float cr = tak_cosf(u->roll),  sr = tak_sinf(u->roll);
     const int   V  = m->vert_count;
 
-    /* A body being built draws opaque or not at all (legacy:197474). */
-    uint32_t alpha_mul = 255;
+    /* A body being built draws opaque or not at all (legacy:197474).
+     * A ghost or a cloaked unit draws half see through. */
+    uint32_t alpha_mul = (uint32_t)Units_DrawnAlpha(u);
     /* The whiteout: the model rasterised as one solid block of white
      * (legacy:197033-197035) and blended out with the fade
      * (legacy:211265-211295). */
     const int whiteout = u->magic_death != 0;
     if (whiteout) {
-        alpha_mul = (uint32_t)u->magic_death_fade * 255u / UNIT_MAGIC_DEATH_TICKS;
+        alpha_mul = alpha_mul * u->magic_death_fade / UNIT_MAGIC_DEATH_TICKS;
     }
-    /* A cloaked unit draws see through for whoever sees it at all
-     * (legacy:197442-197457). */
-    if (u->cloaked) alpha_mul /= 2u;
 
     /* A unit standing below the sea is drawn through the underwater
      * remap wherever it lies under the surface (legacy:197018-197027). */

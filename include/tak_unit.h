@@ -485,6 +485,8 @@ typedef struct UnitDef {
      * hovers wades with its origin waterline under the sea. */
     uint8_t  can_hover;
     uint8_t  upright;
+    /* ghost (legacy:163076): drawn half see through (legacy:197442-197457). */
+    uint8_t  ghost;
     /* amphibious (legacy:162997): a flyer with it may land under water,
      * down to its maxwaterdepth (legacy:220103-220109). */
     uint8_t  amphibious;
@@ -1506,6 +1508,10 @@ void              Units_DebugSetAggro(int handle, int aggro_mode);
  * top of the sea for a flyer over water (legacy:190499-190507), and a
  * floater or wading hover unit at its waterline (legacy:234287-234330). */
 float             Units_DrawnAlt(const struct GameWorld *w, const Unit *u);
+
+/* How opaque a unit is drawn, 0..255: a ghost at half (legacy:197442-197457,
+ * legacy:372436-372441), or 255. */
+int               Units_DrawnAlpha(const Unit *u);
 
 /* Test hook: the height a unit stands at for the simulation, its shots
  * and the shots aimed at it. -1 for a bad handle. */
