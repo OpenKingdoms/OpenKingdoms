@@ -45,7 +45,7 @@
 
 /* ── Columns ──────────────────────────────────────────────────────────── */
 
-static const char *const k_page[]    = { "landing", "play", "mods", "leaderboard", "stats", "privacy", NULL };
+static const char *const k_page[]    = { "landing", "play", "mods", "leaderboard", "stats", "privacy", "atlas", NULL };
 static const char *const k_step[]    = { "visit", "files", "menu", "battle", "skirmish", "campaign", "multiplayer", NULL };
 static const char *const k_mode[]    = { "campaign", "skirmish", "multiplayer", "replay", "load", "editor", NULL };
 static const char *const k_mp[]      = { "host", "join", "dropin", "watch", "rejoin", NULL };
