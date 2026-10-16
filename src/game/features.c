@@ -359,6 +359,32 @@ int Features_FindAnimatableAt(const struct GameWorld *world,
     return find_offering_at(world, world_x, world_y, FEAT_WANT_ANIMATE);
 }
 
+int Features_CollectSweepableInRect(const struct GameWorld *world,
+                                    int32_t x0, int32_t y0,
+                                    int32_t x1, int32_t y1,
+                                    int32_t *out_x, int32_t *out_y,
+                                    int cap) {
+    if (!world || !world->features || cap <= 0) return 0;
+    if (x0 > x1) { int32_t t = x0; x0 = x1; x1 = t; }
+    if (y0 > y1) { int32_t t = y0; y0 = y1; y1 = t; }
+    int n = 0;
+    for (int i = 0; i < world->feature_count && n < cap; i++) {
+        const FeatureDef *fd =
+            Features_GetByIndex(world->features[i].global_idx);
+        if (!fd) continue;
+        if (!fd->reclaimable && !fd->resurrectable && !fd->animatable)
+            continue;
+        if (feat_instance_rotting(&world->features[i])) continue;
+        int32_t cx, cy;
+        if (Features_InstanceCentre(world, i, &cx, &cy) != 0) continue;
+        if (cx < x0 || cx > x1 || cy < y0 || cy > y1) continue;
+        out_x[n] = cx;
+        out_y[n] = cy;
+        n++;
+    }
+    return n;
+}
+
 int Features_InstanceCentre(const struct GameWorld *world, int idx,
                             int32_t *out_x, int32_t *out_y) {
     if (!world || !world->features) return -1;

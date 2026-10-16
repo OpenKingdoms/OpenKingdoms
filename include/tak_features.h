@@ -128,6 +128,15 @@ int  Features_FindResurrectableAt(const struct GameWorld *world,
 int  Features_FindAnimatableAt(const struct GameWorld *world,
                                int32_t world_x, int32_t world_y);
 
+/* Fill out_x/out_y with the centres of up to cap sweepable features
+ * (reclaimable, resurrectable, or animatable) in the world-pixel
+ * rectangle. Returns the count found. */
+int  Features_CollectSweepableInRect(const struct GameWorld *world,
+                                     int32_t x0, int32_t y0,
+                                     int32_t x1, int32_t y1,
+                                     int32_t *out_x, int32_t *out_y,
+                                     int cap);
+
 /* Delete instance `idx`. The array is compacted, so indices above idx
  * shift down by one and the cell stops blocking movement and drawing
  * from the next query on. Returns 0 on success. */
