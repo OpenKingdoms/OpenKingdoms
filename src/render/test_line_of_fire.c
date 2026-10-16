@@ -40,7 +40,8 @@ enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_HOLDER, LF_ROVER, LF_PICKER, LF_SEEKER, LF_SEEKFAR, LF_ROAMER,
        LF_FLYPICK, LF_BLADEPICK, LF_BROAD, LF_SWIRL, LF_CANNON, LF_TORCH,
        LF_SWEEPER, LF_BOMBER, LF_STURDY, LF_TWISTER, LF_TORNADO,
-       LF_ROVEROAM, LF_HAWK, LF_MASON, LF_FREEZER, LF_ICEMAN, LF_DEF_COUNT };
+       LF_ROVEROAM, LF_HAWK, LF_MASON, LF_FREEZER, LF_ICEMAN, LF_BREATHER,
+       LF_TURRET, LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
 #define LF_SX   800
@@ -376,6 +377,17 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
         memcpy(defs[LF_ICEMAN].body_quad, q, sizeof(q));
         defs[LF_ICEMAN].body_quad_set = 1;
     }
+    /* A flame breather that turns in place, and a turret on wheels
+     * that does not. */
+    lf_fill(&defs[LF_BREATHER], "TESTBREATH", 1.2f, 300);
+    defs[LF_BREATHER].turn_in_place_rate = 750.0f;
+    wp = lf_weapon(&defs[LF_BREATHER], "TESTBREATHW", "Line of Sight", 300, 255, 50);
+    strncpy(wp->subtype, "fire", sizeof(wp->subtype) - 1);
+    wp->los_kind = 2;
+    wp->is_los = 1;
+    wp->aim_tolerance = 1024;
+    lf_fill(&defs[LF_TURRET], "TESTTORTOISE", 1.2f, 300);
+    lf_weapon(&defs[LF_TURRET], "TESTTORTW", "Line of Sight", 500, 550, 40);
 
     FeatureDef fdefs[FD_COUNT];
     memset(fdefs, 0, sizeof fdefs);
@@ -2090,7 +2102,7 @@ static void lf_fog(GameWorld *w) {
  * see, the shooters let go of targets behind the ridge and go looking,
  * and the fog is state. Pinned, so every platform in CI has to
  * reach the same answer. */
-#define LF_FOG_VOLLEY_HASH 0x985c89b7u
+#define LF_FOG_VOLLEY_HASH 0x34747cb2u
 
 static uint32_t lf_fog_volley_hash(int *out_hurt) {
     GameWorld *w = lf_world(1, 1);
@@ -2643,9 +2655,9 @@ TEST(a_weapon_gives_the_attack_order_and_unitstandorders_the_stances) {
  * structure, a monarch, and a walker that cannot be frozen. */
 static const char LF_FBI_ICY[] =
     "[UNITINFO]\n{\n\tUnitName=FBIICY;\n\tbmcode=1;\n\tfrozen=ICYFROZEN;\n"
-    "\tstone=ICYSTONE;\n}\n"
+    "\tstone=ICYSTONE;\n\tturninplacerate=750;\n}\n"
     "[WEAPON1]\n{\n\tname=Freeze;\n\ttype=line of sight;\n"
-    "\tsubtype=turntofrozen;\n}\n";
+    "\tsubtype=turntofrozen;\n\taimtolerance=1024;\n}\n";
 static const char LF_FBI_FORT[] =
     "[UNITINFO]\n{\n\tUnitName=FBIFORT;\n\tbmcode=0;\n\tfrozen=FORTICE;\n}\n";
 static const char LF_FBI_LORD[] =
@@ -2685,6 +2697,8 @@ TEST(the_unit_file_names_its_statues_and_who_can_be_turned) {
     ASSERT_EQ_INT(0, icy.cant_be_frozen);
     ASSERT_EQ_INT(0, icy.cant_be_stoned);
     ASSERT_EQ_INT(UNIT_SPELL_FROZEN, icy.weapons[0].mind_control);
+    ASSERT(icy.turn_in_place_rate == 750.0f);
+    ASSERT_EQ_INT(1024, icy.weapons[0].aim_tolerance);
     ASSERT_EQ_INT(1, fort.cant_be_frozen);
     ASSERT_EQ_INT(1, fort.cant_be_stoned);
     ASSERT_EQ_INT(1, lord.cant_be_frozen);
@@ -2719,6 +2733,65 @@ TEST(a_freeze_beam_turns_a_walker_to_ice_and_passes_over_the_rest) {
     ASSERT_EQ_INT(0, hurt);
     ASSERT_EQ_INT(UNIT_ALIVE_DEAD, alive);
     ASSERT(statue >= 0);
+}
+
+/* The heading error of unit a off the bearing to unit t, 65536 a turn. */
+static int lf_facing_error(int a, int t) {
+    const Unit *u = lf_unit(a), *v = lf_unit(t);
+    float b = atan2f((float)(v->world_x - u->world_x), -(float)(v->world_y - u->world_y));
+    int e = ((int)(u->heading * 65536.0f / 6.2831853f) -
+             (int)(b * 65536.0f / 6.2831853f)) & 0xffff;
+    return e > 0x8000 ? 0x10000 - e : e;
+}
+
+/* A breather with its back to its target turns in place at its
+ * turninplacerate, 750 a frame, and breathes only once within its
+ * AimTolerance of 1024 (legacy:249301-249306, legacy:249365-249377). */
+TEST(a_breather_turns_onto_its_target_before_it_breathes) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int a = lf_spawn(LF_BREATHER, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_SX, LF_ROW + 150);
+    ASSERT(a >= 0 && t >= 0);
+    ((Unit *)lf_unit(a))->heading = 0.0f;
+    ASSERT(Units_OrderAttack(a, t));
+    int fired = -1, err_at_fire = -1, err_at_20 = -1;
+    for (int i = 0; i < 300 && fired < 0; i++) {
+        Units_TickEngines();
+        if (i == 20) err_at_20 = lf_facing_error(a, t);
+        if (lf_unit(t)->health < 1000) {
+            fired = i;
+            err_at_fire = lf_facing_error(a, t);
+        }
+    }
+    lf_end();
+    printf("(breathed at tick %d, %d off it then, %d off at tick 20) ",
+           fired, err_at_fire, err_at_20);
+    ASSERT(err_at_20 > 0x4000);
+    ASSERT(fired >= 80);
+    ASSERT(err_at_fire >= 0 && err_at_fire <= 1024);
+}
+
+/* A unit with no turninplacerate keeps its heading and lets its
+ * pieces aim, so it shoots what stands behind it without turning
+ * round (legacy:249301-249306). */
+TEST(a_unit_that_cannot_turn_in_place_shoots_without_turning) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int a = lf_spawn(LF_TURRET, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_SX, LF_ROW + 200);
+    ASSERT(a >= 0 && t >= 0);
+    ((Unit *)lf_unit(a))->heading = 0.0f;
+    ASSERT(Units_OrderAttack(a, t));
+    float most = 0.0f;
+    int hurt = 0;
+    for (int i = 0; i < 200; i++) {
+        Units_TickEngines();
+        float h = lf_unit(a)->heading;
+        if (fabsf(h) > most) most = fabsf(h);
+        if (lf_unit(t)->health < 1000) hurt = 1;
+    }
+    lf_end();
+    ASSERT(hurt);
+    ASSERT(most < 0.001f);
 }
 
 /* A unit holding position shoots what comes into reach and lets it go
@@ -3610,6 +3683,8 @@ int main(int argc, char **argv) {
     RUN(a_weapon_gives_the_attack_order_and_unitstandorders_the_stances);
     RUN(the_unit_file_names_its_statues_and_who_can_be_turned);
     RUN(a_freeze_beam_turns_a_walker_to_ice_and_passes_over_the_rest);
+    RUN(a_breather_turns_onto_its_target_before_it_breathes);
+    RUN(a_unit_that_cannot_turn_in_place_shoots_without_turning);
     RUN(a_unit_holding_position_does_not_chase);
     RUN(a_fight_of_its_own_looks_again_once_a_wait);
     RUN(a_unit_holding_position_or_ordered_never_looks_again);

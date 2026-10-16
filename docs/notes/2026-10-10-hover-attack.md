@@ -99,10 +99,15 @@ attack this way at once.
 - The point is kept as an offset from a unit target, so the flyer
   follows it as the original's move does. It is reached within 8 px,
   where the walk stops for it, not the original's 4 (D-039).
-  Between points the flyer is moving, and at its point it holds, faces
-  the target and attacks.
-- The weapon in hand fires whenever it is ready, its aim is done and the
-  target is in reach, on the move as well as at the point.
+  Between points the flyer is moving, and at its point it holds and
+  attacks.
+- With its weapons on a target in reach the flyer turns onto it at its
+  turnrate, and between points it moves straight at the next one
+  without turning away (legacy:249301-249306).
+- The weapon in hand fires whenever it is ready, its aim is done, the
+  target is in reach and the flyer faces it within the weapon's
+  AimTolerance, never more than 0x200 off (legacy:249365-249377), on
+  the move as well as at the point.
 - Firing, a shot landing without hurting the other side more than
   twice its own and reaching the point are kept as bits in
   `hover_events`, which stage 4 and stage 5 read and clear. Each shot's
@@ -137,12 +142,15 @@ Blast reaches 250 px, so one cast on the spot still takes a ring 200 px
 out, as it would in the original.
 
 The data free cases in `test_movement` give twelve Harpies on a still
-enemy 0.11 others within 50 px on average, 98% of the samples 170 to 240
-px from it, over six of the eight octants round it. A Harpy on a ground
-point from 600 px east holds 194 to 203 px east of it, and one following
-a walker fires 16 of its 20 shots on the move. A Harpy whose shots do a
-still post no harm flies round it 11 times in a minute of 29 shots, and
-one whose shots hurt it never does.
+enemy 0.39 others within 50 px on average, 93% of the samples 170 to 240
+px from it, over five of the eight octants round it. A Harpy on a ground
+point from 600 px east holds 202 to 205 px east of it, and one following
+a walker fires 11 of its 20 shots on the move. A Harpy whose shots do a
+still post no harm flies round it 14 times in a minute of 24 shots, and
+one whose shots hurt it never does. These are the numbers since the
+flyer has to face what it shoots (2026-10-16). Before, it fired whichever
+way it faced and they were 0.11, 98%, six octants, 194 to 203 px, 16 of
+20 and 11 times in 29 shots.
 
 ## Left out
 

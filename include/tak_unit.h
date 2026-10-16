@@ -200,6 +200,10 @@ typedef struct UnitWeapon {
     int32_t wander_max_variation;
     int32_t wander_step_fp;
     int32_t to_air_weapon;    /* toairweapon targeting flag */
+    /* AimTolerance: how far off its target a unit that turns to shoot
+     * may face and still fire, never under 0x200 (legacy:250064,
+     * legacy:249365-249377). */
+    int32_t aim_tolerance;
     int32_t no_air_weapon;    /* noairweapon targeting flag */
     int32_t no_radar;         /* noradar projectile/minimap flag */
     int32_t range;            /* world pixels */
@@ -524,6 +528,10 @@ typedef struct UnitDef {
     float    acceleration;
     float    brake_rate;
     float    turn_rate;
+    /* turninplacerate, the turn of a walker standing still. One with
+     * none never turns its body onto what it shoots (legacy:162866,
+     * legacy:249301-249306). */
+    float    turn_in_place_rate;
 
     /* Capability bitmask — drives which action buttons appear when
      * this unit is selected (legacy:150627+, where each bit of the
