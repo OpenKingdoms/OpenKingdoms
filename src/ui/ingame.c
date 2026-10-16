@@ -942,6 +942,25 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
         else HUD_ClearCommandMode();
         return;
     }
+    /* A drag with the broom sweeps the box between the ground under its
+     * two ends (legacy:238755-238767, legacy:243837-243841). */
+    if (HUD_GetCommandMode() == HUD_CMD_CLEAR) {
+        int32_t ax = x0, ay = y0, bx = x1, by = y1;
+        Units_GroundUnderPoint(x0, y0, &ax, &ay);
+        Units_GroundUnderPoint(x1, y1, &bx, &by);
+        int hw = (abs(bx - ax) / 2 + 15) / 16, hh = (abs(by - ay) / 2 + 15) / 16;
+        if (hw > 255) hw = 255;
+        if (hh > 255) hh = 255;
+        uint16_t q = shift_held ? (uint16_t)TAK_CMD_ARG_QUEUE : 0;
+        if (TAK_Cmd_EmitSelection(TAK_CMD_RECLAIM_FEATURE, (ax + bx) / 2,
+                                  (ay + by) / 2, -1,
+                                  (uint16_t)(hw << 8 | hh),
+                                  (uint16_t)(TAK_CMD_ARG_AREA | q)) >= 0) {
+            if (shift_held) ig.shift_hold = 1;
+            else HUD_ClearCommandMode();
+            return;
+        }
+    }
     int n = Units_SelectInRect(x0, y0, x1, y1, shift_held);
     /* Shift adds to the selection without a voice (legacy:237803). */
     if (n > 0 && !shift_held) ig_play_box_select_ack();

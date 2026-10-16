@@ -4002,7 +4002,9 @@ static int leg_takeable(const Unit *u, const UnitMoveLeg *leg) {
             return t >= 0 && unit_def_can_repair(d) &&
                    !unit_players_are_enemies(u->player_id, g_units[t].player_id);
         case UNIT_LEG_RECLAIM: return t >= 0 && (d->cap_flags & UNIT_CAP_RECLAIM);
-        case UNIT_LEG_SWEEP:   return mobile && (d->cap_flags & UNIT_CAP_RECLAIM);
+        case UNIT_LEG_SWEEP:
+        case UNIT_LEG_SWEEP_AREA:
+            return mobile && (d->cap_flags & UNIT_CAP_RECLAIM);
         case UNIT_LEG_RAISE:   return mobile;
         case UNIT_LEG_UNLOAD:  return (d->cap_flags & UNIT_CAP_TRANSPORT) != 0;
         case UNIT_LEG_BUILD:
@@ -4010,6 +4012,63 @@ static int leg_takeable(const Unit *u, const UnitMoveLeg *leg) {
         case UNIT_LEG_SPECIAL: return 1;
         default: return 0;
     }
+}
+
+/* A dragged sweep goes for the nearest thing in its box the unit can
+ * clear or raise, on ground its side has explored, and goes back to the
+ * head of the queue behind it. It ends when nothing is left, or when the
+ * nearest is the one it went for last and could not clear
+ * (legacy:12880-12927, legacy:220463-220540). */
+static int sweep_area_take(int h, const UnitMoveLeg *leg) {
+    Unit *u = &g_units[h];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    GameWorld *w = World_Get();
+    if (!d || !w || !w->features) return 0;
+    int32_t hw = (int32_t)((leg->heading >> 8) & 0xffu) * 16;
+    int32_t hh = (int32_t)(leg->heading & 0xffu) * 16;
+    int raise = (d->cap_flags & UNIT_CAP_RESURRECT) != 0;
+    int animate = (d->cap_flags & UNIT_CAP_ANIMATE) && d->animate_type[0];
+    int best = -1;
+    int64_t best_d2 = 0;
+    int32_t bx = 0, by = 0;
+    for (int i = 0; i < w->feature_count; i++) {
+        const struct MapFeature *mf = &w->features[i];
+        const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+        if (!fd || mf->sink_ticks > 0) continue;
+        if (!fd->reclaimable && !(raise && fd->resurrectable) &&
+            !(animate && fd->animatable))
+            continue;
+        int fpx = 1, fpz = 1;
+        Features_InstanceFootprint(w, i, &fpx, &fpz);
+        int32_t x0 = (int32_t)mf->tile_x * 16, y0 = (int32_t)mf->tile_z * 16;
+        if (x0 >= leg->x + hw || x0 + fpx * 16 <= leg->x - hw ||
+            y0 >= leg->y + hh || y0 + fpz * 16 <= leg->y - hh)
+            continue;
+        int32_t cx = x0 + fpx * 8, cy = y0 + fpz * 8;
+        if (w->cfg.line_of_sight &&
+            Fog_StateAtForPlayer(w, u->player_id, cx, cy) == TAK_FOG_UNEXPLORED)
+            continue;
+        int64_t dx = (int64_t)cx - u->world_x, dy = (int64_t)cy - u->world_y;
+        if (best < 0 || dx * dx + dy * dy < best_d2) {
+            best = i;
+            best_d2 = dx * dx + dy * dy;
+            bx = cx;
+            by = cy;
+        }
+    }
+    if (best < 0) return 0;
+    uint32_t last = UNIT_LEG_AREA_LAST |
+                    ((uint32_t)w->features[best].tile_x << 12) |
+                    (uint32_t)w->features[best].tile_z;
+    if (leg->target == last) return 0;
+    if (!Units_OrderReclaimFeature(h, bx, by, -1)) return 0;
+    if (u->leg_count < UNIT_MOVE_LEGS_MAX) {
+        memmove(&u->legs[1], &u->legs[0], sizeof u->legs[0] * u->leg_count);
+        u->legs[0] = *leg;
+        u->legs[0].target = last;
+        u->leg_count++;
+    }
+    return 1;
 }
 
 /* Carry a leg out now, through the same order a command without Shift
@@ -4046,6 +4105,9 @@ static int unit_take_leg(int h, const UnitMoveLeg *leg) {
             break;
         case UNIT_LEG_SWEEP:
             ok = Units_OrderReclaimFeature(h, leg->x, leg->y, t);
+            break;
+        case UNIT_LEG_SWEEP_AREA:
+            ok = sweep_area_take(h, leg);
             break;
         case UNIT_LEG_RAISE:
             ok = Units_OrderResurrectFeature(h, leg->x, leg->y);

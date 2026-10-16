@@ -698,6 +698,50 @@ TEST(soldiers_with_no_orders_step_off_to_spots_of_their_own) {
     ASSERT_EQ_INT(0, on_pad);
 }
 
+static int32_t oq_drawn_y(GameWorld *w, int32_t x, int32_t y, float up);
+
+/* A drag with the broom clears every tree in the box, one after the
+ * other, and leaves the one outside it (legacy:238755-238767,
+ * legacy:12880-12927). */
+TEST(a_drag_with_the_broom_clears_the_box) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    FeatureDef fd;
+    memset(&fd, 0, sizeof fd);
+    strncpy(fd.name, "TESTTREE", sizeof(fd.name) - 1);
+    strncpy(fd.category, "trees", sizeof(fd.category) - 1);
+    fd.footprint_x = 1;
+    fd.footprint_z = 1;
+    fd.height = 60;
+    fd.blocking = 1;
+    fd.reclaimable = 1;
+    fd.damage = 100;
+    ASSERT_EQ_INT(1, Features_DebugSetDefs(&fd, 1));
+    static const int cells[5][2] = { {70, 60}, {72, 60}, {70, 62}, {72, 62}, {90, 60} };
+    for (int k = 0; k < 5; k++)
+        ASSERT(Features_AddInstance(w, 0, cells[k][0], cells[k][1],
+                                    cells[k][0] * 16 + 8, cells[k][1] * 16 + 8,
+                                    0, -1) >= 0);
+    ((UnitDef *)Units_GetDef(OQ_BUILDER))->cap_flags |= UNIT_CAP_RECLAIM;
+    int b = Units_Spawn(OQ_BUILDER, 1, 0, 66 * 16, 61 * 16);
+    ASSERT(b >= 0);
+    Units_SelectSingle(b);
+    HUD_SetCommandMode(HUD_CMD_CLEAR);
+    InGame_WorldDrag(68 * 16, oq_drawn_y(w, 68 * 16, 58 * 16, 0.0f),
+                     75 * 16, oq_drawn_y(w, 75 * 16, 64 * 16, 0.0f), 0);
+    int left = 5, at = -1;
+    for (int t = 0; t < 12000 && left > 1; t++) {
+        oq_ticks(1);
+        left = w->feature_count;
+        at = t;
+    }
+    int outside = w->feature_count == 1 && w->features[0].tile_x == 90;
+    oq_end();
+    printf("(%d left after %d ticks) ", left, at);
+    ASSERT_EQ_INT(1, left);
+    ASSERT_EQ_INT(1, outside);
+}
+
 /* A queued order carries a def only when it is a building, so what a
  * save keeps is what the hash counts. */
 TEST(a_queued_move_carries_no_def) {
@@ -2525,6 +2569,7 @@ int main(int argc, char **argv) {
     RUN(a_barracks_refuses_a_building_on_its_queue);
     RUN(a_soldier_lost_on_the_pad_is_not_trained_again);
     RUN(soldiers_with_no_orders_step_off_to_spots_of_their_own);
+    RUN(a_drag_with_the_broom_clears_the_box);
     RUN(a_queued_move_carries_no_def);
     RUN(ctrl_changes_the_order_in_hand_and_keeps_the_queue);
     RUN(a_cancelled_frame_frees_its_site);
