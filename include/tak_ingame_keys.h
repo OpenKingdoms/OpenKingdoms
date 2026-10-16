@@ -37,7 +37,8 @@ void InGame_ApplySpeedKeys(const uint8_t *keys, const uint8_t *prev);
  * Returns the quarter turns to make, 1, -1, or 0 for none. */
 int  InGame_TurnKey(const uint8_t *keys, const uint8_t *prev, int view3d);
 
-/* Tab, while watching a match. Alt is left to the debug tools. */
+/* Tab: the full screen radar for a player, the next view for a watcher.
+ * Alt is left to the debug tools. */
 int  InGame_WatchKey(const uint8_t *keys, const uint8_t *prev);
 
 /* The view a watcher's Tab moves to: from the whole map to the first

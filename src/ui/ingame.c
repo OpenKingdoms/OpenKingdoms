@@ -1627,8 +1627,12 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
      * first (legacy:243003-243004). */
     if (has_focus && IG_PRESSED(SDL_SCANCODE_ESCAPE)) ig_cancel();
     int ig_alt = keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT];
-    if (has_focus && TAK_Match_IsWatching() && InGame_WatchKey(keys, ig.prev_keys))
-        ig_watch_next(world);
+    /* Keys.TDF binds Tab to fsr, the full screen radar, which toggles
+     * (legacy:208746-208770). A watcher's Tab walks the views. */
+    if (has_focus && InGame_WatchKey(keys, ig.prev_keys)) {
+        if (TAK_Match_IsWatching()) ig_watch_next(world);
+        else Minimap_SetLarge(!Minimap_IsLarge());
+    }
 
     /* Game speed, one step per press (legacy:131808-131825). The
      * bindings live in ingame_keys.c so a test can press them. */
@@ -1983,7 +1987,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         int mx = 0, my = 0;
         if (platform->has_focus) SDL_GetMouseState(&mx, &my);
         int32_t hover_x = 0, hover_y = 0;
-        int over_world = platform->has_focus &&
+        int over_world = platform->has_focus && !Minimap_IsLarge() &&
                          !HUD_HitTest(mx, my, platform) &&
                          ig_view()->pointer_to_world(world, platform, mx, my,
                                                      &hover_x, &hover_y);
@@ -2117,7 +2121,9 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      *     on terrain = move (legacy default-cursor behaviour).
      *   - Right-click: cancel command mode if active, else deselect. */
     int32_t world_click_x = 0, world_click_y = 0;
-    if (platform->has_focus && !dp_active && !HUD_HitTest(wx, wy, platform) &&
+    /* The large radar covers the battle, and takes its clicks above. */
+    if (platform->has_focus && !dp_active && !Minimap_IsLarge() &&
+        !HUD_HitTest(wx, wy, platform) &&
         ig_view()->pointer_to_world(world, platform, wx, wy,
                                     &world_click_x, &world_click_y)) {
 
