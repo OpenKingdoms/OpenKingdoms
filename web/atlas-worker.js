@@ -350,8 +350,9 @@ function render3d(model, size) {
   }
   if (!thumbGl) return null;
   thumbCanvas.width = thumbCanvas.height = size;
-  thumbGl.view.yaw = -0.4;
-  thumbGl.view.pitch = 0.55;
+  var v = G.thumbView(model, -0.4, 0.55);
+  thumbGl.view.yaw = v.yaw;
+  thumbGl.view.pitch = v.pitch;
   thumbGl.view.zoom = 1.15;
   thumbGl.draw([model], { grid: false, background: [0.16, 0.16, 0.17] });
   var out = encode(thumbCanvas);

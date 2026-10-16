@@ -301,6 +301,29 @@
     return { w: w, h: h, rgba: out };
   }
 
+  /* The camera turn a thumbnail takes: the usual three quarter view, unless
+     that sees a flat model such as a card nearly edge on. */
+  function thumbView(model, yaw, pitch) {
+    function seen(y, p) {
+      var d = [Math.cos(p) * Math.sin(y), Math.sin(p), Math.cos(p) * Math.cos(y)], a = 0;
+      model.groups.forEach(function (g) {
+        for (var i = 0; i < g.pos.length; i += 9) {
+          var e1 = [g.pos[i + 3] - g.pos[i], g.pos[i + 4] - g.pos[i + 1], g.pos[i + 5] - g.pos[i + 2]];
+          var e2 = [g.pos[i + 6] - g.pos[i], g.pos[i + 7] - g.pos[i + 1], g.pos[i + 8] - g.pos[i + 2]];
+          a += Math.abs(dot(cross(e1, e2), d));
+        }
+      });
+      return a;
+    }
+    var best = { yaw: yaw, pitch: pitch, a: seen(yaw, pitch) }, base = best.a;
+    for (var k = 0; k < 8; k++)
+      [0.15, 0.55, 1.1].forEach(function (p) {
+        var y = k * Math.PI / 4, a = seen(y, p);
+        if (a > best.a) best = { yaw: y, pitch: p, a: a };
+      });
+    return base >= best.a * 0.35 ? { yaw: yaw, pitch: pitch } : { yaw: best.yaw, pitch: best.pitch };
+  }
+
   /* ── the renderer ───────────────────────────────────────────────────── */
 
   var VS = [
@@ -532,6 +555,7 @@
     flatNormals: flatNormals,
     bounds: bounds,
     renderer: renderer,
+    thumbView: thumbView,
     mul: mul,
     perspective: perspective,
     lookAt: lookAt
