@@ -514,8 +514,10 @@
     function release(model) {
       if (!model) return;
       model.groups.forEach(function (g) {
-        if (g._buf && g._gl === gl) ['pos', 'nrm', 'uv', 'col'].forEach(function (k) { if (g._buf[k]) gl.deleteBuffer(g._buf[k]); });
-        g._buf = null;
+        if (g._buf && g._gl === gl) {
+          ['pos', 'nrm', 'uv', 'col'].forEach(function (k) { if (g._buf[k]) gl.deleteBuffer(g._buf[k]); });
+          g._buf = null;
+        }
         [g.tex, g.emTex].forEach(function (s) {
           var c = s && textures.get(s);
           if (c) { gl.deleteTexture(c.t); textures.delete(s); }

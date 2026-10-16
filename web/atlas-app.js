@@ -367,6 +367,7 @@
     if (S.busy) return Promise.resolve();
     S.busy = true;
     S.source = src;
+    var painted = S.live.size > 0;
     var found = packagesFrom(src.files);
     if (!found.size) {
       S.busy = false;
@@ -401,6 +402,10 @@
       return sendOrder().then(function () { return indexAll(todo); });
     }).then(function () {
       S.busy = false;
+      /* The remaster's pictures drawn before now are unpainted. */
+      if (!painted && S.sod) S.sod.entries.forEach(function (e) {
+        if (thumbUrl.has(e.id)) { URL.revokeObjectURL(thumbUrl.get(e.id)); thumbUrl.delete(e.id); }
+      });
       rebuild();
       return sendOrder();
     }).then(function () {
@@ -698,7 +703,8 @@
   function gridScrollTop(v) { if (grid) grid.scrollTop = v; }
   function measure() {
     var inner = grid.clientWidth - 16;
-    var cols = Math.max(1, Math.floor(inner / S.cell));
+    var cell = narrow.matches ? Math.min(S.cell, Math.floor(inner / 3)) : S.cell;
+    var cols = Math.max(1, Math.floor(inner / cell));
     var w = inner / cols;
     layout = { cols: cols, w: w, rowH: Math.round(w - 8 + 50) };
   }
@@ -801,12 +807,13 @@
       cells.forEach(function (c) { var e = S.byId.get(c.dataset.id); if (e && !thumbUrl.has(e.id) && !thumbMiss.has(e.id)) shown.push(e); });
       var look = shown.filter(function (e) { return !dbChecked.has(e.id); });
       look.forEach(function (e) { dbChecked.add(e.id); });
-      DB.many('thumbs', look.map(function (e) { return THUMB_V + ':' + e.id; })).then(function (blobs) {
+      DB.many('thumbs', look.map(thumbKey)).then(function (blobs) {
         look.forEach(function (e, i) { if (blobs[i]) setThumb(e.id, URL.createObjectURL(blobs[i])); });
         var ask = [];
         shown.forEach(function (e) {
           if (thumbUrl.has(e.id) || thumbMiss.has(e.id)) return;
-          if (!S.live.has(e.pkg) || e.pkg === A.SOD) { missThumb(e.id); return; }
+          if (e.pkg === A.SOD) { if (sodBrowsing()) sodThumb(e); else idleThumb(e.id); return; }
+          if (!S.live.has(e.pkg)) { missThumb(e.id); return; }
           var names = A.namesOf(e, S.book), pal = A.paletteChoice(e, names);
           ask.push({ uid: e.id, pkg: e.pkg, path: e.path, k: e.k, ei: e.ei, fmt: e.fmt, pal: pal ? pal.spec : null,
                      flat: A.flatPalette(e), own: e.k === '3do' ? ownTextures(e.pkg) : null });
@@ -822,6 +829,42 @@
     DB.put('thumbs', THUMB_V + ':' + uid, blob);
     setThumb(uid, URL.createObjectURL(blob));
   }
+  /* A remaster model's picture is kept apart unpainted, before the game
+     files that paint it are loaded. */
+  function thumbKey(e) { return THUMB_V + ':' + e.id + (e.pkg === A.SOD && !S.live.size ? '~plain' : ''); }
+
+  /* The remaster's models are fetched for pictures only while its package
+     is what the visitor is looking through, two at a time. */
+  function sodBrowsing() {
+    var sc = S.scope;
+    return !!(sc && (sc.group === 'sod' || sc.pkg === A.SOD)) || S.filters.source === 'remaster' || S.results.length <= 40;
+  }
+  var sodWait = [], sodBusy = 0;
+  function sodThumb(e) {
+    if (sodWait.indexOf(e) >= 0 || e.thumbing) return;
+    sodWait.push(e);
+    sodNext();
+  }
+  function sodNext() {
+    while (sodBusy < 2 && sodWait.length) {
+      var e = sodWait.shift();
+      var on = false;
+      cells.forEach(function (c) { if (c.dataset.id === e.id) on = true; });
+      if (!on || thumbUrl.has(e.id)) continue;
+      sodBusy++;
+      e.thumbing = true;
+      (function (e) {
+        fetchRemaster(e).then(function (bytes) {
+          return G.fromGlb(bytes, { scale: 16, image: decodeImage, paint: S.live.size ? paintFor : null });
+        }).then(function (m) { remasterThumb(e, m); }, function () { idleThumb(e.id); })
+          .then(function () { sodBusy--; e.thumbing = false; sodNext(); });
+      })(e);
+    }
+  }
+  function idleThumb(uid) {
+    cells.forEach(function (c) { if (c.dataset.id === uid) c.firstChild.classList.remove('loading'); });
+  }
+
   function missThumb(uid) {
     thumbMiss.add(uid);
     cells.forEach(function (c) { if (c.dataset.id === uid) c.firstChild.classList.remove('loading'); });
@@ -852,9 +895,10 @@
     if (!thumbR) return;
     thumbR.view.yaw = -0.4; thumbR.view.pitch = 0.55; thumbR.view.zoom = 1.15;
     thumbR.draw([model], { grid: false, background: [0.16, 0.16, 0.17] });
+    thumbR.release(model);
     thumbCanvas.toBlob(function (b) {
       if (!b) return;
-      DB.put('thumbs', THUMB_V + ':' + e.id, b);
+      DB.put('thumbs', thumbKey(e), b);
       setThumb(e.id, URL.createObjectURL(b));
     }, 'image/webp', 0.86);
   }
@@ -1024,6 +1068,9 @@
   function showMode() {
     var viewer = $('viewer'), d3 = V.mode !== '2d';
     viewer.classList.toggle('idle', !V.e);
+    if (V.mode === 'plane' && renderer()) { V.r.view.yaw = 0; V.r.view.pitch = 0.12; V.r.view.zoom = 1; V.r.view.panX = V.r.view.panY = 0; V.clock = 0; }
+    var cap = $('v-cap');
+    cap.textContent = V.e ? (V.e.seq || V.e.name) + ' \u00b7 ' + pkgName(V.e.pkg) + ' / ' + V.e.path : '';
     viewer.classList.toggle('d3', d3);
     viewer.classList.toggle('d2', !d3);
     $('vt-zoom').hidden = d3;
@@ -1134,7 +1181,9 @@
       last = t;
       if (!V.e || V.mode === '2d' || !V.spin || dragging || document.hidden) return;
       if (!V.r) return;
-      V.r.view.yaw += dt * 0.5;
+      V.clock = (V.clock || 0) + dt;
+      if (V.mode === 'plane') V.r.view.yaw = 0.5 * Math.sin(V.clock * 0.6);
+      else V.r.view.yaw += dt * 0.5;
       draw3d();
     }
     V.raf = requestAnimationFrame(f);
@@ -1322,6 +1371,7 @@
   function renderInfo() {
     var e = S.byId.get(S.sel), box = $('info');
     box.textContent = '';
+    box.scrollTop = 0;
     if (!e) { box.appendChild(el('p', 'fine', 'Pick an asset to see it here.')); return; }
     var names = e.pkg === A.SOD ? { units: [], features: [] } : A.namesOf(e, S.book);
     box.appendChild(el('h3', '', e.seq || e.name));

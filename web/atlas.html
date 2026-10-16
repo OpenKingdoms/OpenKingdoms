@@ -197,6 +197,9 @@
   .frames input[type=range] { flex: 1; accent-color: var(--gold-2); min-width: 60px; }
   .frames .fi { font-variant-numeric: tabular-nums; color: var(--ink-2); min-width: 70px; text-align: right; font-size: 12.5px; }
   .app.full .viewer { position: fixed; inset: 0; z-index: 40; height: auto; }
+  .v-cap { display: none; position: absolute; left: 50%; top: 14px; transform: translateX(-50%); max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+           background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--line); border-radius: 9px; padding: 6px 12px; font-weight: 600; pointer-events: none; }
+  .app.full .v-cap { display: block; }
   .app.full .frames { position: fixed; left: 0; right: 0; bottom: 0; z-index: 41; background: var(--panel); }
 
   /* ---- details ---------------------------------------------------- */
@@ -241,7 +244,7 @@
   @media (max-width: 760px) {
     .top { flex-wrap: wrap; gap: 8px; padding: 8px 10px; }
     .brand .logo { font-size: 18px; }
-    .links { display: none; }
+    .links, .search kbd { display: none; }
     .search { order: 3; flex-basis: 100%; max-width: none; }
     .body { display: block; position: relative; }
     .side, .detail, .center { position: absolute; inset: 0; width: auto; border: 0; display: none; }
@@ -357,6 +360,7 @@
           <button class="icon small" type="button" id="spin" aria-pressed="true" aria-label="Spin" title="Spin"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v5h-5"/></svg></button>
         </div>
         <div class="v-msg" id="v-msg" hidden><span></span></div>
+        <div class="v-cap" id="v-cap"></div>
       </div>
       <div class="frames" id="frames" hidden>
         <button class="icon small" type="button" id="f-prev" aria-label="Previous frame">&#9664;</button>
