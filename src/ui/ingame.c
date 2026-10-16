@@ -1947,8 +1947,9 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * the battle stays drawn behind it and every key and click goes to
      * the dialog (legacy:154694-154752). */
     const Uint8 *keys = SDL_GetKeyboardState(NULL);
-    int console_keys = ig_console_keys(platform->has_focus, keys,
-                                       platform->text_in);
+    /* Ctrl+D's question takes Enter, which would open a chat line. */
+    int console_keys = ig.sd_ask ? 0 : ig_console_keys(platform->has_focus, keys,
+                                                       platform->text_in);
     if (platform->has_focus && !console_keys && keys[SDL_SCANCODE_F1] &&
         !ig.prev_keys[SDL_SCANCODE_F1] && !InGameMenu_IsOpen() && !ig.sd_ask) {
         (void)InGameMenu_Open();
