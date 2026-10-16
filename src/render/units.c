@@ -9650,8 +9650,14 @@ static int32_t cob_host_call_function(void *user, int fn_id,
             if (u->facing)
                 return (int32_t)(Units_BuildHeading(u->def_idx) * 65536.0f / 6.2831853f);
             return (int32_t)(u->heading * 65536.0f / 6.2831853f);
-        case 28: /* IN_WATER */
-            return 0;
+        case 28: { /* IN_WATER: a mover below the sea (legacy:185197-185206) */
+            const GameWorld *ww = World_Get();
+            if (!ww || ww->water_height <= 0 || !def || !(def->max_velocity > 0.0f))
+                return 0;
+            float y = (float)Terrain_SampleHeight(ww, u->world_x, u->world_y) +
+                      Units_DrawnAlt(ww, u);
+            return y < (float)ww->water_height;
+        }
         case 29: /* CURRENT_SPEED */
             return u->velocity >= 0 ? u->velocity : -u->velocity;
         case 30:
@@ -9683,6 +9689,11 @@ static int32_t cob_host_call_function(void *user, int fn_id,
                 fn_id, n_args);
     }
     return 0;
+}
+
+int32_t Units_DebugScriptPort(int handle, int port) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    return cob_host_call_function(&g_units[handle], port, 1, &(int32_t){ port });
 }
 
 int Units_DebugInvokeScript(const char *script_name) {

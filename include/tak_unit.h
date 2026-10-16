@@ -1511,6 +1511,9 @@ float             Units_DrawnAlt(const struct GameWorld *w, const Unit *u);
  * and the shots aimed at it. -1 for a bad handle. */
 float             Units_DebugStandHeight(int handle);
 
+/* Test hook: what a unit's script reads from GET port `port`. */
+int32_t           Units_DebugScriptPort(int handle, int port);
+
 /* Test hook: 1 when the original's landing test would let this flyer
  * land with its footprint at (x, y), 0 when not, -1 for a bad handle. */
 int               Units_DebugCanLandAt(int handle, int32_t x, int32_t y);

@@ -2059,6 +2059,41 @@ TEST(a_ship_is_drawn_at_its_waterline_not_on_the_sea_floor) {
     mv_end();
 }
 
+/* A script's IN_WATER reads 1 for a mover standing below the sea, the
+ * wader at its waterline among them, and 0 on dry land or for a
+ * building (legacy:185197-185206, legacy:223296-223299). The Mer
+ * Warrior swims on it. */
+TEST(a_unit_under_the_sea_tells_its_script_it_is_in_water) {
+    GameWorld *w = mv_sea();
+    ASSERT_NOT_NULL(w);
+    UnitDef defs[MV_DEF_SEA_COUNT];
+    for (int i = 0; i < MV_DEF_SEA_COUNT; i++) defs[i] = *Units_GetDef(i);
+    defs[MV_DEF_KNIGHT].can_hover = 1;
+    defs[MV_DEF_KNIGHT].upright = 1;
+    defs[MV_DEF_KNIGHT].waterline = 26;
+    ASSERT_EQ_INT(MV_DEF_SEA_COUNT, Units_DebugSetDefs(defs, MV_DEF_SEA_COUNT));
+    int wader = Units_Spawn(MV_DEF_KNIGHT, 1, 0, 1500, 1500);
+    int walker = Units_Spawn(MV_DEF_WALKER, 1, 0, 1700, 1500);
+    int hut = Units_Spawn(MV_DEF_HUT, 1, 0, 1900, 1500);
+    ASSERT(wader >= 0 && walker >= 0 && hut >= 0);
+    enum { IN_WATER = 28 };
+    /* The deep sea, the shallows, dry land. */
+    static const int ground[3] = { MV_SEABED, MV_WATER - 10, MV_WATER + 10 };
+    static const int wet[3] = { 1, 1, 0 };
+    size_t hn = (size_t)w->tnt.height_w * (size_t)w->tnt.height_h;
+    for (int k = 0; k < 3; k++) {
+        memset(w->tnt.heightmap, ground[k], hn);
+        printf("(ground %d: wader %d, walker %d, hut %d) ", ground[k],
+               (int)Units_DebugScriptPort(wader, IN_WATER),
+               (int)Units_DebugScriptPort(walker, IN_WATER),
+               (int)Units_DebugScriptPort(hut, IN_WATER));
+        ASSERT_EQ_INT(wet[k], (int)Units_DebugScriptPort(wader, IN_WATER));
+        ASSERT_EQ_INT(wet[k], (int)Units_DebugScriptPort(walker, IN_WATER));
+        ASSERT_EQ_INT(0, (int)Units_DebugScriptPort(hut, IN_WATER));
+    }
+    mv_end();
+}
+
 /* ── Hover attack ────────────────────────────────────────────────────── */
 
 enum { MV_HOVER_HARPY = MV_DEF_COUNT, MV_HOVER_POST, MV_HOVER_COUNT };
@@ -2375,6 +2410,7 @@ int main(int argc, char **argv) {
     RUN(the_landing_search_repeats_exactly);
     RUN(a_flyer_cruises_over_the_sea_not_the_sea_floor);
     RUN(a_ship_is_drawn_at_its_waterline_not_on_the_sea_floor);
+    RUN(a_unit_under_the_sea_tells_its_script_it_is_in_water);
     RUN(a_flyer_never_lands_on_sea_it_had_not_explored);
     TEST_SUITE("Hover attack");
     RUN(a_hover_flock_spreads_round_a_still_target);
