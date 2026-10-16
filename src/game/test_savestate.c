@@ -420,6 +420,7 @@ static const char *unit_field_at(size_t o) {
         { offsetof(Unit, cloak_want), 1, "cloak_want" },
         { offsetof(Unit, cloaked), 1, "cloaked" },
         { offsetof(Unit, cloak_wait), 2, "cloak_wait" },
+        { offsetof(Unit, paralyzed_ticks), 2, "paralyzed_ticks" },
         { offsetof(Unit, build_unseen), 1, "build_unseen" },
         { offsetof(Unit, build_facing), 1, "build_facing" },
         { offsetof(Unit, hit_by), 4, "hit_by" },

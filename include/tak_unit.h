@@ -144,6 +144,10 @@ typedef struct UnitWeapon {
     char    name[32];
     char    type[32];          /* type: Ballistic, Line of Sight, Remote Effect */
     char    damage_type[32];   /* damagetype */
+    /* damagetype = paralyzer: a hit holds the target for its damage in
+     * frames instead of wounding it (legacy:250385-250398,
+     * legacy:233857-233878). */
+    uint8_t paralyzer;
     char    explosion_class[32]; /* explosionclass */
     /* waterexplosionclass, read for a host's look. The simulation never reads it. */
     char    water_explosion_class[32];
@@ -364,6 +368,8 @@ typedef struct Projectile {
  * (legacy:245240), and the weapon is a fire starter (legacy:250028). */
 #define UNIT_BLAST_UNITS_ONLY   0x01u
 #define UNIT_BLAST_FIRE_STARTER 0x02u
+/* The shot's weapon is a paralyzer: it holds what it hits. */
+#define UNIT_BLAST_PARALYZER    0x04u
 
 /* A shot that runs the per cell test on its way (legacy:245377-245476).
  * Remote effect and wandering shots never do. */
@@ -511,6 +517,9 @@ typedef struct UnitDef {
      * anything that is not bmcode 1 (legacy:163161-163180). */
     uint8_t  cant_be_stoned;
     uint8_t  cant_be_frozen;
+    /* immunetoparalyzer: a paralyzer's hit leaves it free
+     * (legacy:163003, legacy:233866). */
+    uint8_t  immune_to_paralyzer;
     int32_t  transported_size; /* transportedsize override when carried */
     int32_t  transport_distance; /* transportdistance; load/unload radius */
     char     movement_class[32];/* movementclass key into moveinfo.tdf */
@@ -1034,6 +1043,9 @@ typedef struct Unit {
     uint8_t    cloak_want;
     uint8_t    cloaked;
     uint16_t   cloak_wait;
+    /* Ticks a paralyzer still holds the unit, 0 when it is free
+     * (legacy:9564-9599). */
+    uint16_t   paralyzed_ticks;
     /* The last enemy unit that hit this one, by stable id, 0 for none,
      * and the engine tick of that hit, for its guards to answer. */
     uint32_t   hit_by;

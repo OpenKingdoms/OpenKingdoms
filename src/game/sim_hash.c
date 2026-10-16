@@ -208,6 +208,8 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     if (u->cloak_want || u->cloaked || u->cloak_wait)
         h = TAK_HashI32(h, 0x2000000 | u->cloak_want | (u->cloaked << 1) |
                            ((uint32_t)u->cloak_wait << 2));
+    /* Only a unit a paralyzer holds adds what is left of it. */
+    if (u->paralyzed_ticks) h = TAK_HashI32(h, 0x4000000 | u->paralyzed_ticks);
     /* Only a unit an enemy has hit adds what hit it and when. */
     if (u->hit_by) {
         h = TAK_HashU32(h, u->hit_by);
