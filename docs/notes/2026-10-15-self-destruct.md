@@ -41,6 +41,10 @@ version 14. The few random frames come from the simulation's generator
 when the count starts, where the original draws them when the seconds
 run out. Engine build 43.
 
+A start asks first in the engine, in the shipped yes or no box, which
+the original never does. Calling a countdown off asks nothing. That is
+our own addition, recorded as D-041 in docs/MANUAL_DEVIATIONS.md.
+
 ## A fallen player
 
 When the last unit of a player is gone, in a skirmish or a match, the

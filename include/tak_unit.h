@@ -200,6 +200,10 @@ typedef struct UnitWeapon {
     int32_t wander_max_variation;
     int32_t wander_step_fp;
     int32_t to_air_weapon;    /* toairweapon targeting flag */
+    /* AimTolerance: how far off its target a unit that turns to shoot
+     * may face and still fire, never under 0x200 (legacy:250064,
+     * legacy:249365-249377). */
+    int32_t aim_tolerance;
     int32_t no_air_weapon;    /* noairweapon targeting flag */
     int32_t no_radar;         /* noradar projectile/minimap flag */
     int32_t range;            /* world pixels */
@@ -246,7 +250,10 @@ typedef struct UnitWeapon {
     uint8_t is_gravity;       /* type = Ballistic → arced flight */
     uint8_t dropped;          /* subtype = Dropped → no launch impulse */
     /* subtype = mindcontrol: the hit rolls to take the unit over and
-     * deals no damage (legacy:249801, legacy:247761). */
+     * deals no damage (legacy:249801, legacy:247761). A turntostone or
+     * turntofrozen shot flies the same way and its roll turns the unit
+     * to stone or ice (legacy:249811-249826, legacy:247868-247996).
+     * One of UNIT_SPELL_*, 0 for any other weapon. */
     uint8_t mind_control;
     /* A hover attacker's standoff and height with this weapon, 0 to take
      * the unit's (legacy:250022-250024), and the `dropped` key, which
@@ -264,6 +271,10 @@ typedef struct UnitWeapon {
     char    icon_selected[32];  /* buttonimageselected — active weapon */
     char    icon_disabled[32];  /* buttonimagedisabled — out of mana   */
 } UnitWeapon;
+
+#define UNIT_SPELL_MIND   1
+#define UNIT_SPELL_STONE  2
+#define UNIT_SPELL_FROZEN 3
 
 /* In-flight projectile spawned when a weapon fires. Travels toward
  * the target unit (or its last-known position) at weapon velocity;
@@ -407,6 +418,11 @@ typedef struct UnitDef {
     char     corpse[TAK_UNITDEF_OBJ_MAX];
     int32_t  corpse_adjust_x;
     int32_t  corpse_adjust_z;
+    /* `stone` and `frozen` name the statue a unit turned to stone or
+     * ice leaves, placed as its corpse is (legacy:163161-163176,
+     * legacy:227395-227416). */
+    char     stone[TAK_UNITDEF_OBJ_MAX];
+    char     frozen[TAK_UNITDEF_OBJ_MAX];
     /* `animatetype`: the unit an animator raises out of an animatable
      * feature, where a resurrector brings back the unit the corpse
      * came from (legacy:163138-163145, 13061-13072). */
@@ -469,6 +485,8 @@ typedef struct UnitDef {
      * hovers wades with its origin waterline under the sea. */
     uint8_t  can_hover;
     uint8_t  upright;
+    /* ghost (legacy:163076): drawn half see through (legacy:197442-197457). */
+    uint8_t  ghost;
     /* amphibious (legacy:162997): a flyer with it may land under water,
      * down to its maxwaterdepth (legacy:220103-220109). */
     uint8_t  amphibious;
@@ -489,6 +507,10 @@ typedef struct UnitDef {
     /* cantbecaptured (legacy:163021): mind control neither aims at
      * this unit nor takes it. */
     int32_t  cant_be_captured;
+    /* cantbestoned and cantbefrozen, forced on for a monarch and for
+     * anything that is not bmcode 1 (legacy:163161-163180). */
+    uint8_t  cant_be_stoned;
+    uint8_t  cant_be_frozen;
     int32_t  transported_size; /* transportedsize override when carried */
     int32_t  transport_distance; /* transportdistance; load/unload radius */
     char     movement_class[32];/* movementclass key into moveinfo.tdf */
@@ -508,17 +530,21 @@ typedef struct UnitDef {
     float    acceleration;
     float    brake_rate;
     float    turn_rate;
+    /* turninplacerate, the turn of a walker standing still. One with
+     * none never turns its body onto what it shoots (legacy:162866,
+     * legacy:249301-249306). */
+    float    turn_in_place_rate;
 
     /* Capability bitmask — drives which action buttons appear when
-     * this unit is selected (matches decomp at the legacy reference
-     * line 150627+ where flag 0x264 maps to the dialog's per-button
-     * visibility bytes). FBI fields parsed: canmove, canstop,
-     * canattack, canguard, canpatrol, cancloak, cantransport,
-     * builder. Each bit set ↔ button should appear. */
+     * this unit is selected (legacy:150627+, where each bit of the
+     * def's flag word lights its button). FBI fields parsed: canmove,
+     * canstop, canattack, canguard, canpatrol, cancloak, cantransport,
+     * builder. The ATTACK and stance buttons go by Units_DefTakesAttack
+     * and Units_DefHasStances instead. */
     uint32_t cap_flags;
 #define UNIT_CAP_MOVE      (1u << 0)
 #define UNIT_CAP_STOP      (1u << 1)
-#define UNIT_CAP_ATTACK    (1u << 2)
+#define UNIT_CAP_ATTACK    (1u << 2)   /* canattack, for the def hash only */
 #define UNIT_CAP_GUARD     (1u << 3)
 #define UNIT_CAP_PATROL    (1u << 4)
 #define UNIT_CAP_CLOAK     (1u << 5)
@@ -531,6 +557,9 @@ typedef struct UnitDef {
 #define UNIT_CAP_W_SWITCH  (1u << 12)  /* weaponswitching — Pri/Sec/Special */
 #define UNIT_CAP_CAPTURE   (1u << 14)  /* cancapture (legacy:163056)  */
 #define UNIT_CAP_ANIMATE   (1u << 13)  /* cananimate (legacy:163045)  */
+    /* unitstandorders: the stance buttons show unless it is 0
+     * (legacy:163025). */
+    uint8_t  unit_stand_orders;
 
     /* Mana economy fields. The legacy engine treats two FBI pairs
      * as additive contributions to the owning player's pool:
@@ -585,6 +614,15 @@ typedef struct UnitDef {
     /* `selfdestructcountdown`: seconds a self destruct counts down, 2
      * when the file has none (legacy:163089-163095). */
     uint8_t      selfd_countdown;
+    /* The cloak (legacy:162947-162963): mana a second still and moving,
+     * the latter cloakcost when the file has none, the distance an
+     * enemy keeps it off at, 80 when unset (legacy:163619-163620), and
+     * whether a new unit wants it. cloakcost above 0 is what lets a unit
+     * cloak (legacy:9760). */
+    float        cloak_cost_per_sec;
+    float        cloak_cost_moving_per_sec;
+    int32_t      min_cloak_distance;
+    uint8_t      init_cloaked;
 
     /* Per-player-color baked meshes. NULL until first spawn with
      * that color; Mesh_Bake fills it lazily. */
@@ -991,6 +1029,11 @@ typedef struct Unit {
     /* Ticks left before a self destruct ends the unit, 0 for none. It
      * counts down beside whatever orders the unit holds. */
     uint16_t   selfd_ticks;
+    /* The cloak: wanted by its player's order, hidden now, and the ticks
+     * before it may hide again (legacy:8700-8736, legacy:9757-9779). */
+    uint8_t    cloak_want;
+    uint8_t    cloaked;
+    uint16_t   cloak_wait;
     /* The last enemy unit that hit this one, by stable id, 0 for none,
      * and the engine tick of that hit, for its guards to answer. */
     uint32_t   hit_by;
@@ -1023,6 +1066,11 @@ typedef struct Unit {
      * build_def goes up at cmd_x, cmd_y once they leave, looked for as
      * build_endless's next is (legacy:12088-12124). */
     uint8_t    build_held;
+    /* With build_held: a site its side did not see when ordered. The
+     * builder walks there first and the site is judged on arrival, the
+     * building turned to build_facing (legacy:12063-12124). */
+    uint8_t    build_unseen;
+    uint8_t    build_facing;
     /* Ticks left in the attack handler's wait, after which a fight it
      * took on for itself looks again (legacy:11485-11509). 0 when not
      * waiting. */
@@ -1461,9 +1509,16 @@ void              Units_DebugSetAggro(int handle, int aggro_mode);
  * floater or wading hover unit at its waterline (legacy:234287-234330). */
 float             Units_DrawnAlt(const struct GameWorld *w, const Unit *u);
 
+/* How opaque a unit is drawn, 0..255: a ghost at half (legacy:197442-197457,
+ * legacy:372436-372441), or 255. */
+int               Units_DrawnAlpha(const Unit *u);
+
 /* Test hook: the height a unit stands at for the simulation, its shots
  * and the shots aimed at it. -1 for a bad handle. */
 float             Units_DebugStandHeight(int handle);
+
+/* Test hook: what a unit's script reads from GET port `port`. */
+int32_t           Units_DebugScriptPort(int handle, int port);
 
 /* Test hook: 1 when the original's landing test would let this flyer
  * land with its footprint at (x, y), 0 when not, -1 for a bad handle. */
@@ -1888,6 +1943,10 @@ int               Units_WeaponCanTake(int handle, int target_handle);
  * how many of them carry a weapon at all. */
 int               Units_SelectionCanAttack(int target_handle, int *armed);
 int               Units_IsArmed(int handle);
+/* The order buttons a def shows: ATTACK for a unit with a weapon, the
+ * stances unless its file sets unitstandorders = 0. */
+int               Units_DefTakesAttack(const UnitDef *d);
+int               Units_DefHasStances(const UnitDef *d);
 int               Units_CanWalk(int handle);
 /* 0 for a unit the player cannot select: none there, dead, or still
  * being built, which the original never selects. */
@@ -1934,6 +1993,12 @@ int               Units_CanHelpBuild(int helper, int frame);
 int               Units_ToggleSelfDestruct(const int *handles, int n);
 /* 1 while the unit counts down to its self destruct. */
 int               Units_SelfDestructing(int handle);
+/* The cloak order, on or off, for a unit that can cloak. Returns 1 when
+ * it was taken. */
+int               Units_OrderCloak(int handle, int on);
+/* The cloak order the local player's selection holds: 1 all of it
+ * wants the cloak, 0 none of it, 2 some, -1 none of it can cloak. */
+int               Units_SelectedCloakState(void);
 /* Any selected unit of the local player's that could help that frame. */
 int               Units_SelectionCanHelpBuild(int frame);
 
@@ -2113,6 +2178,12 @@ int               Units_IsBuildSiteClear(int def_idx,
 int               Units_IsBuildSiteClearFacing(int def_idx,
                                                 int32_t world_x, int32_t world_y,
                                                 int facing);
+/* The cursor's test as a seat knows the site: ground it never saw is
+ * refused, and units count only where it sees now (legacy:39263-39305,
+ * 218741-218806). A viewer below 1 sees everything. */
+int               Units_IsBuildSiteClearSeen(int def_idx,
+                                              int32_t world_x, int32_t world_y,
+                                              int facing, int viewer);
 /* The cursor's test above looks for units only on a building's cells.
  * A def that walks has an open yard and is placed over units
  * (legacy:163272-163292, 218800-218811). The frame itself goes up only

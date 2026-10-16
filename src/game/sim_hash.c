@@ -205,6 +205,9 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     }
     /* Only a unit counting down to its self destruct adds to the hash. */
     if (u->selfd_ticks) h = TAK_HashI32(h, 0x1000 | u->selfd_ticks);
+    if (u->cloak_want || u->cloaked || u->cloak_wait)
+        h = TAK_HashI32(h, 0x2000000 | u->cloak_want | (u->cloaked << 1) |
+                           ((uint32_t)u->cloak_wait << 2));
     /* Only a unit an enemy has hit adds what hit it and when. */
     if (u->hit_by) {
         h = TAK_HashU32(h, u->hit_by);
@@ -225,7 +228,9 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     h = TAK_HashI32(h, u->build_gy);
     /* Only a summons without end or one held adds to the hash. */
     if (u->build_endless || u->build_held) {
-        h = TAK_HashI32(h, 0x300 | u->build_endless | (u->build_held << 1));
+        h = TAK_HashI32(h, 0x300 | u->build_endless | (u->build_held << 1) |
+                           (u->build_held && u->build_unseen
+                                ? 4 | ((u->build_facing & 3) << 3) : 0));
         h = TAK_HashI32(h, u->build_def);
         h = TAK_HashI32(h, u->build_tries);
         h = TAK_HashI32(h, u->build_wait);

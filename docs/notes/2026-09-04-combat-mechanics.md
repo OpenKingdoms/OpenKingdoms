@@ -117,6 +117,15 @@ want-cloak flag and calls the script's `StartCloaking` / `StopCloaking`.
 global see-all. The local player's own cloaked units also draw a white circle
 at `mincloakdistance` (:180534).
 
+**In the engine (2026-10-16).** Cloaking is in. The gate is `cloakcost` above
+0, the sidebar's Cloaked and Uncloaked pair and the K key give the order, and
+the waits above are doubled for the 60 Hz tick. Only the owner and a watcher
+see a cloaked unit, drawn at half alpha in both views. An attack on it ends
+(:11010-11013, :11376-11379), and neither the computer player nor any idle
+search takes it. The want, the cloaked state and the wait are in the state
+hash and the unit record from version 16. The half alpha is our own stand in
+for the original's translucent mode.
+
 ## 3. Radar / detection (NO sonar, NO stealth flag in TAK)
 
 Only two range keys exist: `sightdistance` and `radardistance`

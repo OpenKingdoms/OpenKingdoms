@@ -180,6 +180,8 @@ void AI_Influence_Refresh(const GameWorld *world) {
                 continue;
             }
             if (!Units_PlayersAreEnemies(p, q)) continue;
+            /* A cloaked enemy is seen by nobody (legacy:206815). */
+            if (u->cloaked) continue;
             if (world->cfg.line_of_sight &&
                 !Fog_IsVisibleForPlayer(world, p, u->world_x, u->world_y)) {
                 continue;

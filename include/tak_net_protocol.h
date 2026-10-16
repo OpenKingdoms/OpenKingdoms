@@ -132,8 +132,13 @@
  * builder on patrol mends and helps build, and a blade takes no flyer
  * in the air. 43: a guard attacks what hits the unit it guards, mends
  * it, joins its build or repair, and keeps five cells off it, and
- * Ctrl+D self destructs. */
-#define TAK_ENGINE_BUILD_ID           43
+ * Ctrl+D self destructs. 44: units with a cloak cost cloak, and a
+ * builder sent to a site its side cannot see checks it on arrival.
+ * 45: a unit turns onto its target only by turninplacerate or as a
+ * hover attacker and fires within its aim tolerance, and freeze and
+ * stone shots turn a unit to a statue on a roll. 46: a unit's script
+ * reads IN_WATER as 1 while it moves below the sea. */
+#define TAK_ENGINE_BUILD_ID           46
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

@@ -779,6 +779,7 @@ static void draw_ground_pieces(const GameWorld *world, const float planes[6][4])
         float alpha = 1.0f;
         if (u->magic_death)
             alpha = (float)u->magic_death_fade / (float)UNIT_MAGIC_DEATH_TICKS;
+        alpha *= (float)Units_DrawnAlpha(u) / 255.0f;
         if (body)
             draw_model_part(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0, 0,
                             (float)u->world_x, h, (float)u->world_y, u->heading, u->pitch, u->roll,
@@ -789,12 +790,16 @@ static void draw_ground_pieces(const GameWorld *world, const float planes[6][4])
     GL3D_SetDepthWrite(1);
 }
 
-static void draw_units(const GameWorld *world, const float planes[6][4]) {
+/* `see_through` picks the pass: the solid units, or the ghosts, which go
+ * last so whatever stands behind them shows through. */
+static void draw_units(const GameWorld *world, const float planes[6][4], int see_through) {
     int count = 0;
     const Unit *units = Units_GetActive(&count);
     for (int i = 0; i < count; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) continue;
+        const int drawn_alpha = Units_DrawnAlpha(u);
+        if ((drawn_alpha < 255) != see_through) continue;
         /* A frame's body shows past half built, its mass while it is
          * being built (legacy:197474-197489). */
         const int body = Units_NanoframeBodyShown(u);
@@ -808,9 +813,9 @@ static void draw_units(const GameWorld *world, const float planes[6][4]) {
         float h = (float)Terrain_SampleHeight(world, u->world_x, u->world_y) + Units_DrawnAlt(world, u);
         float c[3] = { (float)u->world_x, h + m->height_px * 0.5f, (float)u->world_y };
         if (!Camera3D_SphereInFrustum(planes, c, m->radius_px)) continue;
-        float alpha = 1.0f;
+        float alpha = (float)drawn_alpha / 255.0f;
         if (u->magic_death) {
-            alpha = (float)u->magic_death_fade / (float)UNIT_MAGIC_DEATH_TICKS;
+            alpha *= (float)u->magic_death_fade / (float)UNIT_MAGIC_DEATH_TICKS;
         }
         const int part = View3D_GroundPiecesOf(def, m) ? V3_PART_STANDING : V3_PART_ALL;
         /* With no body the mass still blends over its front surface only. */
@@ -1132,6 +1137,48 @@ static float surface_height(const GameWorld *world, float x, float z) {
 }
 
 /* A flat ring on the ground or the water around each selected unit. */
+/* Your own selected cloaked units show how near an enemy may come, a
+ * white ring at mincloakdistance (legacy:180534-180536). */
+static void draw_cloak_rings(const GameWorld *world) {
+    int n = 0;
+    const int *sel = Units_GetSelection(&n);
+    if (n <= 0) return;
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    const int segs = 48;
+    if (ensure_stream(n * segs * 2, n * segs * 6) != 0) return;
+    int nv = 0, ni = 0;
+    for (int k = 0; k < n; k++) {
+        int h = sel[k];
+        if (h < 0 || h >= count) continue;
+        const Unit *u = &units[h];
+        const UnitDef *def = Units_GetDef(u->def_idx);
+        if (u->alive != UNIT_ALIVE_ACTIVE || !u->cloaked || !def ||
+            u->player_id != Units_LocalPlayer() || def->min_cloak_distance <= 0)
+            continue;
+        float r = (float)def->min_cloak_distance;
+        for (int s = 0; s < segs; s++) {
+            float a = (float)s / (float)segs * 2.0f * V3_PI;
+            float ca = cosf(a), sa = sinf(a);
+            float x0 = (float)u->world_x + ca * r, z0 = (float)u->world_y + sa * r;
+            float x1 = (float)u->world_x + ca * (r + 1.5f), z1 = (float)u->world_y + sa * (r + 1.5f);
+            put_vert(v.stream_v + (size_t)(nv + 2 * s) * 9, x0,
+                     surface_height(world, x0, z0) + 1.5f, z0, 0, 0, 1, 1, 1, 1);
+            put_vert(v.stream_v + (size_t)(nv + 2 * s + 1) * 9, x1,
+                     surface_height(world, x1, z1) + 1.5f, z1, 0, 0, 1, 1, 1, 1);
+        }
+        for (int s = 0; s < segs; s++) {
+            int a = nv + 2 * s, b = nv + 2 * ((s + 1) % segs);
+            uint16_t *q = v.stream_i + ni;
+            q[0] = (uint16_t)a; q[1] = (uint16_t)(a + 1); q[2] = (uint16_t)b;
+            q[3] = (uint16_t)(a + 1); q[4] = (uint16_t)(b + 1); q[5] = (uint16_t)b;
+            ni += 6;
+        }
+        nv += segs * 2;
+    }
+    if (nv > 0) GL3D_DrawSprites(v.stream_v, nv, v.stream_i, ni, NULL, 0, 0);
+}
+
 static void draw_selection_rings(const GameWorld *world) {
     int n = 0;
     const int *sel = Units_GetSelection(&n);
@@ -1507,11 +1554,13 @@ static void v3_render(const GameWorld *world, TAK_Platform *plat,
     draw_ground_pieces(world, planes);
     draw_features(world, planes);
     draw_selection_rings(world);
-    draw_units(world, planes);
+    draw_cloak_rings(world);
+    draw_units(world, planes, 0);
     draw_build_ghost(world);
     draw_effects(world, planes);
     draw_beams(world);
     draw_water(world);
+    draw_units(world, planes, 1);
     GL3D_EndFrame();
 
     double freq = (double)SDL_GetPerformanceFrequency();

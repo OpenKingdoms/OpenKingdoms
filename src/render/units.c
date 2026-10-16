@@ -53,6 +53,7 @@
 #include "tak_palette.h"
 #include "tak_ui.h"
 #include "tak_view_shake.h"
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -364,6 +365,7 @@ static int ugrid_random_enemy(const Unit *u, int self_idx, int64_t radius,
 /* Forward — `apply_killed` is defined further down with the combat
  * state-machine code; the projectile tick needs to call it on hits. */
 static void apply_killed(Unit *t, int t_idx);
+static void apply_turned(Unit *t, int t_idx, int frozen);
 
 /* Kill credit — XP to the killer unit plus the victim's mogriumbounty
  * to the killer's mana pool. No self/team credit (legacy :227321). */
@@ -399,6 +401,18 @@ static int ship_hull_blocked(const UnitDef *d, int self, float margin,
                              int32_t from_x, int32_t from_y);
 static int unit_start_script(Unit *u, const char *name,
                              const int32_t *args, int n_args);
+
+/* The cloak's waits, the original's frames doubled for the 60 Hz tick:
+ * after a shot (legacy:245900-245905), while it builds, mends, sweeps or
+ * raises (legacy:12259-12263, 12764-12768, 32139-32143, 32374-32378),
+ * with an enemy near (legacy:208655-208673) and short of mana
+ * (legacy:8724-8731). */
+#define CLOAK_FIRE_TICKS  1200
+#define CLOAK_WORK_TICKS   600
+#define CLOAK_NEAR_TICKS   180
+#define CLOAK_SHORT_TICKS  180
+
+static void cloak_hold(Unit *u, const UnitDef *def, int ticks);
 static int unit_water_depth_ok(const GameWorld *w, const UnitDef *def,
                                int32_t x, int32_t y);
 
@@ -498,6 +512,10 @@ static int unit_visible_to_local_player(const GameWorld *world,
     if (!u) return 0;
     if (!world) return 1;
     if (u->player_id == g_local_player) return 1;
+    /* A cloaked unit shows to its own player and a watcher alone
+     * (legacy:206815, legacy:208620-208625). */
+    if (u->cloaked && !Fog_SeesAll() && (int)u->player_id != Fog_Viewer())
+        return 0;
     return unit_seat_sees(world, Fog_Viewer(), u);
 }
 
@@ -702,6 +720,11 @@ static int unit_queue_pickup(int carrier, int rider, int queued) {
 
 static int unit_can_see_target(const Unit *viewer, const Unit *target) {
     if (!viewer || !target) return 0;
+    /* An enemy that cloaks ends an attack on it (legacy:11010-11013,
+     * legacy:11376-11379). */
+    if (target->cloaked &&
+        unit_players_are_enemies(viewer->player_id, target->player_id))
+        return 0;
     GameWorld *world = World_Get();
     if (!world || !world->cfg.line_of_sight) return 1;
     /* A target already held, or given by an order, is not re-checked
@@ -736,6 +759,9 @@ static int unit_seat_sees(const GameWorld *w, int seat, const Unit *t) {
  * (legacy:20639-20680). Return fire does not ask (unit_would_answer). */
 static int unit_side_sees(int player_id, const Unit *t) {
     if ((int)t->player_id == player_id) return 1;
+    /* A cloaked unit is seen by its own player alone, Line of Sight or
+     * not (legacy:206815, legacy:20536-20540). */
+    if (t->cloaked) return 0;
     const GameWorld *w = World_Get();
     /* With Line of Sight off the side's sight map is full
      * (legacy:167211-167219). See docs/notes/2026-09-15-line-of-sight-off.md
@@ -1156,6 +1182,13 @@ static float unit_float_lift(const GameWorld *w, const Unit *u) {
 float Units_DrawnAlt(const GameWorld *w, const Unit *u) {
     if (!u) return 0.0f;
     return unit_air_alt(w, u) + unit_float_lift(w, u);
+}
+
+/* A ghost and a cloaked unit both draw in the original's translucent
+ * mode (legacy:197442-197457). */
+int Units_DrawnAlpha(const Unit *u) {
+    const UnitDef *d = u ? Units_GetDef(u->def_idx) : NULL;
+    return u && (u->cloaked || (d && d->ghost)) ? 128 : 255;
 }
 
 float Units_DebugStandHeight(int handle) {
@@ -1813,6 +1846,34 @@ static void mind_control_strike(const Projectile *p, int victim_idx,
     Units_Capture(victim_idx, p->player_id);
 }
 
+/* A stone or ice hit (legacy:247865-247896, legacy:247964-247996). It
+ * never wounds. A unit of another player that can move, is no monarch,
+ * can be turned and is built rolls as mind control does, and a roll
+ * under the threshold turns it. */
+static void turn_strike(const Projectile *p, int victim_idx, int scale_pct) {
+    Unit *v = &g_units[victim_idx];
+    if (v->alive != UNIT_ALIVE_ACTIVE) return;
+    if (v->player_id == p->player_id) return;
+    const UnitDef *vd = Units_GetDef(v->def_idx);
+    if (!vd || vd->bmcode == 0 || vd->commander) return;
+    int frozen = p->mind_control == UNIT_SPELL_FROZEN;
+    if (frozen ? vd->cant_be_frozen : vd->cant_be_stoned) return;
+    if (v->under_construction) return;
+    shot_tally_harm(p->shooter, 0, 1);
+    int threshold = Units_CaptureThreshold(Units_GetVeteranLevel(victim_idx));
+    threshold = threshold * scale_pct / 100;
+    if ((int)World_Rand(100) >= threshold) return;
+    credit_kill(p->shooter, (int)p->player_id, v);
+    apply_turned(v, victim_idx, frozen);
+}
+
+static void spell_strike(const Projectile *p, int victim_idx, int scale_pct) {
+    if (p->mind_control == UNIT_SPELL_MIND)
+        mind_control_strike(p, victim_idx, scale_pct);
+    else
+        turn_strike(p, victim_idx, scale_pct);
+}
+
 /* A unit struck by a weapon whose areaofeffect is under this takes the
  * whole hit and the blast goes no further (legacy:245029). */
 #define BLAST_DIRECT_BELOW 17
@@ -1869,7 +1930,7 @@ static void apply_projectile_area_damage(const Projectile *p) {
         if (d >= (aoe >> 1)) continue;
         if (p->mind_control) {
             /* The roll takes the falloff damage would (legacy:245224). */
-            mind_control_strike(p, ui, Units_ComputeSplashDamage(
+            spell_strike(p, ui, Units_ComputeSplashDamage(
                 100, aoe, p->edge_effectiveness, d));
             continue;
         }
@@ -2048,7 +2109,7 @@ static void projectile_detonate_at(Projectile *p, int idx) {
     if (p->area_of_effect >= BLAST_DIRECT_BELOW || struck < 0) {
         apply_projectile_area_damage(p);
     } else if (p->mind_control) {
-        mind_control_strike(p, struck, 100);
+        spell_strike(p, struck, 100);
     } else {
         Unit *v = &g_units[struck];
         unit_take_hit(v, p->shooter, (int)p->player_id,
@@ -2356,7 +2417,7 @@ static void shot_strike_unit(Projectile *p, int idx, int vi) {
     if (p->mind_control) {
         /* A direct hit rolls at full strength and replaces the damage
          * (legacy:245361). */
-        if (enemy) mind_control_strike(p, vi, 100);
+        if (enemy) spell_strike(p, vi, 100);
         return;
     }
     unit_take_hit(v, p->shooter, (int)p->player_id,
@@ -2948,8 +3009,9 @@ static void tick_projectiles(void) {
         }
         if (--p->ttl_ticks <= 0) { p->alive = 0; continue; }
         /* A mind control shot whose caster is dead or dying takes this
-         * step and is gone (legacy:247710-247713). */
-        int last = p->mind_control && !shot_caster_stands(p);
+         * step and is gone (legacy:247710-247713). A stone or ice shot
+         * once away flies on (legacy:247803-247818). */
+        int last = p->mind_control == UNIT_SPELL_MIND && !shot_caster_stands(p);
         /* Beams already dealt their damage at fire — hold, don't move. */
         if (p->is_beam) {
             if (p->visual_kind == UNIT_PROJECTILE_VIS_FLAME) flame_particle(p, i);
@@ -3047,7 +3109,7 @@ static void tick_projectiles(void) {
                     if (p->mind_control) {
                         /* A direct hit rolls at full strength and
                          * replaces the damage (legacy:245361). */
-                        mind_control_strike(p, p->target, 100);
+                        spell_strike(p, p->target, 100);
                         p->alive = 0;
                         continue;
                     }
@@ -3565,6 +3627,19 @@ int Units_IsArmed(int handle) {
     return d && d->num_weapons > 0;
 }
 
+/* The attack order goes to a unit whose file has a [WEAPON1]. The
+ * original never reads canattack (legacy:163567-163568, legacy:150633,
+ * legacy:150713-150721). */
+int Units_DefTakesAttack(const UnitDef *d) {
+    return d && d->num_weapons > 0;
+}
+
+/* The stance buttons follow unitstandorders (legacy:163025,
+ * legacy:150422-150429, legacy:150870-150917). */
+int Units_DefHasStances(const UnitDef *d) {
+    return d && d->unit_stand_orders;
+}
+
 int Units_CanWalk(int handle) {
     if (handle < 0 || handle >= g_unit_count) return 0;
     const UnitDef *d = Units_GetDef(g_units[handle].def_idx);
@@ -3817,6 +3892,8 @@ static void order_fresh(Unit *u) {
     u->air_hold = 0;
     u->build_endless = 0;
     u->build_held = 0;
+    u->build_unseen = 0;
+    u->build_facing = 0;
     u->move_group = 0;
     u->move_paced = 0;
     u->face_mode = UNIT_FACE_NONE;
@@ -5187,6 +5264,7 @@ static int unit_tick_raise(Unit *u, const UnitDef *def) {
      * supply fraction (legacy:13087); we have no such figure and take
      * it as 1. */
     u->raise_left -= 65536 / 2;
+    cloak_hold(u, def, CLOAK_WORK_TICKS);
     /* Once per original frame, which is every other tick here. */
     if (((u->raise_left / (65536 / 2)) & 1) == 0)
         raise_sparkles(u, (int)(u - g_units), def, rw, fi);
@@ -5717,10 +5795,21 @@ static int  unit_def_is_structure(const UnitDef *d);
 static void unit_occ_fp(const Unit *u, int *fx, int *fz);
 static int  unit_is_mobile_occupant(const Unit *u, const UnitDef *d);
 
+/* What a seat knows of a site, read at its centre: ground it never saw
+ * refuses it (0), and units are looked for only where it sees now (1),
+ * not under its fog (2). A viewer below 1 knows everything
+ * (legacy:218741-218768, 218797-218806). */
+static int site_seen(int viewer, int32_t wx, int32_t wy) {
+    const GameWorld *w = World_Get();
+    if (viewer < 1 || !w) return 1;
+    if (Fog_StateAtForPlayer(w, viewer, wx, wy) == TAK_FOG_UNEXPLORED) return 0;
+    return Fog_SeatSeesAt(w, viewer, wx, wy) ? 1 : 2;
+}
+
 /* The placement test at the cell the build would take. With walkers 0
  * a unit that walks, or its frame, does not refuse it. */
 static int build_site_test(int def_idx, int32_t wx, int32_t wy, int facing,
-                           int walkers) {
+                           int walkers, int viewer) {
     const UnitDef *d = Units_GetDef(def_idx);
     if (!d) return 0;
     facing = Units_DefFacing(def_idx, facing);
@@ -5746,6 +5835,8 @@ static int build_site_test(int def_idx, int32_t wx, int32_t wy, int facing,
     if (!site_ground_clear(world, d, yard, ycells, fx, fz, d->max_slope,
                            x0, y0))
         return 0;
+    int seen = site_seen(viewer, wx, wy);
+    if (!seen) return 0;
     /* A unit holds the cells nearest its centre, its footprint snapped
      * the way a building's is (legacy:184167), and the site is refused
      * only on a cell one holds (legacy:218800-218811). A unit beside the
@@ -5753,8 +5844,9 @@ static int build_site_test(int def_idx, int32_t wx, int32_t wy, int facing,
     int sc0 = x0 / 16, sc1 = sc0 + fx;
     int sr0 = y0 / 16, sr1 = sr0 + fz;
     int reach = unit_max_half_extent() + 16;
-    int nn = ugrid_candidates(x0 - reach, y0 - reach, x1 + reach, y1 + reach,
-                              g_site_near, TAK_MAX_UNITS);
+    int nn = seen == 1 ? ugrid_candidates(x0 - reach, y0 - reach, x1 + reach,
+                                          y1 + reach, g_site_near, TAK_MAX_UNITS)
+                       : 0;
     for (int k = 0; k < (nn < 0 ? g_unit_count : nn); k++) {
         const Unit *u = &g_units[nn < 0 ? k : g_site_near[k]];
         if (u->alive != 1) continue;
@@ -5794,7 +5886,13 @@ int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
  * 218185-218191, 218797-218811). */
 int Units_IsBuildSiteClearFacing(int def_idx, int32_t wx, int32_t wy, int facing) {
     return build_site_test(def_idx, wx, wy, facing,
-                           !build_def_walks(Units_GetDef(def_idx)));
+                           !build_def_walks(Units_GetDef(def_idx)), 0);
+}
+
+int Units_IsBuildSiteClearSeen(int def_idx, int32_t wx, int32_t wy, int facing,
+                               int viewer) {
+    return build_site_test(def_idx, wx, wy, facing,
+                           !build_def_walks(Units_GetDef(def_idx)), viewer);
 }
 
 int Units_IsBuildSiteFree(int def_idx, int32_t wx, int32_t wy) {
@@ -5804,7 +5902,7 @@ int Units_IsBuildSiteFree(int def_idx, int32_t wx, int32_t wy) {
 /* The frame goes up only where no unit stands (legacy:12088,
  * 219094-219160). */
 int Units_IsBuildSiteFreeFacing(int def_idx, int32_t wx, int32_t wy, int facing) {
-    return build_site_test(def_idx, wx, wy, facing, 1);
+    return build_site_test(def_idx, wx, wy, facing, 1, 0);
 }
 
 static int  unit_def_is_structure(const UnitDef *d);
@@ -6070,8 +6168,44 @@ static int builder_hold_summons(int h, int def_idx, int32_t x, int32_t y) {
     return 1;
 }
 
-int Units_OrderBuild(int builder_handle, int def_idx, int32_t world_x,
-                     int32_t world_y, int facing, int endless) {
+/* A site the builder's side does not see is walked to before it is
+ * judged, and the frame goes up there, as the original makes it only
+ * once its builder has arrived (legacy:12063-12124). An order there
+ * then tells the player nothing the cursor did not. */
+static int builder_hold_unseen(int h, int def_idx, int32_t x, int32_t y,
+                               int facing, int endless) {
+    Unit *u = order_unit(h);
+    const UnitDef *ud = u ? Units_GetDef(u->def_idx) : NULL;
+    const UnitDef *d = Units_GetDef(def_idx);
+    const GameWorld *w = World_Get();
+    if (!u || !ud || !d || !w || !(ud->cap_flags & UNIT_CAP_BUILDER) ||
+        !(ud->max_velocity > 0.0f))
+        return 0;
+    if (Fog_IsVisibleForPlayer(w, u->player_id, x, y)) return 0;
+    if (!build_site_test(def_idx, x, y, facing, !build_def_walks(d),
+                         u->player_id))
+        return 0;
+    order_fresh(u);
+    u->cmd_kind = UNIT_CMD_BUILD;
+    u->cmd_x = x;
+    u->cmd_y = y;
+    u->build_target = -1;
+    u->build_near_best = 0;
+    u->build_held = 1;
+    u->build_unseen = 1;
+    u->build_facing = (uint8_t)(facing & 3);
+    u->build_def = (int16_t)def_idx;
+    u->build_endless = (uint8_t)(endless && builder_may_summon(u, def_idx));
+    u->build_tries = 0;
+    u->build_wait = 0;
+    u->target = -1;
+    unit_set_build_goal_at(u, def_idx, x, y);
+    unit_clear_path(u);
+    return 1;
+}
+
+static int order_build_now(int builder_handle, int def_idx, int32_t world_x,
+                           int32_t world_y, int facing, int endless) {
     int held = 0;
     if (Units_BeginBuildingForUnitFacing(builder_handle, def_idx, world_x,
                                          world_y, facing) < 0) {
@@ -6090,6 +6224,34 @@ int Units_OrderBuild(int builder_handle, int def_idx, int32_t world_x,
         }
     }
     return 1;
+}
+
+int Units_OrderBuild(int builder_handle, int def_idx, int32_t world_x,
+                     int32_t world_y, int facing, int endless) {
+    if (builder_hold_unseen(builder_handle, def_idx, world_x, world_y, facing,
+                            endless))
+        return 1;
+    return order_build_now(builder_handle, def_idx, world_x, world_y, facing,
+                           endless);
+}
+
+/* A builder sent out of sight has reached its site: the order is given
+ * again there with the real test, and ends if that refuses it. */
+static void builder_unseen_arrive(Unit *u, int h, int in_reach) {
+    if (!in_reach) return;
+    int def = u->build_def, facing = u->build_facing, endless = u->build_endless;
+    int32_t x = u->cmd_x, y = u->cmd_y;
+    u->build_unseen = 0;
+    u->build_facing = 0;
+    u->build_held = 0;
+    u->build_endless = 0;
+    g_leg_taking = 1;
+    int ok = order_build_now(h, def, x, y, facing, endless);
+    g_leg_taking = 0;
+    if (!ok) {
+        u->cmd_kind = UNIT_CMD_NONE;
+        unit_clear_path(u);
+    }
 }
 
 /* ── Factory production queue + rally ───────────────────────────── */
@@ -6406,6 +6568,7 @@ static int builder_remove_builds(Unit *u, int def_idx, int count) {
         u->cmd_kind = UNIT_CMD_NONE;
         u->build_endless = 0;
         u->build_held = 0;
+        u->build_unseen = 0;
         u->target = -1;
         u->build_target = -1;
         u->cmd_x = u->world_x;
@@ -6755,7 +6918,9 @@ uint32_t Units_GetTeamColorRGBA(int idx) {
 static float    *g_scratch_xy    = NULL;
 static uint32_t *g_scratch_color = NULL;
 static float    *g_scratch_uv    = NULL;
-static float    *g_scratch_wz    = NULL;   /* per-vertex world Z, for depth sort */
+static float    *g_scratch_wy    = NULL;   /* per-vertex height over the map */
+/* 1 where a vertex of a unit standing in the sea lies under it. */
+static uint8_t  *g_scratch_wet   = NULL;
 /* Per-vertex legacy height key: whole model-space Y units, the same
  * quantity the legacy rasteriser interpolates and depth-tests
  * (legacy:197697). Base offset dropped, only the order matters. */
@@ -6961,6 +7126,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->floater        = TDF_ReadInt(tdf, "floater", 0);
     out->can_hover      = (uint8_t)(TDF_ReadInt(tdf, "canhover", 0) & 1);
     out->upright        = (uint8_t)(TDF_ReadInt(tdf, "upright", 0) & 1);
+    out->ghost          = (uint8_t)(TDF_ReadInt(tdf, "ghost", 0) & 1);
     out->amphibious     = (uint8_t)(TDF_ReadInt(tdf, "amphibious", 0) & 1);
     out->leash_length   = TDF_ReadInt(tdf, "maneuverleashlength", 0) & 0xffff;
     out->fire_at_will_random = (uint8_t)(TDF_ReadInt(tdf, "fireatwillrandom", 0) & 1);
@@ -7008,6 +7174,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->acceleration   = TDF_ReadFloat(tdf, "acceleration", 0.0f);
     out->brake_rate     = TDF_ReadFloat(tdf, "brakerate",    0.0f);
     out->turn_rate      = TDF_ReadFloat(tdf, "turnrate",     0.0f);
+    out->turn_in_place_rate = TDF_ReadFloat(tdf, "turninplacerate", 0.0f);
 
     /* Capability flags drive per-unit action button visibility.
      * The decomp reads these from the same UNITINFO section as the
@@ -7019,7 +7186,16 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     if (TDF_ReadInt(tdf, "canattack",      0)) out->cap_flags |= UNIT_CAP_ATTACK;
     if (TDF_ReadInt(tdf, "canguard",       0)) out->cap_flags |= UNIT_CAP_GUARD;
     if (TDF_ReadInt(tdf, "canpatrol",      0)) out->cap_flags |= UNIT_CAP_PATROL;
-    if (TDF_ReadInt(tdf, "cancloak",       0)) out->cap_flags |= UNIT_CAP_CLOAK;
+    /* The original reads no cancloak: cloakcost above 0 lets a unit
+     * cloak (legacy:9760, legacy:162957). */
+    out->cloak_cost_per_sec = TDF_ReadFloat(tdf, "cloakcost", 0.0f);
+    out->cloak_cost_moving_per_sec =
+        TDF_ReadFloat(tdf, "cloakcostmoving", out->cloak_cost_per_sec);
+    out->min_cloak_distance = TDF_ReadInt(tdf, "mincloakdistance", 0);
+    if (out->cloak_cost_per_sec > 0.0f && out->min_cloak_distance == 0)
+        out->min_cloak_distance = 80;
+    out->init_cloaked = (uint8_t)(TDF_ReadInt(tdf, "init_cloaked", 0) & 1);
+    if (out->cloak_cost_per_sec > 0.0f) out->cap_flags |= UNIT_CAP_CLOAK;
     if (TDF_ReadInt(tdf, "cantransport",   0)) out->cap_flags |= UNIT_CAP_TRANSPORT;
     if (TDF_ReadInt(tdf, "builder",        0)) out->cap_flags |= UNIT_CAP_BUILDER;
     out->builder_limited = (uint8_t)(TDF_ReadInt(tdf, "builderlimited", 0) & 1);
@@ -7032,6 +7208,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     if (TDF_ReadInt(tdf, "canload",        0)) out->cap_flags |= UNIT_CAP_LOAD;
     if (TDF_ReadInt(tdf, "weaponswitching",0)) out->cap_flags |= UNIT_CAP_W_SWITCH;
     if (TDF_ReadInt(tdf, "cancapture",     0)) out->cap_flags |= UNIT_CAP_CAPTURE;
+    out->unit_stand_orders =
+        (uint8_t)(TDF_ReadInt(tdf, "unitstandorders", 1) != 0);
     out->cant_be_captured = TDF_ReadInt(tdf, "cantbecaptured", 0) ? 1 : 0;
     out->heal_time = TDF_ReadFloat(tdf, "healtime", 0.0f);
     if (out->heal_time < 0.0f) out->heal_time = 0.0f;
@@ -7073,6 +7251,20 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         for (int i = 0; i < cells; i++) {
             if (out->yardmap[i] & TAK_YARD_SACRED) { out->yardmap_sacred = 1; break; }
         }
+    }
+
+    /* A monarch, and anything not bmcode 1, can be neither stoned nor
+     * frozen (legacy:163161-163180). */
+    copy_bounded(out->stone, sizeof(out->stone),
+                 TDF_ReadString(tdf, "stone", ""));
+    out->cant_be_stoned = (uint8_t)(TDF_ReadInt(tdf, "cantbestoned", 0) & 1);
+    out->cant_be_frozen = (uint8_t)(TDF_ReadInt(tdf, "cantbefrozen", 0) & 1);
+    if (!out->cant_be_frozen)
+        copy_bounded(out->frozen, sizeof(out->frozen),
+                     TDF_ReadString(tdf, "frozen", ""));
+    if (out->commander || out->bmcode != 1) {
+        out->cant_be_stoned = 1;
+        out->cant_be_frozen = 1;
     }
 
     TDF_PopSection(tdf);   /* leave UNITINFO */
@@ -7117,6 +7309,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
                      TDF_ReadString(tdf, "soundhit", ""));
         w->range          = TDF_ReadInt(tdf, "range", 0);
         w->min_range      = TDF_ReadInt(tdf, "minrange", 0);
+        w->aim_tolerance  = TDF_ReadInt(tdf, "aimtolerance", 0) & 0xffff;
         w->area_of_effect = TDF_ReadInt(tdf, "areaofeffect", 0);
         w->edge_effectiveness = TDF_ReadFloat(tdf, "edgeeffectiveness", 0.0f);
         if (w->edge_effectiveness < 0.0f) w->edge_effectiveness = 0.0f;
@@ -7197,7 +7390,17 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
             (int16_t)TDF_ReadInt(tdf, "hoverattackaltitude", 0);
         w->drop_key = (uint8_t)(TDF_ReadInt(tdf, "dropped", 0) & 1);
         w->dropped        = ascii_contains_ci(w->subtype, "dropped") ? 1 : 0;
-        w->mind_control   = ascii_contains_ci(w->subtype, "mindcontrol") ? 1 : 0;
+        /* The mind control family: one flight, three hits. Stone is a
+         * Line of Sight subtype only, ice also a Remote Effect one
+         * (legacy:249797-249826, legacy:249896-249916). */
+        w->mind_control = 0;
+        if (ascii_contains_ci(w->subtype, "mindcontrol"))
+            w->mind_control = UNIT_SPELL_MIND;
+        else if (ascii_contains_ci(w->subtype, "turntofrozen"))
+            w->mind_control = UNIT_SPELL_FROZEN;
+        else if (ascii_contains_ci(w->subtype, "turntostone") &&
+                 ascii_contains_ci(w->type, "line of sight"))
+            w->mind_control = UNIT_SPELL_STONE;
         /* Only `type = Ballistic` gets the gravity behaviour; Guided,
          * Line of Sight and Wandering fly flat (legacy:249725-249983).
          * `subtype = Dropped` is its own legacy behaviour object
@@ -7828,23 +8031,26 @@ static int ensure_scratch(int need_verts, int need_idx) {
         float    *xy = (float *)tak_malloc(sizeof(float) * 2 * (size_t)new_cap);
         uint32_t *cl = (uint32_t *)tak_malloc(sizeof(uint32_t) * (size_t)new_cap);
         float    *uv = (float *)tak_malloc(sizeof(float) * 2 * (size_t)new_cap);
-        float    *wz = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
+        float    *wy = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
         float    *hk = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
-        if (!xy || !cl || !uv || !wz || !hk) {
+        uint8_t  *wt = (uint8_t *)tak_malloc((size_t)new_cap);
+        if (!xy || !cl || !uv || !wy || !hk || !wt) {
             if (xy) tak_free(xy);
             if (cl) tak_free(cl);
             if (uv) tak_free(uv);
-            if (wz) tak_free(wz);
+            if (wy) tak_free(wy);
             if (hk) tak_free(hk);
+            if (wt) tak_free(wt);
             return -1;
         }
         if (g_scratch_xy)    tak_free(g_scratch_xy);
         if (g_scratch_color) tak_free(g_scratch_color);
         if (g_scratch_uv)    tak_free(g_scratch_uv);
-        if (g_scratch_wz)    tak_free(g_scratch_wz);
+        if (g_scratch_wy)    tak_free(g_scratch_wy);
         if (g_scratch_hkey)  tak_free(g_scratch_hkey);
-        g_scratch_xy = xy; g_scratch_color = cl; g_scratch_uv = uv; g_scratch_wz = wz;
-        g_scratch_hkey = hk;
+        if (g_scratch_wet)   tak_free(g_scratch_wet);
+        g_scratch_xy = xy; g_scratch_color = cl; g_scratch_uv = uv; g_scratch_wy = wy;
+        g_scratch_hkey = hk; g_scratch_wet = wt;
         g_scratch_vcap = new_cap;
     }
     /* Node xform scratch — sized to the largest mesh seen. */
@@ -7874,11 +8080,15 @@ static int ensure_scratch(int need_verts, int need_idx) {
     return 0;
 }
 
+static void tall_features_free(void);
+
 static void scratch_free(void) {
+    tall_features_free();
     if (g_scratch_xy)    { tak_free(g_scratch_xy);    g_scratch_xy    = NULL; }
     if (g_scratch_color) { tak_free(g_scratch_color); g_scratch_color = NULL; }
     if (g_scratch_uv)    { tak_free(g_scratch_uv);    g_scratch_uv    = NULL; }
-    if (g_scratch_wz)    { tak_free(g_scratch_wz);    g_scratch_wz    = NULL; }
+    if (g_scratch_wy)    { tak_free(g_scratch_wy);    g_scratch_wy    = NULL; }
+    if (g_scratch_wet)   { tak_free(g_scratch_wet);   g_scratch_wet   = NULL; }
     if (g_scratch_hkey)  { tak_free(g_scratch_hkey);  g_scratch_hkey  = NULL; }
     if (g_scratch_idx)        { tak_free(g_scratch_idx);        g_scratch_idx        = NULL; }
     if (g_scratch_tri)        { tak_free(g_scratch_tri);        g_scratch_tri        = NULL; }
@@ -8748,6 +8958,9 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
      * sets its placed units' own share. */
     u->mana_max       = def->max_mana > 0 ? (float)def->max_mana : 0.0f;
     u->mana           = 0.0f;
+    /* init_cloaked is the cloak order a new unit starts with
+     * (legacy:226668). */
+    u->cloak_want     = def->init_cloaked;
     u->cmd_x          = 0;
     u->cmd_y          = 0;
     u->patrol_x       = world_x;
@@ -9455,8 +9668,14 @@ static int32_t cob_host_call_function(void *user, int fn_id,
             if (u->facing)
                 return (int32_t)(Units_BuildHeading(u->def_idx) * 65536.0f / 6.2831853f);
             return (int32_t)(u->heading * 65536.0f / 6.2831853f);
-        case 28: /* IN_WATER */
-            return 0;
+        case 28: { /* IN_WATER: a mover below the sea (legacy:185197-185206) */
+            const GameWorld *ww = World_Get();
+            if (!ww || ww->water_height <= 0 || !def || !(def->max_velocity > 0.0f))
+                return 0;
+            float y = (float)Terrain_SampleHeight(ww, u->world_x, u->world_y) +
+                      Units_DrawnAlt(ww, u);
+            return y < (float)ww->water_height;
+        }
         case 29: /* CURRENT_SPEED */
             return u->velocity >= 0 ? u->velocity : -u->velocity;
         case 30:
@@ -9488,6 +9707,11 @@ static int32_t cob_host_call_function(void *user, int fn_id,
                 fn_id, n_args);
     }
     return 0;
+}
+
+int32_t Units_DebugScriptPort(int handle, int port) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    return cob_host_call_function(&g_units[handle], port, 1, &(int32_t){ port });
 }
 
 int Units_DebugInvokeScript(const char *script_name) {
@@ -9779,6 +10003,8 @@ static void build_stance_args(const Unit *u, const UnitDef *def,
 /* The death type a dying unit's scripts hear: 0 for a blow, 5 for a
  * self destruct, which runs no Killed (legacy:227124-227127). */
 #define UNIT_DEATH_SELF_DESTRUCT 5
+#define UNIT_DEATH_STONE        14
+#define UNIT_DEATH_FROZEN       15
 static int g_death_kind;
 
 static void enter_state(Unit *u, UnitAnimState new_state) {
@@ -9836,6 +10062,10 @@ static void enter_state(Unit *u, UnitAnimState new_state) {
             break;
         }
         case UNIT_ANIM_DYING: {
+            /* Stone and ice run neither script (legacy:227124,
+             * legacy:227241-227256). */
+            if (g_death_kind == UNIT_DEATH_STONE ||
+                g_death_kind == UNIT_DEATH_FROZEN) break;
             /* Killed(severity, corpse type, flags). Legacy derives
              * severity from overkill against maximum hitpoints and
              * clamps it to 1..100 (legacy:227142, legacy:227241).
@@ -9951,13 +10181,9 @@ static int unit_read_corpse_type(Unit *u) {
  * a corpse smaller than the building it came from ends up centred on
  * it (legacy:227423). The body keeps the unit's exact spot, facing and
  * team colour (legacy:227429, 128220-128232). */
-static void unit_leave_corpse(const Unit *u) {
+static void unit_place_body(const Unit *u, const UnitDef *d, int fidx) {
     GameWorld *w = World_Get();
-    if (!w) return;
-    const UnitDef *d = Units_GetDef(u->def_idx);
-    if (!d) return;
-    int fidx = corpse_feature_for(d, u->corpse_type);
-    if (fidx < 0) return;
+    if (!w || !d || fidx < 0) return;
     int fp_x = (d->footprint_x > 0) ? d->footprint_x : 1;
     int fp_z = (d->footprint_z > 0) ? d->footprint_z : 1;
     int cell_x = Occ_TileOf(u->world_x - fp_x * 8) + d->corpse_adjust_x;
@@ -9989,6 +10215,20 @@ static void unit_leave_corpse(const Unit *u) {
     const FeatureDef *fd = Features_GetByIndex(fidx);
     fprintf(stderr, "Corpse: %s left %s at cell %d,%d\n",
             d->unitname, fd ? fd->name : "?", cell_x, cell_z);
+}
+
+static void unit_leave_corpse(const Unit *u) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    unit_place_body(u, d, corpse_feature_for(d, u->corpse_type));
+}
+
+/* A unit turned to stone or ice leaves the statue its file names where
+ * a corpse would lie (legacy:227340-227345, legacy:227395-227423). */
+static void unit_leave_statue(const Unit *u, int frozen) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    const char *name = d ? (frozen ? d->frozen : d->stone) : "";
+    if (!name[0]) return;
+    unit_place_body(u, d, Features_FindByName(name));
 }
 
 /* What a finished unit pays into its player's income. A building
@@ -10180,6 +10420,27 @@ static void apply_killed_as(Unit *t, int t_idx, int bursts) {
 }
 
 static void apply_killed(Unit *t, int t_idx) { apply_killed_as(t, t_idx, 1); }
+
+/* Turned to stone or ice the unit is gone at once: no Killed, no Dying,
+ * no death weapon and no corpse, and its statue stands in its place
+ * (legacy:233775-233785, legacy:227124, legacy:227241-227256,
+ * legacy:227340-227353). */
+static void apply_turned(Unit *t, int t_idx, int frozen) {
+    if (t->alive != UNIT_ALIVE_ACTIVE) return;
+    g_death_kind = frozen ? UNIT_DEATH_FROZEN : UNIT_DEATH_STONE;
+    apply_killed_as(t, t_idx, 0);
+    g_death_kind = 0;
+    if (t->alive == UNIT_ALIVE_DYING) {
+        if (t->cob) {
+            Cob_KillAllThreads(t->cob);
+            Cob_EngineFree(t->cob);
+            tak_free(t->cob);
+            t->cob = NULL;
+        }
+        t->alive = UNIT_ALIVE_DEAD;
+    }
+    unit_leave_statue(t, frozen);
+}
 
 /* A self destruct is death type 5: no Killed, so no body, the owner
  * counts the loss and nobody the kill, and SELFDESTRUCTAS bursts as the
@@ -11366,19 +11627,65 @@ static void unit_avoid_offset(const GameWorld *w, const Unit *u,
 double g_walk_prof_ms[4];
 double g_walk_calls;
 #define WALK_MARK(k) do { if (g_cmb_prof_on) { double t_ = eng_now_ms(); g_walk_prof_ms[k] += t_ - walk_t; walk_t = t_; } } while (0)
-/* Turn toward a heading at turnrate, as a walk turns (legacy:183472). */
-static void unit_turn_toward(Unit *u, const UnitDef *def, float want) {
+/* A heading the walk holds while it moves, set by a hover attacker
+ * turned onto its target. */
+static int   g_walk_face_on;
+static float g_walk_face;
+
+/* Turn toward a heading by a rate in 65536ths of a turn per 30 Hz frame,
+ * at once when the rate is 0. */
+static void unit_turn_at(Unit *u, float rate, float want) {
     float delta = want - u->heading;
     while (delta >  3.14159265f) delta -= 6.2831853f;
     while (delta < -3.14159265f) delta += 6.2831853f;
-    if (def->turn_rate > 0.0f) {
-        float step = def->turn_rate * (6.2831853f / 65536.0f) * 0.5f;
+    if (rate > 0.0f) {
+        float step = rate * (6.2831853f / 65536.0f) * 0.5f;
         if (delta >  step) delta =  step;
         if (delta < -step) delta = -step;
     }
     u->heading += delta;
     while (u->heading >  3.14159265f) u->heading -= 6.2831853f;
     while (u->heading < -3.14159265f) u->heading += 6.2831853f;
+}
+
+/* Turn toward a heading at turnrate, as a walk turns (legacy:183472). */
+static void unit_turn_toward(Unit *u, const UnitDef *def, float want) {
+    unit_turn_at(u, def->turn_rate, want);
+}
+
+/* A unit that turns its body onto what it shoots: a walker with a
+ * turninplacerate or a flyer that hover attacks. Any other leaves the
+ * aim to its script (legacy:249301-249306). */
+static int unit_faces_target(const UnitDef *def) {
+    if (!def || def->max_velocity <= 0.0f) return 0;
+    if (def->can_fly) return def->hover_attack != 0;
+    return def->turn_in_place_rate > 0.0f;
+}
+
+/* One tick of that turn toward the bearing (dx, dy): in place at
+ * turninplacerate on the ground (legacy:183434-183436), at turnrate in
+ * the air (legacy:184017). */
+static void unit_face_toward(Unit *u, const UnitDef *def,
+                             int64_t dx, int64_t dy) {
+    if ((dx == 0 && dy == 0) || !unit_faces_target(def)) return;
+    unit_turn_at(u, def->can_fly ? def->turn_rate : def->turn_in_place_rate,
+                 tak_atan2f((float)dx, -(float)dy));
+}
+
+/* Such a unit fires only with its body within the weapon's AimTolerance
+ * of the target, and never more than 0x200 off it
+ * (legacy:249365-249377). Its aim script waits for that too, so a unit
+ * still turning does not start one each tick. */
+static int unit_body_on_target(const Unit *u, const UnitDef *def,
+                               const UnitWeapon *wp, int32_t x, int32_t y) {
+    int32_t dx = x - u->world_x, dy = y - u->world_y;
+    if (!unit_faces_target(def) || (dx == 0 && dy == 0)) return 1;
+    int32_t tol = wp->aim_tolerance > 0x200 ? wp->aim_tolerance : 0x200;
+    int32_t want = (int32_t)(tak_atan2f((float)dx, -(float)dy)
+                             * 65536.0f / 6.2831853f);
+    int32_t hdg = (int32_t)(u->heading * 65536.0f / 6.2831853f);
+    int32_t err = (int16_t)(uint16_t)((hdg - want) & 0xffff);
+    return (err < 0 ? -err : err) <= tol;
 }
 
 /* A melee attacker walking at its target, which only stops once the
@@ -11510,7 +11817,9 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     {
         float dx = (float)(ax - u->world_x);
         float dy = (float)(ay - u->world_y);
-        if (dx != 0.0f || dy != 0.0f) {
+        if (g_walk_face_on) {
+            unit_turn_at(u, def->turn_rate, g_walk_face);
+        } else if (dx != 0.0f || dy != 0.0f) {
             float delta = tak_atan2f(dx, -dy) - u->heading;
             while (delta >  3.14159265f) delta -= 6.2831853f;
             while (delta < -3.14159265f) delta += 6.2831853f;
@@ -11549,7 +11858,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         float accel_ppt = def->acceleration > 0.0f ? def->acceleration * 0.25f
                                                    : max_ppt;
         float brake_ppt = brake_pf * 0.25f;
-        int he = unit_heading_err_units(u, sx, sy);
+        int he = g_walk_face_on ? 0 : unit_heading_err_units(u, sx, sy);
         float turn_dist = def->turn_rate > 0.0f
                         ? v_pf * (float)he / def->turn_rate : 0.0f;
         float stop_dist = brake_pf > 0.0f
@@ -11564,9 +11873,16 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         if (v < 0.0f) v = 0.0f;
     }
 
-    /* Move along the heading (legacy:183366-183372). */
+    /* Move along the heading (legacy:183366-183372). A flyer holding a
+     * heading moves straight at its point (legacy:183869-184070). */
     float dir_x = tak_sinf(u->heading);
     float dir_y = -tak_cosf(u->heading);
+    if (g_walk_face_on) {
+        float sx = (float)(ax - u->world_x), sy = (float)(ay - u->world_y);
+        float len = sqrtf(sx * sx + sy * sy);
+        dir_x = len > 0.0f ? sx / len : 0.0f;
+        dir_y = len > 0.0f ? sy / len : 0.0f;
+    }
     float fx = u->subpixel_x + dir_x * v;
     float fy = u->subpixel_y + dir_y * v;
     int32_t mx = (int32_t)floorf(fx);
@@ -11856,13 +12172,21 @@ static int weapon_can_target_unit(const UnitWeapon *wp, const Unit *t) {
     if (t->flying && weapon_is_melee(wp)) return 0;
     if (!t->flying && wp->to_air_weapon) return 0;
     if (wp->mind_control) {
-        /* Mind control passes over what it cannot take and what its
-         * damage table zeroes (legacy:15151, legacy:15160). */
         const UnitDef *td = Units_GetDef(t->def_idx);
         if (t->under_construction) return 0;
-        if (td && td->cant_be_captured) return 0;
-        if (td && weapon_damage_for_category(wp, td->damage_category) <= 0)
+        if (wp->mind_control == UNIT_SPELL_MIND) {
+            /* Mind control passes over what it cannot take and what its
+             * damage table zeroes (legacy:15151, legacy:15160). */
+            if (td && td->cant_be_captured) return 0;
+            if (td && weapon_damage_for_category(wp, td->damage_category) <= 0)
+                return 0;
+        } else if (td && (wp->mind_control == UNIT_SPELL_STONE
+                              ? td->cant_be_stoned : td->cant_be_frozen)) {
+            /* Stone and ice pass over what cannot be turned, a building
+             * or a monarch among them (legacy:21149-21156,
+             * legacy:186273-186278). */
             return 0;
+        }
     }
     return 1;
 }
@@ -12013,6 +12337,7 @@ static void fire_weapon_shot_now(Unit *u, int shooter_idx, int slot,
     if (target_handle < 0 || target_handle >= g_unit_count) return;
     Unit *t = &g_units[target_handle];
     if (t->alive != UNIT_ALIVE_ACTIVE) return;
+    cloak_hold(u, Units_GetDef(u->def_idx), CLOAK_FIRE_TICKS);
     /* A spell is a shot that costs mana, once however many a burst holds. */
     if (wp->mana_per_shot > 0 && burst_ordinal == 0) BattleRecord_Cast(u->player_id);
 
@@ -12289,6 +12614,7 @@ static void flame_particle(const Projectile *p, int idx) {
 static void fire_ground_shot_now(Unit *u, int shooter_idx, int slot,
                                  const UnitWeapon *wp) {
     if (!u || !wp) return;
+    cloak_hold(u, Units_GetDef(u->def_idx), CLOAK_FIRE_TICKS);
     if (wp->mana_per_shot > 0) BattleRecord_Cast(u->player_id);
     start_fire_script(u, slot);
     const GameWorld *sw = World_Get();
@@ -13228,10 +13554,9 @@ static void hover_attack_tick(Unit *u, int h, const UnitDef *def,
         *goal_y = py;
         return;
     }
-    /* At its point it faces the target and holds there. */
+    /* At its point it turns onto the target and holds there. */
     *desired = UNIT_ANIM_ATTACKING;
-    if (dx != 0 || dy != 0)
-        u->heading = tak_atan2f((float)dx, -(float)dy);
+    unit_face_toward(u, def, dx, dy);
 }
 
 /* A shot from the weapon in hand at the unit's target or its ground
@@ -13260,6 +13585,7 @@ static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
         (ground || u->target < 0 || u->target >= g_unit_count ||
          weapon_can_target_unit(&def->weapons[slot],
                                 &g_units[u->target])) &&
+        unit_body_on_target(u, def, &def->weapons[slot], aim_x, aim_y) &&
         weapon_aim_ready(u, slot, aim_key, aim_x, aim_y, ws)) {
         const UnitWeapon *wp = &def->weapons[slot];
 
@@ -13334,6 +13660,94 @@ static void caster_mana_tick(Unit *u, const UnitDef *def) {
     if (u->mana_max != (float)def->max_mana) u->mana_max = (float)def->max_mana;
     u->mana += def->mana_recharge_per_sec / 60.0f;
     if (u->mana > u->mana_max) u->mana = u->mana_max;
+}
+
+static int unit_def_can_cloak(const UnitDef *d) {
+    return d && (d->cloak_cost_per_sec > 0.0f || d->init_cloaked);
+}
+
+/* No cloak for the next ticks, or longer if it already waits longer. */
+static void cloak_hold(Unit *u, const UnitDef *def, int ticks) {
+    if (!unit_def_can_cloak(def)) return;
+    if (u->cloak_wait < ticks) u->cloak_wait = (uint16_t)ticks;
+}
+
+static int g_cloak_near[TAK_MAX_UNITS];
+
+/* An enemy its side sees, built and not cloaked itself, inside
+ * mincloakdistance (legacy:20826-20845, legacy:20536-20540). */
+static int cloak_enemy_near(const Unit *u, const UnitDef *def) {
+    int r = def->min_cloak_distance;
+    if (r <= 0) return 0;
+    int n = ugrid_candidates(u->world_x - r, u->world_y - r,
+                             u->world_x + r, u->world_y + r,
+                             g_cloak_near, TAK_MAX_UNITS);
+    int64_t r2 = (int64_t)r * r;
+    for (int k = 0; k < (n < 0 ? g_unit_count : n); k++) {
+        const Unit *t = &g_units[n < 0 ? k : g_cloak_near[k]];
+        if (t->alive != UNIT_ALIVE_ACTIVE || t->under_construction || t->cloaked)
+            continue;
+        if (!unit_players_are_enemies(u->player_id, t->player_id)) continue;
+        int64_t dx = (int64_t)t->world_x - u->world_x;
+        int64_t dy = (int64_t)t->world_y - u->world_y;
+        if (dx * dx + dy * dy > r2) continue;
+        if (unit_side_sees(u->player_id, t)) return 1;
+    }
+    return 0;
+}
+
+/* The cloak each tick (legacy:8700-8736): wanted and out of its wait,
+ * it costs the unit's own mana, cloakcostmoving while it moves, and on
+ * running short it waits. Anything else and it is off. */
+static void cloak_tick(Unit *u, const UnitDef *def) {
+    if (!u->cloak_want && !u->cloaked && !u->cloak_wait) return;
+    if (u->cloak_wait) u->cloak_wait--;
+    int on = 0;
+    if (u->cloak_want) {
+        if (cloak_enemy_near(u, def)) cloak_hold(u, def, CLOAK_NEAR_TICKS);
+        if (!u->cloak_wait) {
+            int moving = u->velocity != 0 || u->cur_speed_ppt > 0.0f;
+            float cost = (moving ? def->cloak_cost_moving_per_sec
+                                 : def->cloak_cost_per_sec) / 60.0f;
+            if (cost <= u->mana) {
+                u->mana -= cost;
+                on = 1;
+            } else {
+                cloak_hold(u, def, CLOAK_SHORT_TICKS);
+            }
+        }
+    }
+    u->cloaked = (uint8_t)on;
+}
+
+/* The order sets the unit's wish and runs StartCloaking or StopCloaking
+ * (legacy:9757-9779). */
+int Units_OrderCloak(int handle, int on) {
+    Unit *u = order_unit(handle);
+    const UnitDef *d = u ? Units_GetDef(u->def_idx) : NULL;
+    if (!u || !d || !(d->cloak_cost_per_sec > 0.0f)) return 0;
+    on = on ? 1 : 0;
+    if (u->cloak_want == on) return 1;
+    u->cloak_want = (uint8_t)on;
+    unit_start_script(u, on ? "StartCloaking" : "StopCloaking", NULL, 0);
+    return 1;
+}
+
+int Units_SelectedCloakState(void) {
+    int want = 0, rest = 0;
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (h < 0 || h >= g_unit_count) continue;
+        const Unit *u = &g_units[h];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != g_local_player) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || !(d->cloak_cost_per_sec > 0.0f)) continue;
+        if (u->cloak_want) want++;
+        else rest++;
+    }
+    if (!want && !rest) return -1;
+    if (want && rest) return 2;
+    return want ? 1 : 0;
 }
 
 /* What a caster can put toward a shot: its own reserve when the def
@@ -13984,6 +14398,7 @@ static void Units_TickCombat(void) {
         }
         flight_tick(u, def, flight_world);
         caster_mana_tick(u, def);
+        cloak_tick(u, def);
         caster_weapon_fallback(u, def);
         self_heal_tick(u, def);
 
@@ -14225,6 +14640,7 @@ static void Units_TickCombat(void) {
         if (u->cmd_kind != UNIT_CMD_BUILD) {
             u->build_endless = 0;
             u->build_held = 0;
+            u->build_unseen = 0;
         }
 
         if (u->cmd_kind == UNIT_CMD_GUARD && u->target >= 0) {
@@ -14386,15 +14802,10 @@ static void Units_TickCombat(void) {
                 goal_x = t->world_x;
                 goal_y = t->world_y;
             }
-            /* Face the target only once in reach. On the approach the
-             * walker owns the heading: forcing it here sent a unit
-             * along the target bearing instead of its waypoint, so it
-             * ground against whatever stood in between and never
-             * arrived. Immobile units never swing their base; their
-             * pieces aim through the COB AimWeapon script. */
-            if (target_in_range && (dx != 0 || dy != 0) &&
-                def->max_velocity > 0.0f)
-                u->heading = tak_atan2f((float)dx, -(float)dy);
+            /* Turn onto the target only once in reach: on the approach
+             * the walker owns the heading. A unit with no turn in place
+             * leaves the aim to its pieces, as a structure does. */
+            if (target_in_range) unit_face_toward(u, def, dx, dy);
         } else if (u->cmd_kind == UNIT_CMD_ATTACK_GROUND &&
                    def->num_weapons > 0 && hover_attacks(u, def, NULL)) {
             hovering = 1;
@@ -14419,9 +14830,7 @@ static void Units_TickCombat(void) {
                 goal_x = u->cmd_x;
                 goal_y = u->cmd_y;
             }
-            if (target_in_range && (dx != 0 || dy != 0) &&
-                def->max_velocity > 0.0f)
-                u->heading = tak_atan2f((float)dx, -(float)dy);
+            if (target_in_range) unit_face_toward(u, def, dx, dy);
         } else if (u->cmd_kind == UNIT_CMD_MOVE) {
             desired = UNIT_ANIM_MOVING;
             goal_x = u->cmd_x;
@@ -14443,7 +14852,9 @@ static void Units_TickCombat(void) {
             int reach = !(def->max_velocity > 0.0f) ||
                         builder_in_reach(u, def, u->build_def, u->cmd_x,
                                          u->cmd_y);
-            builder_summon_next(u, i, reach);
+            if (u->build_held && u->build_unseen)
+                builder_unseen_arrive(u, i, reach);
+            else builder_summon_next(u, i, reach);
             /* While it waits it walks to the site (legacy:12063-12070). */
             if (u->cmd_kind == UNIT_CMD_BUILD && u->build_target < 0 &&
                 !reach) {
@@ -14555,9 +14966,23 @@ static void Units_TickCombat(void) {
                 /* Keep walk thread alive — many scripts loop once and
                  * RETURN; restart while still moving. */
                 ensure_thread(u, "walk", &u->walk_thread_slot, NULL, 0);
-                int arrived = walk_tick(u, def, goal_x, goal_y);
                 /* A hover attacker's weapons stay on its target as it
-                 * flies (legacy:30223-30253). */
+                 * flies (legacy:30223-30253), and it holds itself turned
+                 * onto it while it moves (legacy:249301-249306). */
+                if (hovering && target_in_range && unit_faces_target(def)) {
+                    int32_t fx = u->cmd_x, fy = u->cmd_y;
+                    if (u->target >= 0 && u->target < g_unit_count) {
+                        fx = g_units[u->target].world_x;
+                        fy = g_units[u->target].world_y;
+                    }
+                    if (fx != u->world_x || fy != u->world_y) {
+                        g_walk_face_on = 1;
+                        g_walk_face = tak_atan2f((float)(fx - u->world_x),
+                                                 -(float)(fy - u->world_y));
+                    }
+                }
+                int arrived = walk_tick(u, def, goal_x, goal_y);
+                g_walk_face_on = 0;
                 if (hovering && target_in_range) unit_fire_tick(u, i, def);
                 if (arrived) {
                     u->velocity = 0; u->cur_speed_ppt = 0.0f;
@@ -14679,6 +15104,7 @@ static void Units_TickCombat(void) {
                                  ? def->worker_time : 1.0f;
                     float prev = u->reclaim_accum;
                     u->reclaim_accum += worker;
+                    cloak_hold(u, def, CLOAK_WORK_TICKS);
                     if (u->reclaim_accum > hp_max) u->reclaim_accum = hp_max;
                     if (ffd->energy > 0.0f) {
                         float paid = ffd->energy *
@@ -14745,6 +15171,7 @@ static void Units_TickCombat(void) {
                             }
                         }
                         rt->build_hp_accum += hp_per_tick_f;
+                        cloak_hold(u, def, CLOAK_WORK_TICKS);
                         int hp_per_tick = (int)floorf(rt->build_hp_accum);
                         if (hp_per_tick > 0) {
                             rt->build_hp_accum -= (float)hp_per_tick;
@@ -14762,6 +15189,7 @@ static void Units_TickCombat(void) {
                         float hp_per_tick_f =
                             ((float)hp_max * worker) / (reclaim_time * 60.0f);
                         rt->build_hp_accum += hp_per_tick_f;
+                        cloak_hold(u, def, CLOAK_WORK_TICKS);
                         int hp_per_tick = (int)floorf(rt->build_hp_accum);
                         if (hp_per_tick > 0) {
                             rt->build_hp_accum -= (float)hp_per_tick;
@@ -14836,6 +15264,7 @@ static void Units_TickCombat(void) {
                 float hp_per_tick_f = (((float)hp_max * worker) /
                                       (buildtime * 60.0f)) * progress_scale;
                 bt->build_hp_accum += hp_per_tick_f;
+                cloak_hold(u, def, CLOAK_WORK_TICKS);
                 if (btd && bt->under_construction)
                     build_sparkles(bt, (int)(bt - g_units), btd);
                 int hp_per_tick = (int)floorf(bt->build_hp_accum);
@@ -15488,6 +15917,10 @@ static int g_draw_order[TAK_MAX_UNITS];
 
 static uint8_t g_debug_run_size[TAK_MAX_UNITS];
 
+static int64_t draw_depth(const Unit *u) {
+    return ((int64_t)(u->flying != 0) << 32) + u->world_y;
+}
+
 static int build_draw_order(const struct GameWorld *world) {
     /* Frustum cull pass: only keep units whose footprint is inside the
      * viewport (expanded by a margin for the unit's projected size).
@@ -15523,12 +15956,13 @@ static int build_draw_order(const struct GameWorld *world) {
         g_draw_order[n++] = i;
     }
     /* Insertion sort by world_y (smaller world_y → drawn first → at
-     * the back). Stable: ties keep their spawn-order layering. */
+     * the back), flyers after every walker (legacy:210713-210733).
+     * Stable: ties keep their spawn-order layering. */
     for (int i = 1; i < n; i++) {
         int key = g_draw_order[i];
-        int32_t key_y = g_units[key].world_y;
+        int64_t key_y = draw_depth(&g_units[key]);
         int j = i - 1;
-        while (j >= 0 && g_units[g_draw_order[j]].world_y > key_y) {
+        while (j >= 0 && draw_depth(&g_units[g_draw_order[j]]) > key_y) {
             g_draw_order[j + 1] = g_draw_order[j];
             j--;
         }
@@ -16031,6 +16465,20 @@ int Units_FactoryBuildSpot(int factory_handle,
     return unit_factory_build_spot(f, out_x, out_y);
 }
 
+/* The sea level the run being transformed is tinted under, or 0 when
+ * no unit in it stands in the sea. */
+static float g_wet_sea = 0.0f;
+
+/* The underwater remap (the .blu table) darkens a colour toward the
+ * sea's green blue. All four sides' unit palettes carry the same table,
+ * which averages these three channel scales. */
+static uint32_t underwater_colour(uint32_t c) {
+    uint32_t r = ((c & 0xFFu) * 145u) >> 8;
+    uint32_t g = (((c >> 8) & 0xFFu) * 185u) >> 8;
+    uint32_t b = (((c >> 16) & 0xFFu) * 189u) >> 8;
+    return (c & 0xFF000000u) | r | (g << 8) | (b << 16);
+}
+
 /* Transform one unit's mesh into the scratch buffers at vertex offset
  * `v_off`: per-piece COB transform, heading rotation, projection, plus
  * the per-vertex height key the draw order needs. */
@@ -16051,15 +16499,22 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
     const float cr = tak_cosf(u->roll),  sr = tak_sinf(u->roll);
     const int   V  = m->vert_count;
 
-    /* A body being built draws opaque or not at all (legacy:197474). */
-    uint32_t alpha_mul = 255;
+    /* A body being built draws opaque or not at all (legacy:197474).
+     * A ghost or a cloaked unit draws half see through. */
+    uint32_t alpha_mul = (uint32_t)Units_DrawnAlpha(u);
     /* The whiteout: the model rasterised as one solid block of white
      * (legacy:197033-197035) and blended out with the fade
      * (legacy:211265-211295). */
     const int whiteout = u->magic_death != 0;
     if (whiteout) {
-        alpha_mul = (uint32_t)u->magic_death_fade * 255u / UNIT_MAGIC_DEATH_TICKS;
+        alpha_mul = alpha_mul * u->magic_death_fade / UNIT_MAGIC_DEATH_TICKS;
     }
+
+    /* A unit standing below the sea is drawn through the underwater
+     * remap wherever it lies under the surface (legacy:197018-197027). */
+    const float sea = (float)world->water_height;
+    const int wet = world->water_height > 0 && uh < sea;
+    if (wet) g_wet_sea = sea;
 
     /* Per-piece transforms for THIS unit. Animation gives each unit its
      * own piece state, so this is recomputed per unit. */
@@ -16074,7 +16529,8 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
         if (x->hidden) {
             g_scratch_xy[2 * i + 0] = 0.0f;
             g_scratch_xy[2 * i + 1] = 0.0f;
-            g_scratch_wz[i]         = 0.0f;
+            g_scratch_wy[i]         = 0.0f;
+            g_scratch_wet[i]        = 0;
             g_scratch_hkey[i]       = 0.0f;
             g_scratch_color[i]      = 0;
             g_scratch_uv[2 * i + 0] = 0.0f;
@@ -16109,8 +16565,9 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
         const float wz = uz + rz * ta;
         g_scratch_xy[2 * i + 0] = wx - cam_x;
         g_scratch_xy[2 * i + 1] = wz - cam_y - wy * tilt;
-        g_scratch_wz[i]         = wz;
+        g_scratch_wy[i]         = wy;
         g_scratch_hkey[i]       = model_height_key(my);
+        g_scratch_wet[i]        = (uint8_t)(wet && wy <= sea);
         /* Colour is RGBA8888 little-endian (A in the high byte). */
         uint32_t c = m->colors[v];
         if (whiteout) c |= 0x00FFFFFFu;
@@ -16119,6 +16576,7 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
             a = (a * alpha_mul) / 255u;
             c = (c & 0x00FFFFFFu) | (a << 24);
         }
+        if (g_scratch_wet[i]) c = underwater_colour(c);
         g_scratch_color[i] = c;
         g_scratch_uv[2 * i + 0] = m->uvs[2 * v + 0];
         g_scratch_uv[2 * i + 1] = m->uvs[2 * v + 1];
@@ -16185,6 +16643,13 @@ static int build_unit_tri_list(const UnitMesh *m, int v_off) {
  * Backfaces are tested per copy (legacy:197804), since copies can face
  * different ways. A lone copy is culled up front, which keeps its
  * stretches as long as they can be. */
+/* Tall scenery drawn among the units, defined with the features below. */
+static void collect_tall_features(const struct GameWorld *world);
+static void flush_tall_features(TAK_Platform *plat, int row);
+static int  tall_feature_before(int row);
+static int  unit_draw_row(const Unit *u);
+static void note_drawn_box(const UnitMesh *m, int v_off);
+
 /* Set for the run being emitted when its units are in the whiteout:
  * the triangles go out untextured, one block of the vertex white. */
 static int g_submit_solid_white = 0;
@@ -16192,12 +16657,58 @@ static int g_submit_solid_white = 0;
 static void submit_intangible_mass(TAK_Platform *plat, const UnitMesh *m,
                                    const Unit *u, const UnitDef *def, int n_verts);
 
+/* A new vertex `t` of the way from `a` to `b`, in colour `c`. */
+static int split_vert(int n, int a, int b, float t, uint32_t c) {
+    g_scratch_xy[2 * n + 0] = g_scratch_xy[2 * a + 0] + t * (g_scratch_xy[2 * b + 0] - g_scratch_xy[2 * a + 0]);
+    g_scratch_xy[2 * n + 1] = g_scratch_xy[2 * a + 1] + t * (g_scratch_xy[2 * b + 1] - g_scratch_xy[2 * a + 1]);
+    g_scratch_uv[2 * n + 0] = g_scratch_uv[2 * a + 0] + t * (g_scratch_uv[2 * b + 0] - g_scratch_uv[2 * a + 0]);
+    g_scratch_uv[2 * n + 1] = g_scratch_uv[2 * a + 1] + t * (g_scratch_uv[2 * b + 1] - g_scratch_uv[2 * a + 1]);
+    g_scratch_color[n] = c;
+    return n;
+}
+
+/* Writes a triangle's indices at `w`, cut along the sea level when it
+ * crosses it so the part under the surface alone takes the underwater
+ * colour, the line the original's per pixel test draws. Cut vertices
+ * go at `*nv`. Returns the new index count. */
+static int emit_tri(int i0, int i1, int i2, int w, int *nv) {
+    const int v[3] = { i0, i1, i2 };
+    const int wet = g_scratch_wet[i0] + g_scratch_wet[i1] + g_scratch_wet[i2];
+    if (wet == 0 || wet == 3 || *nv + 4 > 65535 || *nv + 4 > g_scratch_vcap ||
+        w + 9 > g_scratch_icap) {
+        g_scratch_idx[w++] = (uint16_t)i0;
+        g_scratch_idx[w++] = (uint16_t)i1;
+        g_scratch_idx[w++] = (uint16_t)i2;
+        return w;
+    }
+    /* The one vertex alone on its side, then the other two in winding. */
+    int k = 0;
+    while ((g_scratch_wet[v[k]] != 0) == (wet == 2)) k++;
+    const int a = v[k], b = v[(k + 1) % 3], c = v[(k + 2) % 3];
+    const float ta = (g_wet_sea - g_scratch_wy[a]) / (g_scratch_wy[b] - g_scratch_wy[a]);
+    const float tc = (g_wet_sea - g_scratch_wy[a]) / (g_scratch_wy[c] - g_scratch_wy[a]);
+    /* A prim is one colour, so the dry end's colour is the dry side's. */
+    const uint32_t dry = g_scratch_wet[a] ? g_scratch_color[b] : g_scratch_color[a];
+    const uint32_t a_col = g_scratch_wet[a] ? underwater_colour(dry) : dry;
+    const uint32_t o_col = g_scratch_wet[a] ? dry : underwater_colour(dry);
+    const int pa = split_vert((*nv)++, a, b, ta, a_col);
+    const int qa = split_vert((*nv)++, a, c, tc, a_col);
+    const int po = split_vert((*nv)++, a, b, ta, o_col);
+    const int qo = split_vert((*nv)++, a, c, tc, o_col);
+    const uint16_t tris[9] = { (uint16_t)a,  (uint16_t)pa, (uint16_t)qa,
+                               (uint16_t)po, (uint16_t)b,  (uint16_t)c,
+                               (uint16_t)po, (uint16_t)c,  (uint16_t)qo };
+    memcpy(&g_scratch_idx[w], tris, sizeof(tris));
+    return w + 9;
+}
+
 static void emit_height_ordered(TAK_Platform *plat, const UnitMesh *m,
                                 int n_inst, int total_verts) {
     const int V = m->vert_count;
     int kept = build_unit_tri_list_ex(m, 0, n_inst == 1);
     if (kept > 1) qsort(g_scratch_tri, kept, sizeof(TriSort), tri_cmp_far_first);
     int s = 0;
+    int nv = total_verts;
     while (s < kept) {
         int e = s + 1;
         while (e < kept && g_scratch_tri[e].batch == g_scratch_tri[s].batch) e++;
@@ -16209,9 +16720,7 @@ static void emit_height_ordered(TAK_Platform *plat, const UnitMesh *m,
                 const int i1 = g_scratch_tri[t].i1 + v_off;
                 const int i2 = g_scratch_tri[t].i2 + v_off;
                 if (!tri_faces_camera(i0, i1, i2)) continue;
-                g_scratch_idx[w++] = (uint16_t)i0;
-                g_scratch_idx[w++] = (uint16_t)i1;
-                g_scratch_idx[w++] = (uint16_t)i2;
+                w = emit_tri(i0, i1, i2, w, &nv);
             }
         }
         if (w > 0) {
@@ -16219,7 +16728,7 @@ static void emit_height_ordered(TAK_Platform *plat, const UnitMesh *m,
                 g_submit_solid_white ? NULL
                     : m->batches[g_scratch_tri[s].batch].atlas_tex,
                 g_scratch_xy, g_scratch_color, g_scratch_uv,
-                total_verts, g_scratch_idx, w);
+                nv, g_scratch_idx, w);
         }
         s = e;
     }
@@ -16264,12 +16773,15 @@ static void submit_run(TAK_Platform *plat, const struct GameWorld *world,
         const int total_verts   = chunk_n * V;
         const int max_total_idx = chunk_n * m->tri_count * 3;
 
-        if (ensure_scratch(total_verts, max_total_idx) != 0) continue;
+        /* Room for the cuts along the sea level a wet run needs. */
+        if (ensure_scratch(total_verts + 2048, max_total_idx + 6144) != 0) continue;
 
         /* ── Transform every unit's verts into the merged buffer. ── */
+        g_wet_sea = 0.0f;
         for (int ci = 0; ci < chunk_n; ci++) {
-            transform_unit_verts(m, world, &g_units[unit_indices[chunk_start + ci]],
-                                 y_scale, ci * V);
+            const Unit *u = &g_units[unit_indices[chunk_start + ci]];
+            transform_unit_verts(m, world, u, y_scale, ci * V);
+            if (!u->flying) note_drawn_box(m, ci * V);
         }
 
         /* ── One ordered pass over every triangle in the run. ────
@@ -16723,7 +17235,8 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
         if (x->hidden) {
             g_scratch_xy[2 * v + 0] = 0.0f;
             g_scratch_xy[2 * v + 1] = 0.0f;
-            g_scratch_wz[v]         = 0.0f;
+            g_scratch_wy[v]         = 0.0f;
+            g_scratch_wet[v]        = 0;
             g_scratch_hkey[v]       = 0.0f;
             g_scratch_color[v]      = 0;
             g_scratch_uv[2 * v + 0] = 0.0f;
@@ -16745,7 +17258,8 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
         const float wz = uz + rz * ta;
         g_scratch_xy[2 * v + 0] = wx - cam_x;
         g_scratch_xy[2 * v + 1] = wz - cam_y - wy * tilt;
-        g_scratch_wz[v]         = wz;
+        g_scratch_wy[v]         = wy;
+        g_scratch_wet[v]        = 0;
         g_scratch_hkey[v]       = model_height_key(my);
         /* Blend authored vertex colour with the tint and the ghost
          * alpha. RGB = mix(authored, tint, 0.5); A = authored.A * alpha255. */
@@ -16785,12 +17299,16 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
     memset(g_debug_run_size, 0, sizeof(g_debug_run_size));
     if (n <= 0) return;
 
+    collect_tall_features(world);
     int run_start = 0;
     while (run_start < n) {
         const Unit *u0 = &g_units[g_draw_order[run_start]];
+        flush_tall_features(plat, unit_draw_row(u0));
         int run_end = run_start + 1;
         while (run_end < n) {
             const Unit *uk = &g_units[g_draw_order[run_end]];
+            /* A tall feature between the two rows goes down between them. */
+            if (tall_feature_before(unit_draw_row(uk))) break;
             if (uk->def_idx        != u0->def_idx)        break;
             if (uk->team_color_idx != u0->team_color_idx) break;
             /* A whiteout draws untextured, so it is its own run. */
@@ -16809,6 +17327,7 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
                    g_draw_order + run_start, run_end - run_start);
         run_start = run_end;
     }
+    flush_tall_features(plat, INT_MAX);
 }
 
 /* How many units shared the coalesced run this one was drawn in on the
@@ -16953,6 +17472,20 @@ static void render_selection_rings(const struct GameWorld *world, TAK_Platform *
         }
         #undef DASHES
         #undef DASH_SEG
+        /* Your own cloaked unit shows how near an enemy may come
+         * (legacy:180534-180536). */
+        if (def && u->cloaked && u->player_id == g_local_player &&
+            def->min_cloak_distance > 0) {
+            SDL_FPoint pts[49];
+            float cr = (float)def->min_cloak_distance;
+            for (int k = 0; k <= 48; k++) {
+                float a = (float)k / 48.0f * 6.2831853f;
+                pts[k].x = fx + tak_cosf(a) * cr;
+                pts[k].y = fy + tak_sinf(a) * cr * tilt;
+            }
+            SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+            SDL_RenderDrawLinesF(r, pts, 49);
+        }
     }
 }
 
@@ -17072,7 +17605,8 @@ static void submit_static_mesh_run(TAK_Platform *plat,
                 if (x->hidden) {
                     g_scratch_xy[2*i+0] = 0.0f;
                     g_scratch_xy[2*i+1] = 0.0f;
-                    g_scratch_wz[i]     = 0.0f;
+                    g_scratch_wy[i]     = 0.0f;
+                    g_scratch_wet[i]    = 0;
                     g_scratch_hkey[i]   = 0.0f;
                     g_scratch_color[i]  = 0;
                     g_scratch_uv[2*i+0] = 0.0f;
@@ -17099,7 +17633,8 @@ static void submit_static_mesh_run(TAK_Platform *plat,
                 const float wz = uz + rz * ta;
                 g_scratch_xy[2*i+0] = wx - cam_x;
                 g_scratch_xy[2*i+1] = wz - cam_y - wy * tilt;
-                g_scratch_wz[i]     = wz;
+                g_scratch_wy[i]     = wy;
+                g_scratch_wet[i]    = 0;
                 g_scratch_hkey[i]   = model_height_key(by);
                 g_scratch_color[i]  = m->colors[v];
                 g_scratch_uv[2*i+0] = m->uvs[2*v+0];
@@ -18021,6 +18556,40 @@ static void render_feature_at_work(const struct GameWorld *world, SDL_Renderer *
     }
 }
 
+/* Where feature `i`'s sprite is anchored on screen. 0 when it is off
+ * screen or on unexplored ground and so not drawn. */
+static int feature_screen_anchor(const struct GameWorld *world, int i,
+                                 int *out_sx, int *out_sy) {
+    /* Anchor the sprite at the centre of the feature's footprint
+     * (in tile space). The sprite's authored offset_x/_y is the
+     * hotspot relative to that anchor — usually the foot-centre,
+     * which is exactly what a top-down RTS expects so the sprite
+     * sits on the cell that its TNT entry occupies. Tile = 16 wpx
+     * to match the rest of the engine. */
+    int fp_x = 1, fp_z = 1;
+    Features_InstanceFootprint(world, i, &fp_x, &fp_z);
+    int wx = world->features[i].tile_x * 16 + fp_x * 8;
+    int wy = world->features[i].tile_z * 16 + fp_z * 8;
+    int sx = wx - world->cam_x;
+    /* Features lift with the ground the same way units do: legacy
+     * subtracts the mean of the cell's four corner heights over 2
+     * (legacy:211150-211153). Without it a sacred pad sits lower
+     * on screen than the lodestone standing on it. */
+    int sy = wy - world->cam_y
+           - (int)((float)Terrain_SampleHeight(world, wx, wy) * g_tan_tilt);
+    if (sx < -128 || sy < -128 ||
+        sx > world->viewport_w + 128 ||
+        sy > world->viewport_h + 128) return 0;
+    if (Fog_StateAt(world, wx, wy) == TAK_FOG_UNEXPLORED) return 0;
+    *out_sx = sx;
+    *out_sy = sy;
+    return 1;
+}
+
+static int feature_frame_now(const FeatureSprite *fs) {
+    return fs->num_frames > 1 ? (int)((g_construct_anim_tick / 4) % fs->num_frames) : 0;
+}
+
 static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
     if (!world || !plat || !plat->renderer) return;
     if (!world->features || world->feature_count <= 0) return;
@@ -18031,28 +18600,8 @@ static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
         /* A feature with `object` is a model, drawn with the corpse
          * pass (legacy:127098). */
         if (fd && fd->object[0]) continue;
-
-        /* Anchor the sprite at the centre of the feature's footprint
-         * (in tile space). The sprite's authored offset_x/_y is the
-         * hotspot relative to that anchor — usually the foot-centre,
-         * which is exactly what a top-down RTS expects so the sprite
-         * sits on the cell that its TNT entry occupies. Tile = 16 wpx
-         * to match the rest of the engine. */
-        int fp_x = 1, fp_z = 1;
-        Features_InstanceFootprint(world, i, &fp_x, &fp_z);
-        int wx = world->features[i].tile_x * 16 + fp_x * 8;
-        int wy = world->features[i].tile_z * 16 + fp_z * 8;
-        int sx = wx - world->cam_x;
-        /* Features lift with the ground the same way units do: legacy
-         * subtracts the mean of the cell's four corner heights over 2
-         * (legacy:211150-211153). Without it a sacred pad sits lower
-         * on screen than the lodestone standing on it. */
-        int sy = wy - world->cam_y
-               - (int)((float)Terrain_SampleHeight(world, wx, wy) * g_tan_tilt);
-        if (sx < -128 || sy < -128 ||
-            sx > world->viewport_w + 128 ||
-            sy > world->viewport_h + 128) continue;
-        if (Fog_StateAt(world, wx, wy) == TAK_FOG_UNEXPLORED) continue;
+        int sx = 0, sy = 0;
+        if (!feature_screen_anchor(world, i, &sx, &sy)) continue;
 
         if (!fd) {
             /* Unresolved feature: red dot so we can see which TNT cells
@@ -18081,9 +18630,7 @@ static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
             render_feature_at_work(world, r, fd, mf, sx, sy);
             continue;
         }
-        int frame_idx = fs->num_frames > 1
-            ? (int)((g_construct_anim_tick / 4) % fs->num_frames)
-            : 0;
+        int frame_idx = feature_frame_now(fs);
         /* The shadow sprite goes down first, under the feature itself
          * (legacy:211159-211176). */
         if (g_shadows_on && fd->seqname_shad[0] && !fd->no_shadow) {
@@ -18097,6 +18644,141 @@ static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
         }
         blit_feature_frame(r, fs, frame_idx, sx, sy, 0);
     }
+}
+
+/* ── Tall scenery over the units behind it ───────────────────────────
+ *
+ * The original draws scenery under 10 high with the ground, and taller
+ * scenery row by row among the units: one map row's walkers, then that
+ * row's tall features, then the next row (legacy:210555-210570,
+ * legacy:210619-210628, legacy:210650-210686), and flyers after every
+ * row (legacy:210713-210733). The height kept is the low byte of the
+ * feature's `height` (legacy:127053-127054). The classic view lays all
+ * scenery under the fog before any unit, so a tall feature goes down
+ * again, body only, over each unit that stood behind it. */
+typedef struct TallFeature {
+    int            row;       /* map row of the anchor cell */
+    int            idx;       /* world->features index, for ties */
+    int            sx, sy;
+    int            frame;
+    FeatureSprite *fs;
+    SDL_Rect       rect;      /* where the sprite lands */
+} TallFeature;
+static TallFeature *g_tall;
+static int          g_tall_cap, g_tall_count, g_tall_next;
+/* Screen boxes of the walkers drawn so far this frame. */
+static SDL_Rect     g_drawn_box[TAK_MAX_UNITS];
+static int          g_drawn_count;
+
+static int tall_cmp(const void *a, const void *b) {
+    const TallFeature *x = (const TallFeature *)a, *y = (const TallFeature *)b;
+    if (x->row != y->row) return x->row < y->row ? -1 : 1;
+    return x->idx < y->idx ? -1 : (x->idx > y->idx);
+}
+
+static void tall_features_free(void) {
+    if (g_tall) tak_free(g_tall);
+    g_tall = NULL;
+    g_tall_cap = g_tall_count = g_tall_next = 0;
+}
+
+/* The tall features on screen this frame, in row order. */
+static void collect_tall_features(const struct GameWorld *world) {
+    g_tall_count = g_tall_next = 0;
+    g_drawn_count = 0;
+    if (!world->features || world->feature_count <= 0) return;
+    const int x0 = world->cam_x - 384, x1 = world->cam_x + world->viewport_w + 384;
+    const int y0 = world->cam_y - 384, y1 = world->cam_y + world->viewport_h + 384;
+    for (int i = 0; i < world->feature_count; i++) {
+        const struct MapFeature *mf = &world->features[i];
+        if (mf->tile_x * 16 < x0 || mf->tile_x * 16 > x1 ||
+            mf->tile_z * 16 < y0 || mf->tile_z * 16 > y1) continue;
+        const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+        if (!fd || fd->object[0] || (fd->height & 0xff) < 10) continue;
+        if (mf->fx == FEATURE_FX_DYING || mf->fx == FEATURE_FX_BURNING) continue;
+        int sx = 0, sy = 0;
+        if (!feature_screen_anchor(world, i, &sx, &sy)) continue;
+        FeatureSprite *fs = load_feature_sprite(fd->filename, fd->seqname,
+                                                 world->features_rgba);
+        if (!fs || fs->num_frames <= 0) continue;
+        int f = feature_frame_now(fs);
+        if (!fs->frame_pixels[f]) continue;
+        if (g_tall_count >= g_tall_cap) {
+            int cap = g_tall_cap ? g_tall_cap * 2 : 256;
+            TallFeature *grown = (TallFeature *)tak_malloc(sizeof(TallFeature) * (size_t)cap);
+            if (!grown) return;
+            if (g_tall) {
+                memcpy(grown, g_tall, sizeof(TallFeature) * (size_t)g_tall_count);
+                tak_free(g_tall);
+            }
+            g_tall = grown;
+            g_tall_cap = cap;
+        }
+        TallFeature *t = &g_tall[g_tall_count++];
+        t->row = mf->tile_z;
+        t->idx = i;
+        t->sx = sx;
+        t->sy = sy;
+        t->frame = f;
+        t->fs = fs;
+        t->rect.x = sx - fs->frame_off_x[f];
+        t->rect.y = sy - fs->frame_off_y[f];
+        t->rect.w = fs->frame_w[f];
+        t->rect.h = fs->frame_h[f];
+    }
+    if (g_tall_count > 1) qsort(g_tall, (size_t)g_tall_count, sizeof(TallFeature), tall_cmp);
+}
+
+/* Lays the tall features of every row before `row` over the walkers
+ * drawn so far, clipped to each walker's box so nothing else moves. */
+static void flush_tall_features(TAK_Platform *plat, int row) {
+    SDL_Renderer *r = plat->renderer;
+    SDL_Rect prev;
+    const SDL_bool clipped = SDL_RenderIsClipEnabled(r);
+    SDL_RenderGetClipRect(r, &prev);
+    int changed = 0;
+    for (; g_tall_next < g_tall_count && g_tall[g_tall_next].row < row; g_tall_next++) {
+        const TallFeature *t = &g_tall[g_tall_next];
+        for (int k = 0; k < g_drawn_count; k++) {
+            SDL_Rect cut;
+            if (!SDL_IntersectRect(&t->rect, &g_drawn_box[k], &cut)) continue;
+            if (clipped && !SDL_IntersectRect(&cut, &prev, &cut)) continue;
+            SDL_RenderSetClipRect(r, &cut);
+            blit_feature_frame(r, t->fs, t->frame, t->sx, t->sy, 0);
+            changed = 1;
+        }
+    }
+    if (changed) SDL_RenderSetClipRect(r, clipped ? &prev : NULL);
+}
+
+/* The map row a unit is drawn in, flyers after every row. */
+static int unit_draw_row(const Unit *u) {
+    return u->flying ? INT_MAX : u->world_y >> 4;
+}
+
+/* 1 while a tall feature of a row before `row` is still to go down. */
+static int tall_feature_before(int row) {
+    return g_tall_next < g_tall_count && g_tall[g_tall_next].row < row;
+}
+
+/* Notes where a walker just went, when a tall feature may cover it. */
+static void note_drawn_box(const UnitMesh *m, int v_off) {
+    if (g_tall_next >= g_tall_count || g_drawn_count >= TAK_MAX_UNITS) return;
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    for (int v = 0; v < m->vert_count; v++) {
+        if (g_scratch_node_xform[m->vert_node_idx[v]].hidden) continue;
+        const float x = g_scratch_xy[2 * (v_off + v)], y = g_scratch_xy[2 * (v_off + v) + 1];
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+    }
+    if (x0 > x1) return;
+    SDL_Rect *b = &g_drawn_box[g_drawn_count++];
+    b->x = (int)floorf(x0);
+    b->y = (int)floorf(y0);
+    b->w = (int)ceilf(x1) - b->x + 1;
+    b->h = (int)ceilf(y1) - b->y + 1;
 }
 
 /* ── Ground shadows ──────────────────────────────────────────────────
