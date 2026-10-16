@@ -12936,22 +12936,24 @@ static float flyer_height(const Unit *u, const UnitDef *def) {
                                              : (float)def->cruise_alt;
 }
 
-static int unit_climbing(const Unit *u, const UnitDef *def) {
-    return def && def->can_fly && u->flying &&
-           u->flight_alt < flyer_height(u, def);
+/* A flyer holds its fire on the ground and while it climbs. Standby
+ * turns its weapons off (legacy:24543) and only an air attack turns them
+ * on (legacy:25797), which D-026 ties to reaching cruise height. */
+static int flyer_holds_fire(const Unit *u, const UnitDef *def) {
+    return def && def->can_fly &&
+           (!u->flying || u->flight_alt < flyer_height(u, def));
 }
 
 static void flight_tick(Unit *u, const UnitDef *def, const GameWorld *w) {
     if (!def->can_fly) return;
-    /* Takeoff follows the original's missions: moving, and an ordered
-     * attack, lift the unit at once (legacy:25786). One that picked its
-     * own target stays down while it can already reach it
-     * (legacy:26770-26803). Once up it stays up until it runs out of
-     * orders and targets and finds clear ground to land on, which
-     * flyer_air_tick decides. */
+    /* Takeoff follows the original's missions: moving, any order and
+     * any target lift the unit at once. A target found on standby starts
+     * an attack (legacy:24553), a flyer attacks only by its air missions
+     * (legacy:186984-187010) and each takes off first (legacy:25786).
+     * Once up it stays up until it runs out of orders and targets and
+     * finds clear ground to land on, which flyer_air_tick decides. */
     int lift = (u->anim_state == UNIT_ANIM_MOVING) ||
-               (u->cmd_kind != UNIT_CMD_NONE &&
-                (u->cmd_kind != UNIT_CMD_ATTACK || u->attack_explicit));
+               u->cmd_kind != UNIT_CMD_NONE || u->target >= 0;
     if (!u->flying && lift) {
         u->flying = 1;
         unit_start_script(u, "BeginFlight", NULL, 0);
@@ -13675,7 +13677,7 @@ static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
         aim_x = g_units[u->target].world_x;
         aim_y = g_units[u->target].world_y;
     }
-    if (unit_climbing(u, def) ||
+    if (flyer_holds_fire(u, def) ||
         !(ground || u->target < 0 || u->target >= g_unit_count ||
           weapon_can_target_unit(&def->weapons[slot], &g_units[u->target])) ||
         !unit_body_on_target(u, def, &def->weapons[slot], aim_x, aim_y))

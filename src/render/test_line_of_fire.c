@@ -3321,6 +3321,39 @@ TEST(a_blade_never_strikes_a_flyer_in_the_air) {
     ASSERT_EQ_INT(UNIT_CMD_NONE, kind);
 }
 
+/* A flyer on the ground holds its weapons, and one that takes a target
+ * of its own lifts to attack it, so it fires only from the air
+ * (legacy:24563-24600, legacy:186996-187028, legacy:25786-25797). */
+TEST(a_flyer_on_the_ground_takes_off_before_it_shoots) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    UnitDef *fd = (UnitDef *)Units_GetDef(LF_HAWK);
+    fd->weapons[0] = Units_GetDef(LF_ARCHER)->weapons[0];
+    fd->num_weapons = 1;
+    int h = lf_spawn(LF_HAWK, 1, LF_SX, LF_ROW);
+    int foe = lf_spawn(LF_STURDY, 2, LF_SX + 300, LF_ROW);
+    ASSERT(h >= 0 && foe >= 0);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    Units_DebugSetAggro(h, UNIT_AGGRO_OFFENSIVE);
+    int shots = 0, ground_shots = 0, flew = 0;
+    int prev = lf_unit(h)->weapon_state[0].cooldown_ticks;
+    for (int i = 0; i < 900; i++) {
+        Units_TickEngines();
+        const Unit *u = lf_unit(h);
+        int cd = u->weapon_state[0].cooldown_ticks;
+        if (cd > prev) {
+            shots++;
+            if (!u->flying) ground_shots++;
+        }
+        prev = cd;
+        flew |= u->flying;
+    }
+    lf_end();
+    printf("(%d shots, %d from the ground, flew %d) ", shots, ground_shots, flew);
+    ASSERT(shots > 0);
+    ASSERT_EQ_INT(0, ground_shots);
+    ASSERT_EQ_INT(1, flew);
+}
+
 /* ── what the blast hook hears ─────────────────────────────────────── */
 
 TEST(a_rock_on_the_ground_tells_the_hook_where_and_whose) {
@@ -3809,6 +3842,7 @@ int main(int argc, char **argv) {
     RUN(a_patroller_breaks_off_at_its_leash_and_resumes_its_route);
     RUN(a_patrolling_builder_mends_what_it_passes_and_goes_on);
     RUN(a_blade_never_strikes_a_flyer_in_the_air);
+    RUN(a_flyer_on_the_ground_takes_off_before_it_shoots);
     TEST_SUITE("An attack out of reach");
     RUN(an_attack_on_a_target_out_of_reach_is_kept);
     TEST_SUITE("The cell test");

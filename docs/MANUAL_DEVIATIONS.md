@@ -1737,8 +1737,9 @@ Format per entry:
 ## D-026: A flyer holds its fire while it climbs
 
 - Change: a flyer that has taken off to attack or to move does not fire
-  until it reaches its cruise height. A flyer that stays on the ground
-  fires from there as before.
+  until it reaches its cruise height. A flyer on the ground does not
+  fire at all, as in the original, whose standby turns a flyer's
+  weapons off (legacy:24543). One that takes a target takes off for it.
 - Why: some flyers fire from a piece at or under their feet. The Zhon
   hunter's lightning leaves a point 5 px under her. Fired in the first
   ticks of her climb, the shot started under the ground and burst
