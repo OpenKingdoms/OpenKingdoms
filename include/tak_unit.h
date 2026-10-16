@@ -585,6 +585,15 @@ typedef struct UnitDef {
     /* `selfdestructcountdown`: seconds a self destruct counts down, 2
      * when the file has none (legacy:163089-163095). */
     uint8_t      selfd_countdown;
+    /* The cloak (legacy:162947-162963): mana a second still and moving,
+     * the latter cloakcost when the file has none, the distance an
+     * enemy keeps it off at, 80 when unset (legacy:163619-163620), and
+     * whether a new unit wants it. cloakcost above 0 is what lets a unit
+     * cloak (legacy:9760). */
+    float        cloak_cost_per_sec;
+    float        cloak_cost_moving_per_sec;
+    int32_t      min_cloak_distance;
+    uint8_t      init_cloaked;
 
     /* Per-player-color baked meshes. NULL until first spawn with
      * that color; Mesh_Bake fills it lazily. */
@@ -991,6 +1000,11 @@ typedef struct Unit {
     /* Ticks left before a self destruct ends the unit, 0 for none. It
      * counts down beside whatever orders the unit holds. */
     uint16_t   selfd_ticks;
+    /* The cloak: wanted by its player's order, hidden now, and the ticks
+     * before it may hide again (legacy:8700-8736, legacy:9757-9779). */
+    uint8_t    cloak_want;
+    uint8_t    cloaked;
+    uint16_t   cloak_wait;
     /* The last enemy unit that hit this one, by stable id, 0 for none,
      * and the engine tick of that hit, for its guards to answer. */
     uint32_t   hit_by;
@@ -1939,6 +1953,12 @@ int               Units_CanHelpBuild(int helper, int frame);
 int               Units_ToggleSelfDestruct(const int *handles, int n);
 /* 1 while the unit counts down to its self destruct. */
 int               Units_SelfDestructing(int handle);
+/* The cloak order, on or off, for a unit that can cloak. Returns 1 when
+ * it was taken. */
+int               Units_OrderCloak(int handle, int on);
+/* The cloak order the local player's selection holds: 1 all of it
+ * wants the cloak, 0 none of it, 2 some, -1 none of it can cloak. */
+int               Units_SelectedCloakState(void);
 /* Any selected unit of the local player's that could help that frame. */
 int               Units_SelectionCanHelpBuild(int frame);
 

@@ -399,6 +399,18 @@ static int ship_hull_blocked(const UnitDef *d, int self, float margin,
                              int32_t from_x, int32_t from_y);
 static int unit_start_script(Unit *u, const char *name,
                              const int32_t *args, int n_args);
+
+/* The cloak's waits, the original's frames doubled for the 60 Hz tick:
+ * after a shot (legacy:245900-245905), while it builds, mends, sweeps or
+ * raises (legacy:12259-12263, 12764-12768, 32139-32143, 32374-32378),
+ * with an enemy near (legacy:208655-208673) and short of mana
+ * (legacy:8724-8731). */
+#define CLOAK_FIRE_TICKS  1200
+#define CLOAK_WORK_TICKS   600
+#define CLOAK_NEAR_TICKS   180
+#define CLOAK_SHORT_TICKS  180
+
+static void cloak_hold(Unit *u, const UnitDef *def, int ticks);
 static int unit_water_depth_ok(const GameWorld *w, const UnitDef *def,
                                int32_t x, int32_t y);
 
@@ -498,6 +510,10 @@ static int unit_visible_to_local_player(const GameWorld *world,
     if (!u) return 0;
     if (!world) return 1;
     if (u->player_id == g_local_player) return 1;
+    /* A cloaked unit shows to its own player and a watcher alone
+     * (legacy:206815, legacy:208620-208625). */
+    if (u->cloaked && !Fog_SeesAll() && (int)u->player_id != Fog_Viewer())
+        return 0;
     return unit_seat_sees(world, Fog_Viewer(), u);
 }
 
@@ -702,6 +718,11 @@ static int unit_queue_pickup(int carrier, int rider, int queued) {
 
 static int unit_can_see_target(const Unit *viewer, const Unit *target) {
     if (!viewer || !target) return 0;
+    /* An enemy that cloaks ends an attack on it (legacy:11010-11013,
+     * legacy:11376-11379). */
+    if (target->cloaked &&
+        unit_players_are_enemies(viewer->player_id, target->player_id))
+        return 0;
     GameWorld *world = World_Get();
     if (!world || !world->cfg.line_of_sight) return 1;
     /* A target already held, or given by an order, is not re-checked
@@ -736,6 +757,9 @@ static int unit_seat_sees(const GameWorld *w, int seat, const Unit *t) {
  * (legacy:20639-20680). Return fire does not ask (unit_would_answer). */
 static int unit_side_sees(int player_id, const Unit *t) {
     if ((int)t->player_id == player_id) return 1;
+    /* A cloaked unit is seen by its own player alone, Line of Sight or
+     * not (legacy:206815, legacy:20536-20540). */
+    if (t->cloaked) return 0;
     const GameWorld *w = World_Get();
     /* With Line of Sight off the side's sight map is full
      * (legacy:167211-167219). See docs/notes/2026-09-15-line-of-sight-off.md
@@ -5189,6 +5213,7 @@ static int unit_tick_raise(Unit *u, const UnitDef *def) {
      * supply fraction (legacy:13087); we have no such figure and take
      * it as 1. */
     u->raise_left -= 65536 / 2;
+    cloak_hold(u, def, CLOAK_WORK_TICKS);
     /* Once per original frame, which is every other tick here. */
     if (((u->raise_left / (65536 / 2)) & 1) == 0)
         raise_sparkles(u, (int)(u - g_units), def, rw, fi);
@@ -7106,7 +7131,16 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     if (TDF_ReadInt(tdf, "canattack",      0)) out->cap_flags |= UNIT_CAP_ATTACK;
     if (TDF_ReadInt(tdf, "canguard",       0)) out->cap_flags |= UNIT_CAP_GUARD;
     if (TDF_ReadInt(tdf, "canpatrol",      0)) out->cap_flags |= UNIT_CAP_PATROL;
-    if (TDF_ReadInt(tdf, "cancloak",       0)) out->cap_flags |= UNIT_CAP_CLOAK;
+    /* The original reads no cancloak: cloakcost above 0 lets a unit
+     * cloak (legacy:9760, legacy:162957). */
+    out->cloak_cost_per_sec = TDF_ReadFloat(tdf, "cloakcost", 0.0f);
+    out->cloak_cost_moving_per_sec =
+        TDF_ReadFloat(tdf, "cloakcostmoving", out->cloak_cost_per_sec);
+    out->min_cloak_distance = TDF_ReadInt(tdf, "mincloakdistance", 0);
+    if (out->cloak_cost_per_sec > 0.0f && out->min_cloak_distance == 0)
+        out->min_cloak_distance = 80;
+    out->init_cloaked = (uint8_t)(TDF_ReadInt(tdf, "init_cloaked", 0) & 1);
+    if (out->cloak_cost_per_sec > 0.0f) out->cap_flags |= UNIT_CAP_CLOAK;
     if (TDF_ReadInt(tdf, "cantransport",   0)) out->cap_flags |= UNIT_CAP_TRANSPORT;
     if (TDF_ReadInt(tdf, "builder",        0)) out->cap_flags |= UNIT_CAP_BUILDER;
     out->builder_limited = (uint8_t)(TDF_ReadInt(tdf, "builderlimited", 0) & 1);
@@ -8835,6 +8869,9 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
      * sets its placed units' own share. */
     u->mana_max       = def->max_mana > 0 ? (float)def->max_mana : 0.0f;
     u->mana           = 0.0f;
+    /* init_cloaked is the cloak order a new unit starts with
+     * (legacy:226668). */
+    u->cloak_want     = def->init_cloaked;
     u->cmd_x          = 0;
     u->cmd_y          = 0;
     u->patrol_x       = world_x;
@@ -12100,6 +12137,7 @@ static void fire_weapon_shot_now(Unit *u, int shooter_idx, int slot,
     if (target_handle < 0 || target_handle >= g_unit_count) return;
     Unit *t = &g_units[target_handle];
     if (t->alive != UNIT_ALIVE_ACTIVE) return;
+    cloak_hold(u, Units_GetDef(u->def_idx), CLOAK_FIRE_TICKS);
     /* A spell is a shot that costs mana, once however many a burst holds. */
     if (wp->mana_per_shot > 0 && burst_ordinal == 0) BattleRecord_Cast(u->player_id);
 
@@ -12376,6 +12414,7 @@ static void flame_particle(const Projectile *p, int idx) {
 static void fire_ground_shot_now(Unit *u, int shooter_idx, int slot,
                                  const UnitWeapon *wp) {
     if (!u || !wp) return;
+    cloak_hold(u, Units_GetDef(u->def_idx), CLOAK_FIRE_TICKS);
     if (wp->mana_per_shot > 0) BattleRecord_Cast(u->player_id);
     start_fire_script(u, slot);
     const GameWorld *sw = World_Get();
@@ -13423,6 +13462,94 @@ static void caster_mana_tick(Unit *u, const UnitDef *def) {
     if (u->mana > u->mana_max) u->mana = u->mana_max;
 }
 
+static int unit_def_can_cloak(const UnitDef *d) {
+    return d && (d->cloak_cost_per_sec > 0.0f || d->init_cloaked);
+}
+
+/* No cloak for the next ticks, or longer if it already waits longer. */
+static void cloak_hold(Unit *u, const UnitDef *def, int ticks) {
+    if (!unit_def_can_cloak(def)) return;
+    if (u->cloak_wait < ticks) u->cloak_wait = (uint16_t)ticks;
+}
+
+static int g_cloak_near[TAK_MAX_UNITS];
+
+/* An enemy its side sees, built and not cloaked itself, inside
+ * mincloakdistance (legacy:20826-20845, legacy:20536-20540). */
+static int cloak_enemy_near(const Unit *u, const UnitDef *def) {
+    int r = def->min_cloak_distance;
+    if (r <= 0) return 0;
+    int n = ugrid_candidates(u->world_x - r, u->world_y - r,
+                             u->world_x + r, u->world_y + r,
+                             g_cloak_near, TAK_MAX_UNITS);
+    int64_t r2 = (int64_t)r * r;
+    for (int k = 0; k < (n < 0 ? g_unit_count : n); k++) {
+        const Unit *t = &g_units[n < 0 ? k : g_cloak_near[k]];
+        if (t->alive != UNIT_ALIVE_ACTIVE || t->under_construction || t->cloaked)
+            continue;
+        if (!unit_players_are_enemies(u->player_id, t->player_id)) continue;
+        int64_t dx = (int64_t)t->world_x - u->world_x;
+        int64_t dy = (int64_t)t->world_y - u->world_y;
+        if (dx * dx + dy * dy > r2) continue;
+        if (unit_side_sees(u->player_id, t)) return 1;
+    }
+    return 0;
+}
+
+/* The cloak each tick (legacy:8700-8736): wanted and out of its wait,
+ * it costs the unit's own mana, cloakcostmoving while it moves, and on
+ * running short it waits. Anything else and it is off. */
+static void cloak_tick(Unit *u, const UnitDef *def) {
+    if (!u->cloak_want && !u->cloaked && !u->cloak_wait) return;
+    if (u->cloak_wait) u->cloak_wait--;
+    int on = 0;
+    if (u->cloak_want) {
+        if (cloak_enemy_near(u, def)) cloak_hold(u, def, CLOAK_NEAR_TICKS);
+        if (!u->cloak_wait) {
+            int moving = u->velocity != 0 || u->cur_speed_ppt > 0.0f;
+            float cost = (moving ? def->cloak_cost_moving_per_sec
+                                 : def->cloak_cost_per_sec) / 60.0f;
+            if (cost <= u->mana) {
+                u->mana -= cost;
+                on = 1;
+            } else {
+                cloak_hold(u, def, CLOAK_SHORT_TICKS);
+            }
+        }
+    }
+    u->cloaked = (uint8_t)on;
+}
+
+/* The order sets the unit's wish and runs StartCloaking or StopCloaking
+ * (legacy:9757-9779). */
+int Units_OrderCloak(int handle, int on) {
+    Unit *u = order_unit(handle);
+    const UnitDef *d = u ? Units_GetDef(u->def_idx) : NULL;
+    if (!u || !d || !(d->cloak_cost_per_sec > 0.0f)) return 0;
+    on = on ? 1 : 0;
+    if (u->cloak_want == on) return 1;
+    u->cloak_want = (uint8_t)on;
+    unit_start_script(u, on ? "StartCloaking" : "StopCloaking", NULL, 0);
+    return 1;
+}
+
+int Units_SelectedCloakState(void) {
+    int want = 0, rest = 0;
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (h < 0 || h >= g_unit_count) continue;
+        const Unit *u = &g_units[h];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != g_local_player) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || !(d->cloak_cost_per_sec > 0.0f)) continue;
+        if (u->cloak_want) want++;
+        else rest++;
+    }
+    if (!want && !rest) return -1;
+    if (want && rest) return 2;
+    return want ? 1 : 0;
+}
+
 /* What a caster can put toward a shot: its own reserve when the def
  * carries maxmana, the seat's pool otherwise (legacy:245908). */
 static float caster_mana_available(const Unit *u, const UnitDef *def) {
@@ -14071,6 +14198,7 @@ static void Units_TickCombat(void) {
         }
         flight_tick(u, def, flight_world);
         caster_mana_tick(u, def);
+        cloak_tick(u, def);
         caster_weapon_fallback(u, def);
         self_heal_tick(u, def);
 
@@ -14769,6 +14897,7 @@ static void Units_TickCombat(void) {
                                  ? def->worker_time : 1.0f;
                     float prev = u->reclaim_accum;
                     u->reclaim_accum += worker;
+                    cloak_hold(u, def, CLOAK_WORK_TICKS);
                     if (u->reclaim_accum > hp_max) u->reclaim_accum = hp_max;
                     if (ffd->energy > 0.0f) {
                         float paid = ffd->energy *
@@ -14835,6 +14964,7 @@ static void Units_TickCombat(void) {
                             }
                         }
                         rt->build_hp_accum += hp_per_tick_f;
+                        cloak_hold(u, def, CLOAK_WORK_TICKS);
                         int hp_per_tick = (int)floorf(rt->build_hp_accum);
                         if (hp_per_tick > 0) {
                             rt->build_hp_accum -= (float)hp_per_tick;
@@ -14852,6 +14982,7 @@ static void Units_TickCombat(void) {
                         float hp_per_tick_f =
                             ((float)hp_max * worker) / (reclaim_time * 60.0f);
                         rt->build_hp_accum += hp_per_tick_f;
+                        cloak_hold(u, def, CLOAK_WORK_TICKS);
                         int hp_per_tick = (int)floorf(rt->build_hp_accum);
                         if (hp_per_tick > 0) {
                             rt->build_hp_accum -= (float)hp_per_tick;
@@ -14926,6 +15057,7 @@ static void Units_TickCombat(void) {
                 float hp_per_tick_f = (((float)hp_max * worker) /
                                       (buildtime * 60.0f)) * progress_scale;
                 bt->build_hp_accum += hp_per_tick_f;
+                cloak_hold(u, def, CLOAK_WORK_TICKS);
                 if (btd && bt->under_construction)
                     build_sparkles(bt, (int)(bt - g_units), btd);
                 int hp_per_tick = (int)floorf(bt->build_hp_accum);
@@ -16150,6 +16282,9 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
     if (whiteout) {
         alpha_mul = (uint32_t)u->magic_death_fade * 255u / UNIT_MAGIC_DEATH_TICKS;
     }
+    /* A cloaked unit draws see through for whoever sees it at all
+     * (legacy:197442-197457). */
+    if (u->cloaked) alpha_mul /= 2u;
 
     /* Per-piece transforms for THIS unit. Animation gives each unit its
      * own piece state, so this is recomputed per unit. */
@@ -17043,6 +17178,20 @@ static void render_selection_rings(const struct GameWorld *world, TAK_Platform *
         }
         #undef DASHES
         #undef DASH_SEG
+        /* Your own cloaked unit shows how near an enemy may come
+         * (legacy:180534-180536). */
+        if (def && u->cloaked && u->player_id == g_local_player &&
+            def->min_cloak_distance > 0) {
+            SDL_FPoint pts[49];
+            float cr = (float)def->min_cloak_distance;
+            for (int k = 0; k <= 48; k++) {
+                float a = (float)k / 48.0f * 6.2831853f;
+                pts[k].x = fx + tak_cosf(a) * cr;
+                pts[k].y = fy + tak_sinf(a) * cr * tilt;
+            }
+            SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+            SDL_RenderDrawLinesF(r, pts, 49);
+        }
     }
 }
 

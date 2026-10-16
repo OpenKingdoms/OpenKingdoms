@@ -69,4 +69,7 @@ InGameSelectKey InGame_SelectKey(const uint8_t *keys, const uint8_t *prev);
  * SelfDestruct. */
 int  InGame_SelfDestructKey(const uint8_t *keys, const uint8_t *prev);
 
+/* K: Keys.TDF's LOWER_K and UPPER_K, UnitCommand ToggleCloak. */
+int  InGame_CloakKey(const uint8_t *keys, const uint8_t *prev);
+
 #endif /* TAK_INGAME_KEYS_H */

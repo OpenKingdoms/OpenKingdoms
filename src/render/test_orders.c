@@ -41,7 +41,7 @@
 #define OQ_GROUND 64
 
 enum { OQ_BUILDER = 0, OQ_SOLDIER, OQ_ARCHER, OQ_BARRACKS, OQ_HELPER, OQ_GATE,
-       OQ_HALL, OQ_BOW, OQ_CANNON, OQ_FLYER, OQ_LIMITED, OQ_DEF_COUNT };
+       OQ_HALL, OQ_BOW, OQ_CANNON, OQ_FLYER, OQ_LIMITED, OQ_SPY, OQ_DEF_COUNT };
 
 static void oq_fill(UnitDef *d, const char *name, float velocity, int fx, int fz) {
     memset(d, 0, sizeof(*d));
@@ -136,6 +136,19 @@ static GameWorld *oq_world(void) {
     defs[OQ_LIMITED].worker_time = 60.0f;
     defs[OQ_LIMITED].build_distance = 32;
     defs[OQ_LIMITED].builder_limited = 1;
+    /* The Aramon assassin's cloak: 10 mana a second in, 14 out still
+     * and 21 moving, found at 80. */
+    oq_fill(&defs[OQ_SPY], "TESTSPY", 1.4f, 1, 1);
+    defs[OQ_SPY].max_health = 30000;
+    defs[OQ_SPY].num_weapons = 1;
+    defs[OQ_SPY].weapons[0].range = 400;
+    defs[OQ_SPY].weapons[0].damage = 10;
+    defs[OQ_SPY].max_mana = 1000;
+    defs[OQ_SPY].mana_recharge_per_sec = 10.0f;
+    defs[OQ_SPY].cloak_cost_per_sec = 14.0f;
+    defs[OQ_SPY].cloak_cost_moving_per_sec = 21.0f;
+    defs[OQ_SPY].min_cloak_distance = 80;
+    defs[OQ_SPY].cap_flags |= UNIT_CAP_CLOAK;
     /* FBI category lines, for the select keys. */
     strcpy(defs[OQ_BUILDER].category, "TEST BUILDER");
     strcpy(defs[OQ_HELPER].category, "TEST BUILDER");
@@ -1008,6 +1021,92 @@ TEST(ctrl_d_self_destructs_a_building_and_again_calls_it_off) {
     oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_D);
     oq_ticks(200);
     ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(kept)->alive);
+    oq_end();
+}
+
+static float oq_mana(int h) {
+    float cur = 0.0f, max = 0.0f;
+    Units_GetMana(h, &cur, &max);
+    return cur;
+}
+
+/* The cloak (legacy:8700-8736, legacy:9757-9779, legacy:206815). Ordered
+ * on from the sidebar, a unit with mana hides from the other side and
+ * pays cloakcost less its recharge. An enemy it sees inside
+ * mincloakdistance brings it out for three seconds (legacy:208655-208673),
+ * a shot of its own for twenty (legacy:245900-245905), and an enemy
+ * shooting at it lets go once it hides (legacy:11010-11013). */
+TEST(a_cloaked_unit_hides_until_an_enemy_comes_near_or_it_fires) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    int spy = Units_Spawn(OQ_SPY, 1, 0, OQ_CX, OQ_CY);
+    int foe = Units_Spawn(OQ_BOW, 2, 1, OQ_CX + 200, OQ_CY);
+    ASSERT(spy >= 0 && foe >= 0);
+    Units_DebugSetAggro(spy, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetMana(spy, 500.0f);
+    Units_SelectSingle(spy);
+    ASSERT_EQ_INT(0, Units_SelectedCloakState());
+    for (int t = 0; t < 120 && oq_unit(foe)->target != spy; t++) oq_ticks(1);
+    ASSERT_EQ_INT(1, Units_SideSees(2, spy));
+    ASSERT_EQ_INT(spy, (int)oq_unit(foe)->target);
+
+    ASSERT_EQ_INT(1, HUD_TriggerCommand(HUD_CMD_CLOAK_ON));
+    oq_ticks(2);
+    ASSERT_EQ_INT(1, Units_SelectedCloakState());
+    ASSERT_EQ_INT(1, (int)oq_unit(spy)->cloaked);
+    ASSERT_EQ_INT(0, Units_SideSees(2, spy));
+    ASSERT_EQ_INT(1, Units_SideSees(1, spy));
+    oq_ticks(2);
+    ASSERT_EQ_INT(-1, (int)oq_unit(foe)->target);
+    /* Four a second, 14 out and 10 in. */
+    float m0 = oq_mana(spy);
+    oq_ticks(60);
+    float spent = m0 - oq_mana(spy);
+    ASSERT(spent > 3.9f && spent < 4.1f);
+
+    /* Found inside 80, out for 180 ticks after it goes. */
+    int near = Units_Spawn(OQ_SOLDIER, 2, 1, OQ_CX + 60, OQ_CY);
+    ASSERT(near >= 0);
+    Units_DebugSetAggro(near, UNIT_AGGRO_PASSIVE);
+    oq_ticks(1);
+    ASSERT_EQ_INT(0, (int)oq_unit(spy)->cloaked);
+    ASSERT_EQ_INT(1, Units_SideSees(2, spy));
+    /* It changes sides, so nothing hostile is near any more. */
+    Units_SetOwner(near, 1, 0);
+    oq_ticks(170);
+    ASSERT_EQ_INT(0, (int)oq_unit(spy)->cloaked);
+    oq_ticks(20);
+    ASSERT_EQ_INT(1, (int)oq_unit(spy)->cloaked);
+
+    /* A shot of its own brings it out for 1200 ticks. */
+    int prey = Units_Spawn(OQ_SOLDIER, 2, 1, OQ_CX + 150, OQ_CY);
+    ASSERT(prey >= 0);
+    ASSERT_EQ_INT(1, Units_OrderAttack(spy, prey));
+    for (int t = 0; t < 200 && oq_unit(spy)->cloaked; t++) oq_ticks(1);
+    ASSERT_EQ_INT(0, (int)oq_unit(spy)->cloaked);
+    ASSERT(oq_unit(spy)->cloak_wait > 1100);
+
+    /* Off again from the sidebar, and it stays off. */
+    ASSERT_EQ_INT(1, HUD_TriggerCommand(HUD_CMD_CLOAK_OFF));
+    oq_ticks(2);
+    ASSERT_EQ_INT(0, Units_SelectedCloakState());
+    oq_end();
+}
+
+/* Short of the cost it comes out and waits three seconds before it
+ * tries again (legacy:8724-8731). */
+TEST(a_cloak_short_of_mana_comes_out_and_waits) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    int spy = Units_Spawn(OQ_SPY, 1, 0, OQ_CX, OQ_CY);
+    ASSERT(spy >= 0);
+    Units_DebugSetMana(spy, 0.0f);
+    ASSERT_EQ_INT(1, Units_OrderCloak(spy, 1));
+    oq_ticks(1);
+    ASSERT_EQ_INT(0, (int)oq_unit(spy)->cloaked);
+    ASSERT_EQ_INT(180, (int)oq_unit(spy)->cloak_wait);
+    oq_ticks(181);
+    ASSERT_EQ_INT(1, (int)oq_unit(spy)->cloaked);
     oq_end();
 }
 
@@ -2415,6 +2514,8 @@ int main(int argc, char **argv) {
     RUN(a_guard_mends_its_charge_and_joins_its_repairs);
     RUN(a_guard_keeps_its_distance_from_a_building);
     RUN(ctrl_d_self_destructs_a_building_and_again_calls_it_off);
+    RUN(a_cloaked_unit_hides_until_an_enemy_comes_near_or_it_fires);
+    RUN(a_cloak_short_of_mana_comes_out_and_waits);
     RUN(a_builder_goes_round_a_ridge_as_a_move_does);
     RUN(a_repairer_goes_round_a_ridge_as_a_move_does);
     RUN(a_builder_walking_out_of_a_pocket_keeps_its_frame);

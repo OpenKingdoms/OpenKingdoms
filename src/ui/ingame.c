@@ -1760,6 +1760,13 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
         InGameSelectKey sk = InGame_SelectKey(keys, ig.prev_keys);
         if (sk.kind != IG_SELECT_NONE) ig_select_key(world, sk);
         if (InGame_SelfDestructKey(keys, ig.prev_keys)) ig_self_destruct(keys);
+        /* ToggleCloak presses Cloaked unless that is the lit one
+         * (legacy:151278-151287). */
+        if (InGame_CloakKey(keys, ig.prev_keys)) {
+            int cloak = Units_SelectedCloakState();
+            if (cloak >= 0)
+                HUD_TriggerCommand(cloak == 1 ? HUD_CMD_CLOAK_OFF : HUD_CMD_CLOAK_ON);
+        }
     }
 #undef IG_PRESSED
 }
