@@ -763,16 +763,18 @@ typedef enum {
 } UnitScriptEvent;
 
 /* Per-weapon runtime state, one per slot up to UnitDef.num_weapons.
- * cooldown_ticks counts down each tick after a shot; aim_thread_slot
- * tracks an active AimWeapon thread so we don't spawn duplicates. */
+ * cooldown_ticks counts down each tick after a shot. aim_target names
+ * what the last AimWeapon was asked to aim at, -1 to ask again, and
+ * aim_ready says its script has set port 22 for the slot since. */
 typedef struct UnitWeaponState {
     int32_t cooldown_ticks;
     int32_t burst_ticks;
     int16_t burst_remaining;
     int16_t burst_target;
-    int8_t  aim_thread_slot;     /* -1 if no aim thread active */
-    int16_t aim_ticks;           /* bounded wait for AimWeapon completion */
+    int8_t  aim_thread_slot;     /* the thread the last AimWeapon took */
+    int16_t aim_ticks;           /* ticks since that AimWeapon began */
     int16_t aim_target;          /* target handle for the active aim */
+    uint8_t aim_ready;
     /* A drawn shot waiting on the script's release, port 23
      * (legacy:245900-245904): UNIT_DRAW_*, and the target drawn at. */
     int8_t  draw;

@@ -9355,14 +9355,20 @@ static void cob_host_set_unit_value(void *user, int port, int32_t value) {
         case 19: /* BUGGER_OFF, script-visible flag (legacy:223379-223381) */
             u->cob_bugger_off = (value != 0);
             return;
-        case 21: /* the weapon's shot is called off (legacy:223387-223391) */
-            if (value >= 0 && value < 3 &&
-                u->weapon_state[value].draw != UNIT_DRAW_LOST) {
-                u->weapon_state[value].draw = UNIT_DRAW_NONE;
-                u->weapon_state[value].draw_target = -1;
+        case 21: /* the weapon's shot and aim are called off
+                  * (legacy:223387-223391) */
+            if (value >= 0 && value < 3) {
+                UnitWeaponState *ws = &u->weapon_state[value];
+                if (ws->draw != UNIT_DRAW_LOST) {
+                    ws->draw = UNIT_DRAW_NONE;
+                    ws->draw_target = -1;
+                }
+                ws->aim_ready = 0;
+                ws->aim_target = -1;
             }
             return;
-        case 22: /* aimed: the engine reads AimWeapon's return instead */
+        case 22: /* the weapon is aimed (legacy:223392-223395) */
+            if (value >= 0 && value < 3) u->weapon_state[value].aim_ready = 1;
             return;
         case 23: /* WEAPON_LAUNCH_NOW (legacy:223397-223400) */
             if (value >= 0 && value < 3) {
@@ -12361,43 +12367,25 @@ static int weapon_aim_ready(Unit *u, int slot, int aim_key,
     }
     int32_t args[3] = { rel_heading, 0, (int32_t)slot };
 
+    /* A new target, or a shot gone, asks the script to aim again; the
+     * aim is done when the script sets port 22 to the slot, not when
+     * AimWeapon returns (legacy:249303-249310, legacy:223392-223395). */
     if (ws->aim_target != aim_key) {
-        ws->aim_thread_slot = -1;
+        ws->aim_ready = 0;
         ws->aim_ticks = 0;
         ws->aim_target = (int16_t)aim_key;
-    }
-
-    if (ws->aim_thread_slot < 0) {
         int started = Cob_StartThreadByName(u->cob, name, args, 3);
-        if (started < 0) {
-            ws->aim_thread_slot = -1;
-            ws->aim_target = -1;
-            ws->aim_ticks = 0;
-            return 1;
-        }
         ws->aim_thread_slot = (int8_t)started;
-        ws->aim_ticks = 0;
-        return 0;
-    }
-
-    if (Cob_IsThreadAlive(u->cob, ws->aim_thread_slot)) {
-        ws->aim_ticks++;
-        if (ws->aim_ticks > 120) {
-            Cob_StopThread(u->cob, ws->aim_thread_slot);
-            ws->aim_thread_slot = -1;
+        if (started < 0) {
             ws->aim_target = -1;
-            ws->aim_ticks = 0;
             return 1;
         }
-        return 0;
+        return ws->aim_ready;
     }
-
-    int32_t ret = 1;
-    int has_ret = Cob_GetThreadReturn(u->cob, ws->aim_thread_slot, &ret);
-    ws->aim_thread_slot = -1;
-    ws->aim_target = -1;
-    ws->aim_ticks = 0;
-    return !has_ret || ret != 0;
+    if (ws->aim_ready) return 1;
+    /* An aim the script never answers is asked again. */
+    if (++ws->aim_ticks > 120) ws->aim_target = -1;
+    return 0;
 }
 
 /* A mind control shot aims where its target will be: the sweet spot
@@ -12864,6 +12852,7 @@ static void tick_weapon_draw(Unit *u, int shooter_idx, int slot,
     if (ws->draw != UNIT_DRAW_RELEASE) return;
     ws->draw = UNIT_DRAW_NONE;
     ws->draw_target = -1;
+    ws->aim_target = -1;
     const UnitWeapon *wp = &def->weapons[slot];
     /* The shot pays as it leaves, what there is to pay with
      * (legacy:249460-249461). */
@@ -13683,12 +13672,16 @@ static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
         aim_x = g_units[u->target].world_x;
         aim_y = g_units[u->target].world_y;
     }
-    if (ws->cooldown_ticks == 0 && !unit_climbing(u, def) &&
-        (ground || u->target < 0 || u->target >= g_unit_count ||
-         weapon_can_target_unit(&def->weapons[slot],
-                                &g_units[u->target])) &&
-        unit_body_on_target(u, def, &def->weapons[slot], aim_x, aim_y) &&
-        weapon_aim_ready(u, slot, aim_key, aim_x, aim_y, ws)) {
+    if (unit_climbing(u, def) ||
+        !(ground || u->target < 0 || u->target >= g_unit_count ||
+          weapon_can_target_unit(&def->weapons[slot], &g_units[u->target])) ||
+        !unit_body_on_target(u, def, &def->weapons[slot], aim_x, aim_y))
+        return;
+    /* The aim runs whenever the target is in reach, reloading or not,
+     * and the shot waits for both (legacy:249255-249310,
+     * legacy:249328-249338). */
+    int aimed = weapon_aim_ready(u, slot, aim_key, aim_x, aim_y, ws);
+    if (aimed && ws->cooldown_ticks == 0) {
         const UnitWeapon *wp = &def->weapons[slot];
 
         /* A mana-costing shot draws from the caster's
@@ -13724,6 +13717,9 @@ static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
             ws->cooldown_ticks = wp->reload_ticks;
             if (u->hover_state != UNIT_HOVER_NONE)
                 u->hover_events |= UNIT_HOVER_EV_FIRED;
+            /* A shot that leaves now has the script aim again for the
+             * next (legacy:249457). A drawn one does as it is let go. */
+            if (!draws) ws->aim_target = -1;
             if (ground) {
                 fire_ground_shot(u, i, slot, wp);
                 return;

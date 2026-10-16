@@ -2108,7 +2108,7 @@ static void lf_fog(GameWorld *w) {
  * see, the shooters let go of targets behind the ridge and go looking,
  * and the fog is state. Pinned, so every platform in CI has to
  * reach the same answer. */
-#define LF_FOG_VOLLEY_HASH 0x34747cb2u
+#define LF_FOG_VOLLEY_HASH 0xd90e5f32u
 
 static uint32_t lf_fog_volley_hash(int *out_hurt) {
     GameWorld *w = lf_world(1, 1);
@@ -2863,6 +2863,44 @@ TEST(a_paralyzer_hold_adds_up_to_a_minute_and_is_passed_over) {
     printf("(held at most %d ticks, picked %d) ", most, picked);
     ASSERT_EQ_INT(3600, most);
     ASSERT_EQ_INT(w, picked);
+}
+
+/* An AimWeapon that takes a quarter second, says the weapon is aimed
+ * on port 22 and returns 0, as the shipped scripts' does. */
+static const uint32_t LF_AIM_SCRIPT[] = {
+    0x10021001u, 250u, 0x10013000u,             /* sleep 250 */
+    0x10021001u, 22u, 0x10021001u, 0u, 0x10082000u, /* port 22 = 0 */
+    0x10021001u, 0u, 0x10065000u                /* return 0 */
+};
+
+/* The shot waits for port 22, not for what AimWeapon returns, and the
+ * script aims again while the weapon reloads, so a quarter second aim
+ * behind a half second reload costs nothing (legacy:223392-223395,
+ * legacy:249255-249310, legacy:249457). */
+TEST(a_weapon_fires_once_its_script_says_aimed_and_aims_while_it_reloads) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    static const char *const names[] = { "AimWeapon" };
+    static const uint32_t offsets[] = { 0 };
+    ASSERT_EQ_INT(0, Units_DebugSetDefScript(LF_QUICK, LF_AIM_SCRIPT,
+                                             (int)(sizeof LF_AIM_SCRIPT / 4),
+                                             names, offsets, 1));
+    int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_STURDY, 2, LF_SX + 200, LF_ROW);
+    ASSERT(a >= 0 && t >= 0);
+    ASSERT(Units_OrderAttack(a, t));
+    int shots = 0, first = -1, last = -1;
+    for (int i = 0; i < 600; i++) {
+        Units_TickEngines();
+        if (lf_unit(a)->weapon_state[0].cooldown_ticks == 30) {
+            shots++;
+            if (first < 0) first = i;
+            last = i;
+        }
+    }
+    lf_end();
+    printf("(%d shots, the first at %d, the last at %d) ", shots, first, last);
+    ASSERT(first >= 12 && first <= 25);
+    ASSERT(shots >= 19);
 }
 
 /* A unit holding position shoots what comes into reach and lets it go
@@ -3758,6 +3796,7 @@ int main(int argc, char **argv) {
     RUN(a_unit_that_cannot_turn_in_place_shoots_without_turning);
     RUN(a_paralyzer_holds_its_target_without_wounding_it);
     RUN(a_paralyzer_hold_adds_up_to_a_minute_and_is_passed_over);
+    RUN(a_weapon_fires_once_its_script_says_aimed_and_aims_while_it_reloads);
     RUN(a_unit_holding_position_does_not_chase);
     RUN(a_fight_of_its_own_looks_again_once_a_wait);
     RUN(a_unit_holding_position_or_ordered_never_looks_again);

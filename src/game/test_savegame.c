@@ -709,6 +709,7 @@ static int setup(const char *map_name) {
             u->weapon_state[wi].aim_thread_slot = (int8_t)(wi == 0 ? 3 : -1);
             u->weapon_state[wi].aim_ticks = (int16_t)(wi * 5);
             u->weapon_state[wi].aim_target = (int16_t)(wi == 0 ? i : -1);
+            u->weapon_state[wi].aim_ready = (uint8_t)(wi == 0);
             u->weapon_state[wi].draw = (int8_t)(wi == 1 ? UNIT_DRAW_RELEASE : UNIT_DRAW_NONE);
             u->weapon_state[wi].draw_target = (int16_t)(wi == 1 ? i : -1);
         }

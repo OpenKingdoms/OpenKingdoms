@@ -287,6 +287,9 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 #define U_WPN_AIM_TICKS 12u
 #define U_WPN_AIM_TGT   14u
 #define U_WPN_AIM_SLOT  16u
+/* Port 22 heard for the aim, in what was a spare byte. An older record
+ * reads back not yet aimed. */
+#define U_WPN_AIM_READY 17u
 #define U_WPN_END       (U_WPN + U_WPN_BYTES * 3u)
 
 #define U_LOAD_QUEUE    U_WPN_END
@@ -1318,6 +1321,7 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
         tak_put_i16(ws + U_WPN_AIM_TICKS, s->aim_ticks);
         tak_put_i16(ws + U_WPN_AIM_TGT, s->aim_target);
         tak_put_u8(ws + U_WPN_AIM_SLOT, (uint8_t)s->aim_thread_slot);
+        tak_put_u8(ws + U_WPN_AIM_READY, s->aim_ready);
     }
 
     /* The live prefix only: past the length both queues hold whatever
@@ -1605,6 +1609,7 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
         s->aim_ticks = tak_get_i16(ws + U_WPN_AIM_TICKS);
         s->aim_target = tak_get_i16(ws + U_WPN_AIM_TGT);
         s->aim_thread_slot = (int8_t)tak_get_u8(ws + U_WPN_AIM_SLOT);
+        s->aim_ready = tak_get_u8(ws + U_WPN_AIM_READY);
     }
 
     if (u->load_queue_len > UNIT_LOAD_QUEUE_MAX) {
