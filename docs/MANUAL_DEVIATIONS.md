@@ -1274,12 +1274,18 @@ Format per entry:
 - Change: a unit a factory finishes with no orders of the factory's to
   carry walks to the nearest clear spot in a ring round the factory, as
   the original sends it, and passes over a spot another unit is already
-  walking to. The spot is chosen once, when the unit is finished.
+  walking to. The spot is chosen once, when the unit is finished. A
+  flyer flies to a random bearing as far out as a walker goes and all
+  the way to its point before it looks for ground.
 - Why: the original finds the spot by a route search and, when the walk
   there is cut short, searches again a few times (legacy:13813-13879).
   Two units finished one after the other then end on spots of their own.
   Passing over a spot already spoken for gets the same end without a
-  second search and the state it would keep.
+  second search and the state it would keep. The original takes a size
+  term it does not name off a flyer's range (legacy:13822-13846). Half
+  the factory's footprint, the stand-in the walker's ring uses, would
+  set a flyer down inside the factory and on its own pad, where it holds
+  up the next unit for good.
 - Citation: the manual describes no rule for this. The getbuilt mission
   that sends the unit off is at legacy:9694-9711.
 

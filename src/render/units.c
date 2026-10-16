@@ -6546,9 +6546,11 @@ static int unit_free_spot_round(const UnitDef *d, int skip, int32_t cx,
  * sends it (legacy:9694-9711). A walker goes to the nearest clear spot
  * from 16 px times rand(6) plus rand(3) plus 3 beyond its footprint and
  * half the factory's out to three times as far. A flyer, with 3 more
- * rolled in, flies to a random bearing that far less the half
- * (legacy:13813-13879). The half stands in for a size term the original
- * does not name, as the cargo's step does. */
+ * rolled in, flies to a random bearing (legacy:13813-13879). The half
+ * stands in for a size term the original does not name, as the cargo's
+ * step does. The original takes that term off a flyer's range, but the
+ * stand-in would set it down inside the factory, so the flyer goes as
+ * far out as a walker and all the way to its point. */
 static int factory_step_off(const Unit *f, const UnitDef *fd, Unit *bt,
                             const UnitDef *btd) {
     const GameWorld *w = World_Get();
@@ -6564,13 +6566,14 @@ static int factory_step_off(const Unit *f, const UnitDef *fd, Unit *bt,
     int32_t x = 0, y = 0;
     if (btd->can_fly) {
         float a = Units_HeadingFromTurn((uint16_t)World_Rand(0x10000));
-        r -= half;
+        r += half;
         x = f->world_x - (int32_t)((float)r * tak_sinf(a));
         y = f->world_y - (int32_t)((float)r * tak_cosf(a));
         if (x < 32) x = 32;
         if (y < 32) y = 32;
         if (x > w->map_pixels_w - 32) x = w->map_pixels_w - 32;
         if (y > w->map_pixels_h - 32) y = w->map_pixels_h - 32;
+        bt->air_band = 1;
     } else if (!unit_free_spot_round(btd, (int)(bt - g_units), f->world_x,
                                      f->world_y, r + half, 3 * (r + half),
                                      bt->world_x, bt->world_y, &x, &y)) {
