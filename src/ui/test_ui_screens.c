@@ -7886,10 +7886,89 @@ TEST(a_dead_monarch_leaves_no_mana_in_the_pool) {
  * TAK_AI_DUEL_GAMES seeds (2 when unset), each seed twice with the
  * seats swapped so the ground favours nobody, under the remastered
  * battlefield rules when TAK_AI_DUEL_REMASTERED is 1, and prints what
- * each side killed and lost. It is registered only when asked for. */
+ * each side killed and lost, the lodestones it held, the fighters it
+ * raised and what it had standing at the end. TAK_AI_DUEL_FIRST is the
+ * first seed's number and TAK_AI_DUEL_PLAIN=1 or 2 plays only the games
+ * with the plain seat there. It is registered only when asked for. */
+#define DUEL_DEFS 512
+typedef struct DuelTally {
+    int     lode_seconds[3];
+    int     lodes_at[3][4];          /* at minutes 5, 10, 15 and 20 */
+    int     raised[3][DUEL_DEFS];    /* mobile fighters by type */
+    int64_t standing[3];             /* build cost of what stands at the end */
+    int64_t home_s[3], away_s[3];    /* fighter seconds near the start and away */
+    int     pads;                    /* sacred pads on the map */
+    uint32_t counted[TAK_MAX_UNITS]; /* the stable id a slot was counted at */
+} DuelTally;
+static char g_duel_names[DUEL_DEFS][16];
+
+static int duel_is_lodestone(const UnitDef *d) {
+    return d && d->max_velocity <= 0.0f && !(d->cap_flags & UNIT_CAP_BUILDER) &&
+           (d->yardmap_sacred || d->mogrium_income_per_sec > 0.0f);
+}
+
+static void duel_sample(DuelTally *t, int second) {
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    const GameWorld *world = World_Get();
+    int32_t sx[3] = { 0, 0, 0 }, sy[3] = { 0, 0, 0 };
+    int has_start[3] = { 0, 0, 0 };
+    for (int s = 0; world && s < world->num_start_positions; s++) {
+        int q = world->start_positions[s].player;
+        if (q < 1 || q > 2) continue;
+        sx[q] = world->start_positions[s].x * 16;
+        sy[q] = world->start_positions[s].z * 16;
+        has_start[q] = 1;
+    }
+    int lodes[3] = { 0, 0, 0 };
+    for (int i = 0; i < count && i < TAK_MAX_UNITS; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id < 1 || u->player_id > 2)
+            continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || u->under_construction) continue;
+        if (duel_is_lodestone(d)) lodes[u->player_id]++;
+        if (d->max_velocity > 0.0f && d->num_weapons > 0 &&
+            !(d->cap_flags & UNIT_CAP_BUILDER) && !d->commander &&
+            has_start[u->player_id]) {
+            int64_t dx = u->world_x - sx[u->player_id], dy = u->world_y - sy[u->player_id];
+            if (dx * dx + dy * dy <= 1536 * 1536) t->home_s[u->player_id]++;
+            else t->away_s[u->player_id]++;
+        }
+        if (t->counted[i] != u->stable_id && d->max_velocity > 0.0f &&
+            d->num_weapons > 0 && !(d->cap_flags & UNIT_CAP_BUILDER) &&
+            !d->commander && u->def_idx < DUEL_DEFS) {
+            t->raised[u->player_id][u->def_idx]++;
+            t->counted[i] = u->stable_id;
+            snprintf(g_duel_names[u->def_idx], sizeof(g_duel_names[0]), "%s",
+                     d->unitname);
+        }
+    }
+    for (int p = 1; p <= 2; p++) {
+        t->lode_seconds[p] += lodes[p];
+        if (second > 0 && second % 300 == 0 && second / 300 <= 4)
+            t->lodes_at[p][second / 300 - 1] = lodes[p];
+    }
+}
+
+static void duel_print_mix(const char *who, const int *raised) {
+    int total = 0, top = -1;
+    for (int k = 0; k < DUEL_DEFS; k++) {
+        total += raised[k];
+        if (raised[k] > 0 && (top < 0 || raised[k] > raised[top])) top = k;
+    }
+    fprintf(stderr, "duel:   %s raised %d fighters", who, total);
+    for (int k = 0; k < DUEL_DEFS; k++)
+        if (raised[k] > 0) fprintf(stderr, " %s %d", g_duel_names[k], raised[k]);
+    if (top >= 0 && total > 0)
+        fprintf(stderr, ", the most raised is %d%% of them", raised[top] * 100 / total);
+    fprintf(stderr, "\n");
+}
+
 static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                          int base, int remastered, int minutes, uint32_t seed,
-                         int32_t kills[3], int32_t losses[3], int *winner) {
+                         int32_t kills[3], int32_t losses[3], int *winner,
+                         DuelTally *tally) {
     const char *map = getenv("TAK_AI_DUEL_MAP");
     const char *kingdom = getenv("TAK_AI_DUEL_WORLD");
     const char *sides = getenv("TAK_AI_DUEL_SIDES");
@@ -7919,10 +7998,27 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
     InGame_DebugPlayWithoutHumans(1);
     const int total = minutes * 60 * 60;
     int fire_seconds = 0, rubble = 0;
+    memset(tally, 0, sizeof(*tally));
+    for (int i = 0; i < world->feature_count; i++) {
+        const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
+        if (fd && fd->sacred_site > 0.0f) tally->pads++;
+    }
     for (int t = 0; t < total && !world->skirmish_game_over; t += 60) {
         InGame_DebugRunSimTicks(60);
         for (int i = 0; i < world->feature_count; i++)
             fire_seconds += world->features[i].fx == FEATURE_FX_BURNING;
+        duel_sample(tally, t / 60 + 1);
+    }
+    {
+        int count = 0;
+        const Unit *units = Units_GetActive(&count);
+        for (int i = 0; i < count; i++) {
+            const Unit *u = &units[i];
+            if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id < 1 || u->player_id > 2)
+                continue;
+            const UnitDef *d = Units_GetDef(u->def_idx);
+            if (d && !d->commander) tally->standing[u->player_id] += d->build_cost;
+        }
     }
     for (int i = 0; i < world->feature_count; i++) rubble += world->features[i].rubble;
     for (int p = 1; p <= 2; p++) {
@@ -7962,6 +8058,18 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_SQUAD_WAITS),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_SWEEPS),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_FIRE_STEPS));
+        int secs = world->skirmish_elapsed_ticks / 60;
+        int64_t fs = tally->home_s[p] + tally->away_s[p];
+        fprintf(stderr, "duel:   seat %d lodestones on average %d.%02d of %d pads, at "
+                "5/10/15/20 min %d %d %d %d, fighters at home %d%% of the time, "
+                "standing worth %lld\n", p,
+                secs > 0 ? tally->lode_seconds[p] / secs : 0,
+                secs > 0 ? tally->lode_seconds[p] * 100 / secs % 100 : 0,
+                tally->pads, tally->lodes_at[p][0], tally->lodes_at[p][1],
+                tally->lodes_at[p][2], tally->lodes_at[p][3],
+                fs > 0 ? (int)(tally->home_s[p] * 100 / fs) : 0,
+                (long long)tally->standing[p]);
+        duel_print_mix(p == plain_seat ? "plain" : "with", tally->raised[p]);
     }
     InGame_DebugPlayWithoutHumans(0);
     InGame_Shutdown();
@@ -8153,7 +8261,11 @@ TEST(the_computer_walks_its_units_out_of_a_forest_fire) {
 TEST(ai_duel_tactics_against_none) {
     const char *ask = getenv("TAK_AI_DUEL");
     if (!ask || atoi(ask) <= 0) return;
-    if (setup_vfs() != 0) SKIP("no data dir");
+    /* TAK_AI_DUEL_ARCHIVES=1 plays off the archives alone, as a player's
+     * folder does, rather than the extracted tree. */
+    const char *arc = getenv("TAK_AI_DUEL_ARCHIVES");
+    if ((arc && atoi(arc) ? mount_iron_plague() : setup_vfs()) != 0)
+        SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -8169,24 +8281,52 @@ TEST(ai_duel_tactics_against_none) {
     const char *r = getenv("TAK_AI_DUEL_REMASTERED");
     int remastered = r && atoi(r) != 0;
     int32_t with_k = 0, with_l = 0, plain_k = 0, plain_l = 0;
-    int with_wins = 0, plain_wins = 0;
-    for (int s = 1; s <= games; s++) {
+    int with_wins = 0, plain_wins = 0, with_ahead = 0, plain_ahead = 0;
+    int64_t with_lode = 0, plain_lode = 0;
+    int64_t with_home = 0, with_away = 0, plain_home = 0, plain_away = 0;
+    static DuelTally tally;
+    static int with_raised[DUEL_DEFS], plain_raised[DUEL_DEFS];
+    memset(with_raised, 0, sizeof(with_raised));
+    memset(plain_raised, 0, sizeof(plain_raised));
+    const char *first = getenv("TAK_AI_DUEL_FIRST");
+    int s0 = first && atoi(first) > 0 ? atoi(first) : 1;
+    const char *only = getenv("TAK_AI_DUEL_PLAIN");
+    for (int s = s0; s < s0 + games; s++) {
         for (int plain = 1; plain <= 2; plain++) {
+            if (only && atoi(only) > 0 && atoi(only) != plain) continue;
             int32_t kills[3] = { 0 }, losses[3] = { 0 };
             int winner = 0;
             ai_duel_once(&platform, plain, mask, base, remastered, minutes,
-                         (uint32_t)(s * 7919), kills, losses, &winner);
+                         (uint32_t)(s * 7919), kills, losses, &winner, &tally);
             int with = 3 - plain;
             with_k += kills[with];   with_l += losses[with];
             plain_k += kills[plain]; plain_l += losses[plain];
             if (winner == with) with_wins++;
             if (winner == plain) plain_wins++;
+            /* A game still on at the end goes to whoever has more standing. */
+            if (winner == 0 && tally.standing[with] > tally.standing[plain]) with_ahead++;
+            if (winner == 0 && tally.standing[plain] > tally.standing[with]) plain_ahead++;
+            with_lode += tally.lode_seconds[with];
+            plain_lode += tally.lode_seconds[plain];
+            with_home += tally.home_s[with];   with_away += tally.away_s[with];
+            plain_home += tally.home_s[plain]; plain_away += tally.away_s[plain];
+            for (int k = 0; k < DUEL_DEFS; k++) {
+                with_raised[k] += tally.raised[with][k];
+                plain_raised[k] += tally.raised[plain][k];
+            }
         }
     }
     printf("(mask %d against %d%s over %d games of %d minutes: with killed %d "
-           "lost %d won %d, without killed %d lost %d won %d) ", mask, base,
+           "lost %d won %d ahead %d lodestone minutes %lld, without killed %d "
+           "lost %d won %d ahead %d lodestone minutes %lld) ", mask, base,
            remastered ? " remastered" : "", games * 2, minutes,
-           with_k, with_l, with_wins, plain_k, plain_l, plain_wins);
+           with_k, with_l, with_wins, with_ahead, (long long)(with_lode / 60),
+           plain_k, plain_l, plain_wins, plain_ahead, (long long)(plain_lode / 60));
+    fprintf(stderr, "duel: fighters at home %d%% of the time with, %d%% without\n",
+            with_home + with_away > 0 ? (int)(with_home * 100 / (with_home + with_away)) : 0,
+            plain_home + plain_away > 0 ? (int)(plain_home * 100 / (plain_home + plain_away)) : 0);
+    duel_print_mix("all games, with", with_raised);
+    duel_print_mix("all games, plain", plain_raised);
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
