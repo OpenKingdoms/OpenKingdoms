@@ -36,6 +36,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 
 #define OQ_TILES  128
 #define OQ_GROUND 64
@@ -650,7 +651,8 @@ TEST(a_barracks_refuses_a_building_on_its_queue) {
 
 /* A soldier lost on the pad is not trained again: the original counts
  * a run down when its unit is done or its frame is lost
- * (legacy:9293-9303, 9524-9527). */
+ * (legacy:9293-9303, 9524-9527). The lost frame holds the pad until it
+ * decays, and the next waits for that. */
 TEST(a_soldier_lost_on_the_pad_is_not_trained_again) {
     ASSERT_NOT_NULL(oq_world());
     int b = oq_barracks();
@@ -659,10 +661,41 @@ TEST(a_soldier_lost_on_the_pad_is_not_trained_again) {
     int frame = oq_unit(b)->build_target;
     ASSERT(frame >= 0);
     Units_SetOwner(frame, 2, 1);
-    oq_ticks(600);
+    oq_ticks(1600);
     ASSERT_EQ_INT(2, oq_count(OQ_SOLDIER));
     ASSERT_EQ_INT(0, Units_FactoryQueueCount(b));
     oq_end();
+}
+
+/* Soldiers trained with no orders step off to spots of their own round
+ * the barracks rather than piling on one, and the next goes up only once
+ * the pad is clear
+ * (legacy:9694-9711, legacy:13813-13879, legacy:9363-9382). */
+TEST(soldiers_with_no_orders_step_off_to_spots_of_their_own) {
+    ASSERT_NOT_NULL(oq_world());
+    int b = oq_barracks();
+    ASSERT_EQ_INT(0, Units_FactoryAdd(b, OQ_SOLDIER, 6, 0));
+    oq_ticks(3000);
+    int h[8], n = 0, count = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count && n < 8; i++)
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].def_idx == OQ_SOLDIER)
+            h[n++] = i;
+    int close = 0, on_pad = 0;
+    for (int i = 0; i < n; i++) {
+        const Unit *a = oq_unit(h[i]);
+        if (abs(a->world_x - OQ_CX) < 40 && abs(a->world_y - OQ_CY) < 40) on_pad++;
+        for (int j = i + 1; j < n; j++) {
+            const Unit *c = oq_unit(h[j]);
+            if (abs(a->world_x - c->world_x) < 12 && abs(a->world_y - c->world_y) < 12)
+                close++;
+        }
+    }
+    oq_end();
+    printf("(%d trained, %d pairs within 12 px, %d on the pad) ", n, close, on_pad);
+    ASSERT_EQ_INT(6, n);
+    ASSERT_EQ_INT(0, close);
+    ASSERT_EQ_INT(0, on_pad);
 }
 
 /* A queued order carries a def only when it is a building, so what a
@@ -2491,6 +2524,7 @@ int main(int argc, char **argv) {
     RUN(a_click_beside_a_soldier_moves_the_rally);
     RUN(a_barracks_refuses_a_building_on_its_queue);
     RUN(a_soldier_lost_on_the_pad_is_not_trained_again);
+    RUN(soldiers_with_no_orders_step_off_to_spots_of_their_own);
     RUN(a_queued_move_carries_no_def);
     RUN(ctrl_changes_the_order_in_hand_and_keeps_the_queue);
     RUN(a_cancelled_frame_frees_its_site);

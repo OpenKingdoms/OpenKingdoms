@@ -5955,9 +5955,10 @@ static int  unit_effective_max_slope(const UnitDef *def,
                                      const MoveClassDef *move_class);
 
 /* A transport's drop test for the cargo's def centred on (wx, wy)
- * (legacy:14551). ignore_mobile lets movers through (legacy:218806). */
-static int unit_spot_clear(const UnitDef *d, int32_t wx, int32_t wy,
-                           int ignore_mobile) {
+ * (legacy:14551). ignore_mobile lets movers through (legacy:218806), and
+ * the unit skip, the one placed, is no obstacle to itself. */
+static int unit_spot_clear_but(const UnitDef *d, int32_t wx, int32_t wy,
+                               int ignore_mobile, int skip) {
     GameWorld *world = World_Get();
     if (!d || !world) return 0;
     int fx = 1, fz = 1;
@@ -5976,7 +5977,7 @@ static int unit_spot_clear(const UnitDef *d, int32_t wx, int32_t wy,
         return 0;
     for (int i = 0; i < g_unit_count; i++) {
         const Unit *u = &g_units[i];
-        if (u->alive != UNIT_ALIVE_ACTIVE) continue;
+        if (i == skip || u->alive != UNIT_ALIVE_ACTIVE) continue;
         const UnitDef *ud = Units_GetDef(u->def_idx);
         if (!ud) continue;
         if (ud->can_fly && !unit_is_mobile_occupant(u, ud)) continue;
@@ -5994,6 +5995,11 @@ static int unit_spot_clear(const UnitDef *d, int32_t wx, int32_t wy,
         if (ux0 < x1 && ux1 > x0 && uy0 < y1 && uy1 > y0) return 0;
     }
     return 1;
+}
+
+static int unit_spot_clear(const UnitDef *d, int32_t wx, int32_t wy,
+                           int ignore_mobile) {
+    return unit_spot_clear_but(d, wx, wy, ignore_mobile, -1);
 }
 
 int Units_CanSetDownAt(int def_idx, int32_t world_x, int32_t world_y) {
@@ -6064,6 +6070,29 @@ int Units_BeginBuildingForUnit(int builder_handle,
                                             world_x, world_y, 0);
 }
 
+/* Whether a unit other than the factory stands where its product of def
+ * pd would go up at (x, y). A flyer in the air holds no cells. */
+static int factory_pad_held(int factory, const UnitDef *pd, int32_t x,
+                            int32_t y) {
+    int fx = 1, fz = 1;
+    unit_mobile_footprint(World_Get(), pd, &fx, &fz);
+    int32_t x0 = x - fx * 8, x1 = x + fx * 8;
+    int32_t y0 = y - fz * 8, y1 = y + fz * 8;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *o = &g_units[i];
+        if (i == factory || o->alive != UNIT_ALIVE_ACTIVE) continue;
+        const UnitDef *od = Units_GetDef(o->def_idx);
+        if (!od || unit_def_is_structure(od)) continue;
+        if (od->can_fly && !unit_is_mobile_occupant(o, od)) continue;
+        int ofx = 1, ofz = 1;
+        unit_occ_fp(o, &ofx, &ofz);
+        if (o->world_x - ofx * 8 < x1 && o->world_x + ofx * 8 > x0 &&
+            o->world_y - ofz * 8 < y1 && o->world_y + ofz * 8 > y0)
+            return 1;
+    }
+    return 0;
+}
+
 int Units_BeginBuildingForUnitFacing(int builder_handle,
                                      int building_def_idx,
                                      int32_t world_x,
@@ -6121,6 +6150,11 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
         if (hd && ship_hull_blocked(hd, -1, UNIT_HULL_MARGIN,
                                     build_heading_for_def(bd), world_x,
                                     world_y, 0, 0.0f, 0, 0))
+            return -1;
+        /* Nor does one go up on a unit standing on the pad: the
+         * placement test at the spot counts units, and the factory looks
+         * again shortly (legacy:9363-9382, legacy:219134-219147). */
+        if (!hd && factory_pad_held(builder_handle, bd, world_x, world_y))
             return -1;
     } else if (!Units_IsBuildSiteFreeFacing(building_def_idx, world_x, world_y,
                                             facing)) {
@@ -6399,6 +6433,94 @@ static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
     return 0;
 }
 
+/* Whether a unit other than skip is walking to a point within reach px
+ * of (x, y) on both axes. */
+static int unit_spot_spoken_for(int skip, int32_t x, int32_t y, int reach) {
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *o = &g_units[i];
+        if (i == skip || o->alive != UNIT_ALIVE_ACTIVE ||
+            o->cmd_kind != UNIT_CMD_MOVE)
+            continue;
+        if (abs(o->cmd_x - x) < reach && abs(o->cmd_y - y) < reach) return 1;
+    }
+    return 0;
+}
+
+/* The nearest spot to (from_x, from_y) between rmin and rmax px from
+ * (cx, cy) where def d stands on clear ground no unit holds, searched
+ * ring by ring and on each ring outward from the bearing of from. A spot
+ * another unit is walking to is passed over too, which is ours: the
+ * original searches again when its walk is cut short (legacy:13854-13879). */
+static int unit_free_spot_round(const UnitDef *d, int skip, int32_t cx,
+                                int32_t cy, int rmin, int rmax,
+                                int32_t from_x, int32_t from_y,
+                                int32_t *out_x, int32_t *out_y) {
+    const GameWorld *w = World_Get();
+    if (!w || !d) return 0;
+    int fx = 1, fz = 1;
+    unit_mobile_footprint(w, d, &fx, &fz);
+    int reach = 16 * (fx > fz ? fx : fz);
+    float base = tak_atan2f((float)(from_y - cy), (float)(from_x - cx));
+    for (int r = rmin; r <= rmax; r += 16) {
+        int n = (int)(6.2831853f * (float)r / 16.0f);
+        if (n < 8) n = 8;
+        for (int j = 0; j < n; j++) {
+            int k = (j & 1) ? -((j + 1) / 2) : j / 2;
+            float a = base + 6.2831853f * (float)k / (float)n;
+            int32_t x = cx + (int32_t)((float)r * tak_cosf(a));
+            int32_t y = cy + (int32_t)((float)r * tak_sinf(a));
+            if (!unit_terrain_walkable(w, d, x, y)) continue;
+            if (!unit_spot_clear_but(d, x, y, 0, skip)) continue;
+            if (unit_spot_spoken_for(skip, x, y, reach)) continue;
+            *out_x = x;
+            *out_y = y;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A product with no orders steps off as the original's getbuilt mission
+ * sends it (legacy:9694-9711). A walker goes to the nearest clear spot
+ * from 16 px times rand(6) plus rand(3) plus 3 beyond its footprint and
+ * half the factory's out to three times as far. A flyer, with 3 more
+ * rolled in, flies to a random bearing that far less the half
+ * (legacy:13813-13879). The half stands in for a size term the original
+ * does not name, as the cargo's step does. */
+static int factory_step_off(const Unit *f, const UnitDef *fd, Unit *bt,
+                            const UnitDef *btd) {
+    const GameWorld *w = World_Get();
+    if (!w) return 0;
+    int rolls = (int)World_Rand(6) + (int)World_Rand(3);
+    int dist = 16 * (rolls + (btd->can_fly ? 6 : 3));
+    int pfx = 1, pfz = 1;
+    unit_occ_fp(bt, &pfx, &pfz);
+    int ffx = fd->footprint_x > 0 ? fd->footprint_x : 2;
+    int ffz = fd->footprint_z > 0 ? fd->footprint_z : 2;
+    int half = (ffx > ffz ? ffx : ffz) * 8;
+    int r = 16 * pfx + dist;
+    int32_t x = 0, y = 0;
+    if (btd->can_fly) {
+        float a = Units_HeadingFromTurn((uint16_t)World_Rand(0x10000));
+        r -= half;
+        x = f->world_x - (int32_t)((float)r * tak_sinf(a));
+        y = f->world_y - (int32_t)((float)r * tak_cosf(a));
+        if (x < 32) x = 32;
+        if (y < 32) y = 32;
+        if (x > w->map_pixels_w - 32) x = w->map_pixels_w - 32;
+        if (y > w->map_pixels_h - 32) y = w->map_pixels_h - 32;
+    } else if (!unit_free_spot_round(btd, (int)(bt - g_units), f->world_x,
+                                     f->world_y, r + half, 3 * (r + half),
+                                     bt->world_x, bt->world_y, &x, &y)) {
+        return 0;
+    }
+    bt->cmd_kind = UNIT_CMD_MOVE;
+    bt->cmd_x = x;
+    bt->cmd_y = y;
+    unit_clear_path(bt);
+    return 1;
+}
+
 /* A finished product leaves the yard: to the rally point with the
  * factory's standing orders behind it, or just clear of the doors.
  * Legacy hands it a move order after getbuilt (legacy:9430) and the
@@ -6432,6 +6554,7 @@ static void factory_release(const Unit *f, const UnitDef *fd, Unit *bt,
     int fz = fd->footprint_z > 0 ? fd->footprint_z : 2;
     const UnitDef *hd = def_hull(bt->def_idx);
     if (hd && ship_launch_spot(f, fx, fz, bt, btd, hd)) return;
+    if (!hd && factory_step_off(f, fd, bt, btd)) return;
     int exit_px = (fx > fz ? fx : fz) * 8 + 24;
     /* Off the pad first: keep going the way the pad already points, so
      * the product steps clear of the doors instead of turning back

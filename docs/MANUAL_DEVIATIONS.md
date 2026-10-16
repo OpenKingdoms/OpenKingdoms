@@ -1269,6 +1269,20 @@ Format per entry:
 - Citation: the manual describes no rule for this. The original's rule
   is in docs/notes/2026-10-04-summons-placement.md.
 
+## M-016: A new unit picks its spot off the pad once
+
+- Change: a unit a factory finishes with no orders of the factory's to
+  carry walks to the nearest clear spot in a ring round the factory, as
+  the original sends it, and passes over a spot another unit is already
+  walking to. The spot is chosen once, when the unit is finished.
+- Why: the original finds the spot by a route search and, when the walk
+  there is cut short, searches again a few times (legacy:13813-13879).
+  Two units finished one after the other then end on spots of their own.
+  Passing over a spot already spoken for gets the same end without a
+  second search and the state it would keep.
+- Citation: the manual describes no rule for this. The getbuilt mission
+  that sends the unit off is at legacy:9694-9711.
+
 ## D-006: Chat messages expire on the wall clock
 
 - Change: A chat message leaves the message list when it has been on
