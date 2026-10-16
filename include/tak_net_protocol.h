@@ -142,8 +142,10 @@
  * script says it is aimed, and statues take their side's paint.
  * 48: every canfly unit flies and lands, a flyer takes off before it
  * fires, a factory's product walks to a spot of its own, a broom drag
- * clears its box, and a rider boards a flying transport. */
-#define TAK_ENGINE_BUILD_ID           48
+ * clears its box, and a rider boards a flying transport. 49: the
+ * computer settles every free pad under cover, holds or presses on
+ * after a win, and weighs a troop its profile leaves out like its peers. */
+#define TAK_ENGINE_BUILD_ID           49
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
