@@ -17564,6 +17564,66 @@ TEST(hud_conjuring_target_shows_live_progress) {
     corpse_shutdown(&platform);
 }
 
+/* The second info panel shows the selected unit's target: when a unit
+ * is ordered to attack an enemy the panel names it and tracks its
+ * health (legacy:152140-152143). An enemy target hides the mana bar
+ * (own_only) but shows the name and health. */
+TEST(hud_target_panel_shows_attack_target) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(sword_def >= 0);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    ASSERT(n > 0);
+    int attacker = Units_Spawn(sword_def, 1, 0,
+                                units[0].world_x + 200,
+                                units[0].world_y + 200);
+    ASSERT(attacker >= 0);
+    int enemy = Units_Spawn(sword_def, 2, 1,
+                             units[0].world_x + 260,
+                             units[0].world_y + 200);
+    ASSERT(enemy >= 0);
+
+    Units_OrderAttack(attacker, enemy);
+    Units_SelectSingle(attacker);
+    HUD_Draw(&platform, world);
+
+    GUIRuntime *rt = HUD_DebugRuntime();
+    int hp = hud_panel_child(rt, "UnitInfo2", "HealthBar");
+    int label = hud_panel_child(rt, "UnitInfo2", "UnitText");
+    int mana = hud_panel_child(rt, "UnitInfo2", "ManaBar");
+    ASSERT(hp >= 0 && label >= 0);
+    ASSERT_EQ_INT(0, GUIRuntime_WidgetHiddenAt(rt, hp));
+    ASSERT_EQ_INT(0, GUIRuntime_WidgetHiddenAt(rt, label));
+    ASSERT_EQ_STR(Units_GetDef(sword_def)->display_name,
+                  GUIRuntime_WidgetAt(rt, label)->display_text);
+    /* Enemy target: mana bar hidden (own_only). */
+    if (mana >= 0)
+        ASSERT_EQ_INT(1, GUIRuntime_WidgetHiddenAt(rt, mana));
+
+    /* Damage the enemy and verify the gauge tracks it. */
+    Units_SetHealthPercent(enemy, 50);
+    HUD_Draw(&platform, world);
+    float tgt_hp = 0, tgt_mana = 0, pool = 0;
+    HUD_GetTargetGaugeFractions(&tgt_hp, &tgt_mana);
+    printf("[attack target hp gauge %.2f] ", tgt_hp);
+    ASSERT(fabsf(tgt_hp - 0.5f) < 0.05f);
+
+    /* Deselect: panel 2 goes away. */
+    Units_SelectSingle(-1);
+    HUD_Draw(&platform, world);
+    ASSERT_EQ_INT(1, GUIRuntime_WidgetHiddenAt(rt, hp));
+
+    InGame_Shutdown();
+    corpse_shutdown(&platform);
+}
+
 /* A def's model box in px, half the x and z extents and the full
  * height, from whichever colour's mesh is baked. */
 static int sparkle_model_box(const UnitDef *d, float *hx, float *hz,
@@ -30848,6 +30908,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_feature_draws_its_shadow_sprite);
     RUN_UI_TEST(build_sparkles_stand_on_the_building_at_any_terrain_height);
     RUN_UI_TEST(hud_conjuring_target_shows_live_progress);
+    RUN_UI_TEST(hud_target_panel_shows_attack_target);
     RUN_UI_TEST(build_sparkles_follow_the_size_of_the_building);
     RUN_UI_TEST(build_sparkles_rise_and_fall_each_at_its_own_speed);
     RUN_UI_TEST(build_sparkles_keep_flowing_once_the_ring_is_full);

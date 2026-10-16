@@ -119,6 +119,7 @@ static int            g_panel1_n = 0;
 static HUDPanelWidget g_panel2[HUD_MAX_PANEL_WIDGETS];
 static int            g_panel2_n = 0;
 static int g_target_health_bar = -1, g_target_mana_bar = -1, g_target_text = -1;
+static int g_target_kills = -1;
 
 /* Decoded RGBA art, wrapped in a surface only while it is blitted: SDL 3,
  * under the SDL 2 that Arch ships, invalidates every surface at SDL_Quit. */
@@ -228,6 +229,8 @@ static int      g_idx_unit_text  = -1;   /* the selection panel's name */
 static float    g_gauge_health   = 1.0f;
 static float    g_gauge_mana     = 1.0f;
 static float    g_gauge_pool     = 1.0f;
+static float    g_gauge_tgt_hp   = 0.0f;
+static float    g_gauge_tgt_mana = 0.0f;
 static SDL_Rect g_rect_mana_bar;
 static SDL_Rect g_rect_unit_text;
 static SDL_Rect g_rect_mana_text;     /* heuristic: mana box area */
@@ -664,6 +667,7 @@ static void hud_cache_dialog_rects(void) {
     g_target_health_bar = have_info2 ? widget_index_in("HealthBar", r_info2) : -1;
     g_target_mana_bar = have_info2 ? widget_index_in("ManaBar", r_info2) : -1;
     g_target_text = have_info2 ? widget_index_in("UnitText", r_info2) : -1;
+    g_target_kills = have_info2 ? widget_index_in("KillCount", r_info2) : -1;
 
     g_panel1_n = have_info1 ? collect_panel_widgets(r_info1, g_panel1,
                                    HUD_MAX_PANEL_WIDGETS) : 0;
@@ -910,26 +914,36 @@ static void fill_rect_canvas(SDL_Rect rc, SDL_Color c) {
     SDL_FillRect(off, &rc, SDL_MapRGBA(off->format, c.r, c.g, c.b, c.a));
 }
 
-/* A single conjurer's current product belongs in the authored target
- * panel. Build HP is the simulation's actual progress, including stalls
- * for lack of mana; a wall-clock estimate would run ahead of the build. */
-static const Unit *hud_conjuring_target(const int *sel, int count, int *handle) {
+/* The second info panel describes the selection's target
+ * (legacy:152140-152143): the unit the selected unit is interacting
+ * with. A conjurer's product, an attack target, a guard charge, a
+ * repair patient, or a reclaim victim. Only for a single selection. */
+static const Unit *hud_selection_target(const int *sel, int count, int *handle) {
     *handle = -1;
     if (!sel || count != 1) return NULL;
     int n = 0;
     const Unit *units = Units_GetActive(&n);
     if (sel[0] < 0 || sel[0] >= n) return NULL;
-    const Unit *builder = &units[sel[0]];
-    if (builder->alive != UNIT_ALIVE_ACTIVE ||
-        builder->player_id != Units_LocalPlayer() ||
-        builder->cmd_kind != UNIT_CMD_BUILD) return NULL;
-    int h = builder->build_target;
+    const Unit *u = &units[sel[0]];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return NULL;
+    /* A conjurer's product uses build_target. */
+    if (u->cmd_kind == UNIT_CMD_BUILD && u->build_target >= 0 &&
+        u->build_target < n && u->player_id == Units_LocalPlayer()) {
+        const Unit *t = &units[u->build_target];
+        if (t->alive == UNIT_ALIVE_ACTIVE && t->under_construction &&
+            t->player_id == Units_LocalPlayer()) {
+            *handle = u->build_target;
+            return t;
+        }
+    }
+    /* Every other command that names a unit: attack, guard, repair,
+     * reclaim, load. The target field holds the handle. */
+    int h = u->target;
     if (h < 0 || h >= n) return NULL;
-    const Unit *target = &units[h];
-    if (target->alive != UNIT_ALIVE_ACTIVE || !target->under_construction ||
-        target->player_id != Units_LocalPlayer()) return NULL;
+    const Unit *t = &units[h];
+    if (t->alive != UNIT_ALIVE_ACTIVE) return NULL;
     *handle = h;
-    return target;
+    return t;
 }
 
 void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
@@ -938,8 +952,8 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
     int sel_count = 0;
     const int *sel = Units_GetSelection(&sel_count);
     int have_sel = (sel && sel_count > 0);
-    int build_handle = -1;
-    const Unit *build_target = hud_conjuring_target(sel, sel_count, &build_handle);
+    int tgt_handle = -1;
+    const Unit *tgt = hud_selection_target(sel, sel_count, &tgt_handle);
 
     /* Forward mouse state to the runtime so hover frames update and
      * widget hit-testing works. The actual click dispatch happens in
@@ -1017,8 +1031,7 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
          * name label, both gauges with their backings, the rank pip and
          * the kill tally, leaving the strip art up
          * (legacy:152277-152296, legacy:152496-152506). The second panel
-         * describes the selection's TARGET (legacy:152140-152143).
-         * Populate it for an active conjuring order. */
+         * describes the selection's TARGET (legacy:152140-152143). */
         int sel_rank = have_sel ? Units_GetSelectedVeteranLevel() : 0;
         int show_xp = sel_rank > 0;
         int sel_own = hud_selection_is_own();
@@ -1031,10 +1044,28 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
                 if (g_panel1[i].is_kills && sel_kills <= 0) show = 0;
                 GUIRuntime_SetWidgetVisibleAt(g_rt, g_panel1[i].index, show);
             }
+            /* The same routine refreshes both panels
+             * (legacy:152113-152143). Panel 2 shows the target's
+             * rank and kills the same way panel 1 does for the
+             * selected unit. */
+            int tgt_own = tgt && tgt->player_id == Units_LocalPlayer();
+            int tgt_rank = (tgt && tgt_handle >= 0)
+                         ? Units_GetVeteranLevel(tgt_handle) : 0;
+            int tgt_kills = tgt ? tgt->kills : 0;
             for (int i = 0; i < g_panel2_n; i++) {
-                /* An unfinished product has neither rank nor kills. */
-                int show = build_target && !g_panel2[i].is_xp && !g_panel2[i].is_kills;
+                int show = tgt != NULL;
+                if (show && g_panel2[i].is_xp)    show = tgt_rank > 0;
+                if (show && g_panel2[i].is_kills)  show = tgt_kills > 0;
+                if (show && g_panel2[i].own_only && !tgt_own) show = 0;
                 GUIRuntime_SetWidgetVisibleAt(g_rt, g_panel2[i].index, show);
+            }
+            if (tgt_rank > 0) {
+                int frame = (tgt_rank < 3 ? tgt_rank : 3) - 1;
+                int xp_idx = -1;
+                for (int i = 0; i < g_panel2_n; i++)
+                    if (g_panel2[i].is_xp) { xp_idx = g_panel2[i].index; break; }
+                if (xp_idx >= 0)
+                    GUIRuntime_SetFrameOverrideAt(g_rt, xp_idx, frame);
             }
         } else {
             /* No panel groups in this dialog, drive the set by name. */
@@ -1110,10 +1141,13 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         }
         GUIRuntime_SetWidgetText(g_rt, "UnitText",
                                   unit_name   ? unit_name   : "");
-        if (build_target && g_target_text >= 0) {
-            const UnitDef *d = Units_GetDef(build_target->def_idx);
-            const char *name = d ? (d->display_name[0] ? d->display_name :
-                                   d->description[0] ? d->description : d->unitname) : "";
+        if (g_target_text >= 0) {
+            const char *name = "";
+            if (tgt) {
+                const UnitDef *d = Units_GetDef(tgt->def_idx);
+                name = d ? (d->display_name[0] ? d->display_name :
+                           d->description[0] ? d->description : d->unitname) : "";
+            }
             GUIRuntime_SetWidgetTextAt(g_rt, g_target_text, name);
         }
         /* A building that can turn says how while it is armed. */
@@ -1128,6 +1162,12 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
                    ? Units_GetSelectedKills() : 0;
             if (nk > 0) snprintf(kbuf, sizeof(kbuf), "%d", nk);
             GUIRuntime_SetWidgetText(g_rt, "KillCount", kbuf);
+        }
+        if (g_target_kills >= 0) {
+            char tbuf[8] = "";
+            if (tgt && tgt->player_id == Units_LocalPlayer() && tgt->kills > 0)
+                snprintf(tbuf, sizeof(tbuf), "%d", tgt->kills);
+            GUIRuntime_SetWidgetTextAt(g_rt, g_target_kills, tbuf);
         }
 
         /* HelpText is the desktop's own help line. A transport with
@@ -1206,16 +1246,20 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         if (g_rt && g_idx_mana_bar >= 0)
             GUIRuntime_SetFillFractionAt(g_rt, g_idx_mana_bar, mana_frac);
     }
-    if (g_rt) {
+    {
         float hp = 0.0f, mana = 0.0f, cur = 0.0f, max = 0.0f;
-        if (build_target) {
-            if (build_target->max_health > 0)
-                hp = (float)build_target->health / (float)build_target->max_health;
-            if (Units_GetMana(build_handle, &cur, &max) && max > 0.0f)
+        if (tgt) {
+            if (tgt->max_health > 0)
+                hp = (float)tgt->health / (float)tgt->max_health;
+            if (Units_GetMana(tgt_handle, &cur, &max) && max > 0.0f)
                 mana = cur / max;
         }
-        GUIRuntime_SetFillFractionAt(g_rt, g_target_health_bar, hp);
-        GUIRuntime_SetFillFractionAt(g_rt, g_target_mana_bar, mana);
+        g_gauge_tgt_hp   = hp;
+        g_gauge_tgt_mana = mana;
+        if (g_rt) {
+            GUIRuntime_SetFillFractionAt(g_rt, g_target_health_bar, hp);
+            GUIRuntime_SetFillFractionAt(g_rt, g_target_mana_bar, mana);
+        }
     }
     if (g_rt) GUIRuntime_Render(g_rt);
 
@@ -1558,6 +1602,11 @@ void HUD_GetGaugeFractions(float *out_health, float *out_mana, float *out_pool) 
     if (out_health) *out_health = g_gauge_health;
     if (out_mana)   *out_mana   = g_gauge_mana;
     if (out_pool)   *out_pool   = g_gauge_pool;
+}
+
+void HUD_GetTargetGaugeFractions(float *out_health, float *out_mana) {
+    if (out_health) *out_health = g_gauge_tgt_hp;
+    if (out_mana)   *out_mana   = g_gauge_tgt_mana;
 }
 
 int HUD_GetUnitInfoRects(SDL_Rect *out_text, SDL_Rect *out_image) {

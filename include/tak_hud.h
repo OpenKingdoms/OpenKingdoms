@@ -230,6 +230,10 @@ int  HUD_GetUnitInfoRects(SDL_Rect *out_text, SDL_Rect *out_image);
 /* The fractions the sidebar gauges were last drawn at: the selected
  * unit's health and own mana, and the player's pool (crystal ball). */
 void HUD_GetGaugeFractions(float *out_health, float *out_mana, float *out_pool);
+/* The target panel's gauges: the health and mana of the unit in
+ * UnitInfo2, whether that is a build product, an attack target, a
+ * guard charge, or a repair patient (legacy:152140-152143). */
+void HUD_GetTargetGaugeFractions(float *out_health, float *out_mana);
 /* Window rect of a visible action button (MOVE, PATROL, ...) by its
  * command mode, as laid out by the last HUD_Draw. 0 when the current
  * selection shows no such button. */
