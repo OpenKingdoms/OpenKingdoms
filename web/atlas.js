@@ -323,7 +323,8 @@
     }).map(function (m) {
       var short = m.p.replace(/^unity\/Assets\/Overrides\//, '');
       return { id: noteKey(SOD, short), nk: noteKey(SOD, short), pkg: SOD, path: short, k: 'glb', name: m.n, b: m.b | 0, tris: m.t | 0,
-               imgs: m.i | 0, painted: m.pt | 0, sod: m.k, url: j.base + m.p.split('/').map(encodeURIComponent).join('/'),
+               imgs: m.i | 0, painted: m.pt | 0, sod: m.k,
+               url: /^https:\/\/media\.githubusercontent\.com\//.test(m.u || '') ? m.u : j.base + m.p.split('/').map(encodeURIComponent).join('/'),
                rp: m.rp || '', rt: m.rt || '' };
     });
     return { commit: j.commit || '', repo: j.repo || SOD_REPO, entries: entries };

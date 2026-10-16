@@ -8,8 +8,9 @@ GitHub, when the remaster has new models:
     python3 scripts/atlas-remaster-index.py ~/Projects/Stars-of-Darien
 
 The page fetches each model from that commit on raw.githubusercontent.com,
-which answers with an open CORS header. The list holds names and numbers
-read from each file, never a picture or a mesh.
+or media.githubusercontent.com for one kept in Git LFS, both of which answer
+with an open CORS header. The list holds names and numbers read from each
+file, never a picture or a mesh.
 """
 import json
 import os
@@ -76,10 +77,13 @@ def main():
                 continue
             full = os.path.join(root, rel)
             j = glb_json(full)
+            lfs = git(root, "check-attr", "filter", "--", rel).endswith(": lfs")
             entry = {"n": name[:-4], "p": rel, "k": kind, "b": os.path.getsize(full),
                      "t": triangles(j), "i": len(j.get("images", []))}
             if painted(j):
                 entry["pt"] = painted(j)
+            if lfs:
+                entry["u"] = "https://media.githubusercontent.com/media/" + REPO + "/" + commit + "/" + urllib.parse.quote(rel)
             side = full[:-4] + ".json"
             if kind == "unit" and os.path.exists(side) and rel[:-4] + ".json" in tracked:
                 card = json.load(open(side))

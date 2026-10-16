@@ -140,15 +140,21 @@ const REMASTER = {
     { n: 'TestTree01', p: 'unity/Assets/Overrides/Features/TestTree01.glb', k: 'feature', b: 10, t: 100, i: 0, pt: 1 },
     { n: 'TESTKNIGHT', p: 'unity/Assets/Overrides/Units/TESTKNIGHT.glb', k: 'unit', b: 10, t: 900, i: 2 },
     { n: 'Bad', p: 'unity/Assets/../x.glb', k: 'feature' },
-    { n: 'Space Name', p: 'unity/Assets/Overrides/Features/Space Name.glb', k: 'feature' }
+    { n: 'Space Name', p: 'unity/Assets/Overrides/Features/Space Name.glb', k: 'feature' },
+    { n: 'Kept', p: 'unity/Assets/Overrides/Features/Kept.glb', k: 'feature',
+      u: 'https://media.githubusercontent.com/media/OpenKingdoms/Stars-of-Darien/abc123/unity/Assets/Overrides/Features/Kept.glb' },
+    { n: 'Elsewhere', p: 'unity/Assets/Overrides/Features/Elsewhere.glb', k: 'feature', u: 'https://example.com/x.glb' }
   ]
 };
 
 check('the remaster list is read, and a path that climbs or needs escaping is handled', () => {
   const r = A.parseRemaster(JSON.stringify(REMASTER));
-  assert.strictEqual(r.entries.length, 3);
+  assert.strictEqual(r.entries.length, 5);
   assert.strictEqual(r.entries[0].id, 'stars-of-darien|features/testtree01.glb');
   assert.strictEqual(r.entries[2].url, REMASTER.base + 'unity/Assets/Overrides/Features/Space%20Name.glb');
+  /* A model in Git LFS comes from GitHub's media host, and nowhere else. */
+  assert.strictEqual(r.entries[3].url, REMASTER.models[4].u);
+  assert.strictEqual(r.entries[4].url, REMASTER.base + 'unity/Assets/Overrides/Features/Elsewhere.glb');
   assert.strictEqual(A.parseRemaster('{"okAtlasRemaster":2,"models":[]}'), null);
   assert.strictEqual(A.parseRemaster({ okAtlasRemaster: 1, base: 'http://x/', models: [] }), null);
 });
@@ -195,11 +201,11 @@ check('search needs every word, and filters narrow it', () => {
   assert.deepStrictEqual(ids('shiny'), ['data.hpi|objects3d/arrow.3do']);
   assert.deepStrictEqual(ids('ammo 3do'), ['data.hpi|objects3d/arrow.3do']);
   assert.deepStrictEqual(ids('"test knight"'), ['data.hpi|objects3d/testknt.3do']);
-  assert.strictEqual(ids('', { kind: 'model' }).length, 6);
+  assert.strictEqual(ids('', { kind: 'model' }).length, 8);
   assert.deepStrictEqual(ids('', { rating: 3 }), ['data.hpi|objects3d/arrow.3do']);
   assert.deepStrictEqual(ids('', { remaster: 'needs' }), ['data.hpi|objects3d/teststatue.3do', 'data.hpi|objects3d/arrow.3do']);
   assert.strictEqual(ids('', { remaster: 'has' }).length, 4);
-  assert.strictEqual(ids('', { source: 'remaster' }).length, 3);
+  assert.strictEqual(ids('', { source: 'remaster' }).length, 5);
   assert.strictEqual(ids('', { source: 'official' }).length, 6);
 });
 
