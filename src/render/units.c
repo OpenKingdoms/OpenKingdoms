@@ -8323,6 +8323,7 @@ static int ensure_scratch(int need_verts, int need_idx) {
 }
 
 static void tall_features_free(void);
+static void tall_tex_release(void);
 static void overlap_order_free(void);
 
 static void scratch_free(void) {
@@ -8910,6 +8911,7 @@ void Units_ClearInstances(void) {
     Occ_Clear(World_Get());
     /* Teardown runs while the renderer that made the projectile art is
      * still up, so release the strips here and retire the epoch. */
+    tall_tex_release();
     proj_art_release_textures();
     shadow_mask_release();
     mass_release();
@@ -19627,6 +19629,66 @@ static void collect_tall_features(const struct GameWorld *world) {
     if (g_tall_count > 1) qsort(g_tall, (size_t)g_tall_count, sizeof(TallFeature), tall_cmp);
 }
 
+/* A tall feature's frame kept on the GPU for the redraw. A texture made
+ * and freed among the unit draws stalls their queue, and costs far more
+ * than the draw. Kept like the projectile art: by renderer and epoch. */
+#define TALL_TEX_SLOTS 64
+typedef struct TallTex {
+    const FeatureSprite *fs;
+    int           frame;
+    SDL_Texture  *tex;
+    SDL_Renderer *owner;
+    uint32_t      owner_gen, epoch, used;
+} TallTex;
+static TallTex  g_tall_tex[TALL_TEX_SLOTS];
+static uint32_t g_tall_tex_clock;
+
+static SDL_Texture *tall_tex_for(SDL_Renderer *r, const FeatureSprite *fs, int f) {
+    if (g_live_renderer_gen == 0 || !fs->frame_pixels[f]) return NULL;
+    TallTex *free_slot = NULL, *oldest = NULL;
+    for (int i = 0; i < TALL_TEX_SLOTS; i++) {
+        TallTex *t = &g_tall_tex[i];
+        const int live = t->tex && t->owner == r && t->owner_gen == g_live_renderer_gen &&
+                         t->epoch == g_proj_art_epoch;
+        if (live && t->fs == fs && t->frame == f) { t->used = ++g_tall_tex_clock; return t->tex; }
+        if (!live) {
+            t->tex = NULL;   /* another renderer's, never touched */
+            if (!free_slot) free_slot = t;
+        } else if (!oldest || t->used < oldest->used) {
+            oldest = t;
+        }
+    }
+    /* A free slot, else the one used longest ago. */
+    TallTex *pick = free_slot ? free_slot : oldest;
+    if (pick->tex) SDL_DestroyTexture(pick->tex);
+    memset(pick, 0, sizeof(*pick));
+    SDL_Texture *tex = SDL_CreateTexture(r, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC,
+                                         fs->frame_w[f], fs->frame_h[f]);
+    if (!tex) return NULL;
+    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+    SDL_UpdateTexture(tex, NULL, fs->frame_pixels[f], fs->frame_w[f] * 4);
+    pick->fs = fs;
+    pick->frame = f;
+    pick->tex = tex;
+    pick->owner = r;
+    pick->owner_gen = g_live_renderer_gen;
+    pick->epoch = g_proj_art_epoch;
+    pick->used = ++g_tall_tex_clock;
+    return tex;
+}
+
+/* Runs at world teardown with the renderer still up, just before the
+ * projectile art moves the epoch on. */
+static void tall_tex_release(void) {
+    for (int i = 0; i < TALL_TEX_SLOTS; i++) {
+        TallTex *t = &g_tall_tex[i];
+        if (t->tex && t->epoch == g_proj_art_epoch && t->owner_gen == g_live_renderer_gen &&
+            g_live_renderer_gen != 0)
+            SDL_DestroyTexture(t->tex);
+        memset(t, 0, sizeof(*t));
+    }
+}
+
 /* Lays the tall features of every row before `row` over the walkers
  * drawn so far, clipped to each walker's box so nothing else moves. */
 static void flush_tall_features(TAK_Platform *plat, int row) {
@@ -19641,8 +19703,10 @@ static void flush_tall_features(TAK_Platform *plat, int row) {
             SDL_Rect cut;
             if (!SDL_IntersectRect(&t->rect, &g_drawn_box[k], &cut)) continue;
             if (clipped && !SDL_IntersectRect(&cut, &prev, &cut)) continue;
+            SDL_Texture *tex = tall_tex_for(r, t->fs, t->frame);
+            if (!tex) continue;
             SDL_RenderSetClipRect(r, &cut);
-            blit_feature_frame(r, t->fs, t->frame, t->sx, t->sy, 0);
+            SDL_RenderCopy(r, tex, NULL, &t->rect);
             changed = 1;
         }
     }
