@@ -3589,6 +3589,19 @@ int Units_IsArmed(int handle) {
     return d && d->num_weapons > 0;
 }
 
+/* The attack order goes to a unit whose file has a [WEAPON1]. The
+ * original never reads canattack (legacy:163567-163568, legacy:150633,
+ * legacy:150713-150721). */
+int Units_DefTakesAttack(const UnitDef *d) {
+    return d && d->num_weapons > 0;
+}
+
+/* The stance buttons follow unitstandorders (legacy:163025,
+ * legacy:150422-150429, legacy:150870-150917). */
+int Units_DefHasStances(const UnitDef *d) {
+    return d && d->unit_stand_orders;
+}
+
 int Units_CanWalk(int handle) {
     if (handle < 0 || handle >= g_unit_count) return 0;
     const UnitDef *d = Units_GetDef(g_units[handle].def_idx);
@@ -7153,6 +7166,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     if (TDF_ReadInt(tdf, "canload",        0)) out->cap_flags |= UNIT_CAP_LOAD;
     if (TDF_ReadInt(tdf, "weaponswitching",0)) out->cap_flags |= UNIT_CAP_W_SWITCH;
     if (TDF_ReadInt(tdf, "cancapture",     0)) out->cap_flags |= UNIT_CAP_CAPTURE;
+    out->unit_stand_orders =
+        (uint8_t)(TDF_ReadInt(tdf, "unitstandorders", 1) != 0);
     out->cant_be_captured = TDF_ReadInt(tdf, "cantbecaptured", 0) ? 1 : 0;
     out->heal_time = TDF_ReadFloat(tdf, "healtime", 0.0f);
     if (out->heal_time < 0.0f) out->heal_time = 0.0f;

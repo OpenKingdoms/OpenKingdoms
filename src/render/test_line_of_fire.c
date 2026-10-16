@@ -2582,6 +2582,42 @@ TEST(the_unit_file_gives_the_standing_order) {
     ASSERT_EQ_INT(0, steady_roams);
 }
 
+/* canattack on a unit with no weapon, a weapon with no canattack, and
+ * unitstandorders = 0. */
+static const char LF_FBI_TAMER[] =
+    "[UNITINFO]\n{\n\tUnitName=FBITAMER;\n\tcanattack=1;\n"
+    "\tunitstandorders=0;\n}\n";
+static const char LF_FBI_WHIP[] =
+    "[UNITINFO]\n{\n\tUnitName=FBIWHIP;\n}\n"
+    "[WEAPON1]\n{\n\tname=Whip;\n\ttype=Melee;\n\trange=100;\n"
+    "\t[DAMAGE]\n\t{\n\t\tdefault=180;\n\t}\n}\n";
+
+TEST(a_weapon_gives_the_attack_order_and_unitstandorders_the_stances) {
+    VFS_Shutdown();
+    lf_mkdir(LF_FBI_DIR);
+    TestHPIEntry e[] = {
+        { "units/fbitamer.fbi", LF_FBI_TAMER, 100, 0 },
+        { "units/fbiwhip.fbi", LF_FBI_WHIP, 100, 0 },
+    };
+    ASSERT_EQ_INT(0, test_write_hpi(LF_FBI_DIR "/a.hpi", e, 2));
+    int loaded = (VFS_Init(LF_FBI_DIR, NULL) == 0) ? Units_LoadDefs() : -1;
+    const UnitDef *tamer = Units_GetDef(Units_FindDefByName("FBITAMER"));
+    const UnitDef *whip = Units_GetDef(Units_FindDefByName("FBIWHIP"));
+    int tamer_attack = Units_DefTakesAttack(tamer);
+    int tamer_stances = Units_DefHasStances(tamer);
+    int whip_attack = Units_DefTakesAttack(whip);
+    int whip_stances = Units_DefHasStances(whip);
+    VFS_Shutdown();
+    Units_FreeDefs();
+    remove(LF_FBI_DIR "/a.hpi");
+    lf_rmdir(LF_FBI_DIR);
+    ASSERT_EQ_INT(2, loaded);
+    ASSERT_EQ_INT(0, tamer_attack);
+    ASSERT_EQ_INT(0, tamer_stances);
+    ASSERT_EQ_INT(1, whip_attack);
+    ASSERT_EQ_INT(1, whip_stances);
+}
+
 /* A unit holding position shoots what comes into reach and lets it go
  * when it walks off. One that maneuvers goes after it. */
 static int32_t lf_after_walk_off(int def, int *out_target) {
@@ -3468,6 +3504,7 @@ int main(int argc, char **argv) {
     RUN(a_weapon_is_melee_by_its_type);
     RUN(a_unit_is_born_with_its_standing_order);
     RUN(the_unit_file_gives_the_standing_order);
+    RUN(a_weapon_gives_the_attack_order_and_unitstandorders_the_stances);
     RUN(a_unit_holding_position_does_not_chase);
     RUN(a_fight_of_its_own_looks_again_once_a_wait);
     RUN(a_unit_holding_position_or_ordered_never_looks_again);

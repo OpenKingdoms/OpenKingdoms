@@ -510,15 +510,15 @@ typedef struct UnitDef {
     float    turn_rate;
 
     /* Capability bitmask — drives which action buttons appear when
-     * this unit is selected (matches decomp at the legacy reference
-     * line 150627+ where flag 0x264 maps to the dialog's per-button
-     * visibility bytes). FBI fields parsed: canmove, canstop,
-     * canattack, canguard, canpatrol, cancloak, cantransport,
-     * builder. Each bit set ↔ button should appear. */
+     * this unit is selected (legacy:150627+, where each bit of the
+     * def's flag word lights its button). FBI fields parsed: canmove,
+     * canstop, canattack, canguard, canpatrol, cancloak, cantransport,
+     * builder. The ATTACK and stance buttons go by Units_DefTakesAttack
+     * and Units_DefHasStances instead. */
     uint32_t cap_flags;
 #define UNIT_CAP_MOVE      (1u << 0)
 #define UNIT_CAP_STOP      (1u << 1)
-#define UNIT_CAP_ATTACK    (1u << 2)
+#define UNIT_CAP_ATTACK    (1u << 2)   /* canattack, for the def hash only */
 #define UNIT_CAP_GUARD     (1u << 3)
 #define UNIT_CAP_PATROL    (1u << 4)
 #define UNIT_CAP_CLOAK     (1u << 5)
@@ -531,6 +531,9 @@ typedef struct UnitDef {
 #define UNIT_CAP_W_SWITCH  (1u << 12)  /* weaponswitching — Pri/Sec/Special */
 #define UNIT_CAP_CAPTURE   (1u << 14)  /* cancapture (legacy:163056)  */
 #define UNIT_CAP_ANIMATE   (1u << 13)  /* cananimate (legacy:163045)  */
+    /* unitstandorders: the stance buttons show unless it is 0
+     * (legacy:163025). */
+    uint8_t  unit_stand_orders;
 
     /* Mana economy fields. The legacy engine treats two FBI pairs
      * as additive contributions to the owning player's pool:
@@ -1907,6 +1910,10 @@ int               Units_WeaponCanTake(int handle, int target_handle);
  * how many of them carry a weapon at all. */
 int               Units_SelectionCanAttack(int target_handle, int *armed);
 int               Units_IsArmed(int handle);
+/* The order buttons a def shows: ATTACK for a unit with a weapon, the
+ * stances unless its file sets unitstandorders = 0. */
+int               Units_DefTakesAttack(const UnitDef *d);
+int               Units_DefHasStances(const UnitDef *d);
 int               Units_CanWalk(int handle);
 /* 0 for a unit the player cannot select: none there, dead, or still
  * being built, which the original never selects. */
