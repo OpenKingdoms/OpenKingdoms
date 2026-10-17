@@ -752,6 +752,87 @@ Format per entry:
 - Citation: the manual describes no rule for either. D-036 makes the
   conditions they answer.
 
+## A-012: The computer settles every free pad under cover, holds the ground it wins and builds a varied army
+
+- Change: three behaviours, each a tactic bit the duel can measure on
+  its own. Settling (`TAK_AI_TACTIC_EXPAND`): a seat wants a lodestone
+  on every free sacred pad it can safely take, up to the profile's
+  limit for the type, where it wanted one plus half the free pads. A
+  builder bound for a pad past the base's radius takes the fighters
+  gathering at home with it as an escort group, which stands 160 px
+  past the pad from home, off the site, until the work ends. A builder
+  out past the base's radius puts its next hall up at home. Holding
+  ground (`TAK_AI_TACTIC_HOLD`): a group in the field whose target
+  falls, or whose escort ends, picks its next target from where it
+  stands and a member drawn at random. It presses on when it can see that target
+  and is a fifth stronger than what it sees there, or when the long
+  wait of A-007 is up. Short of that it holds the ground it won. It
+  stands there, fights what comes into reach, walks back to its point
+  after a chase and draws the reinforcements of A-009. What is left of
+  a spent group holds the same way on quiet ground away from home. A
+  holding group answers a threat at home or within 1536 px of it and
+  breaks off like any group when outmatched, a fit fighter idle in the
+  field joins a group near it rather than walk home, a wave still
+  nearer home than its target turns back when home is hit, and a
+  group whose errand ends at home gives its members back to the
+  gathering. A varied army (`TAK_AI_TACTIC_MIX`): a fighter the
+  profile names no weight for weighs the mean of the named fighters in
+  a build list it is in. The code is `ai_group_next`, `ai_escort` and
+  `ai_profile_peers` in `src/game/ai.c` and the group domain in
+  `src/game/ai_htn.c`.
+- Why: a player's report for 0.5.1. With no threat about, the
+  computer gathered everything at home, took no new ground and walked
+  away from a fight it had won, and Veruna fielded mostly Centaurs.
+  The original sends a spare builder to the nearest safe unclaimed
+  sacred site whenever it has one, up to the profile's limit
+  (legacy:16503), and puts every spare ground and air unit of the pass
+  into that builder's group as its escort (legacy:16320-16328). Ours
+  held one plus half the free pads, four of fourteen on Two Castles
+  with the mana pool empty most of the match. The builder the original
+  sends comes from roles that pass over the commander key
+  (legacy:15528-15545, the key read at legacy:163074), so its monarch
+  never goes. Ours may send the monarch: Zhon's other builders summon
+  before they build, and with its monarch kept home a Zhon seat took
+  fewer pads than before and lost seven duels of eight. The
+  original's group whose target dies picks the next from its own
+  position (legacy:18293, legacy:18343), and one with no target waits
+  where it stands (legacy:18350). Ours sent such a group at the seat's
+  target, picked from the middle of the whole army, and sent what was
+  left of a spent group and every idle fighter in the field home. The
+  shipped profile (ai/default.txt of 12-17-99, in the patch and in
+  Iron Plague) names no weight for the Centaur the patch added to
+  Veruna's castle. The original gives a type nobody named 100
+  (legacy:19792) and ours gave it 50, against 3 to 8 for the castle's
+  other troops, so once a seat owned two of each the castle's draw
+  weighed a Centaur at 10 and every other troop at 1. With its peers'
+  mean it weighs 7. The strength test, the hold, the regroup, the turn
+  back, the answer to a threat, the halls at home and the peer weight
+  are ours.
+- Measured: in duels of 20 minutes off the archives a player's folder
+  holds, each seed played twice with the seats swapped, a seat with
+  A-012 against one without. Over 64 games on Two Castles and
+  Tarosian Plain, every kingdom against itself and two mixed pairs,
+  the seat with it won 36 and was ahead at the end of 7 more, against
+  17 wins and 4 ahead, and killed 2,591 for 2,202 lost against 2,122
+  for 2,784. It stood on 5.0 lodestones on average against 3.5, and its
+  fighters were near home 40 percent of the time against 55. On Two
+  Castles Veruna won 10 and was ahead in 2 of 16 against 4 wins,
+  Aramon won 7 of 8 against 1, Taros won 5 and was ahead in 1 against
+  none and 2 ahead, and Zhon won 3 and was ahead in 2 against 2 and 1.
+  Veruna against Taros came out 4 against 3 and 1 ahead, Aramon
+  against Zhon 4 against 4, and Veruna on Tarosian Plain, where 34
+  pads let both seats reach the profile's limit of 7, 3 and 2 ahead
+  against 3. Alone over eight Veruna games each bit was near even:
+  the mix won 4 and was ahead in 1 against 1 and 2, settling 3 and 2
+  against 3, holding 3 and 1 against 2 and 2. The castle's output was
+  46 percent Centaurs without the mix and 16 percent with it. No troop
+  made more than 38 percent of what a seat raised either way. The
+  keep's swordsmen and archers make about a third each, which is the
+  profile's weights at work.
+- Citation: the manual describes no AI rule at this level. Behaviour
+  note `docs/notes/2026-09-04-legacy-ai.md`, "Roles", "Attack waves"
+  and the gap list.
+
 ## T-001: Flying transports load and unload by the ground rules
 
 - Change: The Roc and the Ghost Ship pick up and set down units the way
