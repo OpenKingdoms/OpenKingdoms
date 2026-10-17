@@ -131,6 +131,11 @@ int Units_OrderSetAggro(int handle, int aggro_mode) {
     return 1;
 }
 
+int Units_OrderCloak(int handle, int on) {
+    g_units[handle].cloak_want = (uint8_t)(on != 0);
+    return 1;
+}
+
 int Units_OrderLoadList(int carrier, const int *riders, int count, int queued) {
     (void)carrier; (void)riders; (void)count; (void)queued;
     return 1;

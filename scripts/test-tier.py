@@ -376,9 +376,9 @@ def render_plan_script(decision, targets, ui, build, config, count):
         '  local filter="$1" want="$2" out line',
         '  out=$("$UI" "$filter" 2>&1); rc=$?',
         '  line=$(printf "%s\\n" "$out" | grep -E "^Results:" | tail -1)',
-        '  if [ $rc -ne 0 ] || [ "$line" != "Results: $want passed, 0 failed, $want total" ]; then',
+        '  if [ $rc -ne 0 ] || [ "$line" != "Results: $want passed, 0 failed, 0 skipped, $want total" ]; then',
         '    printf "%s\\n" "$out"',
-        '    echo "FAILED  ui \\"$filter\\"  got: ${line:-no Results line}  want: Results: $want passed, 0 failed, $want total"',
+        '    echo "FAILED  ui \\"$filter\\"  got: ${line:-no Results line}  want: Results: $want passed, 0 failed, 0 skipped, $want total"',
         "    fail=1",
         "  else",
         '    echo "ok      ui \\"$filter\\"  $line"',
@@ -466,7 +466,7 @@ def print_report(decision, rules, index, args):
             out('     ctest --test-dir %s -C %s -R "%s" --output-on-failure'
                 % (b, config, regex))
         for f, n in ui:
-            out('     %s "%s"   expect Results: %d passed, 0 failed, %d total'
+            out('     %s "%s"   expect Results: %d passed, 0 failed, 0 skipped, %d total'
                 % (ui_exe(build, config), f, n, n))
         out("")
         out("  3. Paste every Results line with the number the rules")

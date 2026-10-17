@@ -74,6 +74,26 @@ EM_JS(double, web_device_pixel_ratio, (void), {
     return window.devicePixelRatio || 1;
 });
 
+/* A press shows which of Shift, Ctrl and Alt are really down. One whose
+ * release the page never saw, which an input method can swallow, is let
+ * go before SDL hears the press, so it cannot stay held. SDL drops a
+ * release for a key it holds as up. */
+EM_JS(void, web_watch_modifiers, (void), {
+    if (Module.okModWatch) return;
+    Module.okModWatch = true;
+    var keys = [["shiftKey", "Shift", "ShiftLeft", "ShiftRight"],
+                ["ctrlKey", "Control", "ControlLeft", "ControlRight"],
+                ["altKey", "Alt", "AltLeft", "AltRight"]];
+    window.addEventListener("mousedown", function (e) {
+        for (var i = 0; i < keys.length; i++) {
+            if (e[keys[i][0]]) continue;
+            for (var side = 1; side <= 2; side++)
+                window.dispatchEvent(new KeyboardEvent("keyup", {
+                    key: keys[i][1], code: keys[i][1 + side], location: side }));
+        }
+    }, true);
+});
+
 /* Under Original the canvas is sized in CSS so each game pixel covers
  * exactly k screen pixels, and drawn without smoothing. Under Fit the
  * sheet's 16:9 box takes over again. */
@@ -231,6 +251,9 @@ int TAK_Platform_Init(TAK_Platform *plat, const TAK_DisplayConfig *cfg) {
         SDL_Quit();
         return -1;
     }
+#ifdef __EMSCRIPTEN__
+    web_watch_modifiers();
+#endif
 
     Uint32 rend_flags = cfg->use_sw_renderer
         ? SDL_RENDERER_SOFTWARE

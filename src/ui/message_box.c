@@ -30,6 +30,7 @@ static struct {
     Font       *font_help;
     int         off_x;
     int         off_y;
+    int         yes_no;
     char        text[256];
 } mb;
 
@@ -110,15 +111,17 @@ void MessageBox_Close(void) {
     if (mb.font_help) { Font_Free(mb.font_help); mb.font_help = NULL; }
     mb.off_x = 0;
     mb.off_y = 0;
+    mb.yes_no = 0;
     mb.text[0] = '\0';
 }
 
-int MessageBox_Open(const char *text) {
+static int open_box(const char *text, const char *gui, int yes_no) {
     MessageBox_Close();
     strncpy(mb.text, text ? text : "", sizeof(mb.text) - 1);
     mb.text[sizeof(mb.text) - 1] = '\0';
     if (!mb.text[0]) return -1;
-    if (GUIDialog_Load(&mb.dialog, "data/guis/ok.gui") != 0) return -1;
+    mb.yes_no = yes_no;
+    if (GUIDialog_Load(&mb.dialog, gui) != 0) return -1;
     mb.has_dialog = 1;
     mb.rt = GUIRuntime_Create(&mb.dialog);
     if (!mb.rt) { GUIDialog_Free(&mb.dialog); mb.has_dialog = 0; return -1; }
@@ -137,6 +140,16 @@ int MessageBox_Open(const char *text) {
     mb.font_help = Font_Load("data/fonts/b_times new roman (100b)",
                              UI_RGBAFormat());
     return 0;
+}
+
+int MessageBox_Open(const char *text) {
+    return open_box(text, "data/guis/ok.gui", 0);
+}
+
+/* The original picks ok.gui, okcancel.gui or yesno.gui for the same
+ * dialog by a flag (legacy:146759-146780). */
+int MessageBox_OpenYesNo(const char *text) {
+    return open_box(text, "data/guis/yesno.gui", 1);
 }
 
 /* The hovered button help string, in the dialog HelpText label
@@ -170,9 +183,11 @@ int MessageBox_Tick(int mx, int my, int mouse_down,
                                         clicked, sizeof(clicked))
                     : 0;
     MessageBox_Render();
-    if (got || enter_edge || esc_edge) {
-        MessageBox_Close();
-        return 1;
-    }
-    return 0;
+    if (!got && !enter_edge && !esc_edge) return 0;
+    /* yesno.gui's own keys are #Enter#Yes#Esc#No. */
+    int answer = 1;
+    if (mb.yes_no)
+        answer = (got ? tak_stricmp(clicked, "No") == 0 : esc_edge) ? 2 : 1;
+    MessageBox_Close();
+    return answer;
 }

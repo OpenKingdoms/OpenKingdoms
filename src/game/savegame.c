@@ -287,6 +287,9 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 #define U_WPN_AIM_TICKS 12u
 #define U_WPN_AIM_TGT   14u
 #define U_WPN_AIM_SLOT  16u
+/* Port 22 heard for the aim, in what was a spare byte. An older record
+ * reads back not yet aimed. */
+#define U_WPN_AIM_READY 17u
 #define U_WPN_END       (U_WPN + U_WPN_BYTES * 3u)
 
 #define U_LOAD_QUEUE    U_WPN_END
@@ -386,7 +389,27 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 #define U_HOVER_EVENTS  (U_HOVER_STATE + 3u)
 #define U_HOVER_X       (U_HOVER_STATE + 4u)
 #define U_HOVER_Y       (U_HOVER_STATE + 8u)
-#define U_END           (U_HOVER_STATE + 12u)
+/* Version 13 on: a fight's post and leash, or the point a patrol goes on
+ * to after repairs. An older record reads back none. */
+#define U_POST_SET      (U_HOVER_STATE + 12u)
+#define U_POST_LEASH    (U_POST_SET + 1u)
+#define U_POST_X        (U_POST_SET + 3u)
+#define U_POST_Y        (U_POST_SET + 7u)
+/* Version 14 on: the ticks a self destruct has left. An older record
+ * reads back none. */
+#define U_SELFD_TICKS   (U_POST_SET + 11u)
+/* Version 15 on: the last enemy unit that hit it and the tick it did.
+ * An older record reads back never hit. */
+#define U_HIT_BY        (U_SELFD_TICKS + 2u)
+#define U_HIT_TICK      (U_HIT_BY + 4u)
+/* Version 16 on: the cloak, 1 wanted and 2 hidden now, and the ticks
+ * before it may hide again. An older record reads back no cloak. */
+#define U_CLOAK         (U_HIT_TICK + 4u)
+#define U_CLOAK_WAIT    (U_CLOAK + 1u)
+/* Version 17 on: the ticks a paralyzer still holds the unit. An older
+ * record reads back free. */
+#define U_PARALYZED     (U_CLOAK_WAIT + 2u)
+#define U_END           (U_PARALYZED + 2u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -603,7 +626,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 12
+#define VER_UNIT 17
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 4
@@ -1206,8 +1229,24 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_u8(r + U_HOVER_EVENTS, u->hover_events);
     tak_put_i32(r + U_HOVER_X, u->hover_x);
     tak_put_i32(r + U_HOVER_Y, u->hover_y);
+    tak_put_u8(r + U_POST_SET, u->post_set);
+    tak_put_u16(r + U_POST_LEASH, u->post_leash);
+    tak_put_i32(r + U_POST_X, u->post_x);
+    tak_put_i32(r + U_POST_Y, u->post_y);
+    tak_put_u16(r + U_SELFD_TICKS, u->selfd_ticks);
+    tak_put_u32(r + U_HIT_BY, u->hit_by);
+    tak_put_u32(r + U_HIT_TICK, u->hit_tick);
+    tak_put_u8(r + U_CLOAK, (uint8_t)((u->cloak_want ? 1u : 0u) |
+                                      (u->cloaked ? 2u : 0u)));
+    tak_put_u16(r + U_CLOAK_WAIT, u->cloak_wait);
+    tak_put_u16(r + U_PARALYZED, u->paralyzed_ticks);
+    /* Bit 2 marks a held order on a site out of sight, bits 3-4 its
+     * facing. */
     tak_put_u8(r + U_BUILD_ENDLESS, (uint8_t)((u->build_endless ? 1u : 0u) |
-                                              (u->build_held ? 2u : 0u)));
+                                              (u->build_held ? 2u : 0u) |
+                                              (u->build_held && u->build_unseen
+                                                   ? 4u | ((u->build_facing & 3u) << 3)
+                                                   : 0u)));
     tak_put_u8(r + U_BUILD_TRIES, u->build_tries);
     tak_put_u8(r + U_BUILD_WAIT, u->build_wait);
     tak_put_i16(r + U_BUILD_DEF, (int16_t)(u->build_endless || u->build_held
@@ -1282,6 +1321,7 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
         tak_put_i16(ws + U_WPN_AIM_TICKS, s->aim_ticks);
         tak_put_i16(ws + U_WPN_AIM_TGT, s->aim_target);
         tak_put_u8(ws + U_WPN_AIM_SLOT, (uint8_t)s->aim_thread_slot);
+        tak_put_u8(ws + U_WPN_AIM_READY, s->aim_ready);
     }
 
     /* The live prefix only: past the length both queues hold whatever
@@ -1463,9 +1503,23 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->hover_events = tak_get_u8(r + U_HOVER_EVENTS);
     u->hover_x = tak_get_i32(r + U_HOVER_X);
     u->hover_y = tak_get_i32(r + U_HOVER_Y);
+    u->post_set = tak_get_u8(r + U_POST_SET);
+    u->post_leash = tak_get_u16(r + U_POST_LEASH);
+    u->post_x = tak_get_i32(r + U_POST_X);
+    u->post_y = tak_get_i32(r + U_POST_Y);
+    u->selfd_ticks = tak_get_u16(r + U_SELFD_TICKS);
+    u->hit_by = tak_get_u32(r + U_HIT_BY);
+    u->hit_tick = tak_get_u32(r + U_HIT_TICK);
+    uint8_t cloak = tak_get_u8(r + U_CLOAK);
+    u->cloak_want = (cloak & 1u) ? 1 : 0;
+    u->cloaked = (cloak & 2u) ? 1 : 0;
+    u->cloak_wait = tak_get_u16(r + U_CLOAK_WAIT);
+    u->paralyzed_ticks = tak_get_u16(r + U_PARALYZED);
     uint8_t summons = tak_get_u8(r + U_BUILD_ENDLESS);
     u->build_endless = (summons & 1u) ? 1 : 0;
     u->build_held = (summons & 2u) ? 1 : 0;
+    u->build_unseen = (u->build_held && (summons & 4u)) ? 1 : 0;
+    u->build_facing = u->build_unseen ? (uint8_t)((summons >> 3) & 3u) : 0;
     u->build_tries = tak_get_u8(r + U_BUILD_TRIES);
     u->build_wait = tak_get_u8(r + U_BUILD_WAIT);
     u->build_def = 0;
@@ -1555,6 +1609,7 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
         s->aim_ticks = tak_get_i16(ws + U_WPN_AIM_TICKS);
         s->aim_target = tak_get_i16(ws + U_WPN_AIM_TGT);
         s->aim_thread_slot = (int8_t)tak_get_u8(ws + U_WPN_AIM_SLOT);
+        s->aim_ready = tak_get_u8(ws + U_WPN_AIM_READY);
     }
 
     if (u->load_queue_len > UNIT_LOAD_QUEUE_MAX) {

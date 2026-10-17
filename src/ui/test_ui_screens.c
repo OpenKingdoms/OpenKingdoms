@@ -2777,9 +2777,10 @@ TEST(select_game_hosting_a_game_names_the_rules_it_plays_by) {
     TAK_MsgCreateRoom cr;
     ASSERT_EQ_INT(0, TAK_Msg_CreateRoomDecode(&cr, f.payload, f.payload_len));
 
-    /* The same rules this build would play a skirmish under. */
+    /* The rules the player last hosted under, the defaults until then. */
     BattleConfig defaults;
     BattleConfig_SetDefaults(&defaults);
+    BattleSetup_LoadGameOptions(&defaults, TAK_GAMEOPTS_NETGAME, 0);
     ASSERT_EQ_INT(defaults.units_per_side, (int)cr.unit_cap);
     ASSERT_EQ_INT(defaults.line_of_sight,
                   (cr.options & TAK_ROOMOPT_LINE_OF_SIGHT) != 0);
@@ -3091,6 +3092,13 @@ TEST(mp_room_builds_the_world_the_server_described) {
     memcpy(sg.map_name, "two castles", 12);
     sg.unit_cap = 700;
     sg.options = TAK_ROOMOPT_LINE_OF_SIGHT | TAK_ROOMOPT_POWER_CODES;
+    /* A joiner's own kept options are not the room's. */
+    BattleConfig mine;
+    BattleConfig_SetDefaults(&mine);
+    mine.crusades_balance = 1;
+    mine.map_revealed = 1;
+    mine.units_per_side = 300;
+    BattleSetup_SaveGameOptions(&mine, TAK_GAMEOPTS_NETGAME, 0);
     sg.slot[0].kind = TAK_NSLOT_HUMAN;
     sg.slot[0].side = TAK_SIDE_VERUNA;
     sg.slot[0].team = 2;
@@ -3117,6 +3125,9 @@ TEST(mp_room_builds_the_world_the_server_described) {
     ASSERT_EQ_INT(1, w->cfg.power_codes);
     ASSERT_EQ_INT(0, w->cfg.map_revealed);
     ASSERT_EQ_INT(0, w->cfg.monarch_expendable);
+    BattleConfig_SetDefaults(&mine);
+    BattleSetup_SaveGameOptions(&mine, TAK_GAMEOPTS_NETGAME, 0);
+    ASSERT_EQ_INT(0, w->cfg.crusades_balance);
     ASSERT_EQ_INT(TAK_SLOT_HUMAN, (int)w->cfg.players[0].kind);
     ASSERT_EQ_INT(TAK_SIDE_VERUNA, w->cfg.players[0].side);
     ASSERT_EQ_INT(2, w->cfg.players[0].team);
@@ -4137,6 +4148,163 @@ TEST(the_lobbies_offer_the_remastered_battlefield) {
     ASSERT_EQ_INT(0, took);
     ASSERT_EQ_INT(TAK_EDIT_OPTIONS, (int)e.field);
     ASSERT_EQ_INT((int)(TAK_ROOMOPT_LINE_OF_SIGHT | TAK_ROOMOPT_REMASTERED), (int)e.value);
+}
+
+/* The game options stay as the player last left them, as the original
+ * keeps them under its own names, one set for a skirmish and one for a
+ * game the player hosts (legacy:131635-131657, legacy:136553-136560):
+ * the next skirmish starts with them, a hosted room with the hosted set,
+ * and a host's change in the room is kept too. */
+static void go_put(const char *section, const char *name, int v) {
+    char k[96];
+    snprintf(k, sizeof k, "%s.%s", section, name);
+    Settings_SetInt(k, v);
+}
+
+static int go_get(const char *section, const char *name) {
+    char k[96];
+    snprintf(k, sizeof k, "%s.%s", section, name);
+    return Settings_GetInt(k, -1);
+}
+
+TEST(the_game_options_are_kept_for_the_next_battle) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+#ifdef _WIN32
+    _mkdir("gameoptions_scratch");
+#else
+    mkdir("gameoptions_scratch", 0755);
+#endif
+    Settings_SetDirectory("gameoptions_scratch");
+    remove(Settings_FilePath());
+    BattleConfig defaults;
+    BattleConfig_SetDefaults(&defaults);
+    BattleSetup_SaveGameOptions(&defaults, TAK_GAMEOPTS_SKIRMISH, 1);
+    BattleSetup_SaveGameOptions(&defaults, TAK_GAMEOPTS_NETGAME, 0);
+    /* What a last skirmish left: 700 units, Zhon against Veruna. */
+    go_put(TAK_GAMEOPTS_SKIRMISH, "FavoriteUnitsPerPlayer", 700);
+    go_put(TAK_GAMEOPTS_SKIRMISH, "Side", TAK_SIDE_ZHON);
+    go_put(TAK_GAMEOPTS_SKIRMISH, "EnemySide", TAK_SIDE_VERUNA);
+
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    BattleConfig first = *BattleSetup_Config();
+    static const char *boxes[] = { "LineOfSight", "Mapping", "MonarchDeath",
+                                   "StartLocations", "CheatCodes", "CrusadesBalance" };
+    for (int i = 0; i < 6; i++) BattleSetup_Press(boxes[i]);
+    BattleSetup_Shutdown();
+    /* A fresh start, from the file rather than from memory. */
+    static const char *keys[] = { "LosOn", "MappingOn", "MonarchDeath",
+                                  "RandomStartLocations", "AllowCheating",
+                                  "CrusadesBalance", "FavoriteUnitsPerPlayer",
+                                  "Side", "EnemySide" };
+    for (int i = 0; i < 9; i++) go_put(TAK_GAMEOPTS_SKIRMISH, keys[i], -1);
+    ASSERT_EQ_INT(0, Settings_Load());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    BattleConfig next = *BattleSetup_Config();
+    BattleSetup_Shutdown();
+    int saved_los = go_get(TAK_GAMEOPTS_SKIRMISH, "LosOn");
+    int saved_mapping = go_get(TAK_GAMEOPTS_SKIRMISH, "MappingOn");
+    int saved_death = go_get(TAK_GAMEOPTS_SKIRMISH, "MonarchDeath");
+
+    /* The hosted set is its own: the skirmish's choices are not in it. */
+    go_put(TAK_GAMEOPTS_NETGAME, "MappingOn", 0);
+    go_put(TAK_GAMEOPTS_NETGAME, "FavoriteUnitsPerPlayer", 900);
+    ASSERT_EQ_INT(0, SelectGame_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 707);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1000);
+    (void)SelectGame_Tick(&platform, 1.0f / 60.0f);
+    while (TAK_NetClient_TakeMessage(c, msg, sizeof msg) > 0) { }
+    SelectGame_HandleClick("HostGame");
+    TAK_MsgCreateRoom cr;
+    memset(&cr, 0, sizeof cr);
+    TAK_NetFrame f;
+    n = TAK_NetClient_TakeMessage(c, msg, sizeof msg);
+    int hosted = n > 0 && TAK_Net_Split(msg, n, &f) == 0 &&
+                 f.type == TAK_MSG_CREATE_ROOM &&
+                 TAK_Msg_CreateRoomDecode(&cr, f.payload, f.payload_len) == 0;
+    SelectGame_Shutdown();
+
+    /* The host turns Use Crusades Units off and the limit up. */
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    n = mp_encode_room_hosted(msg, sizeof msg, 1, 707,
+                              TAK_ROOMOPT_LINE_OF_SIGHT | TAK_ROOMOPT_CRUSADES_BALANCE,
+                              500, 0);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1100);
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    mp_drain(c);
+    (void)Multiplayer_HandleClick("Crusades", widget_index_named(Multiplayer_Runtime(), "Crusades"));
+    TAK_MsgRoomEdit e;
+    memset(&e, 0, sizeof e);
+    int took = mp_take_edit(c, &e);
+    GUIRuntime *mrt = Multiplayer_Runtime();
+    for (int i = 0; i < GUIRuntime_NumWidgets(mrt); i++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(mrt, i);
+        if (w && tak_stricmp(w->name, "incbutton") == 0 && w->rect.y < 240) {
+            (void)Multiplayer_HandleClick("incbutton", i);
+            break;
+        }
+    }
+    /* The server takes both and says so. */
+    n = mp_encode_room_hosted(msg, sizeof msg, 2, 707, TAK_ROOMOPT_LINE_OF_SIGHT,
+                              500 + TAK_UNITS_PER_SIDE_STEP, 0);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1200);
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    Multiplayer_Shutdown();
+    NetSession_Disconnect();
+    go_put(TAK_GAMEOPTS_NETGAME, "CrusadesBalance", 1);
+    ASSERT_EQ_INT(0, Settings_Load());
+    int kept_crusades = go_get(TAK_GAMEOPTS_NETGAME, "CrusadesBalance");
+    int kept_units = go_get(TAK_GAMEOPTS_NETGAME, "FavoriteUnitsPerPlayer");
+    int kept_skirmish = go_get(TAK_GAMEOPTS_SKIRMISH, "CrusadesBalance");
+
+    BattleSetup_SaveGameOptions(&defaults, TAK_GAMEOPTS_SKIRMISH, 1);
+    BattleSetup_SaveGameOptions(&defaults, TAK_GAMEOPTS_NETGAME, 0);
+    Settings_SetDirectory(NULL);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+
+    printf("(first: los %d revealed %d expendable %d random %d codes %d crusades %d, "
+           "%d units, sides %d %d. next: los %d revealed %d expendable %d random %d codes %d "
+           "crusades %d. hosted room options 0x%x cap %d. kept %d crusades, %d units) ",
+           first.line_of_sight, first.map_revealed, first.monarch_expendable,
+           first.random_start_locations, first.power_codes, first.crusades_balance,
+           first.units_per_side, first.players[0].side, first.players[1].side,
+           next.line_of_sight, next.map_revealed, next.monarch_expendable,
+           next.random_start_locations, next.power_codes, next.crusades_balance,
+           (unsigned)cr.options, (int)cr.unit_cap, kept_crusades, kept_units);
+    ASSERT_EQ_INT(defaults.line_of_sight, first.line_of_sight);
+    ASSERT_EQ_INT(0, first.crusades_balance);
+    ASSERT_EQ_INT(700, first.units_per_side);
+    ASSERT_EQ_INT(TAK_SIDE_ZHON, first.players[0].side);
+    ASSERT_EQ_INT(TAK_SIDE_VERUNA, first.players[1].side);
+    ASSERT_EQ_INT(!first.line_of_sight, next.line_of_sight);
+    ASSERT_EQ_INT(!first.map_revealed, next.map_revealed);
+    ASSERT_EQ_INT(!first.monarch_expendable, next.monarch_expendable);
+    ASSERT_EQ_INT(!first.random_start_locations, next.random_start_locations);
+    ASSERT_EQ_INT(!first.power_codes, next.power_codes);
+    ASSERT_EQ_INT(1, next.crusades_balance);
+    ASSERT_EQ_INT(700, next.units_per_side);
+    ASSERT_EQ_INT(TAK_SIDE_ZHON, next.players[0].side);
+    ASSERT_EQ_INT(TAK_SIDE_VERUNA, next.players[1].side);
+    /* The original's names hold the original's sense. */
+    ASSERT_EQ_INT(next.line_of_sight, saved_los);
+    ASSERT_EQ_INT(!next.map_revealed, saved_mapping);
+    ASSERT_EQ_INT(!next.monarch_expendable, saved_death);
+    ASSERT_EQ_INT(1, hosted);
+    ASSERT_EQ_INT((int)(defaults.line_of_sight ? TAK_ROOMOPT_LINE_OF_SIGHT : 0u) |
+                  (int)TAK_ROOMOPT_MAP_REVEALED, (int)cr.options);
+    ASSERT_EQ_INT(900, (int)cr.unit_cap);
+    ASSERT_EQ_INT(0, took);
+    ASSERT_EQ_INT((int)TAK_ROOMOPT_LINE_OF_SIGHT, (int)e.value);
+    ASSERT_EQ_INT(0, kept_crusades);
+    ASSERT_EQ_INT(500 + TAK_UNITS_PER_SIDE_STEP, kept_units);
+    ASSERT_EQ_INT(1, kept_skirmish);
 }
 
 TEST(mp_room_host_sets_the_rules_the_cap_and_the_map) {
@@ -7718,10 +7886,89 @@ TEST(a_dead_monarch_leaves_no_mana_in_the_pool) {
  * TAK_AI_DUEL_GAMES seeds (2 when unset), each seed twice with the
  * seats swapped so the ground favours nobody, under the remastered
  * battlefield rules when TAK_AI_DUEL_REMASTERED is 1, and prints what
- * each side killed and lost. It is registered only when asked for. */
+ * each side killed and lost, the lodestones it held, the fighters it
+ * raised and what it had standing at the end. TAK_AI_DUEL_FIRST is the
+ * first seed's number and TAK_AI_DUEL_PLAIN=1 or 2 plays only the games
+ * with the plain seat there. It is registered only when asked for. */
+#define DUEL_DEFS 512
+typedef struct DuelTally {
+    int     lode_seconds[3];
+    int     lodes_at[3][4];          /* at minutes 5, 10, 15 and 20 */
+    int     raised[3][DUEL_DEFS];    /* mobile fighters by type */
+    int64_t standing[3];             /* build cost of what stands at the end */
+    int64_t home_s[3], away_s[3];    /* fighter seconds near the start and away */
+    int     pads;                    /* sacred pads on the map */
+    uint32_t counted[TAK_MAX_UNITS]; /* the stable id a slot was counted at */
+} DuelTally;
+static char g_duel_names[DUEL_DEFS][16];
+
+static int duel_is_lodestone(const UnitDef *d) {
+    return d && d->max_velocity <= 0.0f && !(d->cap_flags & UNIT_CAP_BUILDER) &&
+           (d->yardmap_sacred || d->mogrium_income_per_sec > 0.0f);
+}
+
+static void duel_sample(DuelTally *t, int second) {
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    const GameWorld *world = World_Get();
+    int32_t sx[3] = { 0, 0, 0 }, sy[3] = { 0, 0, 0 };
+    int has_start[3] = { 0, 0, 0 };
+    for (int s = 0; world && s < world->num_start_positions; s++) {
+        int q = world->start_positions[s].player;
+        if (q < 1 || q > 2) continue;
+        sx[q] = world->start_positions[s].x * 16;
+        sy[q] = world->start_positions[s].z * 16;
+        has_start[q] = 1;
+    }
+    int lodes[3] = { 0, 0, 0 };
+    for (int i = 0; i < count && i < TAK_MAX_UNITS; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id < 1 || u->player_id > 2)
+            continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || u->under_construction) continue;
+        if (duel_is_lodestone(d)) lodes[u->player_id]++;
+        if (d->max_velocity > 0.0f && d->num_weapons > 0 &&
+            !(d->cap_flags & UNIT_CAP_BUILDER) && !d->commander &&
+            has_start[u->player_id]) {
+            int64_t dx = u->world_x - sx[u->player_id], dy = u->world_y - sy[u->player_id];
+            if (dx * dx + dy * dy <= 1536 * 1536) t->home_s[u->player_id]++;
+            else t->away_s[u->player_id]++;
+        }
+        if (t->counted[i] != u->stable_id && d->max_velocity > 0.0f &&
+            d->num_weapons > 0 && !(d->cap_flags & UNIT_CAP_BUILDER) &&
+            !d->commander && u->def_idx < DUEL_DEFS) {
+            t->raised[u->player_id][u->def_idx]++;
+            t->counted[i] = u->stable_id;
+            snprintf(g_duel_names[u->def_idx], sizeof(g_duel_names[0]), "%s",
+                     d->unitname);
+        }
+    }
+    for (int p = 1; p <= 2; p++) {
+        t->lode_seconds[p] += lodes[p];
+        if (second > 0 && second % 300 == 0 && second / 300 <= 4)
+            t->lodes_at[p][second / 300 - 1] = lodes[p];
+    }
+}
+
+static void duel_print_mix(const char *who, const int *raised) {
+    int total = 0, top = -1;
+    for (int k = 0; k < DUEL_DEFS; k++) {
+        total += raised[k];
+        if (raised[k] > 0 && (top < 0 || raised[k] > raised[top])) top = k;
+    }
+    fprintf(stderr, "duel:   %s raised %d fighters", who, total);
+    for (int k = 0; k < DUEL_DEFS; k++)
+        if (raised[k] > 0) fprintf(stderr, " %s %d", g_duel_names[k], raised[k]);
+    if (top >= 0 && total > 0)
+        fprintf(stderr, ", the most raised is %d%% of them", raised[top] * 100 / total);
+    fprintf(stderr, "\n");
+}
+
 static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                          int base, int remastered, int minutes, uint32_t seed,
-                         int32_t kills[3], int32_t losses[3], int *winner) {
+                         int32_t kills[3], int32_t losses[3], int *winner,
+                         DuelTally *tally) {
     const char *map = getenv("TAK_AI_DUEL_MAP");
     const char *kingdom = getenv("TAK_AI_DUEL_WORLD");
     const char *sides = getenv("TAK_AI_DUEL_SIDES");
@@ -7751,10 +7998,27 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
     InGame_DebugPlayWithoutHumans(1);
     const int total = minutes * 60 * 60;
     int fire_seconds = 0, rubble = 0;
+    memset(tally, 0, sizeof(*tally));
+    for (int i = 0; i < world->feature_count; i++) {
+        const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
+        if (fd && fd->sacred_site > 0.0f) tally->pads++;
+    }
     for (int t = 0; t < total && !world->skirmish_game_over; t += 60) {
         InGame_DebugRunSimTicks(60);
         for (int i = 0; i < world->feature_count; i++)
             fire_seconds += world->features[i].fx == FEATURE_FX_BURNING;
+        duel_sample(tally, t / 60 + 1);
+    }
+    {
+        int count = 0;
+        const Unit *units = Units_GetActive(&count);
+        for (int i = 0; i < count; i++) {
+            const Unit *u = &units[i];
+            if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id < 1 || u->player_id > 2)
+                continue;
+            const UnitDef *d = Units_GetDef(u->def_idx);
+            if (d && !d->commander) tally->standing[u->player_id] += d->build_cost;
+        }
     }
     for (int i = 0; i < world->feature_count; i++) rubble += world->features[i].rubble;
     for (int p = 1; p <= 2; p++) {
@@ -7794,6 +8058,24 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_SQUAD_WAITS),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_SWEEPS),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_FIRE_STEPS));
+        fprintf(stderr, "duel:   seat %d escorts %d pressed on %d held ground %d "
+                "regrouped %d\n", p,
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_ESCORTS),
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_PRESSED),
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_HOLDS),
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_REGROUPED));
+        int secs = world->skirmish_elapsed_ticks / 60;
+        int64_t fs = tally->home_s[p] + tally->away_s[p];
+        fprintf(stderr, "duel:   seat %d lodestones on average %d.%02d of %d pads, at "
+                "5/10/15/20 min %d %d %d %d, fighters at home %d%% of the time, "
+                "standing worth %lld\n", p,
+                secs > 0 ? tally->lode_seconds[p] / secs : 0,
+                secs > 0 ? tally->lode_seconds[p] * 100 / secs % 100 : 0,
+                tally->pads, tally->lodes_at[p][0], tally->lodes_at[p][1],
+                tally->lodes_at[p][2], tally->lodes_at[p][3],
+                fs > 0 ? (int)(tally->home_s[p] * 100 / fs) : 0,
+                (long long)tally->standing[p]);
+        duel_print_mix(p == plain_seat ? "plain" : "with", tally->raised[p]);
     }
     InGame_DebugPlayWithoutHumans(0);
     InGame_Shutdown();
@@ -7985,7 +8267,11 @@ TEST(the_computer_walks_its_units_out_of_a_forest_fire) {
 TEST(ai_duel_tactics_against_none) {
     const char *ask = getenv("TAK_AI_DUEL");
     if (!ask || atoi(ask) <= 0) return;
-    if (setup_vfs() != 0) SKIP("no data dir");
+    /* TAK_AI_DUEL_ARCHIVES=1 plays off the archives alone, as a player's
+     * folder does, rather than the extracted tree. */
+    const char *arc = getenv("TAK_AI_DUEL_ARCHIVES");
+    if ((arc && atoi(arc) ? mount_iron_plague() : setup_vfs()) != 0)
+        SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -8001,24 +8287,52 @@ TEST(ai_duel_tactics_against_none) {
     const char *r = getenv("TAK_AI_DUEL_REMASTERED");
     int remastered = r && atoi(r) != 0;
     int32_t with_k = 0, with_l = 0, plain_k = 0, plain_l = 0;
-    int with_wins = 0, plain_wins = 0;
-    for (int s = 1; s <= games; s++) {
+    int with_wins = 0, plain_wins = 0, with_ahead = 0, plain_ahead = 0;
+    int64_t with_lode = 0, plain_lode = 0;
+    int64_t with_home = 0, with_away = 0, plain_home = 0, plain_away = 0;
+    static DuelTally tally;
+    static int with_raised[DUEL_DEFS], plain_raised[DUEL_DEFS];
+    memset(with_raised, 0, sizeof(with_raised));
+    memset(plain_raised, 0, sizeof(plain_raised));
+    const char *first = getenv("TAK_AI_DUEL_FIRST");
+    int s0 = first && atoi(first) > 0 ? atoi(first) : 1;
+    const char *only = getenv("TAK_AI_DUEL_PLAIN");
+    for (int s = s0; s < s0 + games; s++) {
         for (int plain = 1; plain <= 2; plain++) {
+            if (only && atoi(only) > 0 && atoi(only) != plain) continue;
             int32_t kills[3] = { 0 }, losses[3] = { 0 };
             int winner = 0;
             ai_duel_once(&platform, plain, mask, base, remastered, minutes,
-                         (uint32_t)(s * 7919), kills, losses, &winner);
+                         (uint32_t)(s * 7919), kills, losses, &winner, &tally);
             int with = 3 - plain;
             with_k += kills[with];   with_l += losses[with];
             plain_k += kills[plain]; plain_l += losses[plain];
             if (winner == with) with_wins++;
             if (winner == plain) plain_wins++;
+            /* A game still on at the end goes to whoever has more standing. */
+            if (winner == 0 && tally.standing[with] > tally.standing[plain]) with_ahead++;
+            if (winner == 0 && tally.standing[plain] > tally.standing[with]) plain_ahead++;
+            with_lode += tally.lode_seconds[with];
+            plain_lode += tally.lode_seconds[plain];
+            with_home += tally.home_s[with];   with_away += tally.away_s[with];
+            plain_home += tally.home_s[plain]; plain_away += tally.away_s[plain];
+            for (int k = 0; k < DUEL_DEFS; k++) {
+                with_raised[k] += tally.raised[with][k];
+                plain_raised[k] += tally.raised[plain][k];
+            }
         }
     }
     printf("(mask %d against %d%s over %d games of %d minutes: with killed %d "
-           "lost %d won %d, without killed %d lost %d won %d) ", mask, base,
+           "lost %d won %d ahead %d lodestone minutes %lld, without killed %d "
+           "lost %d won %d ahead %d lodestone minutes %lld) ", mask, base,
            remastered ? " remastered" : "", games * 2, minutes,
-           with_k, with_l, with_wins, plain_k, plain_l, plain_wins);
+           with_k, with_l, with_wins, with_ahead, (long long)(with_lode / 60),
+           plain_k, plain_l, plain_wins, plain_ahead, (long long)(plain_lode / 60));
+    fprintf(stderr, "duel: fighters at home %d%% of the time with, %d%% without\n",
+            with_home + with_away > 0 ? (int)(with_home * 100 / (with_home + with_away)) : 0,
+            plain_home + plain_away > 0 ? (int)(plain_home * 100 / (plain_home + plain_away)) : 0);
+    duel_print_mix("all games, with", with_raised);
+    duel_print_mix("all games, plain", plain_raised);
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
@@ -9147,12 +9461,9 @@ TEST(render_probe_models) {
 
     ntri = Units_DebugSubmitOrder(keep, world, order, keys, order_cap);
     ASSERT(ntri > 0);
-    /* Keys must come out non-decreasing: that IS the height-key rule,
-     * and it is what stops the keep's walls painting over its tower. */
-    int ascending = 1, base_tris = 0, base_before_pole = 0;
+    int base_tris = 0, base_before_pole = 0;
     int at_pole = -1;
     for (int t = 0; t < ntri; t++) {
-        if (t > 0 && keys[t] < keys[t - 1]) ascending = 0;
         if (order[t] == base) {
             base_tris++;
             if (at_pole < 0) base_before_pole++;
@@ -9160,15 +9471,33 @@ TEST(render_probe_models) {
         if (at_pole < 0 && order[t] == pole) at_pole = t;
     }
     fprintf(stderr, "probe: ARAKEEP %d tris, pole at %d, %d/%d Base tris "
-            "before it, ascending=%d\n",
-            ntri, at_pole, base_before_pole, base_tris, ascending);
-    ASSERT(ascending);
+            "before it\n", ntri, at_pole, base_before_pole, base_tris);
     ASSERT(base_tris > 0);
     /* The whole keep lives in one 120-prim Base node, so authored order
      * alone cannot layer it. The flag pole tops the model out, so most
      * of Base must already be down before the pole goes on. */
     ASSERT(at_pole > 0);
     ASSERT(base_before_pole * 2 > base_tris);
+
+    /* A building's faces show where the original's per pixel height key
+     * puts them (legacy:265317) at nearly every pixel, the Veruna
+     * bastion's front walls over the fins inside it among them. */
+    {
+        int bastion_def = Units_FindDefByName("VERTOWER");
+        ASSERT(bastion_def >= 0);
+        int bastion = Units_Spawn(bastion_def, 1, 2, cx + 420, cy + 420);
+        ASSERT(bastion >= 0);
+        static const char *bn[] = { "ARAKEEP", "ARACASTL", "VERTOWER" };
+        const int bh[] = { keep, castle, bastion };
+        for (int i = 0; i < 3; i++) {
+            int covered = 0;
+            int wrong = Units_DebugOrderMismatch(bh[i], world, &covered);
+            fprintf(stderr, "probe: %s %d of %d px off the height key\n", bn[i], wrong,
+                    covered);
+            ASSERT(covered > 1000);
+            ASSERT(wrong >= 0 && wrong * 10 < covered);
+        }
+    }
 
     InGame_Shutdown();
     Loading_Shutdown();
@@ -13692,12 +14021,13 @@ TEST(a_harpy_takes_a_swordsman_standing_or_walking_across) {
     corpse_shutdown(&platform);
     ASSERT(ok);
     ASSERT(set);
-    /* Pinned. A shot lands slower than the Harpy reloads, so a second is
-     * in the air when the first takes a still target. A walking one is
-     * taken by the first, fired from the hover attack's 200 px, in all
-     * but one seed, where the second shot takes it. */
+    /* Pinned. Every target is taken. A still one is taken by the first
+     * of two or three shots, as the Harpy aims again while it reloads
+     * and the next is in the air before the first lands. A walking one is taken by the first shot, fired from the
+     * hover attack's 200 px once the Harpy faces it, in all but one
+     * seed, where the second shot takes it. */
     ASSERT_EQ_INT(4, still);
-    ASSERT_EQ_INT(8, still_shots);
+    ASSERT_EQ_INT(9, still_shots);
     ASSERT_EQ_INT(4, walking);
     ASSERT_EQ_INT(5, walking_shots);
 }
@@ -19061,7 +19391,7 @@ static void fwa_watch(GameWorld *w, int h, const UnitDef *d, FwaTally *t) {
     int g = Terrain_SampleHeight(w, v->world_x, v->world_y);
     if (Units_DebugStandHeight(h) < (float)sea) t->under_sea++;
     if ((float)g + Units_DrawnAlt(w, v) < (float)sea) t->drawn_under++;
-    if (d->script_flies && !v->flying &&
+    if (!v->flying &&
         (g < sea || fw_lowest_corner(w, v->world_x, v->world_y, d->footprint_x,
                                      d->footprint_z) < sea))
         t->wet_landed++;
@@ -19088,8 +19418,7 @@ static int fwa_stop_over(FwSea *s, int h, const UnitDef *d, FwaTally *t,
         fwa_watch(s->world, h, d, t);
         u = Units_GetActive(&n);
         int64_t dx = u[h].world_x - x, dy = u[h].world_y - y;
-        int up = !d->script_flies ||
-                 (u[h].flying && u[h].flight_alt >= (float)d->cruise_alt);
+        int up = u[h].flying && u[h].flight_alt >= (float)d->cruise_alt;
         if (up && dx * dx + dy * dy <= 48 * 48) {
             Units_OrderStop(h);
             return 1;
@@ -19101,7 +19430,7 @@ static int fwa_stop_over(FwSea *s, int h, const UnitDef *d, FwaTally *t,
 /* Every unit with canfly on Two Castles, left idle over the open sea,
  * stopped by the shore, stopped over the shallows and stopped after a
  * patrol over the sea, lands only on dry ground and never stands or is
- * drawn under the water. A hoverer stays cruisealt over the sea. */
+ * drawn under the water. */
 TEST(every_flyer_kind_keeps_off_the_water) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -19155,7 +19484,6 @@ TEST(every_flyer_kind_keeps_off_the_water) {
         memset(&t, 0, sizeof(t));
         int reached = fwa_stop_over(&s, h, d, &t, s.open_x, s.open_y);
         fwa_run(&s, h, d, &t, 1500);
-        float open_at = Units_DebugStandHeight(h);
         reached &= fwa_stop_over(&s, h, d, &t, s.shore_x, s.shore_y);
         fwa_run(&s, h, d, &t, 3600);
         reached &= fwa_stop_over(&s, h, d, &t, sh_x, sh_y);
@@ -19169,16 +19497,14 @@ TEST(every_flyer_kind_keeps_off_the_water) {
         u = Units_GetActive(&n);
         int alive = u[h].alive == UNIT_ALIVE_ACTIVE;
         int landings = Units_DebugScriptEventCount(h, UNIT_SCRIPT_EV_BEGIN_LANDING);
-        int hover_low = !d->script_flies &&
-                        open_at < (float)(sea + d->cruise_alt);
-        if (!reached || !alive || hover_low || t.under_sea || t.drawn_under ||
+        if (!reached || !alive || t.under_sea || t.drawn_under ||
             t.wet_landed) {
-            printf("[%s reached %d alive %d over the sea at %.0f under %d drawn "
-                   "under %d down wet %d] ", d->unitname, reached, alive,
-                   (double)open_at, t.under_sea, t.drawn_under, t.wet_landed);
+            printf("[%s reached %d alive %d under %d drawn under %d down "
+                   "wet %d] ", d->unitname, reached, alive, t.under_sea,
+                   t.drawn_under, t.wet_landed);
             bad++;
         }
-        if (d->script_flies && landings == 0) {
+        if (landings == 0) {
             printf("[%s never landed] ", d->unitname);
             bad++;
         }
@@ -19719,10 +20045,10 @@ TEST(war_galley_hits_resting_ghost_ship) {
     int ghost  = Units_Spawn(ghost_def, 2, 1, sx, sy);
     ASSERT(galley >= 0 && ghost >= 0);
     ASSERT_EQ_INT(0, InGame_Init(&platform));
-    /* Both under orders: the ghost ship is a hovering surface target,
-     * so the galley's noairweapon cannon still reaches it. */
+    /* The ghost ship holds its fire and rests where it is, so it is a
+     * surface target and the galley's noairweapon cannon reaches it. */
+    Units_DebugSetAggro(ghost, UNIT_AGGRO_PASSIVE);
     Units_CommandAttackUnit(galley, ghost);
-    Units_CommandAttackUnit(ghost, galley);
     Timer timer;
     Timer_Init(&timer);
     int n = 0;
@@ -29715,6 +30041,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(mp_room_shows_why_the_server_said_no);
     RUN_UI_TEST(mp_room_host_sets_the_rules_the_cap_and_the_map);
     RUN_UI_TEST(the_lobbies_offer_the_remastered_battlefield);
+    RUN_UI_TEST(the_game_options_are_kept_for_the_next_battle);
     RUN_UI_TEST(mp_room_host_cycles_a_slot_by_its_name);
     RUN_UI_TEST(a_click_on_a_scroll_arrow_reaches_the_arrow);
     RUN_UI_TEST(select_game_scrolls_by_its_arrows);

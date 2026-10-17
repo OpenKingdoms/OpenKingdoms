@@ -1500,6 +1500,76 @@ TEST(flyers_sent_to_one_place_do_not_stack) {
     mv_end();
 }
 
+/* The Veruna dirigible has canfly and no BeginFlight in its script. It
+ * flies and lands like any flyer (legacy:162986-162987,
+ * legacy:24120-24131), so six sent to one point part in the air and come
+ * down on cells of their own. */
+TEST(flyers_without_flight_scripts_part_and_land) {
+    ASSERT_NOT_NULL(mv_world());
+    int harpy = mv_add_harpy();
+    ASSERT(harpy >= 0);
+    UnitDef defs[MV_DEF_COUNT + 2];
+    for (int i = 0; i <= MV_DEF_COUNT; i++) defs[i] = *Units_GetDef(i);
+    defs[MV_DEF_COUNT + 1] = defs[MV_DEF_COUNT];
+    strncpy(defs[MV_DEF_COUNT + 1].unitname, "TESTBALL",
+            sizeof(defs[0].unitname) - 1);
+    ASSERT_EQ_INT(MV_DEF_COUNT + 2, Units_DebugSetDefs(defs, MV_DEF_COUNT + 2));
+    int ball = MV_DEF_COUNT + 1;
+    #define MV_BALL_N 6
+    int h[MV_BALL_N];
+    for (int i = 0; i < MV_BALL_N; i++) {
+        h[i] = Units_Spawn(ball, 1, 0, 1000 + (i % 3) * 48, 1500 + (i / 3) * 48);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    for (int i = 0; i < MV_BALL_N; i++) Units_OrderMove(h[i], 2000, 1600);
+    int flew = 0;
+    for (int t = 0; t < 3600; t++) {
+        Units_TickEngines();
+        for (int i = 0; i < MV_BALL_N; i++) flew |= mv_unit(h[i])->flying;
+    }
+    int down = 0;
+    for (int i = 0; i < MV_BALL_N; i++) {
+        const Unit *u = mv_unit(h[i]);
+        if (!u->flying && u->flight_alt <= 0.0f) down++;
+    }
+    int rest = mv_flyer_overlaps(h, MV_BALL_N, NULL);
+    printf("(flew %d, %d of %d down, %d pairs share cells) ", flew, down,
+           MV_BALL_N, rest);
+    ASSERT_EQ_INT(1, flew);
+    ASSERT_EQ_INT(MV_BALL_N, down);
+    ASSERT_EQ_INT(0, rest);
+    #undef MV_BALL_N
+    mv_end();
+}
+
+/* A Harpy taken over in the air is still up at its height: the unit made
+ * in its place keeps the movement mode and the place it had
+ * (legacy:228969, legacy:226947), and comes down from there like any
+ * idle flyer. */
+TEST(a_flyer_taken_over_in_the_air_is_still_up) {
+    ASSERT_NOT_NULL(mv_world());
+    int harpy = mv_add_harpy();
+    ASSERT(harpy >= 0);
+    int h = Units_Spawn(harpy, 1, 0, 1000, 1500);
+    ASSERT(h >= 0);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    Units_OrderMove(h, 2600, 1500);
+    for (int t = 0; t < 600 && mv_unit(h)->flight_alt < 200.0f; t++)
+        Units_TickEngines();
+    ASSERT_EQ_INT(1, (int)mv_unit(h)->flying);
+    float alt = mv_unit(h)->flight_alt;
+    int n = Units_Capture(h, 2);
+    ASSERT(n >= 0);
+    printf("(up at %.0f, taken over at %.0f flying %d) ", (double)alt,
+           (double)mv_unit(n)->flight_alt, (int)mv_unit(n)->flying);
+    ASSERT_EQ_INT(1, (int)mv_unit(n)->flying);
+    ASSERT(mv_unit(n)->flight_alt >= alt - 1.0f);
+    Units_TickEngines();
+    ASSERT(mv_unit(n)->flight_alt >= alt - 10.0f);
+    mv_end();
+}
+
 /* Eight Harpies packed closer than their footprints patrol to one point
  * and back. On patrol they never land, so only the step outs part them
  * (legacy:26180, legacy:32733-32880): pairs that share cells in the air
@@ -1676,7 +1746,7 @@ TEST(a_ground_crowd_packs_as_it_did) {
 #define MV_ISLAND   120     /* the island's height, dry over the sea */
 #define MV_SHALLOW   60     /* wet, but above an amphibious flyer's floor */
 
-enum { MV_FLY_DRAG = MV_DEF_SEA_COUNT, MV_FLY_HUNT, MV_FLY_AMPH, MV_FLY_HOVER,
+enum { MV_FLY_DRAG = MV_DEF_SEA_COUNT, MV_FLY_HUNT, MV_FLY_AMPH,
        MV_FLY_COUNT };
 
 static void mv_fill_flyer(UnitDef *d, const char *name, int max_wd,
@@ -1714,14 +1784,11 @@ static GameWorld *mv_island(void) {
     mv_fill_flyer(&defs[MV_FLY_DRAG], "TESTDRAG", 0, 0);
     mv_fill_flyer(&defs[MV_FLY_HUNT], "TESTHUNT", 10000, 0);
     mv_fill_flyer(&defs[MV_FLY_AMPH], "TESTAMPH", 30, 1);
-    /* No flight pair: it hovers at its cruise height, as the ghost ship. */
-    mv_fill_flyer(&defs[MV_FLY_HOVER], "TESTHOVR", 10000, 0);
-    defs[MV_FLY_HOVER].cruise_alt = 50;
     if (Units_DebugSetDefs(defs, MV_FLY_COUNT) != MV_FLY_COUNT) return NULL;
     static const uint32_t ret[] = { 0x10065000u };
     static const char *const names[] = { "BeginFlight", "BeginLanding" };
     static const uint32_t offsets[] = { 0, 0 };
-    for (int d = MV_FLY_DRAG; d < MV_FLY_HOVER; d++)
+    for (int d = MV_FLY_DRAG; d < MV_FLY_COUNT; d++)
         if (Units_DebugSetDefScript(d, ret, 1, names, offsets, 2) != 0) return NULL;
     return w;
 }
@@ -1991,8 +2058,7 @@ TEST(a_flyer_never_lands_on_sea_it_had_not_explored) {
 }
 
 /* Over the sea a flyer cruises cruisealt over the water, not over the
- * sea floor, and one that hovers hovers over the surface
- * (legacy:190499-190507). Over land nothing changes. */
+ * sea floor (legacy:190499-190507). Over land nothing changes. */
 TEST(a_flyer_cruises_over_the_sea_not_the_sea_floor) {
     GameWorld *w = mv_island();
     ASSERT_NOT_NULL(w);
@@ -2008,18 +2074,83 @@ TEST(a_flyer_cruises_over_the_sea_not_the_sea_floor) {
     ASSERT(ground < MV_WATER);
     ASSERT(Units_DebugStandHeight(h) >= (float)(MV_WATER + 150));
     ASSERT((float)ground + Units_DrawnAlt(w, u) >= (float)(MV_WATER + 150));
-    int hov = Units_Spawn(MV_FLY_HOVER, 1, 0, 1200, 1500);
-    ASSERT(hov >= 0);
-    mv_run(120);
-    ASSERT(Units_DebugStandHeight(hov) >= (float)(MV_WATER + 50));
-    ASSERT((float)Terrain_SampleHeight(w, 1200, 1500) +
-           Units_DrawnAlt(w, mv_unit(hov)) >= (float)(MV_WATER + 50));
     /* On the island a landed flyer stands on the ground. */
     int down = Units_Spawn(MV_FLY_DRAG, 1, 0, 2600, 900);
     ASSERT(down >= 0);
     mv_run(2);
     ASSERT_EQ_INT(MV_ISLAND, (int)Units_DebugStandHeight(down));
     ASSERT(Units_DrawnAlt(w, mv_unit(down)) == 0.0f);
+    mv_end();
+}
+
+/* A ship is drawn with its origin its waterline under the sea and an
+ * upright hover unit wades the same way, neither under the ground; a
+ * land unit stands on the sea floor (legacy:234287-234330). */
+TEST(a_ship_is_drawn_at_its_waterline_not_on_the_sea_floor) {
+    GameWorld *w = mv_sea();
+    ASSERT_NOT_NULL(w);
+    UnitDef defs[MV_DEF_SEA_COUNT];
+    for (int i = 0; i < MV_DEF_SEA_COUNT; i++) defs[i] = *Units_GetDef(i);
+    defs[MV_DEF_GALLEY].floater = 1;
+    defs[MV_DEF_GALLEY].waterline = 5;
+    defs[MV_DEF_KNIGHT].can_hover = 1;
+    defs[MV_DEF_KNIGHT].upright = 1;
+    defs[MV_DEF_KNIGHT].waterline = 40;
+    ASSERT_EQ_INT(MV_DEF_SEA_COUNT, Units_DebugSetDefs(defs, MV_DEF_SEA_COUNT));
+    int ship = Units_Spawn(MV_DEF_GALLEY, 1, 0, 1500, 1500);
+    int wader = Units_Spawn(MV_DEF_KNIGHT, 1, 0, 1700, 1500);
+    int walker = Units_Spawn(MV_DEF_WALKER, 1, 0, 1900, 1500);
+    ASSERT(ship >= 0 && wader >= 0 && walker >= 0);
+    /* Each ground: the deep sea, the shallows, dry land. */
+    static const int ground[3] = { MV_SEABED, MV_WATER - 10, MV_WATER + 10 };
+    static const int ship_at[3] = { MV_WATER - 5, MV_WATER - 5, MV_WATER + 10 };
+    static const int wader_at[3] = { MV_WATER - 40, MV_WATER - 10, MV_WATER + 10 };
+    size_t hn = (size_t)w->tnt.height_w * (size_t)w->tnt.height_h;
+    for (int k = 0; k < 3; k++) {
+        memset(w->tnt.heightmap, ground[k], hn);
+        float g = (float)ground[k];
+        printf("(ground %d: ship %.0f, wader %.0f) ", ground[k],
+               (double)(g + Units_DrawnAlt(w, mv_unit(ship))),
+               (double)(g + Units_DrawnAlt(w, mv_unit(wader))));
+        ASSERT_EQ_INT(ship_at[k], (int)(g + Units_DrawnAlt(w, mv_unit(ship))));
+        ASSERT_EQ_INT(wader_at[k], (int)(g + Units_DrawnAlt(w, mv_unit(wader))));
+        ASSERT(Units_DrawnAlt(w, mv_unit(walker)) == 0.0f);
+    }
+    mv_end();
+}
+
+/* A script's IN_WATER reads 1 for a mover standing below the sea, the
+ * wader at its waterline among them, and 0 on dry land or for a
+ * building (legacy:185197-185206, legacy:223296-223299). The Mer
+ * Warrior swims on it. */
+TEST(a_unit_under_the_sea_tells_its_script_it_is_in_water) {
+    GameWorld *w = mv_sea();
+    ASSERT_NOT_NULL(w);
+    UnitDef defs[MV_DEF_SEA_COUNT];
+    for (int i = 0; i < MV_DEF_SEA_COUNT; i++) defs[i] = *Units_GetDef(i);
+    defs[MV_DEF_KNIGHT].can_hover = 1;
+    defs[MV_DEF_KNIGHT].upright = 1;
+    defs[MV_DEF_KNIGHT].waterline = 26;
+    ASSERT_EQ_INT(MV_DEF_SEA_COUNT, Units_DebugSetDefs(defs, MV_DEF_SEA_COUNT));
+    int wader = Units_Spawn(MV_DEF_KNIGHT, 1, 0, 1500, 1500);
+    int walker = Units_Spawn(MV_DEF_WALKER, 1, 0, 1700, 1500);
+    int hut = Units_Spawn(MV_DEF_HUT, 1, 0, 1900, 1500);
+    ASSERT(wader >= 0 && walker >= 0 && hut >= 0);
+    enum { IN_WATER = 28 };
+    /* The deep sea, the shallows, dry land. */
+    static const int ground[3] = { MV_SEABED, MV_WATER - 10, MV_WATER + 10 };
+    static const int wet[3] = { 1, 1, 0 };
+    size_t hn = (size_t)w->tnt.height_w * (size_t)w->tnt.height_h;
+    for (int k = 0; k < 3; k++) {
+        memset(w->tnt.heightmap, ground[k], hn);
+        printf("(ground %d: wader %d, walker %d, hut %d) ", ground[k],
+               (int)Units_DebugScriptPort(wader, IN_WATER),
+               (int)Units_DebugScriptPort(walker, IN_WATER),
+               (int)Units_DebugScriptPort(hut, IN_WATER));
+        ASSERT_EQ_INT(wet[k], (int)Units_DebugScriptPort(wader, IN_WATER));
+        ASSERT_EQ_INT(wet[k], (int)Units_DebugScriptPort(walker, IN_WATER));
+        ASSERT_EQ_INT(0, (int)Units_DebugScriptPort(hut, IN_WATER));
+    }
     mv_end();
 }
 
@@ -2329,6 +2460,8 @@ int main(int argc, char **argv) {
     RUN(a_ground_crowd_packs_as_it_did);
     TEST_SUITE("Flyers");
     RUN(flyers_sent_to_one_place_do_not_stack);
+    RUN(flyers_without_flight_scripts_part_and_land);
+    RUN(a_flyer_taken_over_in_the_air_is_still_up);
     RUN(a_patrolling_flock_spreads_out);
     RUN(flyers_side_by_side_step_apart);
     RUN(a_flyer_lands_clear_and_holds_its_ground);
@@ -2338,6 +2471,8 @@ int main(int argc, char **argv) {
     RUN(a_flyer_stopped_over_land_lands_where_it_is);
     RUN(the_landing_search_repeats_exactly);
     RUN(a_flyer_cruises_over_the_sea_not_the_sea_floor);
+    RUN(a_ship_is_drawn_at_its_waterline_not_on_the_sea_floor);
+    RUN(a_unit_under_the_sea_tells_its_script_it_is_in_water);
     RUN(a_flyer_never_lands_on_sea_it_had_not_explored);
     TEST_SUITE("Hover attack");
     RUN(a_hover_flock_spreads_round_a_still_target);

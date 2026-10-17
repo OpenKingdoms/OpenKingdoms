@@ -709,6 +709,7 @@ static int setup(const char *map_name) {
             u->weapon_state[wi].aim_thread_slot = (int8_t)(wi == 0 ? 3 : -1);
             u->weapon_state[wi].aim_ticks = (int16_t)(wi * 5);
             u->weapon_state[wi].aim_target = (int16_t)(wi == 0 ? i : -1);
+            u->weapon_state[wi].aim_ready = (uint8_t)(wi == 0);
             u->weapon_state[wi].draw = (int8_t)(wi == 1 ? UNIT_DRAW_RELEASE : UNIT_DRAW_NONE);
             u->weapon_state[wi].draw_target = (int16_t)(wi == 1 ? i : -1);
         }
@@ -773,6 +774,22 @@ static int setup(const char *map_name) {
     g_units[1].hover_events = UNIT_HOVER_ARMED | UNIT_HOVER_GOING;
     g_units[1].hover_x = -141;
     g_units[1].hover_y = 2222;
+    /* And walks back to the post of a fight it took on. */
+    g_units[1].post_set = UNIT_POST_FIGHT;
+    g_units[1].post_leash = 500;
+    g_units[1].post_x = 1234;
+    g_units[1].post_y = -77;
+    /* And counts down to its self destruct. */
+    g_units[1].selfd_ticks = 131;
+    /* And remembers what hit it last. */
+    g_units[1].hit_by = 4242;
+    g_units[1].hit_tick = 9876;
+    /* And hides under its cloak, with a wait still to run. */
+    g_units[1].cloak_want = 1;
+    g_units[1].cloaked = 1;
+    g_units[1].cloak_wait = 77;
+    /* And stands held by a paralyzer. */
+    g_units[1].paralyzed_ticks = 345;
     /* The bowman holds a summons of TARNECRO for a unit on its spot. */
     g_units[1].build_held = 1;
     g_units[1].build_def = 3;
@@ -1701,7 +1718,10 @@ static uint32_t rec_u32(const uint8_t *r, int at) {
  * drawn shot at 974, version 7 a builder's walk goal at 983,
  * version 8 the attack handler's wait at 991, version 9 the death blast
  * at 992, version 10 a summons without end at 993, version 11 a
- * flyer's air traffic at 1000 and version 12 a hover attack at 1024. */
+ * flyer's air traffic at 1000, version 12 a hover attack at 1024,
+ * version 13 a fight's post at 1036, version 14 a self destruct's
+ * count at 1047, version 15 what hit it last at 1049, version 16 the
+ * cloak at 1057 and version 17 a paralyzer's hold at 1060. */
 TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
@@ -1713,8 +1733,8 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
-    ASSERT_EQ_INT(12, (int)version);
-    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24 + 12,
+    ASSERT_EQ_INT(17, (int)version);
+    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24 + 12 + 11 + 2 + 8 + 3 + 2,
                   (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;
     /* The bowman's formation group at 487 and its second leg at 520. */
@@ -1779,6 +1799,22 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     ASSERT_EQ_INT(-141, (int)rec_u32(r1, 1028));
     ASSERT_EQ_INT(2222, (int)rec_u32(r1, 1032));
     ASSERT_EQ_INT(0, r0[1024]);
+    /* The post, its leash and where it is at 1036. */
+    ASSERT_EQ_INT(UNIT_POST_FIGHT, r1[1036]);
+    ASSERT_EQ_INT(500, r1[1037] | (r1[1038] << 8));
+    ASSERT_EQ_INT(1234, (int)rec_u32(r1, 1039));
+    ASSERT_EQ_INT(-77, (int)rec_u32(r1, 1043));
+    /* The self destruct count at 1047. */
+    ASSERT_EQ_INT(131, r1[1047] | r1[1048] << 8);
+    /* What hit it last at 1049 and when at 1053. */
+    ASSERT_EQ_INT(4242, (int)rec_u32(r1, 1049));
+    ASSERT_EQ_INT(9876, (int)rec_u32(r1, 1053));
+    /* The cloak at 1057, wanted and hidden, and its wait at 1058. */
+    ASSERT_EQ_INT(3, r1[1057]);
+    ASSERT_EQ_INT(77, r1[1058] | r1[1059] << 8);
+    /* The paralyzer's hold at 1060. */
+    ASSERT_EQ_INT(345, r1[1060] | r1[1061] << 8);
+    ASSERT_EQ_INT(0, r0[1036]);
     Save_Close(r);
 }
 

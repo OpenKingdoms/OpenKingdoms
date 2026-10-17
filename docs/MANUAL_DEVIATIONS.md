@@ -752,6 +752,87 @@ Format per entry:
 - Citation: the manual describes no rule for either. D-036 makes the
   conditions they answer.
 
+## A-012: The computer settles every free pad under cover, holds the ground it wins and builds a varied army
+
+- Change: three behaviours, each a tactic bit the duel can measure on
+  its own. Settling (`TAK_AI_TACTIC_EXPAND`): a seat wants a lodestone
+  on every free sacred pad it can safely take, up to the profile's
+  limit for the type, where it wanted one plus half the free pads. A
+  builder bound for a pad past the base's radius takes the fighters
+  gathering at home with it as an escort group, which stands 160 px
+  past the pad from home, off the site, until the work ends. A builder
+  out past the base's radius puts its next hall up at home. Holding
+  ground (`TAK_AI_TACTIC_HOLD`): a group in the field whose target
+  falls, or whose escort ends, picks its next target from where it
+  stands and a member drawn at random. It presses on when it can see that target
+  and is a fifth stronger than what it sees there, or when the long
+  wait of A-007 is up. Short of that it holds the ground it won. It
+  stands there, fights what comes into reach, walks back to its point
+  after a chase and draws the reinforcements of A-009. What is left of
+  a spent group holds the same way on quiet ground away from home. A
+  holding group answers a threat at home or within 1536 px of it and
+  breaks off like any group when outmatched, a fit fighter idle in the
+  field joins a group near it rather than walk home, a wave still
+  nearer home than its target turns back when home is hit, and a
+  group whose errand ends at home gives its members back to the
+  gathering. A varied army (`TAK_AI_TACTIC_MIX`): a fighter the
+  profile names no weight for weighs the mean of the named fighters in
+  a build list it is in. The code is `ai_group_next`, `ai_escort` and
+  `ai_profile_peers` in `src/game/ai.c` and the group domain in
+  `src/game/ai_htn.c`.
+- Why: a player's report for 0.5.1. With no threat about, the
+  computer gathered everything at home, took no new ground and walked
+  away from a fight it had won, and Veruna fielded mostly Centaurs.
+  The original sends a spare builder to the nearest safe unclaimed
+  sacred site whenever it has one, up to the profile's limit
+  (legacy:16503), and puts every spare ground and air unit of the pass
+  into that builder's group as its escort (legacy:16320-16328). Ours
+  held one plus half the free pads, four of fourteen on Two Castles
+  with the mana pool empty most of the match. The builder the original
+  sends comes from roles that pass over the commander key
+  (legacy:15528-15545, the key read at legacy:163074), so its monarch
+  never goes. Ours may send the monarch: Zhon's other builders summon
+  before they build, and with its monarch kept home a Zhon seat took
+  fewer pads than before and lost seven duels of eight. The
+  original's group whose target dies picks the next from its own
+  position (legacy:18293, legacy:18343), and one with no target waits
+  where it stands (legacy:18350). Ours sent such a group at the seat's
+  target, picked from the middle of the whole army, and sent what was
+  left of a spent group and every idle fighter in the field home. The
+  shipped profile (ai/default.txt of 12-17-99, in the patch and in
+  Iron Plague) names no weight for the Centaur the patch added to
+  Veruna's castle. The original gives a type nobody named 100
+  (legacy:19792) and ours gave it 50, against 3 to 8 for the castle's
+  other troops, so once a seat owned two of each the castle's draw
+  weighed a Centaur at 10 and every other troop at 1. With its peers'
+  mean it weighs 7. The strength test, the hold, the regroup, the turn
+  back, the answer to a threat, the halls at home and the peer weight
+  are ours.
+- Measured: in duels of 20 minutes off the archives a player's folder
+  holds, each seed played twice with the seats swapped, a seat with
+  A-012 against one without. Over 64 games on Two Castles and
+  Tarosian Plain, every kingdom against itself and two mixed pairs,
+  the seat with it won 36 and was ahead at the end of 7 more, against
+  17 wins and 4 ahead, and killed 2,591 for 2,202 lost against 2,122
+  for 2,784. It stood on 5.0 lodestones on average against 3.5, and its
+  fighters were near home 40 percent of the time against 55. On Two
+  Castles Veruna won 10 and was ahead in 2 of 16 against 4 wins,
+  Aramon won 7 of 8 against 1, Taros won 5 and was ahead in 1 against
+  none and 2 ahead, and Zhon won 3 and was ahead in 2 against 2 and 1.
+  Veruna against Taros came out 4 against 3 and 1 ahead, Aramon
+  against Zhon 4 against 4, and Veruna on Tarosian Plain, where 34
+  pads let both seats reach the profile's limit of 7, 3 and 2 ahead
+  against 3. Alone over eight Veruna games each bit was near even:
+  the mix won 4 and was ahead in 1 against 1 and 2, settling 3 and 2
+  against 3, holding 3 and 1 against 2 and 2. The castle's output was
+  46 percent Centaurs without the mix and 16 percent with it. No troop
+  made more than 38 percent of what a seat raised either way. The
+  keep's swordsmen and archers make about a third each, which is the
+  profile's weights at work.
+- Citation: the manual describes no AI rule at this level. Behaviour
+  note `docs/notes/2026-09-04-legacy-ai.md`, "Roles", "Attack waves"
+  and the gap list.
+
 ## T-001: Flying transports load and unload by the ground rules
 
 - Change: The Roc and the Ghost Ship pick up and set down units the way
@@ -1242,19 +1323,13 @@ Format per entry:
   cell of an air layer. A second flyer over the cell goes on the
   holder's list and the holder on its, and the cell passes to one of
   them at random, so a third sees the holder and those on its list that
-  cover the cell (legacy:218336-218512). The five units with `canfly`
-  and no BeginFlight in their scripts, the ghost ship, the two Taros
-  priests, the Veruna ball and the bird, take no part. They hover as
-  surface units here, as before, and hold no ground cells. One smaller
-  difference goes with it. A move ends on its ring round the point as
+  cover the cell (legacy:218336-218512). One smaller difference goes
+  with it. A move ends on its ring round the point as
   clicked, where the original first moves the point onto its
   footprint's cell lattice, at most 8 px away (legacy:25075-25083).
 - Why: the pairs give the original's count for a pair and for a flock
   without an air layer in the world or a draw from the generator for
-  every shared cell. The five hoverers stay as the engine already had
-  them, which keeps their place as targets for weapons that cannot hit
-  the air. The original's missions switch them to air movement too
-  (legacy:24117-24134). The lattice step moves a point by less than the
+  every shared cell. The lattice step moves a point by less than the
   ring's smallest size.
 - Citation: the manual describes no rule for it. The original's rules
   are in docs/notes/2026-10-04-air-traffic.md.
@@ -1274,6 +1349,26 @@ Format per entry:
   in the engine yet.
 - Citation: the manual describes no rule for this. The original's rule
   is in docs/notes/2026-10-04-summons-placement.md.
+
+## M-016: A new unit picks its spot off the pad once
+
+- Change: a unit a factory finishes with no orders of the factory's to
+  carry walks to the nearest clear spot in a ring round the factory, as
+  the original sends it, and passes over a spot another unit is already
+  walking to. The spot is chosen once, when the unit is finished. A
+  flyer flies to a random bearing as far out as a walker goes and all
+  the way to its point before it looks for ground.
+- Why: the original finds the spot by a route search and, when the walk
+  there is cut short, searches again a few times (legacy:13813-13879).
+  Two units finished one after the other then end on spots of their own.
+  Passing over a spot already spoken for gets the same end without a
+  second search and the state it would keep. The original takes a size
+  term it does not name off a flyer's range (legacy:13822-13846). Half
+  the factory's footprint, the stand-in the walker's ring uses, would
+  set a flyer down inside the factory and on its own pad, where it holds
+  up the next unit for good.
+- Citation: the manual describes no rule for this. The getbuilt mission
+  that sends the unit off is at legacy:9694-9711.
 
 ## D-006: Chat messages expire on the wall clock
 
@@ -1724,9 +1819,9 @@ Format per entry:
   A player's own attack order is never let go, and neither is a
   mission script's, whoever owns the unit. The computer's own orders
   are, since it has no other way to notice. A unit that cannot move,
-  or one holding position, also lets go of a target it picked as soon
-  as that target is out of its reach or inside its minrange, and
-  neither its search nor its return fire takes one there.
+  or one holding position and not on patrol, also lets go of a target
+  it picked as soon as that target is out of its reach or inside its
+  minrange, and neither its search nor its return fire takes one there.
 - Why: shots stop on what they fly into now, and the original fires
   into a hill without looking first. Its sight also shrinks uphill
   (D-014), which the engine does not copy yet, so here a unit sees and
@@ -1743,9 +1838,9 @@ Format per entry:
 ## D-026: A flyer holds its fire while it climbs
 
 - Change: a flyer that has taken off to attack or to move does not fire
-  until it reaches its cruise height. A flyer that stays on the ground
-  fires from there as before, and one with no flight scripts, which
-  hovers at its cruise height from the start, is not affected.
+  until it reaches its cruise height. A flyer on the ground does not
+  fire at all, as in the original, whose standby turns a flyer's
+  weapons off (legacy:24543). One that takes a target takes off for it.
 - Why: some flyers fire from a piece at or under their feet. The Zhon
   hunter's lightning leaves a point 5 px under her. Fired in the first
   ticks of her climb, the shot started under the ground and burst
@@ -2041,11 +2136,15 @@ Format per entry:
 - Change: a shot fired at a unit strikes that unit when it passes
   within 24 px of the unit's body, leaves for where the unit stands
   when it is fired, and crosses the ground at its full weaponvelocity
-  however steep its line. A mind control shot now flies by the
-  original's rules instead. It leaves for where its target will be,
-  four fifths of the way through its flight, and strikes only a unit in
-  its own 16 px cell whose selection quad, turned with the unit, holds
-  it and whose model span holds its height. It flies at its
+  however steep its line. A shot that reaches its target this way
+  bursts on the nearest point of the target's model box, as the
+  original's bursts inside the unit's selection quad, so a splash
+  weapon's direct hit does its whole damage. A mind control shot now
+  flies by the original's rules instead. It leaves for where its
+  target will be, four fifths of the way through its flight, and
+  strikes only a unit in its own 16 px cell whose selection quad,
+  turned with the unit, holds it and whose model span holds its
+  height. It flies at its
   weaponvelocity along its line rather than across the ground, it is
   gone after its range at its speed across the ground, and it ends the
   frame its caster is seen dead or dying.
@@ -2081,6 +2180,43 @@ Format per entry:
   legacy:30467-30502, legacy:235678-235762), the hover attack's step out
   (legacy:30636-30705) and the move to its point (legacy:30362-30364).
   The manual is silent.
+
+## D-040: A unit at its leash still fights what it reaches
+
+- Change: a fight a unit takes on for itself ends once it stands its
+  `maneuverleashlength` from where the fight began, as the original's
+  does, but only while the target is out of its reach. A target in
+  reach is fought on there. On the walk back it takes on what stands
+  inside the leash round that point, as the original's does, and also
+  anything its weapon reaches from where it stands. A hit it answers on
+  the way keeps the first point, where the original would start a new
+  fight from where the unit was hit and walk back to each point in turn.
+  A computer player's builder on patrol draws only among finished
+  buildings, where the original draws among everything and then passes
+  over what is not one.
+- Why: the owner asked that units fire at what they can reach and never
+  stand under fire doing nothing. One point per fight keeps the walk
+  back short and easy to read.
+- Citation: the leash ends the attack (legacy:11020, legacy:11380), the
+  walk back takes only what is inside it (legacy:10438-10443), a hit
+  starts a fight from where the unit stands (legacy:15170,
+  legacy:181879-181947) and the patrol's draw (legacy:10877-10884). The
+  manual is silent. docs/notes/2026-09-29-combat-parity-follow-ups.md
+  has the rule.
+
+## D-041: Ctrl+D asks before a self destruct starts
+
+- Change: when Ctrl+D would start the selection's self destruct, the
+  game's yes or no box asks first. Enter or Yes starts it, Escape or No
+  leaves the units be. Calling off a countdown already running asks
+  nothing. The clock stops under the box in single player and skirmish,
+  as it does under the in game menu, and runs on in a match.
+- Why: a player asked for it, since one slip of the keys ends an army.
+  The owner wants it.
+- Citation: the original starts the countdown at once
+  (legacy:122248-122294). The box is the shipped data/guis/yesno.gui,
+  the question form of the original's message dialog
+  (legacy:146759-146780). The manual is silent.
 
 ## R-008: A reel's soundtrack goes through the game's mixer
 

@@ -407,6 +407,19 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
             }
             break;
         case TAK_CMD_RECLAIM_FEATURE:
+            if (cmd->arg & TAK_CMD_ARG_AREA) {
+                /* A dragged sweep clears its box one thing at a time
+                 * (legacy:187201-187210). */
+                UnitMoveLeg leg;
+                memset(&leg, 0, sizeof leg);
+                leg.kind = UNIT_LEG_SWEEP_AREA;
+                leg.x = cmd->target_x;
+                leg.y = cmd->target_y;
+                leg.heading = cmd->build_type_id;
+                for (int i = 0; i < count; i++)
+                    applied += Units_OrderLeg(g_exec_handles[i], &leg, mode);
+                break;
+            }
             /* The sweep resolves on the map cell first and on what
              * stands there second, once per unit ordered
              * (legacy:187131-187199). Deciding here, on the tick, is
@@ -511,6 +524,13 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
                 applied += mode
                     ? exec_leg(g_exec_handles[i], UNIT_LEG_CAPTURE, cmd, target)
                     : Units_OrderCapture(g_exec_handles[i], target);
+            break;
+        case TAK_CMD_SELF_DESTRUCT:
+            applied = Units_ToggleSelfDestruct(g_exec_handles, count);
+            break;
+        case TAK_CMD_CLOAK:
+            for (int i = 0; i < count; i++)
+                applied += Units_OrderCloak(g_exec_handles[i], cmd->arg != 0);
             break;
         case TAK_CMD_WAIT:
             /* Declared on the wire, not yet simulated. Refusing it

@@ -445,6 +445,30 @@ static int test_every_subsystem_contributes(void) {
     POKE("hover point", g_units[0].hover_x = -200, g_units[0].hover_x = 0);
     POKE("hover point y", g_units[0].hover_y = 31, g_units[0].hover_y = 0);
     g_units[0].hover_state = 0;
+    POKE("fight post", g_units[0].post_set = UNIT_POST_FIGHT,
+         g_units[0].post_set = 0);
+    g_units[0].post_set = UNIT_POST_WORK;
+    POKE("post leash", g_units[0].post_leash = 500, g_units[0].post_leash = 0);
+    POKE("post point", g_units[0].post_x = 40, g_units[0].post_x = 0);
+    POKE("post point y", g_units[0].post_y = -9, g_units[0].post_y = 0);
+    g_units[0].post_set = 0;
+    POKE("self destruct count", g_units[0].selfd_ticks = 120,
+         g_units[0].selfd_ticks = 0);
+    POKE("cloak order", g_units[0].cloak_want = 1, g_units[0].cloak_want = 0);
+    POKE("cloaked", g_units[0].cloaked = 1, g_units[0].cloaked = 0);
+    POKE("cloak wait", g_units[0].cloak_wait = 90, g_units[0].cloak_wait = 0);
+    g_units[0].build_held = 1;
+    POKE("build walked to out of sight", g_units[0].build_unseen = 1,
+         g_units[0].build_unseen = 0);
+    g_units[0].build_unseen = 1;
+    POKE("unseen build facing", g_units[0].build_facing = 2,
+         g_units[0].build_facing = 0);
+    g_units[0].build_unseen = 0;
+    g_units[0].build_held = 0;
+    POKE("hit by", g_units[0].hit_by = 77, g_units[0].hit_by = 0);
+    g_units[0].hit_by = 77;
+    POKE("hit tick", g_units[0].hit_tick = 300, g_units[0].hit_tick = 0);
+    g_units[0].hit_by = 0;
     POKE("summons held for units on its spot",
          g_units[0].build_held = 1, g_units[0].build_held = 0);
     g_units[0].build_held = 1;

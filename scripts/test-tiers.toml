@@ -241,7 +241,7 @@ ctest = "^(test_build_facing|test_capture|test_command_pipeline|test_line_of_fir
 ui = [
   ["battle_", 23],
   ["mp_room", 24],
-  ["options_", 6],
+  ["options_", 7],
   ["story_", 17],
   ["end_screen", 8],
   ["main_menu", 12],
@@ -263,6 +263,7 @@ ui = [
   ["the_map_query_searches_filters_and_orders", 1],
   ["a_click_on_a_scroll_arrow_reaches_the_arrow", 1],
   ["the_lobbies_offer_the_remastered_battlefield", 1],
+  ["select_game_hosting_a_game_names_the_rules_it_plays_by", 1],
 ]
 
 [[tier1]]
@@ -285,6 +286,7 @@ ui = [
   ["a_short_message_is_one_centred_line_in_the_one_button_box", 1],
   ["the_empty_replays_message_fits_on_one_line", 1],
   ["the_lobbies_offer_the_remastered_battlefield", 1],
+  ["the_game_options_are_kept_for_the_next_battle", 1],
 ]
 
 [[tier1]]

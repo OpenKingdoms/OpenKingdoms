@@ -11,6 +11,7 @@
 #include "test_framework.h"
 #include "tak_battle_config.h"
 #include "tak_features.h"
+#include "tak_fog.h"
 #include "tak_command_exec.h"
 #include "tak_command_queue.h"
 #include "tak_commands.h"
@@ -22,6 +23,7 @@
 #include "tak_occupancy.h"
 #include "tak_pathing.h"
 #include "tak_sim_hash.h"
+#include "tak_terrain.h"
 #include "tak_tnt.h"
 #include "tak_unit.h"
 #include "tak_world.h"
@@ -580,6 +582,89 @@ TEST(a_unit_beside_a_pad_leaves_the_pad_free) {
     bf_end();
 }
 
+static int g_bf_ghost = -1;
+static void bf_ghost(int def, int color, int32_t x, int32_t y, int valid,
+                     int facing) {
+    (void)def; (void)color; (void)x; (void)y; (void)facing;
+    g_bf_ghost = valid;
+}
+
+/* The ghost's verdict with the pointer over the ground at (x, y). */
+static int bf_ghost_at(GameWorld *w, int def, int32_t x, int32_t y) {
+    TAK_Platform plat;
+    memset(&plat, 0, sizeof plat);
+    plat.renderer = (SDL_Renderer *)&plat;   /* only the hook draws */
+    HUD_BuildGhostFn was = HUD_GetBuildGhostHook();
+    HUD_SetBuildGhostHook(bf_ghost);
+    HUD_BeginBuildPlacement(def);
+    float h = (float)Terrain_SampleHeight(w, x, y);
+    g_bf_ghost = -1;
+    HUD_DrawCommandCursor(&plat, 0, 0, x, y - (int32_t)(h * Units_GetTanTilt()));
+    HUD_ClearCommandMode();
+    HUD_SetBuildGhostHook(was);
+    return g_bf_ghost;
+}
+
+static void bf_fog_at(GameWorld *w, int player, int32_t x, int32_t y, int state) {
+    w->fog_layers[player][(y / TAK_FOG_CELL_PX) * w->fog_w + x / TAK_FOG_CELL_PX] =
+        (uint8_t)state;
+}
+
+static int bf_count_of(int def, int player) {
+    int count = 0, n = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count; i++)
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].def_idx == def &&
+            (player < 0 || units[i].player_id == player)) n++;
+    return n;
+}
+
+/* The cursor judges a site by what the player sees: ground never seen
+ * is refused, and units count only where the player sees now
+ * (legacy:39263-39305, 218741-218768, 218797-218806). The builder sent
+ * to a site out of sight walks there first, and the frame goes up only
+ * if the site is free when it arrives (legacy:12063-12124). */
+TEST(a_pad_out_of_sight_is_judged_when_the_builder_gets_there) {
+    GameWorld *w = bf_world();
+    ASSERT_NOT_NULL(w);
+    w->cfg.line_of_sight = 1;
+    ASSERT_EQ_INT(0, Fog_Init(w));
+    int pad = Features_FindByName("TESTPAD");
+    const int32_t ax = 70 * 16 + 16, ay = 40 * 16 + 16;
+    const int32_t bx = 70 * 16 + 16, by = 60 * 16 + 16;
+    ASSERT(Features_AddInstance(w, pad, 70, 40, ax, ay, 0, -1) >= 0);
+    ASSERT(Features_AddInstance(w, pad, 70, 60, bx, by, 0, -1) >= 0);
+    ASSERT(Units_Spawn(BF_LODE, 2, 1, ax, ay) >= 0);
+    int b = Units_Spawn(BF_BUILDER, 1, 0, ax - 480, ay);
+    ASSERT(b >= 0);
+    Units_SelectSingle(b);
+
+    ASSERT_EQ_INT(0, bf_ghost_at(w, BF_LODE, ax, ay));
+    bf_fog_at(w, 1, ax, ay, TAK_FOG_EXPLORED);
+    ASSERT_EQ_INT(1, bf_ghost_at(w, BF_LODE, ax, ay));
+    bf_fog_at(w, 1, ax, ay, TAK_FOG_VISIBLE);
+    ASSERT_EQ_INT(0, bf_ghost_at(w, BF_LODE, ax, ay));
+    bf_fog_at(w, 1, ax, ay, TAK_FOG_EXPLORED);
+    bf_fog_at(w, 1, bx, by, TAK_FOG_EXPLORED);
+
+    /* Taken: the builder goes, puts nothing up and stops there. */
+    ASSERT_EQ_INT(1, Units_OrderBuild(b, BF_LODE, ax, ay, 0, 0));
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)bf_unit(b)->cmd_kind);
+    for (int t = 0; t < 3000 && bf_unit(b)->cmd_kind == UNIT_CMD_BUILD; t++)
+        Units_TickEngines();
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)bf_unit(b)->cmd_kind);
+    ASSERT(bf_unit(b)->world_x > ax - 200);
+    ASSERT_EQ_INT(0, bf_count_of(BF_LODE, 1));
+
+    /* Free: no frame until it arrives, then the frame is its own. */
+    ASSERT_EQ_INT(1, Units_OrderBuild(b, BF_LODE, bx, by, 0, 0));
+    ASSERT_EQ_INT(0, bf_count_of(BF_LODE, 1));
+    for (int t = 0; t < 3000 && bf_count_of(BF_LODE, 1) == 0; t++)
+        Units_TickEngines();
+    ASSERT_EQ_INT(1, bf_count_of(BF_LODE, 1));
+    bf_end();
+}
+
 /* A builder sent to build forgets the formation it was walking, its
  * heading and the moves queued behind it. */
 TEST(a_build_order_ends_a_formation_walk) {
@@ -896,6 +981,7 @@ int main(int argc, char **argv) {
     RUN(a_lodestone_never_turns);
     RUN(a_lodestone_follows_its_pad_as_it_comes_and_goes);
     RUN(a_unit_beside_a_pad_leaves_the_pad_free);
+    RUN(a_pad_out_of_sight_is_judged_when_the_builder_gets_there);
     RUN(a_build_order_ends_a_formation_walk);
     RUN(the_armed_building_turns_both_ways_and_starts_unturned);
     RUN(a_turned_keeps_wreck_lies_where_it_stood);

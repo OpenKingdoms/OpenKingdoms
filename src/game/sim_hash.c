@@ -28,6 +28,7 @@ static uint32_t hash_weapon(uint32_t h, const UnitWeaponState *ws) {
     h = TAK_HashI32(h, ws->aim_thread_slot);
     h = TAK_HashI32(h, ws->aim_ticks);
     h = TAK_HashI32(h, ws->aim_target);
+    h = TAK_HashI32(h, ws->aim_ready);
     h = TAK_HashI32(h, ws->draw);
     h = TAK_HashI32(h, ws->draw_target);
     return h;
@@ -203,6 +204,18 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
         h = TAK_HashI32(h, u->hover_x);
         h = TAK_HashI32(h, u->hover_y);
     }
+    /* Only a unit counting down to its self destruct adds to the hash. */
+    if (u->selfd_ticks) h = TAK_HashI32(h, 0x1000 | u->selfd_ticks);
+    if (u->cloak_want || u->cloaked || u->cloak_wait)
+        h = TAK_HashI32(h, 0x2000000 | u->cloak_want | (u->cloaked << 1) |
+                           ((uint32_t)u->cloak_wait << 2));
+    /* Only a unit a paralyzer holds adds what is left of it. */
+    if (u->paralyzed_ticks) h = TAK_HashI32(h, 0x4000000 | u->paralyzed_ticks);
+    /* Only a unit an enemy has hit adds what hit it and when. */
+    if (u->hit_by) {
+        h = TAK_HashU32(h, u->hit_by);
+        h = TAK_HashU32(h, u->hit_tick);
+    }
     h = TAK_HashI32(h, u->attack_explicit);
     /* The target its shots were found not to reach, and where it and
      * that target stood then. */
@@ -218,12 +231,22 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     h = TAK_HashI32(h, u->build_gy);
     /* Only a summons without end or one held adds to the hash. */
     if (u->build_endless || u->build_held) {
-        h = TAK_HashI32(h, 0x300 | u->build_endless | (u->build_held << 1));
+        h = TAK_HashI32(h, 0x300 | u->build_endless | (u->build_held << 1) |
+                           (u->build_held && u->build_unseen
+                                ? 4 | ((u->build_facing & 3) << 3) : 0));
         h = TAK_HashI32(h, u->build_def);
         h = TAK_HashI32(h, u->build_tries);
         h = TAK_HashI32(h, u->build_wait);
     }
     h = TAK_HashI32(h, u->research_wait);
+    /* Only a unit with a post to walk back to, or a patrol to go on
+     * with, adds to the hash. */
+    if (u->post_set) {
+        h = TAK_HashI32(h, 0x900 | u->post_set);
+        h = TAK_HashI32(h, u->post_leash);
+        h = TAK_HashI32(h, u->post_x);
+        h = TAK_HashI32(h, u->post_y);
+    }
     /* The caster's own pool, separate from the player economy. */
     h = TAK_HashF32(h, u->mana);
     h = TAK_HashF32(h, u->mana_max);

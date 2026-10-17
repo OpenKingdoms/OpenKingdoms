@@ -25,6 +25,10 @@ typedef struct TakSideInfo {
     char resurrectsparkle_anim[32]; /* resurrectsparklyanim */
     char nimbus[32];                /* nimbus, the caster's glow, "nimbus_aramon" */
     char buildpalette[32];          /* the Intangible Mass colours, "arabipal.pcx" */
+    /* The pictures a statue of the side is painted with, entries of
+     * stonegaf and frozengaf, "" without both keys (legacy:164739-164756). */
+    char stoneanim[32];             /* "basiliskstone" */
+    char frozenanim[32];            /* "creonice" */
     /* musictracks, the numbers of the Music\TrackN.wav files a battle
      * on this side plays, in a random order (legacy:164711). */
     int  music_tracks[16];

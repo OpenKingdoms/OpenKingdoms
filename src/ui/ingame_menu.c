@@ -76,9 +76,10 @@ static void set_text(char *dst, size_t cap, const char *src) {
     dst[cap - 1] = '\0';
 }
 
-/* We have no netplay, so a battle is a campaign mission when the map
- * carried one and a skirmish otherwise. */
+/* A live match, played or watched, is multiplayer. Otherwise a battle
+ * is a campaign mission when the map carried one and a skirmish. */
 static IGMMode igm_mode(void) {
+    if (TAK_Match_IsLive()) return IGM_MULTI;
     const GameWorld *w = World_Get();
     if (w && (w->mission.objective_count > 0 || w->mission.placement_count > 0))
         return IGM_SINGLE;
@@ -160,8 +161,7 @@ int InGameMenu_Open(void) {
     m.font_help = Font_Load("data/fonts/b_times new roman (100b)", UI_RGBAFormat());
     /* The clock stops while the menu is up in single player and in
      * skirmish, and keeps running in multiplayer (legacy:145870-145873,
-     * legacy:145921-145924). We have no netplay, so the multiplayer
-     * branch is written and never taken. */
+     * legacy:145921-145924). */
     if (igm_mode() != IGM_MULTI) {
         m.prev_paused = InGame_IsPaused();
         InGame_SetPaused(1);

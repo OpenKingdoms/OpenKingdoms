@@ -24,6 +24,7 @@
 #include "tak_memory.h"
 #include "tak_world.h"
 #include "tak_battle_config.h"
+#include "tak_fog.h"
 #include "tak_unit.h"
 #include "tak_command_emit.h"
 #include "tak_game_sound.h"
@@ -208,8 +209,9 @@ static const HUDButtonBinding g_button_bindings[] = {
     /* Three radio buttons, one per slot, and a click on any of them
      * is the whole order (legacy:151481-151530, legacy:153147-153180). */
     { "SpecialWeapon",   HUD_CMD_W_SET_SPEC,  -1 },
-    { "CloakOn",         HUD_CMD_CLOAK_ON,    -1 },
-    { "CloakOff",        HUD_CMD_CLOAK_OFF,   -1 },
+    /* The cloak's radio pair (legacy:151473-151590). */
+    { "Cloaked",         HUD_CMD_CLOAK_ON,    -1 },
+    { "Uncloaked",       HUD_CMD_CLOAK_OFF,   -1 },
     { "Active",          HUD_CMD_ACTIVATE,    -1 },
     { "Inactive",        HUD_CMD_DEACTIVATE,  -1 },
 };
@@ -536,6 +538,12 @@ static void hud_load_messages(void) {
                          g_msg_mana, sizeof(g_msg_mana));
     }
     TDF_Close(tdf);
+}
+
+const char *HUD_MissionWords(const char *key) {
+    hud_load_messages();
+    const char *words = key ? Translate_Find(&g_missions, key) : NULL;
+    return words ? words : key;
 }
 
 /* ── Public API ────────────────────────────────────────────────────── */
@@ -979,10 +987,13 @@ int HUD_SelectionCommands(HUDCommandInfo *out, int cap) {
     int onoff = own && ((d && d->onoffable) || gate >= 0);
     int aggro = Units_GetSelectedAggroMode();
     int wswitch = (caps & UNIT_CAP_W_SWITCH) != 0;
+    int attack = own && Units_DefTakesAttack(d);
+    int stances = own && Units_DefHasStances(d);
+    int cloak = Units_SelectedCloakState();
     /* Hotkeys are keys.tdf's UnitCommand letters. */
     const HUDCommandInfo t[] = {
         { HUD_CMD_MOVE,   "MOVE",   HUD_CMDKIND_TARGET, 0, (caps & UNIT_CAP_MOVE) != 0, 1, 0, 0, 0, 'M', -1 },
-        { HUD_CMD_ATTACK, "ATTACK", HUD_CMDKIND_TARGET, 0, (caps & UNIT_CAP_ATTACK) != 0, 1, 0, 0, 0, 'A', -1 },
+        { HUD_CMD_ATTACK, "ATTACK", HUD_CMDKIND_TARGET, 0, attack, 1, 0, 0, 0, 'A', -1 },
         { HUD_CMD_GUARD,  "GUARD",  HUD_CMDKIND_TARGET, 0, (caps & UNIT_CAP_GUARD) != 0, 1, 0, 0, 0, 'G', -1 },
         { HUD_CMD_PATROL, "PATROL", HUD_CMDKIND_TARGET, 0, (caps & UNIT_CAP_PATROL) != 0, 1, 0, 0, 0, 'P', -1 },
         { HUD_CMD_STOP,   "STOP",   HUD_CMDKIND_INSTANT, 0, (caps & UNIT_CAP_STOP) != 0, 1, 0, 0, 0, 'S', -1 },
@@ -991,19 +1002,20 @@ int HUD_SelectionCommands(HUDCommandInfo *out, int cap) {
           ((caps & UNIT_CAP_LOAD) || (caps & UNIT_CAP_TRANSPORT)) != 0, 1, 0, 0, 0, 'L', -1 },
         { HUD_CMD_UNLOAD, "UNLOAD", HUD_CMDKIND_TARGET, 0, (caps & UNIT_CAP_TRANSPORT) != 0, 1, 0, 0, 0, 'U', -1 },
         { HUD_CMD_CLEAR,  "CLEAR",  HUD_CMDKIND_TARGET, 0, (caps & UNIT_CAP_RECLAIM) != 0, 1, 0, 0, 0, 'C', -1 },
-        /* No cloak state is kept yet, so its pair takes no click. */
+        /* The cloak order the selection holds is the lit one
+         * (legacy:150974-151000). */
         { HUD_CMD_CLOAK_ON,  "Cloaked",   HUD_CMDKIND_CHOICE, HUD_GROUP_CLOAK,
-          (caps & UNIT_CAP_CLOAK) != 0, 0, 0, 0, HUD_WHY_UNSUPPORTED, 'K', -1 },
+          (caps & UNIT_CAP_CLOAK) != 0, 1, cloak == 1, 0, 0, 'K', -1 },
         { HUD_CMD_CLOAK_OFF, "Uncloaked", HUD_CMDKIND_CHOICE, HUD_GROUP_CLOAK,
-          (caps & UNIT_CAP_CLOAK) != 0, 0, 1, 0, HUD_WHY_UNSUPPORTED, 'K', -1 },
+          (caps & UNIT_CAP_CLOAK) != 0, 1, cloak == 0, 0, 0, 'K', -1 },
         { HUD_CMD_ACTIVATE,   "Active",   HUD_CMDKIND_CHOICE, HUD_GROUP_GATE, onoff, 1, gate == 1, 0, 0, 'O', -1 },
         { HUD_CMD_DEACTIVATE, "Inactive", HUD_CMDKIND_CHOICE, HUD_GROUP_GATE, onoff, 1, gate == 0, 0, 0, 'O', -1 },
         { HUD_CMD_AGGRO_OFF, "Offensive", HUD_CMDKIND_CHOICE, HUD_GROUP_STANCE,
-          (caps & UNIT_CAP_ATTACK) != 0, 1, aggro == UNIT_AGGRO_OFFENSIVE, 0, 0, 0, -1 },
+          stances, 1, aggro == UNIT_AGGRO_OFFENSIVE, 0, 0, 0, -1 },
         { HUD_CMD_AGGRO_DEF, "Defensive", HUD_CMDKIND_CHOICE, HUD_GROUP_STANCE,
-          (caps & UNIT_CAP_ATTACK) != 0, 1, aggro == UNIT_AGGRO_DEFENSIVE, 0, 0, 0, -1 },
+          stances, 1, aggro == UNIT_AGGRO_DEFENSIVE, 0, 0, 0, -1 },
         { HUD_CMD_AGGRO_PAS, "Passive", HUD_CMDKIND_CHOICE, HUD_GROUP_STANCE,
-          (caps & UNIT_CAP_ATTACK) != 0, 1, aggro == UNIT_AGGRO_PASSIVE, 0, 0, 0, -1 },
+          stances, 1, aggro == UNIT_AGGRO_PASSIVE, 0, 0, 0, -1 },
         { HUD_CMD_W_PRIMARY,   "PrimaryWeapon",   HUD_CMDKIND_CHOICE, HUD_GROUP_WEAPON,
           wswitch && n_weapons >= 1, 1, 0, 0, 0, 0, 0 },
         { HUD_CMD_W_SECONDARY, "SecondaryWeapon", HUD_CMDKIND_CHOICE, HUD_GROUP_WEAPON,
@@ -1151,6 +1163,7 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
          * Frame 0 is the disabled slot. Leaving the others with no
          * override showed that dark slot until the mouse arrived. */
         int gate_state = Units_SelectedGateState();
+        int cloak_state = Units_SelectedCloakState();
         struct { const char *name; int active; } toggles[] = {
             { "Offensive",       aggro == UNIT_AGGRO_OFFENSIVE },
             { "Defensive",       aggro == UNIT_AGGRO_DEFENSIVE },
@@ -1158,6 +1171,9 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             /* The current gate state is the lit one (legacy:150430). */
             { "Active",          gate_state == 1 },
             { "Inactive",        gate_state == 0 },
+            /* And the cloak order the selection holds (legacy:150974-151000). */
+            { "Cloaked",         cloak_state == 1 },
+            { "Uncloaked",       cloak_state == 0 },
         };
         for (size_t i = 0; i < sizeof(toggles)/sizeof(toggles[0]); i++) {
             const GUIWidget *w = GUIRuntime_WidgetByName(g_rt, toggles[i].name);
@@ -1842,8 +1858,12 @@ int HUD_TriggerCommand(int mode) {
         case HUD_CMD_DEACTIVATE:
             hud_set_selected_gates(0);
             return 1;
+        case HUD_CMD_CLOAK_ON:
+        case HUD_CMD_CLOAK_OFF:
+            TAK_Cmd_EmitSelection(TAK_CMD_CLOAK, 0, 0, -1, 0,
+                                  mode == HUD_CMD_CLOAK_ON ? 1u : 0u);
+            return 1;
         default:
-            /* Cloak on/off: no per-unit state implemented yet. */
             return 0;
     }
 }
@@ -1879,8 +1899,10 @@ void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y,
              * the placing click will land. */
             Units_GroundUnderPoint(world_x, world_y, &world_x, &world_y);
             int facing = HUD_GetBuildFacing();
-            int valid = Units_IsBuildSiteClearFacing(g_build_def_idx, world_x,
-                                                     world_y, facing);
+            /* Judged by what the player sees, as the original's cursor
+             * is (legacy:39263-39305). */
+            int valid = Units_IsBuildSiteClearSeen(g_build_def_idx, world_x,
+                                                   world_y, facing, Fog_Viewer());
             g_ghost_x = world_x;
             g_ghost_y = world_y;
             g_ghost_valid = valid;

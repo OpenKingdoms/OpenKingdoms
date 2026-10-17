@@ -125,8 +125,27 @@
  * flies and steps out and gives up by the hover attack's own rule.
  * 40: a hover attacker wakes on a landed shot only when it did not hurt
  * the other side more than twice its own, and counts its point reached
- * where the walk stops. */
-#define TAK_ENGINE_BUILD_ID           40
+ * where the walk stops. 41: a shot that strikes its target bursts on the
+ * target's body. 42: a fight a unit takes on for itself ends at its
+ * maneuverleashlength from where it began and it walks back there, a
+ * patrol fights in any stance and goes on from where it broke off, a
+ * builder on patrol mends and helps build, and a blade takes no flyer
+ * in the air. 43: a guard attacks what hits the unit it guards, mends
+ * it, joins its build or repair, and keeps five cells off it, and
+ * Ctrl+D self destructs. 44: units with a cloak cost cloak, and a
+ * builder sent to a site its side cannot see checks it on arrival.
+ * 45: a unit turns onto its target only by turninplacerate or as a
+ * hover attacker and fires within its aim tolerance, and freeze and
+ * stone shots turn a unit to a statue on a roll. 46: a unit's script
+ * reads IN_WATER as 1 while it moves below the sea. 47: a paralyzer
+ * holds what it hits instead of wounding it, a weapon fires once its
+ * script says it is aimed, and statues take their side's paint.
+ * 48: every canfly unit flies and lands, a flyer takes off before it
+ * fires, a factory's product walks to a spot of its own, a broom drag
+ * clears its box, and a rider boards a flying transport. 49: the
+ * computer settles every free pad under cover, holds or presses on
+ * after a win, and weighs a troop its profile leaves out like its peers. */
+#define TAK_ENGINE_BUILD_ID           49
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

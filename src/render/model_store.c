@@ -264,8 +264,9 @@ static GpuModel *finish(GpuModel *m, UnitMesh *src, const GL3D_ModelBatch *proto
     return m;
 }
 
-static GpuModel *build_3do(const char *name, int color_idx) {
-    UnitMesh *src = Units_BakeObjectMesh(name, color_idx);
+static GpuModel *build_3do(const char *name, int color_idx,
+                           const char *paint) {
+    UnitMesh *src = Units_BakeObjectMeshPainted(name, color_idx, paint);
     if (!src || src->vert_count <= 0 || src->tri_count <= 0) {
         if (src) Units_FreeBakedMesh(src);
         return NULL;
@@ -274,6 +275,7 @@ static GpuModel *build_3do(const char *name, int color_idx) {
     if (!m) { Units_FreeBakedMesh(src); return NULL; }
     memset(m, 0, sizeof(*m));
     snprintf(m->name, sizeof(m->name), "%s", name);
+    snprintf(m->paint, sizeof(m->paint), "%s", paint ? paint : "");
     m->color_idx = color_idx;
     m->mesh = src;
     return finish(m, src, NULL);
@@ -447,20 +449,27 @@ int ModelStore_FlatNodes(const UnitMesh *mesh, uint8_t *flat) {
     return count;
 }
 
-const GpuModel *ModelStore_Get(const char *object_name, int color_idx) {
+const GpuModel *ModelStore_GetPainted(const char *object_name, int color_idx,
+                                      const char *paint) {
     if (!object_name || !object_name[0] || !GL3D_Available()) return NULL;
     if (color_idx < 0 || color_idx > 11) color_idx = 0;
+    if (!paint) paint = "";
     for (int i = 0; i < g_model_count; i++) {
         if (g_models[i]->color_idx == color_idx &&
-            tak_stricmp(g_models[i]->name, object_name) == 0)
+            tak_stricmp(g_models[i]->name, object_name) == 0 &&
+            tak_stricmp(g_models[i]->paint, paint) == 0)
             return g_models[i];
     }
     if (g_model_count >= MODEL_STORE_CAP) return NULL;
     /* An artist's model wins when there is one, and the shipped
      * model stands in whenever there is not or it will not do. */
-    GpuModel *m = build_gltf(object_name, color_idx);
-    if (!m) m = build_3do(object_name, color_idx);
+    GpuModel *m = paint[0] ? NULL : build_gltf(object_name, color_idx);
+    if (!m) m = build_3do(object_name, color_idx, paint);
     if (!m) return NULL;
     g_models[g_model_count++] = m;
     return m;
+}
+
+const GpuModel *ModelStore_Get(const char *object_name, int color_idx) {
+    return ModelStore_GetPainted(object_name, color_idx, NULL);
 }

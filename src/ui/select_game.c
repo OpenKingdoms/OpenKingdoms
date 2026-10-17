@@ -34,6 +34,7 @@
 #include "tak_net_client.h"
 #include "tak_net_room.h"
 #include "tak_settings.h"
+#include "tak_battle_setup.h"
 #include "tak_ui.h"
 #include "tak_util.h"
 #include "tak_web_stats.h"
@@ -468,6 +469,7 @@ static void host_game(void) {
      * line of sight alone is a different battle. */
     BattleConfig defaults;
     BattleConfig_SetDefaults(&defaults);
+    BattleSetup_LoadGameOptions(&defaults, TAK_GAMEOPTS_NETGAME, 0);
     cr.unit_cap = (uint16_t)defaults.units_per_side;
     cr.options =
         (defaults.line_of_sight          ? TAK_ROOMOPT_LINE_OF_SIGHT    : 0u) |
