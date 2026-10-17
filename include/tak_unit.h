@@ -2492,6 +2492,11 @@ int               Units_DebugSubmitOrder(int handle,
                                          const struct GameWorld *world,
                                          uint16_t *out_nodes, float *out_keys,
                                          int max_tris);
+/* Test hook: pixels of a live unit where its submit order shows another
+ * face than the original's per pixel height key would (legacy:265317),
+ * and in out_covered the pixels it covers. -1 on a bad handle. */
+int               Units_DebugOrderMismatch(int handle, const struct GameWorld *world,
+                                           int *out_covered);
 
 /* Test hook: replace the def registry with synthetic entries, so a
  * harness can spawn units with no model, script or yardmap and no
