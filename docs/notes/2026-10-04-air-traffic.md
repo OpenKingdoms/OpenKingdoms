@@ -125,5 +125,7 @@ it lands and lifted when it takes off.
 - The original snaps a move's point to its footprint's cell lattice
   before the ring is drawn. The engine keeps the point as clicked, which
   is at most 8 px off and inside the ring (M-014).
-- The five units with `canfly` and no BeginFlight in their scripts keep
-  out of the air traffic (M-014).
+- The five units with `canfly` and no BeginFlight in their scripts kept
+  out of the air traffic. Since 2026-10-16 they fly, step out and land
+  like the rest, as the original's missions follow the canfly bit alone
+  (legacy:162986-162987, legacy:24120-24131).

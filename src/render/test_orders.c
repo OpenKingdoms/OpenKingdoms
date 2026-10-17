@@ -36,6 +36,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 
 #define OQ_TILES  128
 #define OQ_GROUND 64
@@ -650,7 +651,8 @@ TEST(a_barracks_refuses_a_building_on_its_queue) {
 
 /* A soldier lost on the pad is not trained again: the original counts
  * a run down when its unit is done or its frame is lost
- * (legacy:9293-9303, 9524-9527). */
+ * (legacy:9293-9303, 9524-9527). The lost frame holds the pad until it
+ * decays, and the next waits for that. */
 TEST(a_soldier_lost_on_the_pad_is_not_trained_again) {
     ASSERT_NOT_NULL(oq_world());
     int b = oq_barracks();
@@ -659,10 +661,85 @@ TEST(a_soldier_lost_on_the_pad_is_not_trained_again) {
     int frame = oq_unit(b)->build_target;
     ASSERT(frame >= 0);
     Units_SetOwner(frame, 2, 1);
-    oq_ticks(600);
+    oq_ticks(1600);
     ASSERT_EQ_INT(2, oq_count(OQ_SOLDIER));
     ASSERT_EQ_INT(0, Units_FactoryQueueCount(b));
     oq_end();
+}
+
+/* Soldiers trained with no orders step off to spots of their own round
+ * the barracks rather than piling on one, and the next goes up only once
+ * the pad is clear
+ * (legacy:9694-9711, legacy:13813-13879, legacy:9363-9382). */
+TEST(soldiers_with_no_orders_step_off_to_spots_of_their_own) {
+    ASSERT_NOT_NULL(oq_world());
+    int b = oq_barracks();
+    ASSERT_EQ_INT(0, Units_FactoryAdd(b, OQ_SOLDIER, 6, 0));
+    oq_ticks(3000);
+    int h[8], n = 0, count = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count && n < 8; i++)
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].def_idx == OQ_SOLDIER)
+            h[n++] = i;
+    int close = 0, on_pad = 0;
+    for (int i = 0; i < n; i++) {
+        const Unit *a = oq_unit(h[i]);
+        if (abs(a->world_x - OQ_CX) < 40 && abs(a->world_y - OQ_CY) < 40) on_pad++;
+        for (int j = i + 1; j < n; j++) {
+            const Unit *c = oq_unit(h[j]);
+            if (abs(a->world_x - c->world_x) < 12 && abs(a->world_y - c->world_y) < 12)
+                close++;
+        }
+    }
+    oq_end();
+    printf("(%d trained, %d pairs within 12 px, %d on the pad) ", n, close, on_pad);
+    ASSERT_EQ_INT(6, n);
+    ASSERT_EQ_INT(0, close);
+    ASSERT_EQ_INT(0, on_pad);
+}
+
+static int32_t oq_drawn_y(GameWorld *w, int32_t x, int32_t y, float up);
+
+/* A drag with the broom clears every tree in the box, one after the
+ * other, and leaves the one outside it (legacy:238755-238767,
+ * legacy:12880-12927). */
+TEST(a_drag_with_the_broom_clears_the_box) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    FeatureDef fd;
+    memset(&fd, 0, sizeof fd);
+    strncpy(fd.name, "TESTTREE", sizeof(fd.name) - 1);
+    strncpy(fd.category, "trees", sizeof(fd.category) - 1);
+    fd.footprint_x = 1;
+    fd.footprint_z = 1;
+    fd.height = 60;
+    fd.blocking = 1;
+    fd.reclaimable = 1;
+    fd.damage = 100;
+    ASSERT_EQ_INT(1, Features_DebugSetDefs(&fd, 1));
+    static const int cells[5][2] = { {70, 60}, {72, 60}, {70, 62}, {72, 62}, {90, 60} };
+    for (int k = 0; k < 5; k++)
+        ASSERT(Features_AddInstance(w, 0, cells[k][0], cells[k][1],
+                                    cells[k][0] * 16 + 8, cells[k][1] * 16 + 8,
+                                    0, -1) >= 0);
+    ((UnitDef *)Units_GetDef(OQ_BUILDER))->cap_flags |= UNIT_CAP_RECLAIM;
+    int b = Units_Spawn(OQ_BUILDER, 1, 0, 66 * 16, 61 * 16);
+    ASSERT(b >= 0);
+    Units_SelectSingle(b);
+    HUD_SetCommandMode(HUD_CMD_CLEAR);
+    InGame_WorldDrag(68 * 16, oq_drawn_y(w, 68 * 16, 58 * 16, 0.0f),
+                     75 * 16, oq_drawn_y(w, 75 * 16, 64 * 16, 0.0f), 0);
+    int left = 5, at = -1;
+    for (int t = 0; t < 12000 && left > 1; t++) {
+        oq_ticks(1);
+        left = w->feature_count;
+        at = t;
+    }
+    int outside = w->feature_count == 1 && w->features[0].tile_x == 90;
+    oq_end();
+    printf("(%d left after %d ticks) ", left, at);
+    ASSERT_EQ_INT(1, left);
+    ASSERT_EQ_INT(1, outside);
 }
 
 /* A queued order carries a def only when it is a building, so what a
@@ -1673,8 +1750,7 @@ TEST(the_shift_overlay_draws_only_while_shift_is_held) {
     oq_end();
 }
 
-/* A flyer in the air, as its takeoff leaves it (test-only mutation).
- * The model has no script, so the next tick sets it down as a hoverer. */
+/* A flyer in the air, as its takeoff leaves it (test-only mutation). */
 static void oq_lift(int h, int flying) {
     Unit *u = (Unit *)oq_unit(h);
     u->flight_alt = 120.0f;
@@ -2440,9 +2516,6 @@ TEST(the_computers_summons_site_is_one_no_unit_stands_on) {
 TEST(a_flyer_in_the_air_stands_on_no_site) {
     ASSERT_NOT_NULL(oq_world());
     int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
-    UnitDef *fd = (UnitDef *)Units_GetDef(OQ_FLYER);
-    ASSERT_NOT_NULL(fd);
-    fd->script_flies = 1;
     int f = Units_Spawn(OQ_FLYER, 1, 0, sx, sy);
     ASSERT(f >= 0);
     oq_lift(f, 1);
@@ -2459,9 +2532,6 @@ TEST(a_flyer_in_the_air_stands_on_no_site) {
 TEST(a_summons_under_a_flyer_in_the_air_goes_up_at_once) {
     ASSERT_NOT_NULL(oq_world());
     int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
-    UnitDef *fd = (UnitDef *)Units_GetDef(OQ_FLYER);
-    ASSERT_NOT_NULL(fd);
-    fd->script_flies = 1;
     int f = Units_Spawn(OQ_FLYER, 1, 0, sx, sy);
     int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx - 64, sy);
     ASSERT(f >= 0 && bd >= 0);
@@ -2497,6 +2567,8 @@ int main(int argc, char **argv) {
     RUN(a_click_beside_a_soldier_moves_the_rally);
     RUN(a_barracks_refuses_a_building_on_its_queue);
     RUN(a_soldier_lost_on_the_pad_is_not_trained_again);
+    RUN(soldiers_with_no_orders_step_off_to_spots_of_their_own);
+    RUN(a_drag_with_the_broom_clears_the_box);
     RUN(a_queued_move_carries_no_def);
     RUN(ctrl_changes_the_order_in_hand_and_keeps_the_queue);
     RUN(a_cancelled_frame_frees_its_site);

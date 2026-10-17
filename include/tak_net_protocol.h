@@ -139,8 +139,11 @@
  * stone shots turn a unit to a statue on a roll. 46: a unit's script
  * reads IN_WATER as 1 while it moves below the sea. 47: a paralyzer
  * holds what it hits instead of wounding it, a weapon fires once its
- * script says it is aimed, and statues take their side's paint. */
-#define TAK_ENGINE_BUILD_ID           47
+ * script says it is aimed, and statues take their side's paint.
+ * 48: every canfly unit flies and lands, a flyer takes off before it
+ * fires, a factory's product walks to a spot of its own, a broom drag
+ * clears its box, and a rider boards a flying transport. */
+#define TAK_ENGINE_BUILD_ID           48
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

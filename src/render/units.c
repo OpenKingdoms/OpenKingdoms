@@ -1774,6 +1774,8 @@ int Units_Capture(int handle, int player_id) {
     uint8_t building = old->under_construction;
     float build_hp = old->build_hp_accum;
     int facing = old->facing;
+    uint8_t flying = old->flying;
+    float flight_alt = old->flight_alt;
 
     /* The new unit is made before the old one goes, so a seat at its
      * unit limit takes nothing (legacy:228975). The cells change hands
@@ -1795,6 +1797,11 @@ int Units_Capture(int handle, int player_id) {
     nu->armor_pct = old->armor_pct;
     nu->under_construction = building;
     nu->build_hp_accum = build_hp;
+    /* The new unit keeps the movement mode and height it had, so a flyer
+     * taken in the air stays up (legacy:228969, legacy:226947). */
+    nu->flying = flying;
+    nu->flight_alt = flight_alt;
+    if (flying) occ_sync_mobile(made);
     /* The old unit leaves with no death script and no body: the
      * original skips Killed for this removal (legacy:227130). */
     unit_remove_now(handle);
@@ -3995,7 +4002,9 @@ static int leg_takeable(const Unit *u, const UnitMoveLeg *leg) {
             return t >= 0 && unit_def_can_repair(d) &&
                    !unit_players_are_enemies(u->player_id, g_units[t].player_id);
         case UNIT_LEG_RECLAIM: return t >= 0 && (d->cap_flags & UNIT_CAP_RECLAIM);
-        case UNIT_LEG_SWEEP:   return mobile && (d->cap_flags & UNIT_CAP_RECLAIM);
+        case UNIT_LEG_SWEEP:
+        case UNIT_LEG_SWEEP_AREA:
+            return mobile && (d->cap_flags & UNIT_CAP_RECLAIM);
         case UNIT_LEG_RAISE:   return mobile;
         case UNIT_LEG_UNLOAD:  return (d->cap_flags & UNIT_CAP_TRANSPORT) != 0;
         case UNIT_LEG_BUILD:
@@ -4003,6 +4012,63 @@ static int leg_takeable(const Unit *u, const UnitMoveLeg *leg) {
         case UNIT_LEG_SPECIAL: return 1;
         default: return 0;
     }
+}
+
+/* A dragged sweep goes for the nearest thing in its box the unit can
+ * clear or raise, on ground its side has explored, and goes back to the
+ * head of the queue behind it. It ends when nothing is left, or when the
+ * nearest is the one it went for last and could not clear
+ * (legacy:12880-12927, legacy:220463-220540). */
+static int sweep_area_take(int h, const UnitMoveLeg *leg) {
+    Unit *u = &g_units[h];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    GameWorld *w = World_Get();
+    if (!d || !w || !w->features) return 0;
+    int32_t hw = (int32_t)((leg->heading >> 8) & 0xffu) * 16;
+    int32_t hh = (int32_t)(leg->heading & 0xffu) * 16;
+    int raise = (d->cap_flags & UNIT_CAP_RESURRECT) != 0;
+    int animate = (d->cap_flags & UNIT_CAP_ANIMATE) && d->animate_type[0];
+    int best = -1;
+    int64_t best_d2 = 0;
+    int32_t bx = 0, by = 0;
+    for (int i = 0; i < w->feature_count; i++) {
+        const struct MapFeature *mf = &w->features[i];
+        const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+        if (!fd || mf->sink_ticks > 0) continue;
+        if (!fd->reclaimable && !(raise && fd->resurrectable) &&
+            !(animate && fd->animatable))
+            continue;
+        int fpx = 1, fpz = 1;
+        Features_InstanceFootprint(w, i, &fpx, &fpz);
+        int32_t x0 = (int32_t)mf->tile_x * 16, y0 = (int32_t)mf->tile_z * 16;
+        if (x0 >= leg->x + hw || x0 + fpx * 16 <= leg->x - hw ||
+            y0 >= leg->y + hh || y0 + fpz * 16 <= leg->y - hh)
+            continue;
+        int32_t cx = x0 + fpx * 8, cy = y0 + fpz * 8;
+        if (w->cfg.line_of_sight &&
+            Fog_StateAtForPlayer(w, u->player_id, cx, cy) == TAK_FOG_UNEXPLORED)
+            continue;
+        int64_t dx = (int64_t)cx - u->world_x, dy = (int64_t)cy - u->world_y;
+        if (best < 0 || dx * dx + dy * dy < best_d2) {
+            best = i;
+            best_d2 = dx * dx + dy * dy;
+            bx = cx;
+            by = cy;
+        }
+    }
+    if (best < 0) return 0;
+    uint32_t last = UNIT_LEG_AREA_LAST |
+                    ((uint32_t)w->features[best].tile_x << 12) |
+                    (uint32_t)w->features[best].tile_z;
+    if (leg->target == last) return 0;
+    if (!Units_OrderReclaimFeature(h, bx, by, -1)) return 0;
+    if (u->leg_count < UNIT_MOVE_LEGS_MAX) {
+        memmove(&u->legs[1], &u->legs[0], sizeof u->legs[0] * u->leg_count);
+        u->legs[0] = *leg;
+        u->legs[0].target = last;
+        u->leg_count++;
+    }
+    return 1;
 }
 
 /* Carry a leg out now, through the same order a command without Shift
@@ -4039,6 +4105,9 @@ static int unit_take_leg(int h, const UnitMoveLeg *leg) {
             break;
         case UNIT_LEG_SWEEP:
             ok = Units_OrderReclaimFeature(h, leg->x, leg->y, t);
+            break;
+        case UNIT_LEG_SWEEP_AREA:
+            ok = sweep_area_take(h, leg);
             break;
         case UNIT_LEG_RAISE:
             ok = Units_OrderResurrectFeature(h, leg->x, leg->y);
@@ -5948,9 +6017,10 @@ static int  unit_effective_max_slope(const UnitDef *def,
                                      const MoveClassDef *move_class);
 
 /* A transport's drop test for the cargo's def centred on (wx, wy)
- * (legacy:14551). ignore_mobile lets movers through (legacy:218806). */
-static int unit_spot_clear(const UnitDef *d, int32_t wx, int32_t wy,
-                           int ignore_mobile) {
+ * (legacy:14551). ignore_mobile lets movers through (legacy:218806), and
+ * the unit skip, the one placed, is no obstacle to itself. */
+static int unit_spot_clear_but(const UnitDef *d, int32_t wx, int32_t wy,
+                               int ignore_mobile, int skip) {
     GameWorld *world = World_Get();
     if (!d || !world) return 0;
     int fx = 1, fz = 1;
@@ -5969,7 +6039,7 @@ static int unit_spot_clear(const UnitDef *d, int32_t wx, int32_t wy,
         return 0;
     for (int i = 0; i < g_unit_count; i++) {
         const Unit *u = &g_units[i];
-        if (u->alive != UNIT_ALIVE_ACTIVE) continue;
+        if (i == skip || u->alive != UNIT_ALIVE_ACTIVE) continue;
         const UnitDef *ud = Units_GetDef(u->def_idx);
         if (!ud) continue;
         if (ud->can_fly && !unit_is_mobile_occupant(u, ud)) continue;
@@ -5987,6 +6057,11 @@ static int unit_spot_clear(const UnitDef *d, int32_t wx, int32_t wy,
         if (ux0 < x1 && ux1 > x0 && uy0 < y1 && uy1 > y0) return 0;
     }
     return 1;
+}
+
+static int unit_spot_clear(const UnitDef *d, int32_t wx, int32_t wy,
+                           int ignore_mobile) {
+    return unit_spot_clear_but(d, wx, wy, ignore_mobile, -1);
 }
 
 int Units_CanSetDownAt(int def_idx, int32_t world_x, int32_t world_y) {
@@ -6057,6 +6132,29 @@ int Units_BeginBuildingForUnit(int builder_handle,
                                             world_x, world_y, 0);
 }
 
+/* Whether a unit other than the factory stands where its product of def
+ * pd would go up at (x, y). A flyer in the air holds no cells. */
+static int factory_pad_held(int factory, const UnitDef *pd, int32_t x,
+                            int32_t y) {
+    int fx = 1, fz = 1;
+    unit_mobile_footprint(World_Get(), pd, &fx, &fz);
+    int32_t x0 = x - fx * 8, x1 = x + fx * 8;
+    int32_t y0 = y - fz * 8, y1 = y + fz * 8;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *o = &g_units[i];
+        if (i == factory || o->alive != UNIT_ALIVE_ACTIVE) continue;
+        const UnitDef *od = Units_GetDef(o->def_idx);
+        if (!od || unit_def_is_structure(od)) continue;
+        if (od->can_fly && !unit_is_mobile_occupant(o, od)) continue;
+        int ofx = 1, ofz = 1;
+        unit_occ_fp(o, &ofx, &ofz);
+        if (o->world_x - ofx * 8 < x1 && o->world_x + ofx * 8 > x0 &&
+            o->world_y - ofz * 8 < y1 && o->world_y + ofz * 8 > y0)
+            return 1;
+    }
+    return 0;
+}
+
 int Units_BeginBuildingForUnitFacing(int builder_handle,
                                      int building_def_idx,
                                      int32_t world_x,
@@ -6114,6 +6212,11 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
         if (hd && ship_hull_blocked(hd, -1, UNIT_HULL_MARGIN,
                                     build_heading_for_def(bd), world_x,
                                     world_y, 0, 0.0f, 0, 0))
+            return -1;
+        /* Nor does one go up on a unit standing on the pad: the
+         * placement test at the spot counts units, and the factory looks
+         * again shortly (legacy:9363-9382, legacy:219134-219147). */
+        if (!hd && factory_pad_held(builder_handle, bd, world_x, world_y))
             return -1;
     } else if (!Units_IsBuildSiteFreeFacing(building_def_idx, world_x, world_y,
                                             facing)) {
@@ -6392,6 +6495,97 @@ static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
     return 0;
 }
 
+/* Whether a unit other than skip is walking to a point within reach px
+ * of (x, y) on both axes. */
+static int unit_spot_spoken_for(int skip, int32_t x, int32_t y, int reach) {
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *o = &g_units[i];
+        if (i == skip || o->alive != UNIT_ALIVE_ACTIVE ||
+            o->cmd_kind != UNIT_CMD_MOVE)
+            continue;
+        if (abs(o->cmd_x - x) < reach && abs(o->cmd_y - y) < reach) return 1;
+    }
+    return 0;
+}
+
+/* The nearest spot to (from_x, from_y) between rmin and rmax px from
+ * (cx, cy) where def d stands on clear ground no unit holds, searched
+ * ring by ring and on each ring outward from the bearing of from. A spot
+ * another unit is walking to is passed over too, which is ours: the
+ * original searches again when its walk is cut short (legacy:13854-13879). */
+static int unit_free_spot_round(const UnitDef *d, int skip, int32_t cx,
+                                int32_t cy, int rmin, int rmax,
+                                int32_t from_x, int32_t from_y,
+                                int32_t *out_x, int32_t *out_y) {
+    const GameWorld *w = World_Get();
+    if (!w || !d) return 0;
+    int fx = 1, fz = 1;
+    unit_mobile_footprint(w, d, &fx, &fz);
+    int reach = 16 * (fx > fz ? fx : fz);
+    float base = tak_atan2f((float)(from_y - cy), (float)(from_x - cx));
+    for (int r = rmin; r <= rmax; r += 16) {
+        int n = (int)(6.2831853f * (float)r / 16.0f);
+        if (n < 8) n = 8;
+        for (int j = 0; j < n; j++) {
+            int k = (j & 1) ? -((j + 1) / 2) : j / 2;
+            float a = base + 6.2831853f * (float)k / (float)n;
+            int32_t x = cx + (int32_t)((float)r * tak_cosf(a));
+            int32_t y = cy + (int32_t)((float)r * tak_sinf(a));
+            if (!unit_terrain_walkable(w, d, x, y)) continue;
+            if (!unit_spot_clear_but(d, x, y, 0, skip)) continue;
+            if (unit_spot_spoken_for(skip, x, y, reach)) continue;
+            *out_x = x;
+            *out_y = y;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A product with no orders steps off as the original's getbuilt mission
+ * sends it (legacy:9694-9711). A walker goes to the nearest clear spot
+ * from 16 px times rand(6) plus rand(3) plus 3 beyond its footprint and
+ * half the factory's out to three times as far. A flyer, with 3 more
+ * rolled in, flies to a random bearing (legacy:13813-13879). The half
+ * stands in for a size term the original does not name, as the cargo's
+ * step does. The original takes that term off a flyer's range, but the
+ * stand-in would set it down inside the factory, so the flyer goes as
+ * far out as a walker and all the way to its point. */
+static int factory_step_off(const Unit *f, const UnitDef *fd, Unit *bt,
+                            const UnitDef *btd) {
+    const GameWorld *w = World_Get();
+    if (!w) return 0;
+    int rolls = (int)World_Rand(6) + (int)World_Rand(3);
+    int dist = 16 * (rolls + (btd->can_fly ? 6 : 3));
+    int pfx = 1, pfz = 1;
+    unit_occ_fp(bt, &pfx, &pfz);
+    int ffx = fd->footprint_x > 0 ? fd->footprint_x : 2;
+    int ffz = fd->footprint_z > 0 ? fd->footprint_z : 2;
+    int half = (ffx > ffz ? ffx : ffz) * 8;
+    int r = 16 * pfx + dist;
+    int32_t x = 0, y = 0;
+    if (btd->can_fly) {
+        float a = Units_HeadingFromTurn((uint16_t)World_Rand(0x10000));
+        r += half;
+        x = f->world_x - (int32_t)((float)r * tak_sinf(a));
+        y = f->world_y - (int32_t)((float)r * tak_cosf(a));
+        if (x < 32) x = 32;
+        if (y < 32) y = 32;
+        if (x > w->map_pixels_w - 32) x = w->map_pixels_w - 32;
+        if (y > w->map_pixels_h - 32) y = w->map_pixels_h - 32;
+        bt->air_band = 1;
+    } else if (!unit_free_spot_round(btd, (int)(bt - g_units), f->world_x,
+                                     f->world_y, r + half, 3 * (r + half),
+                                     bt->world_x, bt->world_y, &x, &y)) {
+        return 0;
+    }
+    bt->cmd_kind = UNIT_CMD_MOVE;
+    bt->cmd_x = x;
+    bt->cmd_y = y;
+    unit_clear_path(bt);
+    return 1;
+}
+
 /* A finished product leaves the yard: to the rally point with the
  * factory's standing orders behind it, or just clear of the doors.
  * Legacy hands it a move order after getbuilt (legacy:9430) and the
@@ -6425,6 +6619,7 @@ static void factory_release(const Unit *f, const UnitDef *fd, Unit *bt,
     int fz = fd->footprint_z > 0 ? fd->footprint_z : 2;
     const UnitDef *hd = def_hull(bt->def_idx);
     if (hd && ship_launch_spot(f, fx, fz, bt, btd, hd)) return;
+    if (!hd && factory_step_off(f, fd, bt, btd)) return;
     int exit_px = (fx > fz ? fx : fz) * 8 + 24;
     /* Off the pad first: keep going the way the pad already points, so
      * the product steps clear of the doors instead of turning back
@@ -8332,8 +8527,6 @@ int Units_LoadDefsFor(int crusades_balance) {
         Cob_Load(&d.cob_script, cob_path);   /* NULL on miss — that's OK */
         d.script_launches = (uint8_t)cob_sets_launch_port(d.cob_script);
         if (d.script_launches) launchers++;
-        d.script_flies = d.cob_script &&
-                         Cob_FindScript(d.cob_script, "BeginFlight") >= 0;
         if (src) src[g_def_count] = paths[i];
         g_defs[g_def_count++] = d;
         g_def_gen++;
@@ -8582,9 +8775,8 @@ static void unit_occ_fp(const Unit *u, int *fx, int *fz) {
 
 static int unit_is_mobile_occupant(const Unit *u, const UnitDef *d) {
     if (!d) return 0;
-    /* A flyer holds its cells only once landed (legacy:218217-218250).
-     * One without the flight pair never lands and holds none. */
-    if (d->can_fly && (u->flying || !d->script_flies)) return 0;
+    /* A flyer holds its cells only once landed (legacy:218217-218250). */
+    if (d->can_fly && u->flying) return 0;
     return u->alive == UNIT_ALIVE_ACTIVE;
 }
 
@@ -12267,8 +12459,8 @@ static int64_t unit_body_gap_d2(const Unit *u, const Unit *t) {
 /* Air is a state, not a type. The original tests the target's current
  * movement mode (legacy:249578-249586): noairweapon refuses a unit
  * that is airborne, toairweapon refuses one that is not. A flyer on
- * the ground, or a ghost ship resting on the water, is a ground
- * target for a galley's cannon. */
+ * the ground, or a ghost ship at rest, is a ground target for a
+ * galley's cannon. */
 static int weapon_can_target_unit(const UnitWeapon *wp, const Unit *t) {
     if (!wp || !t) return 1;
     if (t->flying && wp->no_air_weapon) return 0;
@@ -12910,18 +13102,13 @@ static int unit_sfx_occupy_state(const Unit *u, const UnitDef *def,
  * the script's own watcher runs the wing loop while the occupy state
  * says airborne. The climb is part of the mover's 3D step toward the
  * cruise height (legacy:190500, :241337), so it runs at walking speed. */
-/* Airborne is a state the unit has to enter, and only through the
- * flight pair: BeginFlight flips the mission's mode from ground to air
- * (legacy:24117-24131) and only the landing path ever sets the ground
- * mode it flips from (legacy:24387). A unit whose script carries no
- * BeginFlight never runs that state machine and so never reads as
- * airborne. Seventeen of the twenty-two units with canfly have the
- * pair. The five without are the ghost ship, the two Taros priests,
- * the Veruna ball and the bird: they hover at their cruise height and
- * stay surface targets, which is why a war galley's cannon, a weapon
- * flagged noairweapon, can shell a ghost ship. */
+/* Every unit with canfly flies and lands. The flight missions follow
+ * the canfly bit alone (legacy:162986-162987), and BeginFlight flips the
+ * mode to air whether or not the script answers the call
+ * (legacy:24120-24131), so the five without the flight pair, the
+ * Veruna dirigible among them, take off and land like the rest. */
 static int unit_def_has_flight(const UnitDef *def) {
-    return def && def->can_fly && def->script_flies;
+    return def && def->can_fly;
 }
 
 /* D-026: a flyer that took off holds its weapons until it reaches its
@@ -12937,34 +13124,30 @@ static float flyer_height(const Unit *u, const UnitDef *def) {
                                              : (float)def->cruise_alt;
 }
 
-static int unit_climbing(const Unit *u, const UnitDef *def) {
-    return def && def->can_fly && u->flying &&
-           u->flight_alt < flyer_height(u, def);
+/* A flyer holds its fire on the ground and while it climbs. Standby
+ * turns its weapons off (legacy:24543) and only an air attack turns them
+ * on (legacy:25797), which D-026 ties to reaching cruise height. */
+static int flyer_holds_fire(const Unit *u, const UnitDef *def) {
+    return def && def->can_fly &&
+           (!u->flying || u->flight_alt < flyer_height(u, def));
 }
 
 static void flight_tick(Unit *u, const UnitDef *def, const GameWorld *w) {
     if (!def->can_fly) return;
-    float target;
-    if (!unit_def_has_flight(def)) {
-        u->flying = 0;
-        target = (float)def->cruise_alt;   /* hovers, never takes off */
-    } else {
-        /* Takeoff follows the original's missions: moving, and an
-         * ordered attack, lift the unit at once (legacy:25786). One
-         * that picked its own target stays down while it can already
-         * reach it (legacy:26770-26803). Once up it stays up until it
-         * runs out of orders and targets and finds clear ground to
-         * land on, which flyer_air_tick decides. */
-        int lift = (u->anim_state == UNIT_ANIM_MOVING) ||
-                   (u->cmd_kind != UNIT_CMD_NONE &&
-                    (u->cmd_kind != UNIT_CMD_ATTACK || u->attack_explicit));
-        if (!u->flying && lift) {
-            u->flying = 1;
-            unit_start_script(u, "BeginFlight", NULL, 0);
-            occ_sync_mobile((int)(u - g_units));   /* leaves its cells */
-        }
-        target = u->flying ? flyer_height(u, def) : 0.0f;
+    /* Takeoff follows the original's missions: moving, any order and
+     * any target lift the unit at once. A target found on standby starts
+     * an attack (legacy:24553), a flyer attacks only by its air missions
+     * (legacy:186984-187010) and each takes off first (legacy:25786).
+     * Once up it stays up until it runs out of orders and targets and
+     * finds clear ground to land on, which flyer_air_tick decides. */
+    int lift = (u->anim_state == UNIT_ANIM_MOVING) ||
+               u->cmd_kind != UNIT_CMD_NONE || u->target >= 0;
+    if (!u->flying && lift) {
+        u->flying = 1;
+        unit_start_script(u, "BeginFlight", NULL, 0);
+        occ_sync_mobile((int)(u - g_units));   /* leaves its cells */
     }
+    float target = u->flying ? flyer_height(u, def) : 0.0f;
     int occ = unit_sfx_occupy_state(u, def, w);
     if (u->sfx_occupy != occ) {
         int32_t arg = occ;
@@ -13418,15 +13601,15 @@ static int hover_attack_alt(const Unit *u, const UnitDef *def) {
 }
 
 /* A flyer with hoverattack attacks this way unless the weapon in hand
- * is `dropped` (legacy:30040-30052). One with the flight pair does once
- * it is up. A unit target must be one it can shoot at. */
+ * is `dropped` (legacy:30040-30052), once it is up. A unit target must
+ * be one it can shoot at. */
 static int hover_attacks(const Unit *u, const UnitDef *def, const Unit *t) {
     if (!def->can_fly || !def->hover_attack || def->num_weapons <= 0)
         return 0;
     const UnitWeapon *wp = &def->weapons[hover_slot(u, def)];
     if (wp->drop_key) return 0;
     if (t && !weapon_can_target_unit(wp, t)) return 0;
-    return u->flying || !unit_def_has_flight(def);
+    return u->flying;
 }
 
 static void hover_reset(Unit *u) {
@@ -13682,7 +13865,7 @@ static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
         aim_x = g_units[u->target].world_x;
         aim_y = g_units[u->target].world_y;
     }
-    if (unit_climbing(u, def) ||
+    if (flyer_holds_fire(u, def) ||
         !(ground || u->target < 0 || u->target >= g_unit_count ||
           weapon_can_target_unit(&def->weapons[slot], &g_units[u->target])) ||
         !unit_body_on_target(u, def, &def->weapons[slot], aim_x, aim_y))
@@ -14549,12 +14732,13 @@ static void Units_TickCombat(void) {
             /* Whatever put the target there, an order, a patrol's pick
              * or a return of fire, the weapon must still be able to hit
              * it: a flyer that takes off leaves a noair weapon's reach
-             * (legacy:249578-249586). Guard, repair, reclaim and load
-             * targets are friends and carry no such test. */
+             * (legacy:249578-249586). Guard, repair, reclaim, load and
+             * board targets are friends and carry no such test. */
             if (u->cmd_kind != UNIT_CMD_GUARD &&
                 u->cmd_kind != UNIT_CMD_REPAIR &&
                 u->cmd_kind != UNIT_CMD_RECLAIM &&
                 u->cmd_kind != UNIT_CMD_LOAD &&
+                u->cmd_kind != UNIT_CMD_BOARD &&
                 u->target >= 0 && u->target < g_unit_count && def->num_weapons > 0) {
                 int slot = u->weapon_slot;
                 if (slot < 0 || slot >= def->num_weapons) slot = 0;
@@ -15853,7 +16037,6 @@ int Units_DebugSetDefs(const UnitDef *defs, int count) {
         /* Owned resources are this module's to make, never the
          * caller's: a synthetic def has none. */
         g_defs[i].cob_script = NULL;
-        g_defs[i].script_flies = 0;
         g_defs[i].yardmap = NULL;
         for (int c = 0; c < 12; c++) g_defs[i].mesh_per_color[c] = NULL;
     }
@@ -15895,7 +16078,6 @@ int Units_DebugSetDefScript(int def_idx, const uint32_t *code, int words,
     if (d->cob_script) Cob_Free(d->cob_script);
     d->cob_script = cs;
     d->script_launches = (uint8_t)cob_sets_launch_port(cs);
-    d->script_flies = Cob_FindScript(cs, "BeginFlight") >= 0;
     g_def_gen++;
     return 0;
 }

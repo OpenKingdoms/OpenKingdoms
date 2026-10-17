@@ -3291,7 +3291,6 @@ TEST(a_patrolling_builder_mends_what_it_passes_and_goes_on) {
  * where a bow does (legacy:21164, legacy:246390-246403, legacy:11383). */
 TEST(a_blade_never_strikes_a_flyer_in_the_air) {
     ASSERT_NOT_NULL(lf_world(0, 0));
-    ((UnitDef *)Units_GetDef(LF_HAWK))->script_flies = 1;
     int b = lf_spawn(LF_BLADEPICK, 1, LF_SX, LF_ROW);
     int bow = lf_spawn(LF_ARCHER, 1, LF_SX, LF_ROW + 200);
     int h = lf_spawn(LF_HAWK, 2, LF_SX + 80, LF_ROW);
@@ -3320,6 +3319,65 @@ TEST(a_blade_never_strikes_a_flyer_in_the_air) {
     ASSERT_EQ_INT(1, bow_can);
     ASSERT_EQ_INT(-1, ordered);
     ASSERT_EQ_INT(UNIT_CMD_NONE, kind);
+}
+
+/* A flyer on the ground holds its weapons, and one that takes a target
+ * of its own lifts to attack it, so it fires only from the air
+ * (legacy:24563-24600, legacy:186996-187028, legacy:25786-25797). */
+TEST(a_flyer_on_the_ground_takes_off_before_it_shoots) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    UnitDef *fd = (UnitDef *)Units_GetDef(LF_HAWK);
+    fd->weapons[0] = Units_GetDef(LF_ARCHER)->weapons[0];
+    fd->num_weapons = 1;
+    int h = lf_spawn(LF_HAWK, 1, LF_SX, LF_ROW);
+    int foe = lf_spawn(LF_STURDY, 2, LF_SX + 300, LF_ROW);
+    ASSERT(h >= 0 && foe >= 0);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    Units_DebugSetAggro(h, UNIT_AGGRO_OFFENSIVE);
+    int shots = 0, ground_shots = 0, flew = 0;
+    int prev = lf_unit(h)->weapon_state[0].cooldown_ticks;
+    for (int i = 0; i < 900; i++) {
+        Units_TickEngines();
+        const Unit *u = lf_unit(h);
+        int cd = u->weapon_state[0].cooldown_ticks;
+        if (cd > prev) {
+            shots++;
+            if (!u->flying) ground_shots++;
+        }
+        prev = cd;
+        flew |= u->flying;
+    }
+    lf_end();
+    printf("(%d shots, %d from the ground, flew %d) ", shots, ground_shots, flew);
+    ASSERT(shots > 0);
+    ASSERT_EQ_INT(0, ground_shots);
+    ASSERT_EQ_INT(1, flew);
+}
+
+/* A swordsman boarding a flying transport keeps walking to it once it
+ * lifts: the board order names a friend, which carries no weapon test
+ * (legacy:10505-10580). */
+TEST(a_blade_boards_a_flying_transport) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    UnitDef *td = (UnitDef *)Units_GetDef(LF_HAWK);
+    td->cap_flags |= UNIT_CAP_TRANSPORT;
+    td->transport_capacity = 4;
+    td->transport_distance = 150;
+    int t = lf_spawn(LF_HAWK, 1, LF_SX, LF_ROW);
+    int b = lf_spawn(LF_BLADEPICK, 1, LF_SX + 100, LF_ROW);
+    ASSERT(t >= 0 && b >= 0);
+    int one[1] = { t };
+    ASSERT_EQ_INT(1, Units_OrderLoadGroup(one, 1, b, 0));
+    int flew = 0, aboard = 0;
+    for (int i = 0; i < 600 && !aboard; i++) {
+        Units_TickEngines();
+        flew |= lf_unit(t)->flying;
+        aboard = lf_unit(b)->alive == UNIT_ALIVE_TRANSPORTED;
+    }
+    lf_end();
+    printf("(flew %d, aboard %d) ", flew, aboard);
+    ASSERT_EQ_INT(1, flew);
+    ASSERT_EQ_INT(1, aboard);
 }
 
 /* ── what the blast hook hears ─────────────────────────────────────── */
@@ -3810,6 +3868,8 @@ int main(int argc, char **argv) {
     RUN(a_patroller_breaks_off_at_its_leash_and_resumes_its_route);
     RUN(a_patrolling_builder_mends_what_it_passes_and_goes_on);
     RUN(a_blade_never_strikes_a_flyer_in_the_air);
+    RUN(a_flyer_on_the_ground_takes_off_before_it_shoots);
+    RUN(a_blade_boards_a_flying_transport);
     TEST_SUITE("An attack out of reach");
     RUN(an_attack_on_a_target_out_of_reach_is_kept);
     TEST_SUITE("The cell test");

@@ -681,9 +681,6 @@ typedef struct UnitDef {
     /* The script releases the shot itself, by setting port 23 during
      * FireWeapon (legacy:223397-223400). Found by reading the script. */
     uint8_t  script_launches;
-    /* The script has BeginFlight, so the unit takes off and lands
-     * (legacy:24117). Found by reading the script. */
-    uint8_t  script_flies;
 
     /* COB script bundle (Phase D). Loaded eagerly per-def. */
     CobScript *cob_script;
@@ -849,10 +846,15 @@ typedef struct UnitMoveLeg {
 #define UNIT_LEG_UNLOAD       10   /* x, y */
 #define UNIT_LEG_BUILD        11   /* def at x, y, turned facing */
 #define UNIT_LEG_SPECIAL      12   /* the special weapon at target, or x, y */
-#define UNIT_LEG_KINDS        13
+/* A sweep over a box centred on x, y, heading its half size in cells,
+ * across << 8 | down. target is UNIT_LEG_AREA_LAST | the cell of the last
+ * thing it went for, x << 12 | y, or 0. */
+#define UNIT_LEG_SWEEP_AREA   13
+#define UNIT_LEG_KINDS        14
+#define UNIT_LEG_AREA_LAST    0x80000000u
 /* A pickup, as Units_OrdersOf reports one. Pickups keep a queue of their
  * own, so no leg holds one. */
-#define UNIT_LEG_LOAD         13
+#define UNIT_LEG_LOAD         14
 
 /* Unit.rally_set: where a factory's products go and how. */
 #define UNIT_RALLY_NONE   0

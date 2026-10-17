@@ -37,7 +37,8 @@ static int overlay_mark(const UnitOrderView *v, int first) {
         case UNIT_LEG_GUARD:
         case UNIT_LEG_REPAIR:        return ORDER_MARK_ASSIST;
         case UNIT_LEG_RECLAIM:
-        case UNIT_LEG_SWEEP:         return ORDER_MARK_RECLAIM;
+        case UNIT_LEG_SWEEP:
+        case UNIT_LEG_SWEEP_AREA:    return ORDER_MARK_RECLAIM;
         case UNIT_LEG_BUILD:         return ORDER_MARK_BUILD;
         default:                     return ORDER_MARK_ACTION;
     }

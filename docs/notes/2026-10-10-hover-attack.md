@@ -91,8 +91,11 @@ shooter's own side or does no harm does.
 with `hoverattack` that has a target or an attack on the ground, once it
 is in the air. A flyer with the flight pair that took its own target and
 can already reach it still stays down and fires from there, as before.
-The units with `canfly` and no BeginFlight hover from the start, so they
-attack this way at once.
+Since 2026-10-16 it takes off for it instead and never fires from the
+ground, as the original's standby turns a flyer's weapons off
+(legacy:24543) and every flyer attack takes off first (legacy:25786).
+The units with `canfly` and no BeginFlight hovered from the start and
+attacked this way at once. Since 2026-10-16 they take off like the rest.
 
 - Stage 1 drives the flyer at the target and, once it is within the hover
   distance plus 160 px, sets its weapons on and picks a point.

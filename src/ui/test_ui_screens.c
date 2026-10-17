@@ -13860,12 +13860,13 @@ TEST(a_harpy_takes_a_swordsman_standing_or_walking_across) {
     corpse_shutdown(&platform);
     ASSERT(ok);
     ASSERT(set);
-    /* Pinned. A shot lands slower than the Harpy reloads, so a second is
-     * in the air when the first takes a still target. A walking one is
-     * taken by the first, fired from the hover attack's 200 px, in all
-     * but one seed, where the second shot takes it. */
+    /* Pinned. Every target is taken. A still one is taken by the first
+     * of two or three shots, as the Harpy aims again while it reloads
+     * and the next is in the air before the first lands. A walking one is taken by the first shot, fired from the
+     * hover attack's 200 px once the Harpy faces it, in all but one
+     * seed, where the second shot takes it. */
     ASSERT_EQ_INT(4, still);
-    ASSERT_EQ_INT(8, still_shots);
+    ASSERT_EQ_INT(9, still_shots);
     ASSERT_EQ_INT(4, walking);
     ASSERT_EQ_INT(5, walking_shots);
 }
@@ -19229,7 +19230,7 @@ static void fwa_watch(GameWorld *w, int h, const UnitDef *d, FwaTally *t) {
     int g = Terrain_SampleHeight(w, v->world_x, v->world_y);
     if (Units_DebugStandHeight(h) < (float)sea) t->under_sea++;
     if ((float)g + Units_DrawnAlt(w, v) < (float)sea) t->drawn_under++;
-    if (d->script_flies && !v->flying &&
+    if (!v->flying &&
         (g < sea || fw_lowest_corner(w, v->world_x, v->world_y, d->footprint_x,
                                      d->footprint_z) < sea))
         t->wet_landed++;
@@ -19256,8 +19257,7 @@ static int fwa_stop_over(FwSea *s, int h, const UnitDef *d, FwaTally *t,
         fwa_watch(s->world, h, d, t);
         u = Units_GetActive(&n);
         int64_t dx = u[h].world_x - x, dy = u[h].world_y - y;
-        int up = !d->script_flies ||
-                 (u[h].flying && u[h].flight_alt >= (float)d->cruise_alt);
+        int up = u[h].flying && u[h].flight_alt >= (float)d->cruise_alt;
         if (up && dx * dx + dy * dy <= 48 * 48) {
             Units_OrderStop(h);
             return 1;
@@ -19269,7 +19269,7 @@ static int fwa_stop_over(FwSea *s, int h, const UnitDef *d, FwaTally *t,
 /* Every unit with canfly on Two Castles, left idle over the open sea,
  * stopped by the shore, stopped over the shallows and stopped after a
  * patrol over the sea, lands only on dry ground and never stands or is
- * drawn under the water. A hoverer stays cruisealt over the sea. */
+ * drawn under the water. */
 TEST(every_flyer_kind_keeps_off_the_water) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -19323,7 +19323,6 @@ TEST(every_flyer_kind_keeps_off_the_water) {
         memset(&t, 0, sizeof(t));
         int reached = fwa_stop_over(&s, h, d, &t, s.open_x, s.open_y);
         fwa_run(&s, h, d, &t, 1500);
-        float open_at = Units_DebugStandHeight(h);
         reached &= fwa_stop_over(&s, h, d, &t, s.shore_x, s.shore_y);
         fwa_run(&s, h, d, &t, 3600);
         reached &= fwa_stop_over(&s, h, d, &t, sh_x, sh_y);
@@ -19337,16 +19336,14 @@ TEST(every_flyer_kind_keeps_off_the_water) {
         u = Units_GetActive(&n);
         int alive = u[h].alive == UNIT_ALIVE_ACTIVE;
         int landings = Units_DebugScriptEventCount(h, UNIT_SCRIPT_EV_BEGIN_LANDING);
-        int hover_low = !d->script_flies &&
-                        open_at < (float)(sea + d->cruise_alt);
-        if (!reached || !alive || hover_low || t.under_sea || t.drawn_under ||
+        if (!reached || !alive || t.under_sea || t.drawn_under ||
             t.wet_landed) {
-            printf("[%s reached %d alive %d over the sea at %.0f under %d drawn "
-                   "under %d down wet %d] ", d->unitname, reached, alive,
-                   (double)open_at, t.under_sea, t.drawn_under, t.wet_landed);
+            printf("[%s reached %d alive %d under %d drawn under %d down "
+                   "wet %d] ", d->unitname, reached, alive, t.under_sea,
+                   t.drawn_under, t.wet_landed);
             bad++;
         }
-        if (d->script_flies && landings == 0) {
+        if (landings == 0) {
             printf("[%s never landed] ", d->unitname);
             bad++;
         }
@@ -19887,10 +19884,10 @@ TEST(war_galley_hits_resting_ghost_ship) {
     int ghost  = Units_Spawn(ghost_def, 2, 1, sx, sy);
     ASSERT(galley >= 0 && ghost >= 0);
     ASSERT_EQ_INT(0, InGame_Init(&platform));
-    /* Both under orders: the ghost ship is a hovering surface target,
-     * so the galley's noairweapon cannon still reaches it. */
+    /* The ghost ship holds its fire and rests where it is, so it is a
+     * surface target and the galley's noairweapon cannon reaches it. */
+    Units_DebugSetAggro(ghost, UNIT_AGGRO_PASSIVE);
     Units_CommandAttackUnit(galley, ghost);
-    Units_CommandAttackUnit(ghost, galley);
     Timer timer;
     Timer_Init(&timer);
     int n = 0;

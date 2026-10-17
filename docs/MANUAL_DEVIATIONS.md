@@ -1242,19 +1242,13 @@ Format per entry:
   cell of an air layer. A second flyer over the cell goes on the
   holder's list and the holder on its, and the cell passes to one of
   them at random, so a third sees the holder and those on its list that
-  cover the cell (legacy:218336-218512). The five units with `canfly`
-  and no BeginFlight in their scripts, the ghost ship, the two Taros
-  priests, the Veruna ball and the bird, take no part. They hover as
-  surface units here, as before, and hold no ground cells. One smaller
-  difference goes with it. A move ends on its ring round the point as
+  cover the cell (legacy:218336-218512). One smaller difference goes
+  with it. A move ends on its ring round the point as
   clicked, where the original first moves the point onto its
   footprint's cell lattice, at most 8 px away (legacy:25075-25083).
 - Why: the pairs give the original's count for a pair and for a flock
   without an air layer in the world or a draw from the generator for
-  every shared cell. The five hoverers stay as the engine already had
-  them, which keeps their place as targets for weapons that cannot hit
-  the air. The original's missions switch them to air movement too
-  (legacy:24117-24134). The lattice step moves a point by less than the
+  every shared cell. The lattice step moves a point by less than the
   ring's smallest size.
 - Citation: the manual describes no rule for it. The original's rules
   are in docs/notes/2026-10-04-air-traffic.md.
@@ -1274,6 +1268,26 @@ Format per entry:
   in the engine yet.
 - Citation: the manual describes no rule for this. The original's rule
   is in docs/notes/2026-10-04-summons-placement.md.
+
+## M-016: A new unit picks its spot off the pad once
+
+- Change: a unit a factory finishes with no orders of the factory's to
+  carry walks to the nearest clear spot in a ring round the factory, as
+  the original sends it, and passes over a spot another unit is already
+  walking to. The spot is chosen once, when the unit is finished. A
+  flyer flies to a random bearing as far out as a walker goes and all
+  the way to its point before it looks for ground.
+- Why: the original finds the spot by a route search and, when the walk
+  there is cut short, searches again a few times (legacy:13813-13879).
+  Two units finished one after the other then end on spots of their own.
+  Passing over a spot already spoken for gets the same end without a
+  second search and the state it would keep. The original takes a size
+  term it does not name off a flyer's range (legacy:13822-13846). Half
+  the factory's footprint, the stand-in the walker's ring uses, would
+  set a flyer down inside the factory and on its own pad, where it holds
+  up the next unit for good.
+- Citation: the manual describes no rule for this. The getbuilt mission
+  that sends the unit off is at legacy:9694-9711.
 
 ## D-006: Chat messages expire on the wall clock
 
@@ -1743,9 +1757,9 @@ Format per entry:
 ## D-026: A flyer holds its fire while it climbs
 
 - Change: a flyer that has taken off to attack or to move does not fire
-  until it reaches its cruise height. A flyer that stays on the ground
-  fires from there as before, and one with no flight scripts, which
-  hovers at its cruise height from the start, is not affected.
+  until it reaches its cruise height. A flyer on the ground does not
+  fire at all, as in the original, whose standby turns a flyer's
+  weapons off (legacy:24543). One that takes a target takes off for it.
 - Why: some flyers fire from a piece at or under their feet. The Zhon
   hunter's lightning leaves a point 5 px under her. Fired in the first
   ticks of her climb, the shot started under the ground and burst
