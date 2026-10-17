@@ -2899,11 +2899,9 @@ static void fill_unit(OkxUnit *o, int i, const Unit *u, const UnitDef *def,
     o->state = u->alive == UNIT_ALIVE_ACTIVE ? OKX_UNIT_ACTIVE : OKX_UNIT_DYING;
     o->x = (float)u->world_x;
     o->z = (float)u->world_y;
-    float ground = (float)Terrain_SampleHeight(w, u->world_x, u->world_y);
-    /* A floater rides the sea over deeper ground, as its muzzle does. */
-    if (def->floater && w->water_height > ground) ground = (float)w->water_height;
-    /* A flyer over water is held over the sea, not the sea floor. */
-    o->y = ground + Units_DrawnAlt(w, u);
+    /* Where its pose stands: a floater at its waterline under the sea, a
+     * flyer over water held over the sea. */
+    o->y = (float)Terrain_SampleHeight(w, u->world_x, u->world_y) + Units_DrawnAlt(w, u);
     o->heading = u->heading;
     o->pitch = u->pitch;
     o->roll = u->roll;
@@ -3153,9 +3151,7 @@ int32_t okx_effects(OkxEffect *out, int32_t cap) {
         uint32_t age = now - nb->start;
         int tpf = nb->ticks_per_frame ? nb->ticks_per_frame : 2;
         if (age >= (uint32_t)(nb->frames * tpf)) continue;
-        const UnitDef *def = Units_GetDef(u->def_idx);
         float ground = (float)Terrain_SampleHeight(w, u->world_x, u->world_y);
-        if (def && def->floater && w->water_height > ground) ground = (float)w->water_height;
         OkxEffect *o = (out && n < cap) ? &out[n] : &tmp;
         memset(o, 0, sizeof(*o));
         o->kind = OKX_EFFECT_NIMBUS;

@@ -948,9 +948,10 @@ typedef struct OkxUnit {
     int32_t  player;
     int32_t  color;
     int32_t  state;        /* OKX_UNIT_* */
-    float    x, y, z;      /* world pixels, y the ground plus any flight,
-                            * and a floater or a flyer over water rides
-                            * the sea */
+    float    x, y, z;      /* world pixels, y where its pose stands: the
+                            * ground plus any flight, a flyer over water
+                            * over the sea and a floater at its waterline
+                            * under the sea */
     float    heading, pitch, roll;   /* radians, as the engine draws */
     int32_t  health, max_health;
     int32_t  building;     /* 1 while under construction */

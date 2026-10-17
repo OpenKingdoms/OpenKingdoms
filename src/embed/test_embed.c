@@ -614,7 +614,9 @@ TEST(the_studio_places_a_unit_by_the_start_and_a_boat_floats) {
     int hb = okx_place_unit(boat, me);
     if (hb < 0 || t.water_height <= 0) return;   /* no sea by the start */
     ASSERT_EQ_INT(0, okx_unit(hb, &u));
-    ASSERT(u.y >= (float)t.water_height - 0.5f);
+    /* It rides its waterline under the sea, never in the ground. */
+    ASSERT(u.y <= (float)t.water_height + 0.5f);
+    ASSERT(u.y >= okx_ground_height(u.x, u.z) - 0.5f);
     printf("(boat at y %.0f, sea %d) ", (double)u.y, (int)t.water_height);
 }
 
