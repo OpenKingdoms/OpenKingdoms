@@ -2,12 +2,15 @@ OpenKingdoms VERSION_HERE, an engine for Total Annihilation: Kingdoms.
 
 Play in a browser at [openkingdoms.net](https://openkingdoms.net), or download below and play on the desktop.
 
-This release answers a round of playtesting on openkingdoms.net. Your army
-looks after itself again. Units stop chasing an enemy to their death,
-patrols and guards fight and mend, and blades leave flyers alone. Ships
-float, the game options you pick are kept for the next battle, Use
-Crusades Units among them, and Ctrl+D works. Everyone in a multiplayer
-room has to be on this version, so refresh the page after the update.
+This release answers two rounds of playtesting on openkingdoms.net. Your
+army looks after itself again. Units stop chasing an enemy to their death,
+patrols and guards fight and mend, and new units step off the factory pad.
+Weapons, flyers, ships and spells behave as in the original, assassins
+cloak, Tab opens the full screen radar, and the computer opponent takes
+and holds ground with a varied army. The game options you pick are kept
+for the next battle, Use Crusades Units among them. Everyone in a
+multiplayer room has to be on this version, so refresh the page after the
+update.
 
 ## Your army
 
@@ -26,8 +29,12 @@ build or repair whatever it is working on, then goes back to guarding. It
 keeps the original's distance from a building it guards instead of
 standing inside it. (#426)
 
-Swordsmen and the other melee units no longer strike a flyer in the air.
-Archers and other ranged units still can, as in the original. (#425)
+A unit that leaves a factory with no orders walks to a spot of its own
+near it, and the factory waits for a clear pad before it starts the next.
+Units no longer pile up on each other at the door. (#434)
+
+Dragging the clean up cursor over an area clears every tree, rock and
+ruin in the box, nearest first, as in the original. (#434)
 
 ## Combat
 
@@ -35,12 +42,58 @@ A splash shot that strikes its target bursts on the target's body and
 does its whole damage. Shots used to burst a little short, so a Rictus did
 about 560 to a swordsman where the original does 817. (#424)
 
+Units turn to their target only the way the original lets them, and fire
+once they face it within their aim. Breath weapons no longer fire in every
+direction at once, and the Tortoise aims its turret instead of spinning
+round. (#431)
+
+Creon's freeze and stone shots work as in the original. They do no damage,
+and on a roll they turn the target into an ice or stone statue painted
+with its kingdom's ice or stone. Buildings, monarchs and unfinished units
+are left alone. (#431, #433)
+
+The Long Term Stun and the other paralyzers hold what they hit for a time
+instead of wounding it, up to a minute. (#433)
+
+A weapon fires once its unit's script says it has aimed, so the Fire
+Spout breathes every reload instead of once. (#433)
+
+Every unit with a weapon gets the Attack order, as in the original. The
+Beast Handler's whip and the Shaman's lightning can be ordered to attack,
+and the Beast Tamer, which has no weapon, no longer shows the button.
+(#431)
+
+Assassins and every unit with a cloak cost can cloak, from the sidebar or
+with K. A cloaked unit pays its mana as it goes, shows see through to you
+and cannot be seen by the enemy. It comes out for a while when an enemy
+comes close, when it fires or builds, or when its mana runs short. (#429)
+
 Ctrl+D self destructs the units you have selected, lodestones included,
 after the original's two second countdown, and Ctrl+D again calls it off.
-(#426)
+It now asks first. (#426, #429)
 
 The message list names a player who falls, with one of the original's
 lines. (#426)
+
+## Flyers
+
+Dirigibles, the Ghost Ship, the Taros priests and the other flyers whose
+scripts have no flight call now take off, keep apart from each other and
+land when they have nothing to do. They used to hover where they stopped
+and stack up. (#434)
+
+A flyer on the ground takes off before it fires. A flyer taken over by
+mind control stays in the air. A swordsman ordered aboard a flying
+transport still boards it after it lifts off. (#434)
+
+## The computer opponent
+
+The computer settles every free lodestone it can safely reach, sends
+fighters to cover builders it sends far from home, and after it wins a
+fight it holds the ground or presses on to the next target instead of
+walking home. Its castles train a varied army: Veruna's no longer turns
+out mostly Centaurs. Against the previous version it won 36 of 64 test
+games and lost 17. (#435)
 
 ## Game options
 
@@ -52,15 +105,31 @@ battles felt harder hitting lately, Use Crusades Units had been switching
 itself off. Tick it once and it stays. Players who join a room always play
 the host's rules. (#424)
 
-## Ships and spells
+## On screen
+
+Tab puts the original's full screen radar over the battle, with the fog,
+your view and every unit's blip in its player's colour. Click it to look
+there, and Tab again to put it away. (#429)
+
+The build cursor judges a site only by what you can see, as the original
+does, so it no longer shows whether an enemy has taken a lodestone out of
+sight. A builder sent there finds out when it arrives. (#429)
 
 Ships ride at their waterline in both views instead of sitting on the sea
-floor, and units that wade stand in the water the same way. Thirsha's
-lightning leaves her, not the ground under her. (#423)
+floor, and units that wade stand in the water the same way. Mer Warriors
+swim instead of walking on the sea, and in the classic view the part of a
+unit under the water is drawn darker and bluer. (#423, #432)
 
-In the 3D view the ground past the edge of the map is black, as in the
-classic view, instead of sky, and a selection ring beside a cliff no longer
-climbs it. (#427)
+Ghost Ships are see through in both views. (#432)
+
+In the classic view a tree covers a unit standing behind it, and flyers
+draw over everything. The Veruna bastion's stone fins no longer cover the
+blue band down the front of its walls. (#432, #436)
+
+Thirsha's lightning leaves her, not the ground under her. In the 3D view
+the ground past the edge of the map is black, as in the classic view,
+instead of sky, and a selection ring beside a cliff no longer climbs it.
+(#423, #427)
 
 ## Multiplayer
 
