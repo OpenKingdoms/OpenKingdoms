@@ -39,7 +39,7 @@ cmake -S $RepoRoot -B $BuildDir -G Ninja `
     -DBUILD_TESTING=OFF
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
 
-cmake --build $BuildDir --target tak-re
+cmake --build $BuildDir --target tak-re atlas-dec
 if ($LASTEXITCODE -ne 0) { throw "Build failed" }
 
 Write-Host ""
