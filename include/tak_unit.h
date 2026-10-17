@@ -144,6 +144,10 @@ typedef struct UnitWeapon {
     char    name[32];
     char    type[32];          /* type: Ballistic, Line of Sight, Remote Effect */
     char    damage_type[32];   /* damagetype */
+    /* damagetype = paralyzer: a hit holds the target for its damage in
+     * frames instead of wounding it (legacy:250385-250398,
+     * legacy:233857-233878). */
+    uint8_t paralyzer;
     char    explosion_class[32]; /* explosionclass */
     /* waterexplosionclass, read for a host's look. The simulation never reads it. */
     char    water_explosion_class[32];
@@ -364,6 +368,8 @@ typedef struct Projectile {
  * (legacy:245240), and the weapon is a fire starter (legacy:250028). */
 #define UNIT_BLAST_UNITS_ONLY   0x01u
 #define UNIT_BLAST_FIRE_STARTER 0x02u
+/* The shot's weapon is a paralyzer: it holds what it hits. */
+#define UNIT_BLAST_PARALYZER    0x04u
 
 /* A shot that runs the per cell test on its way (legacy:245377-245476).
  * Remote effect and wandering shots never do. */
@@ -511,6 +517,9 @@ typedef struct UnitDef {
      * anything that is not bmcode 1 (legacy:163161-163180). */
     uint8_t  cant_be_stoned;
     uint8_t  cant_be_frozen;
+    /* immunetoparalyzer: a paralyzer's hit leaves it free
+     * (legacy:163003, legacy:233866). */
+    uint8_t  immune_to_paralyzer;
     int32_t  transported_size; /* transportedsize override when carried */
     int32_t  transport_distance; /* transportdistance; load/unload radius */
     char     movement_class[32];/* movementclass key into moveinfo.tdf */
@@ -754,16 +763,18 @@ typedef enum {
 } UnitScriptEvent;
 
 /* Per-weapon runtime state, one per slot up to UnitDef.num_weapons.
- * cooldown_ticks counts down each tick after a shot; aim_thread_slot
- * tracks an active AimWeapon thread so we don't spawn duplicates. */
+ * cooldown_ticks counts down each tick after a shot. aim_target names
+ * what the last AimWeapon was asked to aim at, -1 to ask again, and
+ * aim_ready says its script has set port 22 for the slot since. */
 typedef struct UnitWeaponState {
     int32_t cooldown_ticks;
     int32_t burst_ticks;
     int16_t burst_remaining;
     int16_t burst_target;
-    int8_t  aim_thread_slot;     /* -1 if no aim thread active */
-    int16_t aim_ticks;           /* bounded wait for AimWeapon completion */
+    int8_t  aim_thread_slot;     /* the thread the last AimWeapon took */
+    int16_t aim_ticks;           /* ticks since that AimWeapon began */
     int16_t aim_target;          /* target handle for the active aim */
+    uint8_t aim_ready;
     /* A drawn shot waiting on the script's release, port 23
      * (legacy:245900-245904): UNIT_DRAW_*, and the target drawn at. */
     int8_t  draw;
@@ -1034,6 +1045,9 @@ typedef struct Unit {
     uint8_t    cloak_want;
     uint8_t    cloaked;
     uint16_t   cloak_wait;
+    /* Ticks a paralyzer still holds the unit, 0 when it is free
+     * (legacy:9564-9599). */
+    uint16_t   paralyzed_ticks;
     /* The last enemy unit that hit this one, by stable id, 0 for none,
      * and the engine tick of that hit, for its guards to answer. */
     uint32_t   hit_by;
@@ -1402,7 +1416,14 @@ void              Units_RenderBuildGhostFacing(struct TAK_Platform *plat,
  * result and frees it with Units_FreeBakedMesh. NULL when the model is
  * missing. */
 UnitMesh         *Units_BakeObjectMesh(const char *object_name, int color_idx);
+/* The same with every face painted with one texture, a statue's. */
+UnitMesh         *Units_BakeObjectMeshPainted(const char *object_name,
+                                              int color_idx, const char *paint);
 void              Units_FreeBakedMesh(UnitMesh *m);
+/* The texture a stone or ice statue is painted with, NULL for any
+ * other feature. */
+struct FeatureDef;
+const char       *Units_FeaturePaint(const struct FeatureDef *fd);
 
 /* Compose every node's transform for a mesh from a unit's piece state,
  * or from rest when pieces is NULL. out holds m->node_count entries.

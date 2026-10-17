@@ -709,6 +709,7 @@ static int setup(const char *map_name) {
             u->weapon_state[wi].aim_thread_slot = (int8_t)(wi == 0 ? 3 : -1);
             u->weapon_state[wi].aim_ticks = (int16_t)(wi * 5);
             u->weapon_state[wi].aim_target = (int16_t)(wi == 0 ? i : -1);
+            u->weapon_state[wi].aim_ready = (uint8_t)(wi == 0);
             u->weapon_state[wi].draw = (int8_t)(wi == 1 ? UNIT_DRAW_RELEASE : UNIT_DRAW_NONE);
             u->weapon_state[wi].draw_target = (int16_t)(wi == 1 ? i : -1);
         }
@@ -787,6 +788,8 @@ static int setup(const char *map_name) {
     g_units[1].cloak_want = 1;
     g_units[1].cloaked = 1;
     g_units[1].cloak_wait = 77;
+    /* And stands held by a paralyzer. */
+    g_units[1].paralyzed_ticks = 345;
     /* The bowman holds a summons of TARNECRO for a unit on its spot. */
     g_units[1].build_held = 1;
     g_units[1].build_def = 3;
@@ -1717,8 +1720,8 @@ static uint32_t rec_u32(const uint8_t *r, int at) {
  * at 992, version 10 a summons without end at 993, version 11 a
  * flyer's air traffic at 1000, version 12 a hover attack at 1024,
  * version 13 a fight's post at 1036, version 14 a self destruct's
- * count at 1047, version 15 what hit it last at 1049 and version 16 the
- * cloak at 1057. */
+ * count at 1047, version 15 what hit it last at 1049, version 16 the
+ * cloak at 1057 and version 17 a paralyzer's hold at 1060. */
 TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
@@ -1730,8 +1733,8 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
-    ASSERT_EQ_INT(16, (int)version);
-    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24 + 12 + 11 + 2 + 8 + 3,
+    ASSERT_EQ_INT(17, (int)version);
+    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24 + 12 + 11 + 2 + 8 + 3 + 2,
                   (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;
     /* The bowman's formation group at 487 and its second leg at 520. */
@@ -1809,6 +1812,8 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     /* The cloak at 1057, wanted and hidden, and its wait at 1058. */
     ASSERT_EQ_INT(3, r1[1057]);
     ASSERT_EQ_INT(77, r1[1058] | r1[1059] << 8);
+    /* The paralyzer's hold at 1060. */
+    ASSERT_EQ_INT(345, r1[1060] | r1[1061] << 8);
     ASSERT_EQ_INT(0, r0[1036]);
     Save_Close(r);
 }

@@ -118,6 +118,7 @@ static int16_t g_ugrid_head[UGRID_W * UGRID_W];
 static int16_t g_ugrid_next[TAK_MAX_UNITS];
 static int32_t unit_scaled_damage(int shooter, const Unit *victim, int32_t damage);
 static void unit_take_hit(Unit *victim, int shooter, int shooter_player, int32_t damage);
+static void unit_paralyze(Unit *victim, int shooter, int shooter_player, int32_t damage);
 
 /* Units that came to stand on the map since the grid was built, a
  * spawn or a drop, which a query takes as well: the chains are never
@@ -231,6 +232,14 @@ static int unit_skips(const Unit *u, const Unit *t) {
            unit_stayed(t->world_x, t->world_y, u->skip_tx, u->skip_ty);
 }
 
+/* A paralyzer looking for a target passes over a unit it cannot hold
+ * and one already held (legacy:21156-21160). */
+static int weapon_scan_skips(const UnitWeapon *wp, const Unit *t) {
+    if (!wp || !wp->paralyzer) return 0;
+    const UnitDef *td = Units_GetDef(t->def_idx);
+    return t->paralyzed_ticks != 0 || (td && td->immune_to_paralyzer);
+}
+
 /* Nearest visible enemy of u within radius, or -1. wp non-NULL makes it
  * a target search: what the weapon can take, not set aside (D-025), and
  * for a unit that cannot move or holds position only what the weapon
@@ -260,7 +269,8 @@ static int ugrid_nearest_enemy(const Unit *u, int self_idx, int64_t radius,
                     const UnitDef *td = Units_GetDef(t->def_idx);
                     if (td && td->is_feature) continue;
                 }
-                if (wp && !weapon_can_target_unit(wp, t))
+                if (wp && (!weapon_can_target_unit(wp, t) ||
+                           weapon_scan_skips(wp, t)))
                     continue;
                 if (wp && (unit_skips(u, t) ||
                            (holds && !unit_reach_ok(u, wp, t))))
@@ -310,7 +320,8 @@ static int ugrid_random_enemy(const Unit *u, int self_idx, int64_t radius,
                     continue;
                 const UnitDef *td = Units_GetDef(t->def_idx);
                 if (td && td->is_feature) continue;
-                if (!weapon_can_target_unit(wp, t)) continue;
+                if (!weapon_can_target_unit(wp, t) || weapon_scan_skips(wp, t))
+                    continue;
                 if (unit_skips(u, t) || (holds && !unit_reach_ok(u, wp, t)))
                     continue;
                 int64_t dx = (int64_t)(t->world_x - u->world_x);
@@ -611,6 +622,8 @@ static int unit_can_carry_target(const Unit *carrier, const Unit *target) {
     if (td->cant_be_transported) return 0;
     if (td->can_fly) return 0;                       /* :233637 */
     if (target->under_construction) return 0;
+    /* Neither may be held by a paralyzer (legacy:233623-233626). */
+    if (carrier->paralyzed_ticks || target->paralyzed_ticks) return 0;
     /* The rider must be able to move, and the carrier be finished
      * (legacy:233612-233649). */
     if (carrier == target || carrier->under_construction) return 0;
@@ -1321,6 +1334,7 @@ static int spawn_projectile(int32_t x, int32_t y,
     p->blast_flags = 0;
     if (source_weapon && source_weapon->units_only) p->blast_flags |= UNIT_BLAST_UNITS_ONLY;
     if (source_weapon && source_weapon->fire_starter) p->blast_flags |= UNIT_BLAST_FIRE_STARTER;
+    if (source_weapon && source_weapon->paralyzer) p->blast_flags |= UNIT_BLAST_PARALYZER;
     int meets = (p->path_flags & UNIT_PROJ_PATH_TESTED) != 0;
 
     /* ── Art, arc and orientation ──────────────────────────────────
@@ -1938,6 +1952,10 @@ static void apply_projectile_area_damage(const Projectile *p) {
         int damage = Units_ComputeSplashDamage(base_damage, aoe,
                                                 p->edge_effectiveness, d);
         if (damage <= 0) continue;
+        if (p->blast_flags & UNIT_BLAST_PARALYZER) {
+            unit_paralyze(victim, p->shooter, (int)p->player_id, damage);
+            continue;
+        }
         unit_take_hit(victim, p->shooter, (int)p->player_id, damage);
         unit_alarm_on_damage(victim, p->shooter);
         if (victim->health <= 0) {
@@ -2110,6 +2128,10 @@ static void projectile_detonate_at(Projectile *p, int idx) {
         apply_projectile_area_damage(p);
     } else if (p->mind_control) {
         spell_strike(p, struck, 100);
+    } else if (p->blast_flags & UNIT_BLAST_PARALYZER) {
+        Unit *v = &g_units[struck];
+        unit_paralyze(v, p->shooter, (int)p->player_id,
+                      projectile_base_damage_for_unit(p, v));
     } else {
         Unit *v = &g_units[struck];
         unit_take_hit(v, p->shooter, (int)p->player_id,
@@ -2173,6 +2195,7 @@ static void unit_death_blast(Unit *u, int handle) {
     memcpy(b.water_sound, wp->water_sound, sizeof(b.water_sound));
     if (wp->units_only) b.blast_flags |= UNIT_BLAST_UNITS_ONLY;
     if (wp->fire_starter) b.blast_flags |= UNIT_BLAST_FIRE_STARTER;
+    if (wp->paralyzer) b.blast_flags |= UNIT_BLAST_PARALYZER;
     note_blast(&b, NULL, u->def_idx, UNITS_BLAST_SLOT_DEATH, handle);
     play_projectile_hit_sound(&b, NULL);
     blast_shake_at(b.world_x, b.world_y, wp->shake_magnitude, wp->shake_duration);
@@ -2418,6 +2441,11 @@ static void shot_strike_unit(Projectile *p, int idx, int vi) {
         /* A direct hit rolls at full strength and replaces the damage
          * (legacy:245361). */
         if (enemy) spell_strike(p, vi, 100);
+        return;
+    }
+    if (p->blast_flags & UNIT_BLAST_PARALYZER) {
+        unit_paralyze(v, p->shooter, (int)p->player_id,
+                      projectile_base_damage_for_unit(p, v));
         return;
     }
     unit_take_hit(v, p->shooter, (int)p->player_id,
@@ -3110,6 +3138,12 @@ static void tick_projectiles(void) {
                         /* A direct hit rolls at full strength and
                          * replaces the damage (legacy:245361). */
                         spell_strike(p, p->target, 100);
+                        p->alive = 0;
+                        continue;
+                    }
+                    if (p->blast_flags & UNIT_BLAST_PARALYZER) {
+                        unit_paralyze(t, p->shooter, (int)p->player_id,
+                                      projectile_base_damage_for_unit(p, t));
                         p->alive = 0;
                         continue;
                     }
@@ -7259,6 +7293,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
                  TDF_ReadString(tdf, "stone", ""));
     out->cant_be_stoned = (uint8_t)(TDF_ReadInt(tdf, "cantbestoned", 0) & 1);
     out->cant_be_frozen = (uint8_t)(TDF_ReadInt(tdf, "cantbefrozen", 0) & 1);
+    out->immune_to_paralyzer =
+        (uint8_t)(TDF_ReadInt(tdf, "immunetoparalyzer", 0) & 1);
     if (!out->cant_be_frozen)
         copy_bounded(out->frozen, sizeof(out->frozen),
                      TDF_ReadString(tdf, "frozen", ""));
@@ -7293,6 +7329,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
                      TDF_ReadString(tdf, "type", ""));
         copy_bounded(w->damage_type, sizeof(w->damage_type),
                      TDF_ReadString(tdf, "damagetype", ""));
+        w->paralyzer = stricmp_bounded(w->damage_type, "paralyzer") == 0;
         copy_bounded(w->explosion_class, sizeof(w->explosion_class),
                      TDF_ReadString(tdf, "explosionclass", ""));
         copy_bounded(w->water_explosion_class, sizeof(w->water_explosion_class),
@@ -7621,6 +7658,8 @@ typedef struct BakeState {
     int          batch_count;
     const uint32_t *palette;     /* terrain_rgba, color_idx -> RGBA */
     int          team_color_idx; /* 0..11; selects atlas variant */
+    /* A statue's paint: every face takes this texture (legacy:197875-197886). */
+    const char  *paint;
     /* Authored-order sequence: incremented per emitted triangle in
      * 3DO tree-walk order; written into UnitMesh.tri_seq. */
     uint32_t     seq_counter;
@@ -7665,8 +7704,9 @@ static void bake_discover(const Obj3DNode *n, BakeState *bs) {
 
         GPU_Texture *atlas = NULL;
         SDL_FRect uv = { 0, 0, 0, 0 };
-        if (prim->texture_name[0] != '\0') {
-            atlas = TexAtlas_GetByName(prim->texture_name, bs->team_color_idx, &uv);
+        const char *tex = bs->paint ? bs->paint : prim->texture_name;
+        if (tex[0] != '\0') {
+            atlas = TexAtlas_GetByName(tex, bs->team_color_idx, &uv);
         }
         int b = batch_find_or_add(bs, atlas, &uv);
         if (b < 0) continue;
@@ -7740,8 +7780,9 @@ static void bake_emit(const Obj3DNode *n,
 
         GPU_Texture *atlas = NULL;
         SDL_FRect uv_rect = { 0, 0, 0, 0 };
-        if (prim->texture_name[0] != '\0') {
-            atlas = TexAtlas_GetByName(prim->texture_name, bs->team_color_idx, &uv_rect);
+        const char *tex = bs->paint ? bs->paint : prim->texture_name;
+        if (tex[0] != '\0') {
+            atlas = TexAtlas_GetByName(tex, bs->team_color_idx, &uv_rect);
         }
         int b = batch_find_or_add(bs, atlas, &uv_rect);
         if (b < 0) continue;
@@ -7880,8 +7921,8 @@ static void bake_emit(const Obj3DNode *n,
     }
 }
 
-static UnitMesh *Mesh_Bake(const Obj3DFile *obj, const uint32_t *palette,
-                            int color_idx)
+static UnitMesh *Mesh_BakePainted(const Obj3DFile *obj, const uint32_t *palette,
+                                   int color_idx, const char *paint)
 {
     if (!obj || !obj->root) return NULL;
 
@@ -7889,6 +7930,7 @@ static UnitMesh *Mesh_Bake(const Obj3DFile *obj, const uint32_t *palette,
     memset(&bs, 0, sizeof(bs));
     bs.palette = palette;
     bs.team_color_idx = color_idx;
+    bs.paint = (paint && paint[0]) ? paint : NULL;
 
     /* Pass 1 — discover. Per-node selection-mesh skip via marker. */
     bake_discover(obj->root, &bs);
@@ -7954,6 +7996,11 @@ static UnitMesh *Mesh_Bake(const Obj3DFile *obj, const uint32_t *palette,
         m->batches[b].index_count = bs.tri_count_batch[b] * 3;
     }
     return m;
+}
+
+static UnitMesh *Mesh_Bake(const Obj3DFile *obj, const uint32_t *palette,
+                            int color_idx) {
+    return Mesh_BakePainted(obj, palette, color_idx, NULL);
 }
 
 static void Mesh_Free(UnitMesh *m) {
@@ -9318,14 +9365,20 @@ static void cob_host_set_unit_value(void *user, int port, int32_t value) {
         case 19: /* BUGGER_OFF, script-visible flag (legacy:223379-223381) */
             u->cob_bugger_off = (value != 0);
             return;
-        case 21: /* the weapon's shot is called off (legacy:223387-223391) */
-            if (value >= 0 && value < 3 &&
-                u->weapon_state[value].draw != UNIT_DRAW_LOST) {
-                u->weapon_state[value].draw = UNIT_DRAW_NONE;
-                u->weapon_state[value].draw_target = -1;
+        case 21: /* the weapon's shot and aim are called off
+                  * (legacy:223387-223391) */
+            if (value >= 0 && value < 3) {
+                UnitWeaponState *ws = &u->weapon_state[value];
+                if (ws->draw != UNIT_DRAW_LOST) {
+                    ws->draw = UNIT_DRAW_NONE;
+                    ws->draw_target = -1;
+                }
+                ws->aim_ready = 0;
+                ws->aim_target = -1;
             }
             return;
-        case 22: /* aimed: the engine reads AimWeapon's return instead */
+        case 22: /* the weapon is aimed (legacy:223392-223395) */
+            if (value >= 0 && value < 3) u->weapon_state[value].aim_ready = 1;
             return;
         case 23: /* WEAPON_LAUNCH_NOW (legacy:223397-223400) */
             if (value >= 0 && value < 3) {
@@ -9476,6 +9529,57 @@ static void unit_take_hit(Unit *victim, int shooter, int shooter_player, int32_t
         BattleRecord_Hit(shooter_player, victim->player_id,
                          hit < victim->health ? hit : victim->health);
     victim->health -= hit;
+}
+
+/* The longest a paralyzer holds a unit, 1800 of the original's frames
+ * (legacy:9575-9577). */
+#define UNIT_PARALYZE_MAX_TICKS 3600
+
+/* Held, the unit drops its aims: a weapon that had one hears
+ * TargetCleared and a drawn shot is called off (legacy:9578-9586,
+ * legacy:233924-233940). */
+static void unit_paralysis_start(Unit *u) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    int n = d ? d->num_weapons : 0;
+    for (int w = 0; w < n && w < 3; w++) {
+        UnitWeaponState *ws = &u->weapon_state[w];
+        int had = ws->aim_target != -1 || ws->aim_thread_slot >= 0 ||
+                  ws->draw != UNIT_DRAW_NONE;
+        ws->aim_thread_slot = -1;
+        ws->aim_target = -1;
+        ws->aim_ticks = 0;
+        ws->burst_remaining = 0;
+        ws->burst_ticks = 0;
+        ws->burst_target = -1;
+        if (ws->draw != UNIT_DRAW_NONE) {
+            ws->draw = UNIT_DRAW_LOST;
+            ws->draw_target = -1;
+        }
+        if (had && u->cob) {
+            int32_t args[1] = { (int32_t)w };
+            Cob_StartThreadByName(u->cob, "TargetCleared", args, 1);
+        }
+    }
+}
+
+/* A paralyzer's hit never wounds. The unit hears it as a hit and,
+ * unless immune, is held for the damage in frames, a second hit adding
+ * to what is left (legacy:233760-233773, legacy:233857-233878). */
+static void unit_paralyze(Unit *victim, int shooter, int shooter_player,
+                          int32_t damage) {
+    if (victim->alive != UNIT_ALIVE_ACTIVE) return;
+    int32_t frames = unit_scaled_damage(shooter, victim, damage);
+    if (frames > 0)
+        shot_tally_harm(shooter, victim->player_id == shooter_player, frames);
+    unit_alarm_on_damage(victim, shooter);
+    unit_on_damaged(victim, shooter);
+    const UnitDef *vd = Units_GetDef(victim->def_idx);
+    if (frames <= 0 || (vd && vd->immune_to_paralyzer)) return;
+    int32_t was = victim->paralyzed_ticks;
+    int32_t ticks = was + frames * 2;
+    if (ticks > UNIT_PARALYZE_MAX_TICKS) ticks = UNIT_PARALYZE_MAX_TICKS;
+    victim->paralyzed_ticks = (uint16_t)ticks;
+    if (!was) unit_paralysis_start(victim);
 }
 
 int32_t Units_HitDamage(int shooter, int victim, int32_t damage) {
@@ -10403,6 +10507,7 @@ static void apply_killed_as(Unit *t, int t_idx, int bursts) {
     t->turn_dir_sign = 0;
     unit_clear_path(t);
     t->corpse_type = 0;
+    t->paralyzed_ticks = 0;
     if (t->cob) {
         Cob_KillAllThreads(t->cob);
         t->killed_thread_slot = -1;
@@ -12272,43 +12377,25 @@ static int weapon_aim_ready(Unit *u, int slot, int aim_key,
     }
     int32_t args[3] = { rel_heading, 0, (int32_t)slot };
 
+    /* A new target, or a shot gone, asks the script to aim again; the
+     * aim is done when the script sets port 22 to the slot, not when
+     * AimWeapon returns (legacy:249303-249310, legacy:223392-223395). */
     if (ws->aim_target != aim_key) {
-        ws->aim_thread_slot = -1;
+        ws->aim_ready = 0;
         ws->aim_ticks = 0;
         ws->aim_target = (int16_t)aim_key;
-    }
-
-    if (ws->aim_thread_slot < 0) {
         int started = Cob_StartThreadByName(u->cob, name, args, 3);
-        if (started < 0) {
-            ws->aim_thread_slot = -1;
-            ws->aim_target = -1;
-            ws->aim_ticks = 0;
-            return 1;
-        }
         ws->aim_thread_slot = (int8_t)started;
-        ws->aim_ticks = 0;
-        return 0;
-    }
-
-    if (Cob_IsThreadAlive(u->cob, ws->aim_thread_slot)) {
-        ws->aim_ticks++;
-        if (ws->aim_ticks > 120) {
-            Cob_StopThread(u->cob, ws->aim_thread_slot);
-            ws->aim_thread_slot = -1;
+        if (started < 0) {
             ws->aim_target = -1;
-            ws->aim_ticks = 0;
             return 1;
         }
-        return 0;
+        return ws->aim_ready;
     }
-
-    int32_t ret = 1;
-    int has_ret = Cob_GetThreadReturn(u->cob, ws->aim_thread_slot, &ret);
-    ws->aim_thread_slot = -1;
-    ws->aim_target = -1;
-    ws->aim_ticks = 0;
-    return !has_ret || ret != 0;
+    if (ws->aim_ready) return 1;
+    /* An aim the script never answers is asked again. */
+    if (++ws->aim_ticks > 120) ws->aim_target = -1;
+    return 0;
 }
 
 /* A mind control shot aims where its target will be: the sweet spot
@@ -12349,6 +12436,11 @@ static void fire_weapon_shot_now(Unit *u, int shooter_idx, int slot,
         const UnitDef *td = Units_GetDef(t->def_idx);
         int damage = weapon_damage_for_category(
             wp, td ? td->damage_category : "");
+        if (wp->paralyzer) {
+            unit_paralyze(t, shooter_idx, (int)g_units[shooter_idx].player_id,
+                          damage);
+            return;
+        }
         unit_take_hit(t, shooter_idx, (int)g_units[shooter_idx].player_id, damage);
         unit_alarm_on_damage(t, shooter_idx);
         if (t->health <= 0) {
@@ -12397,6 +12489,11 @@ static void fire_weapon_shot_now(Unit *u, int shooter_idx, int slot,
             const UnitDef *td = Units_GetDef(v->def_idx);
             int dmg = weapon_damage_for_category(
                 wp, td ? td->damage_category : "");
+            if (wp->paralyzer) {
+                unit_paralyze(v, shooter_idx,
+                              (int)g_units[shooter_idx].player_id, dmg);
+                return;
+            }
             unit_take_hit(v, shooter_idx, (int)g_units[shooter_idx].player_id, dmg);
             unit_alarm_on_damage(v, shooter_idx);
             if (v->health <= 0) {
@@ -12459,6 +12556,9 @@ static void fire_weapon_shot_now(Unit *u, int shooter_idx, int slot,
         if (b->area_of_effect >= BLAST_DIRECT_BELOW) {
             apply_projectile_area_damage(b);
             blast_scenery(b, target_handle);
+        } else if (wp->paralyzer) {
+            unit_paralyze(t, shooter_idx, (int)g_units[shooter_idx].player_id,
+                          projectile_base_damage_for_unit(b, t));
         } else {
             unit_take_hit(t, shooter_idx, (int)g_units[shooter_idx].player_id,
                           projectile_base_damage_for_unit(b, t));
@@ -12762,6 +12862,7 @@ static void tick_weapon_draw(Unit *u, int shooter_idx, int slot,
     if (ws->draw != UNIT_DRAW_RELEASE) return;
     ws->draw = UNIT_DRAW_NONE;
     ws->draw_target = -1;
+    ws->aim_target = -1;
     const UnitWeapon *wp = &def->weapons[slot];
     /* The shot pays as it leaves, what there is to pay with
      * (legacy:249460-249461). */
@@ -13581,12 +13682,16 @@ static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
         aim_x = g_units[u->target].world_x;
         aim_y = g_units[u->target].world_y;
     }
-    if (ws->cooldown_ticks == 0 && !unit_climbing(u, def) &&
-        (ground || u->target < 0 || u->target >= g_unit_count ||
-         weapon_can_target_unit(&def->weapons[slot],
-                                &g_units[u->target])) &&
-        unit_body_on_target(u, def, &def->weapons[slot], aim_x, aim_y) &&
-        weapon_aim_ready(u, slot, aim_key, aim_x, aim_y, ws)) {
+    if (unit_climbing(u, def) ||
+        !(ground || u->target < 0 || u->target >= g_unit_count ||
+          weapon_can_target_unit(&def->weapons[slot], &g_units[u->target])) ||
+        !unit_body_on_target(u, def, &def->weapons[slot], aim_x, aim_y))
+        return;
+    /* The aim runs whenever the target is in reach, reloading or not,
+     * and the shot waits for both (legacy:249255-249310,
+     * legacy:249328-249338). */
+    int aimed = weapon_aim_ready(u, slot, aim_key, aim_x, aim_y, ws);
+    if (aimed && ws->cooldown_ticks == 0) {
         const UnitWeapon *wp = &def->weapons[slot];
 
         /* A mana-costing shot draws from the caster's
@@ -13622,6 +13727,9 @@ static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
             ws->cooldown_ticks = wp->reload_ticks;
             if (u->hover_state != UNIT_HOVER_NONE)
                 u->hover_events |= UNIT_HOVER_EV_FIRED;
+            /* A shot that leaves now has the script aim again for the
+             * next (legacy:249457). A drawn one does as it is let go. */
+            if (!draws) ws->aim_target = -1;
             if (ground) {
                 fire_ground_shot(u, i, slot, wp);
                 return;
@@ -14413,6 +14521,18 @@ static void Units_TickCombat(void) {
         /* Legacy single-weapon cooldown for backward compat (unused
          * once multi-weapon is fully wired). */
         if (u->attack_cooldown > 0) u->attack_cooldown--;
+
+        /* Held by a paralyzer, the unit stands and does nothing, and
+         * the orders it had wait for it (legacy:9564-9599,
+         * legacy:181518-181523). */
+        if (u->paralyzed_ticks) {
+            u->paralyzed_ticks--;
+            u->velocity = 0;
+            u->cur_speed_ppt = 0.0f;
+            enter_state(u, UNIT_ANIM_IDLE);
+            update_move_rate(u, def, 0);
+            continue;
+        }
 
         CMB_MARK(0);
         /* An order from outside ends the walk back and a patrol's repairs. */
@@ -17775,6 +17895,21 @@ static float corpse_ground_height(const struct GameWorld *world,
     return (float)h;
 }
 
+/* The picture a statue is painted with: its side's stoneanim or
+ * frozenanim, the side found by the first three letters of its object,
+ * the first side when none matches (legacy:127100-127122). NULL for a
+ * feature that is no statue. */
+const char *Units_FeaturePaint(const FeatureDef *fd) {
+    if (!fd || (!fd->is_stone && !fd->is_frozen)) return NULL;
+    char prefix[4] = { 0 };
+    memcpy(prefix, fd->object, 3);
+    int side = Sides_FindByPrefix(prefix);
+    const TakSideInfo *si = Sides_Get(side >= 0 ? side : 0);
+    if (!si) return NULL;
+    const char *paint = fd->is_stone ? si->stoneanim : si->frozenanim;
+    return paint[0] ? paint : NULL;
+}
+
 static const UnitMesh *corpse_model_mesh(int feat_idx, int color_idx) {
     const FeatureDef *fd = Features_GetByIndex(feat_idx);
     if (!fd || !fd->object[0]) return NULL;
@@ -17806,7 +17941,8 @@ static const UnitMesh *corpse_model_mesh(int feat_idx, int color_idx) {
     }
     GameWorld *world = World_Get();
     const uint32_t *palette = world ? world->terrain_rgba : NULL;
-    UnitMesh *m = Mesh_Bake(obj, palette, color_idx);
+    UnitMesh *m = Mesh_BakePainted(obj, palette, color_idx,
+                                   Units_FeaturePaint(fd));
     Obj3D_Close(obj);
     if (!m) { ca->failed[color_idx] = 1; return NULL; }
     ca->mesh_per_color[color_idx] = m;
@@ -19457,6 +19593,11 @@ void Units_Render(const struct GameWorld *world, TAK_Platform *plat) {
 /* ── Accessors for a second view (tak_unit.h) ────────────────────── */
 
 UnitMesh *Units_BakeObjectMesh(const char *object_name, int color_idx) {
+    return Units_BakeObjectMeshPainted(object_name, color_idx, NULL);
+}
+
+UnitMesh *Units_BakeObjectMeshPainted(const char *object_name, int color_idx,
+                                      const char *paint) {
     if (!object_name || !object_name[0]) return NULL;
     if (color_idx < 0 || color_idx > 11) color_idx = 0;
     char obj_lc[TAK_UNITDEF_OBJ_MAX];
@@ -19466,7 +19607,8 @@ UnitMesh *Units_BakeObjectMesh(const char *object_name, int color_idx) {
     Obj3DFile *obj = NULL;
     if (Obj3D_Load(&obj, path) != 0 || !obj) return NULL;
     GameWorld *world = World_Get();
-    UnitMesh *m = Mesh_Bake(obj, world ? world->terrain_rgba : NULL, color_idx);
+    UnitMesh *m = Mesh_BakePainted(obj, world ? world->terrain_rgba : NULL,
+                                   color_idx, paint);
     Obj3D_Close(obj);
     return m;
 }

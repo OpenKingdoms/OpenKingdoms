@@ -41,7 +41,7 @@ enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_FLYPICK, LF_BLADEPICK, LF_BROAD, LF_SWIRL, LF_CANNON, LF_TORCH,
        LF_SWEEPER, LF_BOMBER, LF_STURDY, LF_TWISTER, LF_TORNADO,
        LF_ROVEROAM, LF_HAWK, LF_MASON, LF_FREEZER, LF_ICEMAN, LF_BREATHER,
-       LF_TURRET, LF_DEF_COUNT };
+       LF_TURRET, LF_STUNNER, LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
 #define LF_SX   800
@@ -388,6 +388,12 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     wp->aim_tolerance = 1024;
     lf_fill(&defs[LF_TURRET], "TESTTORTOISE", 1.2f, 300);
     lf_weapon(&defs[LF_TURRET], "TESTTORTW", "Line of Sight", 500, 550, 40);
+    /* A stun bolt that holds for 300 frames. */
+    lf_fill(&defs[LF_STUNNER], "TESTSTUN", 1.2f, 300);
+    wp = lf_weapon(&defs[LF_STUNNER], "TESTSTUNW", "Line of Sight", 500, 550, 300);
+    strncpy(wp->damage_type, "paralyzer", sizeof(wp->damage_type) - 1);
+    wp->paralyzer = 1;
+    wp->reload_ticks = 30;
 
     FeatureDef fdefs[FD_COUNT];
     memset(fdefs, 0, sizeof fdefs);
@@ -2102,7 +2108,7 @@ static void lf_fog(GameWorld *w) {
  * see, the shooters let go of targets behind the ridge and go looking,
  * and the fog is state. Pinned, so every platform in CI has to
  * reach the same answer. */
-#define LF_FOG_VOLLEY_HASH 0x34747cb2u
+#define LF_FOG_VOLLEY_HASH 0xd90e5f32u
 
 static uint32_t lf_fog_volley_hash(int *out_hurt) {
     GameWorld *w = lf_world(1, 1);
@@ -2792,6 +2798,109 @@ TEST(a_unit_that_cannot_turn_in_place_shoots_without_turning) {
     lf_end();
     ASSERT(hurt);
     ASSERT(most < 0.001f);
+}
+
+/* A paralyzer holds what it hits for its damage in frames and never
+ * wounds it. Held, a unit neither moves nor fires, and it takes up its
+ * order again once free (legacy:233857-233878, legacy:9564-9599). */
+TEST(a_paralyzer_holds_its_target_without_wounding_it) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int s = lf_spawn(LF_STUNNER, 1, LF_SX, LF_ROW);
+    int v = lf_spawn(LF_QUICK, 2, LF_TX, LF_ROW);
+    int d = lf_spawn(LF_TARGET, 1, LF_TX + 200, LF_ROW);
+    ASSERT(s >= 0 && v >= 0 && d >= 0);
+    int v_hp0 = lf_unit(v)->health;
+    ASSERT(Units_OrderAttack(v, d));
+    for (int i = 0; i < 60; i++) Units_TickEngines();
+    int fired_before = lf_unit(d)->health < 1000;
+    ASSERT(Units_DebugFireAt(s, 0, v));
+    int held = 0, i = 0;
+    for (; i < 120 && !held; i++) {
+        Units_TickEngines();
+        held = lf_unit(v)->paralyzed_ticks;
+    }
+    int32_t x_at_hold = lf_unit(v)->world_x;
+    int v_hp = lf_unit(v)->health;
+    /* A shot already in the air still lands. */
+    int ticks = 0, hp_at_hold = 0;
+    while (lf_unit(v)->paralyzed_ticks && ticks < 2000) {
+        Units_TickEngines();
+        if (++ticks == 60) hp_at_hold = lf_unit(d)->health;
+    }
+    int hp_after_hold = lf_unit(d)->health;
+    int32_t x_after_hold = lf_unit(v)->world_x;
+    for (int k = 0; k < 120; k++) Units_TickEngines();
+    int hp_later = lf_unit(d)->health;
+    lf_end();
+    printf("(held %d ticks, then %d) ", held, ticks);
+    ASSERT(fired_before);
+    ASSERT_EQ_INT(v_hp0, v_hp);
+    ASSERT(held >= 590 && held <= 600);
+    ASSERT_EQ_INT(hp_at_hold, hp_after_hold);
+    ASSERT_EQ_INT(x_at_hold, x_after_hold);
+    ASSERT(hp_later < hp_after_hold);
+}
+
+/* Hits add to the hold, never past 1800 frames (legacy:233871-233873,
+ * legacy:9575-9577), and a paralyzer looking for a target passes over a
+ * unit already held (legacy:21156-21160). */
+TEST(a_paralyzer_hold_adds_up_to_a_minute_and_is_passed_over) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int s = lf_spawn(LF_STUNNER, 1, LF_SX, LF_ROW);
+    int v = lf_spawn(LF_TARGET, 2, LF_SX + 150, LF_ROW);
+    int w = lf_spawn(LF_TARGET, 2, LF_SX + 300, LF_ROW);
+    ASSERT(s >= 0 && v >= 0 && w >= 0);
+    for (int k = 0; k < 8; k++) ASSERT(Units_DebugFireAt(s, 0, v));
+    int most = 0;
+    for (int i = 0; i < 60; i++) {
+        Units_TickEngines();
+        if (lf_unit(v)->paralyzed_ticks > most) most = lf_unit(v)->paralyzed_ticks;
+    }
+    Units_DebugSetAggro(s, UNIT_AGGRO_OFFENSIVE);
+    for (int i = 0; i < 10; i++) Units_TickEngines();
+    int picked = lf_unit(s)->target;
+    lf_end();
+    printf("(held at most %d ticks, picked %d) ", most, picked);
+    ASSERT_EQ_INT(3600, most);
+    ASSERT_EQ_INT(w, picked);
+}
+
+/* An AimWeapon that takes a quarter second, says the weapon is aimed
+ * on port 22 and returns 0, as the shipped scripts' does. */
+static const uint32_t LF_AIM_SCRIPT[] = {
+    0x10021001u, 250u, 0x10013000u,             /* sleep 250 */
+    0x10021001u, 22u, 0x10021001u, 0u, 0x10082000u, /* port 22 = 0 */
+    0x10021001u, 0u, 0x10065000u                /* return 0 */
+};
+
+/* The shot waits for port 22, not for what AimWeapon returns, and the
+ * script aims again while the weapon reloads, so a quarter second aim
+ * behind a half second reload costs nothing (legacy:223392-223395,
+ * legacy:249255-249310, legacy:249457). */
+TEST(a_weapon_fires_once_its_script_says_aimed_and_aims_while_it_reloads) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    static const char *const names[] = { "AimWeapon" };
+    static const uint32_t offsets[] = { 0 };
+    ASSERT_EQ_INT(0, Units_DebugSetDefScript(LF_QUICK, LF_AIM_SCRIPT,
+                                             (int)(sizeof LF_AIM_SCRIPT / 4),
+                                             names, offsets, 1));
+    int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_STURDY, 2, LF_SX + 200, LF_ROW);
+    ASSERT(a >= 0 && t >= 0);
+    ASSERT(Units_OrderAttack(a, t));
+    int shots = 0, first = -1, last = -1;
+    for (int i = 0; i < 600; i++) {
+        Units_TickEngines();
+        if (lf_unit(a)->weapon_state[0].cooldown_ticks == 30) {
+            shots++;
+            if (first < 0) first = i;
+            last = i;
+        }
+    }
+    lf_end();
+    printf("(%d shots, the first at %d, the last at %d) ", shots, first, last);
+    ASSERT(first >= 12 && first <= 25);
+    ASSERT(shots >= 19);
 }
 
 /* A unit holding position shoots what comes into reach and lets it go
@@ -3685,6 +3794,9 @@ int main(int argc, char **argv) {
     RUN(a_freeze_beam_turns_a_walker_to_ice_and_passes_over_the_rest);
     RUN(a_breather_turns_onto_its_target_before_it_breathes);
     RUN(a_unit_that_cannot_turn_in_place_shoots_without_turning);
+    RUN(a_paralyzer_holds_its_target_without_wounding_it);
+    RUN(a_paralyzer_hold_adds_up_to_a_minute_and_is_passed_over);
+    RUN(a_weapon_fires_once_its_script_says_aimed_and_aims_while_it_reloads);
     RUN(a_unit_holding_position_does_not_chase);
     RUN(a_fight_of_its_own_looks_again_once_a_wait);
     RUN(a_unit_holding_position_or_ordered_never_looks_again);
