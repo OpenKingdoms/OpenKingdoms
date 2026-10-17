@@ -2514,6 +2514,10 @@ TEST(a_flyer_over_open_sea_stays_up_over_the_water) {
     int rc = boot();
     if (rc == 1) return;
     ASSERT_EQ_INT(0, rc);
+    /* A battle of its own, clear of the shots earlier cases left flying. */
+    okx_end_game();
+    g_booted = 0;
+    ASSERT_EQ_INT(0, start_battle(1));
     OkxTerrainInfo t;
     ASSERT_EQ_INT(0, okx_terrain_info(&t));
     ASSERT(t.water_height > 0);
