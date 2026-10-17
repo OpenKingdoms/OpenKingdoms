@@ -2126,8 +2126,10 @@ TEST(a_beam_leaves_from_its_firing_piece) {
     static float m[12 * 64];
     static OkxNode nodes[64];
     int found = 0;
-    for (int t = 0; t < 900 && !found; t += 2) {
-        okx_tick(2);
+    /* One tick at a time, so the pose is the one the beam left from: the
+     * shaman fires while still turning to its target. */
+    for (int t = 0; t < 900 && !found; t++) {
+        okx_tick(1);
         int k = okx_projectiles(ps, 256);
         for (int i = 0; i < k && i < 256 && !found; i++) {
             if (ps[i].kind != OKX_PROJ_BEAM) continue;
