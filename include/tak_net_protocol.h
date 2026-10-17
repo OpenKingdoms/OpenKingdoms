@@ -144,8 +144,10 @@
  * fires, a factory's product walks to a spot of its own, a broom drag
  * clears its box, and a rider boards a flying transport. 49: the
  * computer settles every free pad under cover, holds or presses on
- * after a win, and weighs a troop its profile leaves out like its peers. */
-#define TAK_ENGINE_BUILD_ID           49
+ * after a win, and weighs a troop its profile leaves out like its peers.
+ * 50: an aim its script never answers fires after 120 ticks with the
+ * unit stopped in reach. */
+#define TAK_ENGINE_BUILD_ID           50
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

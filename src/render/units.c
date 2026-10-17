@@ -12589,8 +12589,15 @@ static int weapon_aim_ready(Unit *u, int slot, int aim_key,
         return ws->aim_ready;
     }
     if (ws->aim_ready) return 1;
-    /* An aim the script never answers is asked again. */
-    if (++ws->aim_ticks > 120) ws->aim_target = -1;
+    /* An aim the script never answers is asked again, but one still
+     * running after 120 ticks with the unit stopped in reach counts as
+     * aimed (D-042). */
+    if (++ws->aim_ticks > 120) {
+        if (u->velocity == 0 && ws->aim_thread_slot >= 0 &&
+            Cob_IsThreadAlive(u->cob, ws->aim_thread_slot))
+            return 1;
+        ws->aim_target = -1;
+    }
     return 0;
 }
 
