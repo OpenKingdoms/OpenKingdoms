@@ -322,8 +322,22 @@ static void judge(TAK_TurnClock *c, TAK_TurnHashRow *row, uint64_t now_ms) {
                 flag_outlier(c, i, tick, now_ms);
         return;
     }
-    /* Two worlds, or no majority. There is no telling which is right, so
-     * the match halts with a report rather than playing on diverged. */
+    /* Two worlds, or no majority. There is no telling which is right,
+     * so every disagreeing world is rebuilt from the log, which every
+     * machine replays alike. A client that cannot, or a match that has
+     * resynced too often, halts with a report instead. */
+    int all_resync = c->resyncs_done < TAK_TURN_RESYNCS_MAX;
+    for (int i = 0; i < TAK_TURN_SIMS_MAX && all_resync; i++)
+        if ((have & (1u << i)) && !c->sim[i].resyncs) all_resync = 0;
+    if (all_resync) {
+        note_desync(c, tick, have, 0);
+        c->resyncs_done++;
+        /* Hashes the parted worlds sent for later ticks are void. */
+        for (int r = 0; r < TAK_TURN_HASH_ROWS; r++) c->row[r].used = 0;
+        for (int i = 0; i < TAK_TURN_SIMS_MAX; i++)
+            if (have & (1u << i)) begin_catch_up(c, i, 0, now_ms);
+        return;
+    }
     note_desync(c, tick, have, 1);
     c->halted = 1;
     update_pace(c);
@@ -561,6 +575,10 @@ static void begin_catch_up(TAK_TurnClock *c, int sim, uint32_t from_turn,
 
 void TAK_TurnClock_SetPaced(TAK_TurnClock *c, int sim, int paced) {
     if (valid_sim(c, sim)) c->sim[sim].paced = (uint8_t)(paced ? 1 : 0);
+}
+
+void TAK_TurnClock_SetResyncs(TAK_TurnClock *c, int sim, int on) {
+    if (valid_sim(c, sim)) c->sim[sim].resyncs = (uint8_t)(on ? 1 : 0);
 }
 
 int TAK_TurnClock_CanReplay(const TAK_TurnClock *c) {

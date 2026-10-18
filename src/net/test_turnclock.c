@@ -355,6 +355,48 @@ TEST(an_outlier_is_named_at_its_tick_and_sent_back_to_turn_zero) {
     ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, clk.sim[c].status);
 }
 
+/* When both clients can rebuild their worlds, two worlds that part are
+ * both sent back to turn zero and the match plays on. Past the limit it
+ * halts as before. */
+TEST(two_worlds_that_disagree_are_both_rebuilt_when_they_can_be) {
+    setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
+    int a = TAK_TurnClock_AddSim(&clk, 101, 0, 0);
+    int b = TAK_TurnClock_AddSim(&clk, 102, 1, 0);
+    TAK_TurnClock_SetResyncs(&clk, a, 1);
+    TAK_TurnClock_SetResyncs(&clk, b, 1);
+    TAK_TurnClock_Start(&clk, 0);
+    for (uint64_t t = 0; t <= 1000; t += 10) TAK_TurnClock_Advance(&clk, t);
+    int before = nsent;
+    ASSERT_EQ_INT(0, ack(a, 19, 60, 1, 1000));
+    ASSERT_EQ_INT(0, ack(b, 19, 60, 2, 1000));
+    ASSERT_EQ_INT(0, clk.halted);
+    ASSERT_EQ_INT(0, clk.desync.halted);
+    ASSERT_EQ_INT((1 << a) | (1 << b), (int)clk.desync.outliers);
+    ASSERT_EQ_INT(TAK_PSTATUS_CATCHING_UP, clk.sim[a].status);
+    ASSERT_EQ_INT(TAK_PSTATUS_CATCHING_UP, clk.sim[b].status);
+    int gos = 0;
+    for (int i = before; i < nsent; i++)
+        if (sent[i].type == TAK_MSG_GO && (sent[i].sim == a || sent[i].sim == b)) gos++;
+    ASSERT_EQ_INT(2, gos);
+    /* Turns keep coming while the worlds are rebuilt. */
+    uint32_t head = clk.head;
+    for (uint64_t t = 1010; t <= 1500; t += 10) TAK_TurnClock_Advance(&clk, t);
+    ASSERT(clk.head > head);
+
+    /* A match that keeps parting halts once it has used its resyncs. */
+    setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
+    a = TAK_TurnClock_AddSim(&clk, 101, 0, 0);
+    b = TAK_TurnClock_AddSim(&clk, 102, 1, 0);
+    TAK_TurnClock_SetResyncs(&clk, a, 1);
+    TAK_TurnClock_SetResyncs(&clk, b, 1);
+    TAK_TurnClock_Start(&clk, 0);
+    clk.resyncs_done = TAK_TURN_RESYNCS_MAX;
+    for (uint64_t t = 0; t <= 1000; t += 10) TAK_TurnClock_Advance(&clk, t);
+    ASSERT_EQ_INT(0, ack(a, 19, 60, 1, 1000));
+    ASSERT_EQ_INT(0, ack(b, 19, 60, 2, 1000));
+    ASSERT_EQ_INT(1, clk.halted);
+}
+
 TEST(two_worlds_that_disagree_halt_the_match) {
     TAK_MsgPace p;
     setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
@@ -989,6 +1031,7 @@ int main(void) {
     RUN(a_seat_over_its_budget_and_a_watcher_are_refused);
     RUN(an_ack_for_a_turn_not_yet_closed_is_refused);
     RUN(an_outlier_is_named_at_its_tick_and_sent_back_to_turn_zero);
+    RUN(two_worlds_that_disagree_are_both_rebuilt_when_they_can_be);
     RUN(two_worlds_that_disagree_halt_the_match);
     RUN(a_catching_up_player_is_checked_against_the_agreed_hash);
     RUN(the_governor_slows_turns_for_a_player_who_falls_behind);

@@ -91,6 +91,9 @@ int         Multiplayer_MapChooserWidgetHidden(const char *name);
  * rejoining or watching. A watcher sees the whole map. 0 on success. */
 struct TAK_MsgStartGame;
 int MP_BeginMatchWorld(TAK_Platform *platform, const struct TAK_MsgStartGame *sg);
+/* The match world again, from the START_GAME the session holds, after a
+ * resync. The battle and its world must already be ended. */
+int MP_RebuildMatchWorld(TAK_Platform *platform);
 
 /* The seat whose sidebar a watcher starts on, 0 based: the first human,
  * else the first computer player. */

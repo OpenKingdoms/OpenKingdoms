@@ -27,6 +27,7 @@
 #include "tak_dataset.h"
 #include "tak_map_fingerprint.h"
 #include "tak_net_session.h"
+#include "tak_net_match.h"
 #include "tak_net_room.h"
 #include "tak_blit.h"
 #include "tak_gaf.h"
@@ -868,6 +869,15 @@ static void mp_config_from_start(const TAK_MsgStartGame *sg,
         p->start_pos = sg->slot[i].start_pos;
         snprintf(p->name, sizeof p->name, "%s", sg->slot[i].name);
     }
+}
+
+int MP_RebuildMatchWorld(TAK_Platform *platform) {
+    TAK_NetClient *c = NetSession_Client();
+    if (!c) return -1;
+    c->resync = 0;
+    TAK_Match_End();
+    fprintf(stderr, "Match: rebuilding the world from the server's turn log\n");
+    return MP_BeginMatchWorld(platform, &c->start);
 }
 
 /* Build it. Returns 0, or -1 when this install cannot, which is worth

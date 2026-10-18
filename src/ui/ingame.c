@@ -121,6 +121,15 @@ static struct {
 /* A battle asked to open in the 3D view (the --view3d flag). */
 static int g_request_view3d;
 
+/* InGame_Tick left the battle for a resync, not for good. */
+static int ig_resync;
+
+int InGame_TakeResync(void) {
+    int r = ig_resync;
+    ig_resync = 0;
+    return r;
+}
+
 static const TAK_View *ig_view(void) {
     if (!ig.view) ig.view = View_Classic();
     return ig.view;
@@ -1889,6 +1898,15 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * arrived this frame are what the next ticks are allowed to be.
      * Outside a match both calls do nothing. */
     NetSession_Tick(SDL_GetTicks64());
+    /* The server restarts a world that parted from the others from its
+     * turn log: the battle is built again and replays to the present. */
+    {
+        TAK_NetClient *rc = NetSession_Client();
+        if (TAK_Match_IsLive() && rc && rc->resync) {
+            ig_resync = 1;
+            return GAMESTATE_GAME_LOADING;
+        }
+    }
     TAK_Match_Pump();
     /* Whoever began or stopped watching, as a system line. */
     {

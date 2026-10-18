@@ -439,8 +439,12 @@ Every client hashes at ticks divisible by 60 and keeps a 60 tick ring of per
 subsystem hashes. The server compares them. On a mismatch it names the tick
 and the disagreeing seats. With three or more seated players, the majority
 continues and the outlier is put into catch up, which resyncs it by
-replaying the turn log from the start. With only two, the match halts with a
-report rather than letting two diverged worlds play on. A watcher's world
+replaying the turn log from the start. With only two, or no majority, every
+disagreeing world is resynced the same way, since the log replays alike on
+every machine: a GO in the middle of a match makes the client build its
+world again and replay the log to the present (protocol 7). A match halts
+with a report only when a client is too old to do that, or after four such
+resyncs. A watcher's world
 never counts: its hash is checked against what the players agreed, and a
 watcher that differs is resynced alone. Each client writes a desync bundle locally holding the replay, its hash
 trace and the per subsystem breakdown at the mismatch tick, which is a
