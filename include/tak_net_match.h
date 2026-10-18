@@ -88,10 +88,6 @@ int  TAK_Match_IsWatching(void);
  * verdict still counts, but it gives no further order. */
 void TAK_Match_SetBeaten(void);
 
-/* 1 while this machine only looks at a match: a watcher, or a seat
- * that was beaten while the battle runs on. */
-int  TAK_Match_IsSpectating(void);
-
 /* A line for whoever began or stopped watching since the last call,
  * "Zach is watching." or "Zach stopped watching.", one per call, from
  * the names the room state carries. `self` is this machine's own name,

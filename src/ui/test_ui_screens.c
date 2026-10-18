@@ -24104,6 +24104,14 @@ TEST(skirmish_local_monarch_death_is_defeat_with_two_foes_left) {
 
 /* Beaten with two computers at war, the player watches them fight on, and
  * when one is left the battle stops without a second end (D-034). */
+/* Message list lines naming player `p` fallen. */
+static int fallen_lines_for(int p) {
+    int n = 0;
+    for (int i = 0; i < Chat_Count(); i++)
+        if (Chat_EntryType(i) == CHAT_TYPE_MINE && Chat_EntryOwner(i) == p) n++;
+    return n;
+}
+
 TEST(skirmish_lost_battle_plays_on_between_the_computers) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -24132,14 +24140,22 @@ TEST(skirmish_lost_battle_plays_on_between_the_computers) {
     for (int t = 0; t < 40 && !world->skirmish_game_over; t++) InGame_DebugRunSimTicks(30);
     ASSERT_EQ_INT(1, world->skirmish_game_over);
     ASSERT_EQ_INT(-1, world->skirmish_local_result);
+    /* The player is named fallen at once, before anyone has built. */
+    ASSERT_EQ_INT(1, fallen_lines_for(1));
     int end_tick = world->skirmish_end_tick;
     int winner = world->skirmish_winner_team;
     int built2 = world->stats[2].units_built, built3 = world->stats[3].units_built;
 
+    /* Past the Defeat banner the battle plays on by itself for the player
+     * to watch, the fog lifted, and the statistics wait. */
     GameSound_DebugRecord(1);
     GameSound_DebugClear();
-    ASSERT_EQ_INT(1, InGame_PlayOn());
+    InGame_DebugRunSimTicks(200);
     ASSERT_EQ_INT(1, InGame_PlayingOn());
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    ASSERT_EQ_INT(0, world->skirmish_stats_open);
+    ASSERT_EQ_INT(1, Fog_SeesAll());
+    ASSERT_EQ_INT(1, InGame_PlayOn());
     int from = world->skirmish_elapsed_ticks;
     InGame_DebugRunSimTicks(60 * 90);
     ASSERT_EQ_INT(from + 60 * 90, world->skirmish_elapsed_ticks);
@@ -24149,10 +24165,14 @@ TEST(skirmish_lost_battle_plays_on_between_the_computers) {
     ASSERT_EQ_INT(-1, world->skirmish_local_result);
     ASSERT_EQ_STR("Defeat", world->skirmish_end_reason);
 
-    /* One computer left: the battle stops where it stands, quietly. */
+    /* One computer left: the battle stops where it stands, quietly, but
+     * for the line that names the fallen one and its cue. */
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("MessageArrived"));
     Units_KillAllOf(3);
     for (int t = 0; t < 40 && !world->skirmish_game_over; t++) InGame_DebugRunSimTicks(30);
     ASSERT_EQ_INT(1, world->skirmish_game_over);
+    ASSERT_EQ_INT(1, fallen_lines_for(3));
+    ASSERT_EQ_INT(1, GameSound_DebugCountPrefix("MessageArrived"));
     ASSERT_EQ_INT(0, InGame_PlayingOn());
     ASSERT_EQ_INT(0, InGame_PlayOn());
     ASSERT_EQ_INT(end_tick, world->skirmish_end_tick);
@@ -24162,6 +24182,7 @@ TEST(skirmish_lost_battle_plays_on_between_the_computers) {
     int stopped = world->skirmish_elapsed_ticks;
     InGame_DebugRunSimTicks(240);
     ASSERT_EQ_INT(stopped, world->skirmish_elapsed_ticks);
+    ASSERT_EQ_INT(1, world->skirmish_stats_open);
     GameSound_DebugRecord(0);
 
     InGame_Shutdown();
@@ -24234,10 +24255,10 @@ TEST(a_seat_beaten_in_a_match_watches_the_rest_of_it) {
     ASSERT_EQ_INT(0, left);
     ASSERT_EQ_INT(-1, world->skirmish_local_result);
     ASSERT_EQ_INT(0, world->skirmish_game_over);
+    ASSERT_EQ_INT(1, fallen_lines_for(1));
 
     /* It watches the whole battle, which runs on as the turns come. */
     ASSERT_EQ_INT(1, Fog_SeesAll());
-    ASSERT_EQ_INT(1, TAK_Match_IsSpectating());
     (void)TAK_Match_Pump();
     int from = world->skirmish_elapsed_ticks;
     InGame_DebugRunSimTicks(240);

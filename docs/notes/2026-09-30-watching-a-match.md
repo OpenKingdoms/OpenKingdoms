@@ -89,7 +89,8 @@ as above. The player keeps the seat, so its world is still compared
 with the others and its report of the verdict still counts, but it
 gives no further order. The relay records a beaten player who leaves
 early at the tick the battle beat them, not the tick they left, so
-leaving never lifts their place.
+leaving never lifts their place. A skirmish does the same for its
+player while two computers still fight (D-034).
 
 ## Who is watching
 

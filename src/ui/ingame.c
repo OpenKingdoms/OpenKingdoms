@@ -98,8 +98,12 @@ static struct {
     char  banner_defeat[32];
     /* A skirmish the local seat lost, played on for it to watch. */
     uint8_t play_on;
-    /* The tick a match beat the local seat while the battle ran on. */
+    /* The local seat was beaten and watches the battle run on, from
+     * this tick. */
+    uint8_t beaten;
     int beaten_tick;
+    /* The seat this machine plays, whichever view Tab shows. */
+    int own_seat;
     /* Each player had units on the map at the last look, for the line
      * that says they have fallen. */
     uint8_t had_units[TAK_MAX_PLAYERS + 1];
@@ -249,6 +253,20 @@ static int InGame_CalledResult(const GameWorld *world, int seat, int losses) {
     return 0;
 }
 
+/* Beaten while the battle runs on: watch the whole of it as a watcher
+ * does (#357), with Tab through the players' views, and give no
+ * further order. Presentation only. */
+static void ig_watch_beaten(int tick) {
+    if (ig.beaten) return;
+    ig.beaten = 1;
+    ig.beaten_tick = tick;
+    TAK_Match_SetBeaten();
+    Fog_SetSeeAll(1);
+    Units_SelectSingle(-1);
+}
+
+static int ig_spectating(void) { return TAK_Match_IsWatching() || ig.beaten; }
+
 /* How the local seat reads the verdict (legacy:206655-206662): defeat
  * once it built something and has nothing left (legacy:240018-240028),
  * victory when the battle ends with it standing (legacy:239992-240013).
@@ -272,14 +290,8 @@ static void InGame_ReadVerdict(GameWorld *world, const int *present) {
     fprintf(stderr, "Skirmish: %s for seat %d at tick %d\n",
             world->skirmish_end_reason, local,
             world->skirmish_elapsed_ticks);
-    /* Beaten while a match runs on: stay and watch the whole battle, as
-     * a watcher does (#357), and give no further order. */
-    if (result < 0 && TAK_Match_IsLive() && !world->skirmish_game_over) {
-        TAK_Match_SetBeaten();
-        Fog_SetSeeAll(1);
-        Units_SelectSingle(-1);
-        ig.beaten_tick = world->skirmish_elapsed_ticks;
-    }
+    if (result < 0 && TAK_Match_IsLive() && !world->skirmish_game_over)
+        ig_watch_beaten(world->skirmish_elapsed_ticks);
 }
 
 /* In a match the verdict goes to the server for the leaderboard: the
@@ -339,6 +351,9 @@ static void InGame_AnnounceFallen(const GameWorld *world, int player_id) {
                      name, at + 2);
     else snprintf(line, sizeof line, "%s", form);
     Chat_Push(line, CHAT_TYPE_MINE, player_id, SDL_GetTicks());
+    /* A line about another player comes with the message cue
+     * (legacy:205815). */
+    if (player_id != ig.own_seat) GameSound_PlayUI("MessageArrived");
 }
 
 /* The verdict belongs to the simulation and is the same on every
@@ -362,15 +377,21 @@ static int InGame_StandingAtWar(const int *standing, int n_standing) {
     return 0;
 }
 
+/* A match's rules, live or in its replay. */
+static int ig_in_match(void) {
+    const TAK_ReplayHeader *h = Replay_IsPlaying() ? Replay_Header() : NULL;
+    return TAK_Match_IsLive() || (h && h->turn_ticks != 0);
+}
+
 /* A lost skirmish goes on while two seats still standing are at war, for
- * the player to watch (D-034). The first end keeps its verdict and cue. */
-int InGame_PlayOn(void) {
-    GameWorld *world = World_Get();
+ * the player to watch with the fog lifted (D-034). The first end keeps
+ * its verdict and cue. */
+static int ig_play_on(GameWorld *world) {
     if (ig.play_on) return 1;
     if (!world || !world->loaded || !world->skirmish_game_over) return 0;
     if (world->skirmish_local_result >= 0) return 0;
     if (world->mission.objective_count > 0 || world->mission.placement_count > 0) return 0;
-    if (TAK_Match_IsLive() || Replay_IsPlaying()) return 0;
+    if (ig_in_match()) return 0;
     int unit_count = 0;
     const Unit *units = Units_GetActive(&unit_count);
     int standing[TAK_MAX_PLAYERS];
@@ -383,7 +404,13 @@ int InGame_PlayOn(void) {
     world->skirmish_game_over = 0;
     world->skirmish_stats_open = 0;
     ig.play_on = 1;
+    ig_watch_beaten(world->skirmish_end_tick);
     return 1;
+}
+
+int InGame_PlayOn(void) {
+    if (Replay_IsPlaying()) return ig.play_on;
+    return ig_play_on(World_Get());
 }
 
 int InGame_PlayingOn(void) { return ig.play_on; }
@@ -402,27 +429,33 @@ static void InGame_StampStanding(GameWorld *world, int tick) {
 }
 
 static void InGame_EvaluateSkirmishRules(GameWorld *world) {
-    if (!world || world->skirmish_game_over) return;
+    if (!world) return;
     if (world->mission.objective_count > 0 ||
         world->mission.placement_count > 0) {
         return;
     }
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int have[TAK_MAX_PLAYERS + 1] = { 0 };
+    /* A player is named the tick their army goes, whatever the battle's
+     * state. */
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        have[p] = player_units_present(world, p, units, unit_count);
+        if (ig.had_units[p] && have[p] <= 0) InGame_AnnounceFallen(world, p);
+        ig.had_units[p] = (uint8_t)(have[p] > 0);
+    }
+    if (world->skirmish_game_over) return;
     int built = 0;
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
         built += world->stats[p].units_built;
     }
     if (built <= 0) return;
 
-    int unit_count = 0;
-    const Unit *units = Units_GetActive(&unit_count);
     int present[TAK_MAX_PLAYERS + 1] = { 0 };
     int standing[TAK_MAX_PLAYERS];
     int n_standing = 0, human_standing = 0;
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
-        int have = player_units_present(world, p, units, unit_count);
-        if (ig.had_units[p] && have <= 0) InGame_AnnounceFallen(world, p);
-        ig.had_units[p] = (uint8_t)(have > 0);
-        present[p] = world->resigned[p] ? 0 : have;
+        present[p] = world->resigned[p] ? 0 : have[p];
         if (present[p] <= 0) continue;
         /* The stamp the end screen prints as Time (legacy:206617). */
         world->stats[p].last_alive_tick = world->skirmish_elapsed_ticks;
@@ -558,6 +591,9 @@ static double prof_now_ms(void) {
 static void InGame_OpenStatsAfterBanner(GameWorld *world, int elapsed) {
     if (!world->skirmish_game_over || world->skirmish_stats_open) return;
     if (elapsed - world->skirmish_end_tick >= IG_BANNER_TICKS) {
+        /* A skirmish the player lost plays on while two sides still
+         * fight, and the statistics wait for its end (D-034). */
+        if (ig_play_on(world)) return;
         world->skirmish_stats_open = 1;
     }
 }
@@ -733,6 +769,15 @@ int InGame_Init(TAK_Platform *platform) {
     memset(&ig, 0, sizeof(ig));
     ig.platform = platform;
     ig.view = View_Classic();
+    ig.own_seat = TAK_Match_IsWatching() ? 0 : Units_LocalPlayer();
+    /* Who stands as the battle opens, so a fall before its first tick is
+     * named too, and one a saved battle already holds is not. */
+    if (World_Get()) {
+        int n = 0;
+        const Unit *u = Units_GetActive(&n);
+        for (int p = 1; p <= TAK_MAX_PLAYERS; p++)
+            ig.had_units[p] = (uint8_t)(player_units_present(World_Get(), p, u, n) > 0);
+    }
     /* A battle starts in the classic view, where buildings never turn and
      * the classic preview draws the ghost. */
     HUD_SetBuildTurning(0);
@@ -883,9 +928,9 @@ static void InGame_DrawMarquee(TAK_Platform *platform,
 static void InGame_DrawSkirmishBanner(const GameWorld *world) {
     if (!world || world->skirmish_stats_open) return;
     if (!world->skirmish_game_over && world->skirmish_local_result >= 0) return;
-    /* A seat beaten in a match sees its defeat for as long as an end
-     * would show it, then the battle it is watching. */
-    if (!world->skirmish_game_over && TAK_Match_IsSpectating() &&
+    /* A beaten seat sees its defeat for as long as an end would show
+     * it, then the battle it is watching. */
+    if (!world->skirmish_game_over && ig_spectating() &&
         world->skirmish_elapsed_ticks - ig.beaten_tick >= IG_BANNER_TICKS) return;
     if (!ig.banner_font) return;
     SDL_Surface *off = UI_Offscreen();
@@ -920,7 +965,7 @@ static void ig_watch_next(const GameWorld *world) {
 
 /* What a watcher is looking at, over the play area. */
 static int ig_watch_line(const GameWorld *world, char *out, size_t cap) {
-    if (!TAK_Match_IsSpectating()) return 0;
+    if (!ig_spectating()) return 0;
     if (Fog_SeesAll()) {
         snprintf(out, cap, "Watching the whole map. Tab shows each player's view.");
         return 1;
@@ -1663,7 +1708,7 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
     /* Keys.TDF binds Tab to fsr, the full screen radar, which toggles
      * (legacy:208746-208770). A watcher's Tab walks the views. */
     if (has_focus && InGame_WatchKey(keys, ig.prev_keys)) {
-        if (TAK_Match_IsSpectating()) ig_watch_next(world);
+        if (ig_spectating()) ig_watch_next(world);
         else Minimap_SetLarge(!Minimap_IsLarge());
     }
 
@@ -1886,6 +1931,10 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * input until one of its buttons leaves (legacy:244079-244086).
      * main.c releases the world on the way out. */
     if (world->skirmish_stats_open) {
+        /* The end is told from the player's own seat, whichever view
+         * Tab left up. */
+        if (!EndScreen_IsOpen() && ig.own_seat && Units_LocalPlayer() != ig.own_seat)
+            Units_SetLocalPlayer(ig.own_seat);
         if (!EndScreen_IsOpen() && EndScreen_Open(platform, world) != 0) {
             return GAMESTATE_MENU;
         }

@@ -60,4 +60,6 @@ dying ones counted, drop to none. The original picks the line with the
 C library's rand, which no other machine shares. The engine picks it
 from the battle tick and the seat, so every machine shows the same
 line. The original also plays MessageArrived for a line about another
-player. The engine plays no sound for any message line yet.
+player, and so does the engine, every time a player falls, the
+computer included. The shipped archives carry no MessageArrived.wav, so
+with the original's files the cue plays nothing, there or here.

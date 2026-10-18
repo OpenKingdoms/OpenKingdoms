@@ -334,10 +334,6 @@ void TAK_Match_SetBeaten(void) {
     if (g_match.live) g_match.beaten = 1;
 }
 
-int TAK_Match_IsSpectating(void) {
-    return TAK_Match_IsWatching() || (g_match.live && g_match.beaten);
-}
-
 /* How many of `list` are called `name`. */
 static int name_count(char list[][TAK_NET_NAME_MAX], int n, const char *name) {
     int k = 0;

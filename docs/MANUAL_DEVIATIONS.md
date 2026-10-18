@@ -1994,17 +1994,22 @@ Format per entry:
   docs/notes/2026-09-30-watching-a-match.md.
 - Citation: none, a new feature. Issue #294.
 
-## D-034: A lost skirmish can play on between the computers
+## D-034: A lost skirmish plays on between the computers
 
-- Change: a front end may let a skirmish the local player lost go on
-  while two seats still standing are at war, so the player can watch the
-  computers fight it out. The defeat stands, and so do the end's tick
-  and its cue. When one side is left the battle stops where it stands,
-  with no second verdict and no second cue. It never runs in a match, a
-  replay or a campaign mission, and the classic view does not offer it.
-- Why: the owner's call, for the remaster's Look at the field. In the
-  original a skirmish is over for the player once their side is gone,
-  whoever is still fighting (legacy:240018-240028).
+- Change: a skirmish the local player lost goes on while two seats
+  still standing are at war, so the player can watch the computers
+  fight it out. The Defeat banner shows for its three seconds, then the
+  battle plays on with the fog lifted and Tab looks through each
+  player's eyes, as a watcher of a match does. The defeat stands, and so
+  do the end's tick and its cue. When one side is left the battle stops
+  where it stands, with no second verdict and no second cue, and the
+  statistics screen opens. A front end may also ask for it after its
+  own end screen. It never runs in a match or a campaign mission, and a
+  replay of a skirmish plays on where the battle did.
+- Why: the owner's call, first for the remaster's Look at the field and
+  then for every skirmish, so a beaten player can watch the rest as in
+  a match. In the original a skirmish is over for the player once their
+  side is gone, whoever is still fighting (legacy:240018-240028).
 - Where it is: `InGame_PlayOn` in `src/ui/ingame.c`.
 
 ## D-035: The wind keeps its own clock, and a save keeps a fire where it was

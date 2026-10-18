@@ -146,8 +146,10 @@
  * computer settles every free pad under cover, holds or presses on
  * after a win, and weighs a troop its profile leaves out like its peers.
  * 50: an aim its script never answers fires after 120 ticks with the
- * unit stopped in reach. */
-#define TAK_ENGINE_BUILD_ID           50
+ * unit stopped in reach. 51: a skirmish the player lost plays on after
+ * the Defeat banner while two sides still fight, and its statistics
+ * wait for the end. */
+#define TAK_ENGINE_BUILD_ID           51
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
