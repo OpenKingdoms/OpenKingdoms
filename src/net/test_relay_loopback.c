@@ -1145,9 +1145,8 @@ TEST(a_seat_that_left_before_the_verdict_is_recorded_where_it_fell) {
     }
 }
 
-/* A seat beaten early that stays to watch and leaves before the end is
- * recorded where the battle beat it, not where it left, so it never
- * places above a seat that fell later. */
+/* A seat beaten early that leaves before the end is recorded where the
+ * battle beat it, not where it left. */
 TEST(a_seat_beaten_before_it_left_is_recorded_where_it_was_beaten) {
     setup(20, 20, 53);
     ASSERT(start_match(3, TAK_ROOMF_AI_TAKES_OVER, 30));
@@ -1171,14 +1170,17 @@ TEST(a_seat_beaten_before_it_left_is_recorded_where_it_was_beaten) {
     const TAK_LedgerMatch *m = TAK_Ledger_Find(&ledger, 1);
     ASSERT_NOT_NULL(m);
     ASSERT_EQ_INT(0, m->disputed);
+    int found = 0;
     for (int i = 0; i < m->seat_count; i++) {
         const TAK_LedgerSeat *s = &m->seat[i];
         if (s->seat != gone) continue;
+        found = 1;
         ASSERT_EQ_INT(0, s->standing);
         ASSERT_EQ_INT(1, s->eliminated);
         ASSERT_EQ_INT(100, s->last_alive_tick);
         ASSERT_EQ_INT(3, s->place);
     }
+    ASSERT_EQ_INT(1, found);
 }
 
 /* Four seats play, the verdict fires on each machine a little apart,
