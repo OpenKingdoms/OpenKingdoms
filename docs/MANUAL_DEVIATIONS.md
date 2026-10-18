@@ -2218,6 +2218,24 @@ Format per entry:
   the question form of the original's message dialog
   (legacy:146759-146780). The manual is silent.
 
+## D-042: An aim its script never answers fires after two seconds
+
+- Change: a weapon fires once its script sets the aimed port, as the
+  original's does, with one exception. When AimWeapon is still running
+  after 120 ticks, two seconds, while the unit stands still with the
+  target in reach, the weapon counts as aimed and fires. Every other aim
+  the script never answers is asked again, as before.
+- Why: some casters' scripts hold AimWeapon until their own can-aim
+  flag is set, and their walk sets that flag only for an aim that began
+  while the unit was still walking. Our attack approach starts the aim
+  on the tick the unit stops in reach, so such a script never answered,
+  and since 0.5.1 Kirenna's Water Blast at a point she had to walk to
+  never fired. The original lets these scripts answer, which points to
+  its approach starting the aim before the stop. Until ours does the
+  same, this keeps those spells working.
+- Citation: the aimed port (legacy:223392-223395) and the fire gate
+  that waits for it (legacy:249328-249384). The manual is silent.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

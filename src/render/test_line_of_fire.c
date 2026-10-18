@@ -2903,6 +2903,40 @@ TEST(a_weapon_fires_once_its_script_says_aimed_and_aims_while_it_reloads) {
     ASSERT(shots >= 19);
 }
 
+/* An AimWeapon held on a gate the script never opens, as a caster's
+ * aim waits on its own can-aim flag. */
+static const uint32_t LF_AIM_HELD_SCRIPT[] = {
+    0x10021001u, 100u, 0x10013000u,             /* sleep 100 */
+    0x10064000u, 0u                             /* and again */
+};
+
+/* A weapon whose aim the script never answers fires once it has aimed
+ * for 120 ticks with its unit stopped in reach (D-042). */
+TEST(a_weapon_its_script_never_says_aimed_fires_after_two_seconds_stopped_in_reach) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    static const char *const names[] = { "AimWeapon" };
+    static const uint32_t offsets[] = { 0 };
+    ASSERT_EQ_INT(0, Units_DebugSetDefScript(LF_QUICK, LF_AIM_HELD_SCRIPT,
+                                             (int)(sizeof LF_AIM_HELD_SCRIPT / 4),
+                                             names, offsets, 1));
+    int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_STURDY, 2, LF_SX + 200, LF_ROW);
+    ASSERT(a >= 0 && t >= 0);
+    ASSERT(Units_OrderAttack(a, t));
+    int shots = 0, first = -1;
+    for (int i = 0; i < 600; i++) {
+        Units_TickEngines();
+        if (lf_unit(a)->weapon_state[0].cooldown_ticks == 30) {
+            shots++;
+            if (first < 0) first = i;
+        }
+    }
+    lf_end();
+    printf("(%d shots, the first at %d) ", shots, first);
+    ASSERT(first >= 120 && first <= 130);
+    ASSERT(shots >= 4);
+}
+
 /* A unit holding position shoots what comes into reach and lets it go
  * when it walks off. One that maneuvers goes after it. */
 static int32_t lf_after_walk_off(int def, int *out_target) {
@@ -3855,6 +3889,7 @@ int main(int argc, char **argv) {
     RUN(a_paralyzer_holds_its_target_without_wounding_it);
     RUN(a_paralyzer_hold_adds_up_to_a_minute_and_is_passed_over);
     RUN(a_weapon_fires_once_its_script_says_aimed_and_aims_while_it_reloads);
+    RUN(a_weapon_its_script_never_says_aimed_fires_after_two_seconds_stopped_in_reach);
     RUN(a_unit_holding_position_does_not_chase);
     RUN(a_fight_of_its_own_looks_again_once_a_wait);
     RUN(a_unit_holding_position_or_ordered_never_looks_again);
