@@ -173,6 +173,8 @@ void WebStats_BattleEnded(const WebStatsResult *r, const char *how) {
         if (r && r->victory) out = "win";
         else if (r && r->defeat) out = "loss";
         else if (r && r->over) out = g.watching ? "over" : r->local > 0 ? "win" : r->local < 0 ? "loss" : "draw";
+        /* Beaten and gone before the others finished. */
+        else if (r && r->local < 0) out = "loss";
         else out = "quit";
     }
     Js j = { "{", 1 };

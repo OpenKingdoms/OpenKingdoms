@@ -1208,6 +1208,16 @@ TEST(a_battle_says_whom_it_is_waiting_for) {
     g_c.pace.paused = 0;
     g_c.pace.seat = TAK_NET_SEAT_NONE;
     ASSERT_EQ_INT(TAK_MATCH_FLOWING, TAK_Match_Waiting(line, sizeof line));
+
+    /* No more turns will come, and the battle says why rather than
+     * stand still with nothing on the screen. */
+    g_c.pace.reason = TAK_PACE_DESYNC_HALT;
+    g_c.pace.paused = 1;
+    ASSERT_EQ_INT(TAK_MATCH_STOPPED, TAK_Match_Waiting(line, sizeof line));
+    ASSERT_EQ_STR("The game stopped: the players' battles no longer agree.", line);
+    g_c.state = TAK_NC_GONE;
+    ASSERT_EQ_INT(TAK_MATCH_STOPPED, TAK_Match_Waiting(line, sizeof line));
+    ASSERT_EQ_STR("The connection to the game server was lost.", line);
     TAK_Match_End();
 }
 

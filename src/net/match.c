@@ -40,6 +40,8 @@ static struct {
     uint32_t       last_turn;
     /* The verdict went to the server. Once a match, whoever asks. */
     uint8_t        reported;
+    /* The local seat was beaten and only looks on. */
+    uint8_t        beaten;
     /* The local seat's commands not yet sent, oldest first, and what
      * went out since the turn count last moved. */
     uint8_t        out[MATCH_BACKLOG];
@@ -99,8 +101,8 @@ static uint8_t match_seat_to_player(uint8_t seat) {
 int TAK_Match_SubmitLocal(const TAK_GameCommand *cmd) {
     if (!g_match.live || !g_match.client || !cmd) return -1;
     /* A watcher holds no seat and gives no order. The relay would refuse
-     * one, and this keeps it off the wire. */
-    if (g_match.seat == TAK_NET_SEAT_NONE) return -1;
+     * one, and this keeps it off the wire. Nor does a beaten seat. */
+    if (g_match.seat == TAK_NET_SEAT_NONE || g_match.beaten) return -1;
     uint8_t buf[TAK_COMMAND_MAX_BYTES];
     size_t len = 0;
     if (TAK_CommandSerialize(cmd, buf, sizeof buf, &len) != 0) return -1;
@@ -248,6 +250,15 @@ int TAK_Match_Waiting(char *out, size_t cap) {
     out[0] = '\0';
     if (!g_match.live || !g_match.client) return TAK_MATCH_FLOWING;
     const TAK_NetClient *c = g_match.client;
+    /* No more turns will come, so the battle says why it stands still. */
+    if (c->state == TAK_NC_GONE) {
+        snprintf(out, cap, "The connection to the game server was lost.");
+        return TAK_MATCH_STOPPED;
+    }
+    if (c->pace.reason == TAK_PACE_DESYNC_HALT) {
+        snprintf(out, cap, "The game stopped: the players' battles no longer agree.");
+        return TAK_MATCH_STOPPED;
+    }
     uint8_t seat = TAK_NET_SEAT_NONE;
     int secs = -1;
     if (c->status.status == TAK_PSTATUS_LOST && c->status.seat < TAK_NET_SEATS) {
@@ -317,6 +328,10 @@ int TAK_Match_Reported(void) { return g_match.live && g_match.reported; }
 
 int TAK_Match_IsWatching(void) {
     return g_match.live && g_match.seat == TAK_NET_SEAT_NONE;
+}
+
+void TAK_Match_SetBeaten(void) {
+    if (g_match.live) g_match.beaten = 1;
 }
 
 /* How many of `list` are called `name`. */
