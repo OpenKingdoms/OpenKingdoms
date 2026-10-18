@@ -352,6 +352,46 @@ else()
     )
 endif()
 
+# ── The Asset Atlas page's decoders (web/atlas.html) ───────────────────────
+# The engine's own HPI, GAF, palette, picture and 3DO readers, built into
+# a small module the atlas runs in a worker. Never linked into the game.
+if(EMSCRIPTEN)
+    add_executable(atlas-dec
+        atlas/atlas_dec.c
+        core/hpi/hpi.c
+        core/hpi/hpi_decompress.c
+        core/memory.c
+        core/io.c
+        core/util.c
+        render/gaf.c
+        render/obj3d.c
+        render/palette.c
+        render/pal_lookup.c
+        render/jpg_decode.c
+        render/png_decode.c
+        ${CMAKE_SOURCE_DIR}/third_party/miniz.c
+    )
+    target_include_directories(atlas-dec PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party
+    )
+    target_link_libraries(atlas-dec PRIVATE SDL2::SDL2)
+    # A worker reads the visitor's files in place through WORKERFS, so
+    # the heap holds one file at a time and starts small.
+    target_link_options(atlas-dec PRIVATE
+        "-sMODULARIZE=1"
+        "-sEXPORT_NAME=AtlasDec"
+        "-sENVIRONMENT=worker,node"
+        "-sINITIAL_MEMORY=67108864"
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-sSTACK_SIZE=1048576"
+        "-sFORCE_FILESYSTEM=1"
+        "-lworkerfs.js"
+        "-sEXPORTED_RUNTIME_METHODS=FS,WORKERFS,HEAPU8,HEAP32,HEAPU32,HEAPF32,UTF8ToString,stringToUTF8,lengthBytesUTF8"
+        "-sEXIT_RUNTIME=0"
+    )
+endif()
+
 # ── SDL2.dll beside the binaries (Windows) ──────────────────────────────────
 # One target owns the copy. Nine targets copying the same file into the
 # same directory raced under a parallel build and failed with the file

@@ -19,6 +19,7 @@
 # Needs the Emscripten SDK (https://emscripten.org), Ninja and, for the
 # decoder, GNU make. Output:
 #   <build-dir>/src/tak-re.html (+ .js/.wasm)
+#   <build-dir>/src/atlas-dec.js (+ .wasm), the Asset Atlas page's decoders
 # Serve it with:  python -m http.server -d <build-dir>/src 8080
 
 set -euo pipefail
@@ -95,7 +96,7 @@ cmake -S "$ROOT" -B "$BUILD_DIR" -G Ninja "${NINJA_ARG[@]}" "${FFMPEG_ARG[@]}" \
     -DBUILD_TESTING=OFF
 
 echo "==> Building"
-cmake --build "$BUILD_DIR" --target tak-re
+cmake --build "$BUILD_DIR" --target tak-re atlas-dec
 
 echo
 echo "Browser build ready: $BUILD_DIR/src/tak-re.html"
