@@ -24265,6 +24265,7 @@ TEST(a_seat_beaten_in_a_match_watches_the_rest_of_it) {
     InGame_Shutdown();
     Loading_Shutdown();
     World_End(&platform);
+    Settings_SetStr("RejoinMatch", "");
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
