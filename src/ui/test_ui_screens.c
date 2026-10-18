@@ -24172,6 +24172,104 @@ TEST(skirmish_lost_battle_plays_on_between_the_computers) {
     VFS_Shutdown();
 }
 
+/* A seat beaten in a match stays to watch. Its army goes as in a
+ * skirmish and the battle runs on for it on the server's turns, over
+ * the whole map with no fog. Tab walks the players' views, as for a
+ * watcher, and the seat sends no further order. */
+TEST(a_seat_beaten_in_a_match_watches_the_rest_of_it) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "Angvir's Maze", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 0;
+    cfg.players[1].kind = TAK_SLOT_HUMAN;
+    cfg.players[2].kind = TAK_SLOT_AI;
+    cfg.players[2].side = TAK_SIDE_VERUNA;
+    cfg.players[2].team = 3;
+    cfg.players[2].color = 2;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, cfg.map_name, "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    ASSERT_NOT_NULL(c);
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 21);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1000));
+    n = pl_encode_start(msg, sizeof msg, 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, pl_run_loading(&platform, 900));
+    TAK_MsgGo go;
+    go.first_turn = 0;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1200));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 8));
+    ASSERT_EQ_INT(1, TAK_Match_IsLive());
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT(Units_PlayersAreEnemies(2, 3));
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    /* Ten seconds of turns from the server, and the monarch falls. */
+    TAK_MsgTurn turn;
+    memset(&turn, 0, sizeof turn);
+    turn.turn = 0;
+    turn.empty_run = 200;
+    n = TAK_Msg_TurnEncode(&turn, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1300));
+    (void)TAK_Match_Pump();
+    InGame_DebugRunSimTicks(60);
+    int monarch = end_find_monarch(1);
+    ASSERT(monarch >= 0);
+    ASSERT_EQ_INT(monarch, Units_DebugKillHandle(monarch));
+    InGame_DebugRunSimTicks(60);
+    ASSERT_EQ_INT(1, world->stats[1].eliminated);
+    int unit_count = 0, left = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    for (int i = 0; i < unit_count; i++)
+        if (units[i].player_id == 1 && units[i].alive == UNIT_ALIVE_ACTIVE) left++;
+    ASSERT_EQ_INT(0, left);
+    ASSERT_EQ_INT(-1, world->skirmish_local_result);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+
+    /* It watches the whole battle, which runs on as the turns come. */
+    ASSERT_EQ_INT(1, Fog_SeesAll());
+    ASSERT_EQ_INT(1, TAK_Match_IsSpectating());
+    (void)TAK_Match_Pump();
+    int from = world->skirmish_elapsed_ticks;
+    InGame_DebugRunSimTicks(240);
+    ASSERT_EQ_INT(from + 240, world->skirmish_elapsed_ticks);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+
+    /* Tab looks through the first seat's eyes, then the next. */
+    InGame_DebugKeyFrame(SDL_SCANCODE_TAB, NULL);
+    InGame_DebugKeyFrame(0, NULL);
+    ASSERT_EQ_INT(0, Fog_SeesAll());
+    ASSERT_EQ_INT(1, Units_LocalPlayer());
+    InGame_DebugKeyFrame(SDL_SCANCODE_TAB, NULL);
+    InGame_DebugKeyFrame(0, NULL);
+    ASSERT_EQ_INT(2, Units_LocalPlayer());
+
+    /* And it gives no order, whoever's view it looks through. */
+    TAK_GameCommand cmd;
+    memset(&cmd, 0, sizeof cmd);
+    cmd.type = TAK_CMD_STOP;
+    ASSERT_EQ_INT(-1, TAK_Match_SubmitLocal(&cmd));
+    ASSERT_EQ_INT(0, TAK_Match_Unsent());
+
+    TAK_Match_End();
+    NetSession_Disconnect();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* Monarch Expendable on: the original keeps a player in the battle
  * while any unit of theirs remains, a lone lodestone included, because
  * the verdict reads the live-unit count the unit records maintain
@@ -30030,6 +30128,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_match_does_not_start_until_the_server_says_go);
     RUN_UI_TEST(a_player_whose_tab_closed_gets_back_into_the_match);
     RUN_UI_TEST(a_match_reports_the_verdict_to_the_server_once);
+    RUN_UI_TEST(a_seat_beaten_in_a_match_watches_the_rest_of_it);
     RUN_UI_TEST(a_skirmish_still_starts_the_moment_its_world_is_built);
     RUN_UI_TEST(a_frame_the_builder_is_walking_to_is_not_abandoned);
     RUN_UI_TEST(mp_room_follows_the_servers_later_snapshot);

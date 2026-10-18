@@ -153,7 +153,8 @@ the rest of this document is still design.
   follows live, sees the whole map and looks through each player's eyes
   with Tab, and gives no order. Its world never counts when the players'
   worlds are compared, and its arrival moves no turn. The players see
-  who is watching. See docs/notes/2026-09-30-watching-a-match.md.
+  who is watching. A player beaten while the others fight on watches the
+  same way and keeps the seat. See docs/notes/2026-09-30-watching-a-match.md.
 - Co-op against the computer with drop in seats (#292, N-010). A
   hosted room lets players drop in. A leaving player's army goes to the
   computer when the seat was a computer's at the start or a human of the
@@ -306,7 +307,9 @@ can skip it.
   who lag, the battle's message line says "Slowing down to wait for" and
   names them. While the turns stop for a player, a lost one or one the
   pace names with the clock paused, it says "Waiting for" and the name,
-  with the seconds left when a countdown runs.
+  with the seconds left when a countdown runs. When no more turns will
+  come, because the server halted the match on a desync or the
+  connection is gone, it says which rather than stand still.
 - The server injects system commands into the turn stream so every simulation
   applies them on the same tick. Those are a player leaving with its
   disposition, a returning player reclaiming their army from the computer,

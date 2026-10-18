@@ -98,6 +98,8 @@ static struct {
     char  banner_defeat[32];
     /* A skirmish the local seat lost, played on for it to watch. */
     uint8_t play_on;
+    /* The tick a match beat the local seat while the battle ran on. */
+    int beaten_tick;
     /* Each player had units on the map at the last look, for the line
      * that says they have fallen. */
     uint8_t had_units[TAK_MAX_PLAYERS + 1];
@@ -270,6 +272,14 @@ static void InGame_ReadVerdict(GameWorld *world, const int *present) {
     fprintf(stderr, "Skirmish: %s for seat %d at tick %d\n",
             world->skirmish_end_reason, local,
             world->skirmish_elapsed_ticks);
+    /* Beaten while a match runs on: stay and watch the whole battle, as
+     * a watcher does (#357), and give no further order. */
+    if (result < 0 && TAK_Match_IsLive() && !world->skirmish_game_over) {
+        TAK_Match_SetBeaten();
+        Fog_SetSeeAll(1);
+        Units_SelectSingle(-1);
+        ig.beaten_tick = world->skirmish_elapsed_ticks;
+    }
 }
 
 /* In a match the verdict goes to the server for the leaderboard: the
@@ -873,6 +883,10 @@ static void InGame_DrawMarquee(TAK_Platform *platform,
 static void InGame_DrawSkirmishBanner(const GameWorld *world) {
     if (!world || world->skirmish_stats_open) return;
     if (!world->skirmish_game_over && world->skirmish_local_result >= 0) return;
+    /* A seat beaten in a match sees its defeat for as long as an end
+     * would show it, then the battle it is watching. */
+    if (!world->skirmish_game_over && TAK_Match_IsSpectating() &&
+        world->skirmish_elapsed_ticks - ig.beaten_tick >= IG_BANNER_TICKS) return;
     if (!ig.banner_font) return;
     SDL_Surface *off = UI_Offscreen();
     if (!off) return;
@@ -906,7 +920,7 @@ static void ig_watch_next(const GameWorld *world) {
 
 /* What a watcher is looking at, over the play area. */
 static int ig_watch_line(const GameWorld *world, char *out, size_t cap) {
-    if (!TAK_Match_IsWatching()) return 0;
+    if (!TAK_Match_IsSpectating()) return 0;
     if (Fog_SeesAll()) {
         snprintf(out, cap, "Watching the whole map. Tab shows each player's view.");
         return 1;
@@ -1649,7 +1663,7 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
     /* Keys.TDF binds Tab to fsr, the full screen radar, which toggles
      * (legacy:208746-208770). A watcher's Tab walks the views. */
     if (has_focus && InGame_WatchKey(keys, ig.prev_keys)) {
-        if (TAK_Match_IsWatching()) ig_watch_next(world);
+        if (TAK_Match_IsSpectating()) ig_watch_next(world);
         else Minimap_SetLarge(!Minimap_IsLarge());
     }
 

@@ -1145,6 +1145,42 @@ TEST(a_seat_that_left_before_the_verdict_is_recorded_where_it_fell) {
     }
 }
 
+/* A seat beaten early that stays to watch and leaves before the end is
+ * recorded where the battle beat it, not where it left, so it never
+ * places above a seat that fell later. */
+TEST(a_seat_beaten_before_it_left_is_recorded_where_it_was_beaten) {
+    setup(20, 20, 53);
+    ASSERT(start_match(3, TAK_ROOMF_AI_TAKES_OVER, 30));
+    uint8_t gone = cl[2].seat;
+    ASSERT_EQ_INT(2, gone);
+    cl[2].close_at = g_now + 5000;
+    run_for(5000 + 30000 + 5000);
+    TAK_RelayRoom *rr = the_room();
+    ASSERT_NOT_NULL(rr);
+    uint32_t left = rr->clock.seat_left_turn[gone];
+    ASSERT(left != TAK_TURN_SEAT_STAYED);
+    ASSERT(left * TAK_NET_TURN_TICKS > 100);
+
+    /* The worlds that stayed saw seat 2 fall at tick 100. */
+    uint32_t verdict = rr->clock.head * TAK_NET_TURN_TICKS;
+    for (int i = 0; i < 2; i++) {
+        cl[i].verdict_tick = verdict;
+        cl[i].report_at = g_now + 200 + 200u * (uint64_t)i;
+    }
+    run_for(2000);
+    const TAK_LedgerMatch *m = TAK_Ledger_Find(&ledger, 1);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(0, m->disputed);
+    for (int i = 0; i < m->seat_count; i++) {
+        const TAK_LedgerSeat *s = &m->seat[i];
+        if (s->seat != gone) continue;
+        ASSERT_EQ_INT(0, s->standing);
+        ASSERT_EQ_INT(1, s->eliminated);
+        ASSERT_EQ_INT(100, s->last_alive_tick);
+        ASSERT_EQ_INT(3, s->place);
+    }
+}
+
 /* Four seats play, the verdict fires on each machine a little apart,
  * and the ledger ends up with one game that all four vouch for. A
  * watcher saw the same battle and is not asked. */
@@ -1805,6 +1841,7 @@ int main(void) {
     RUN(a_game_under_way_names_a_data_mismatch_to_a_newer_lobby);
     RUN(a_resigning_player_leaves_the_game_and_keeps_watching);
     RUN(a_seat_that_left_before_the_verdict_is_recorded_where_it_fell);
+    RUN(a_seat_beaten_before_it_left_is_recorded_where_it_was_beaten);
     RUN(a_finished_match_is_recorded_once_and_every_seat_vouches_for_it);
     RUN(a_seat_that_reports_different_numbers_marks_the_game_disputed);
     RUN(three_players_who_type_one_name_are_three_players);

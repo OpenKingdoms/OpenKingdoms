@@ -438,8 +438,10 @@ static void on_match_result(TAK_Relay *r, TAK_RelayClient *cl,
             seat->ident = TAK_LEDGER_IDENT_DEVICE;
             seat->player_id = TAK_Player_FromToken(rr->seat_token[s]);
         }
+        int reported = 0;
         for (int e = 0; e < m->count; e++) {
             if (m->entry[e].seat != s) continue;
+            reported = 1;
             seat->standing = (uint8_t)(m->entry[e].standing ? 1 : 0);
             seat->eliminated = (uint8_t)(m->entry[e].eliminated ? 1 : 0);
             seat->units_built = m->entry[e].units_built;
@@ -449,11 +451,14 @@ static void on_match_result(TAK_Relay *r, TAK_RelayClient *cl,
             seat->last_alive_tick = m->entry[e].last_alive_tick;
             break;
         }
-        /* A player who left before the verdict fell when they left. */
+        /* A player who left before the verdict fell when they left, or
+         * earlier when the battle had already beaten them. */
         uint32_t left = rr->clock.seat_left_turn[s];
         if (left != TAK_TURN_SEAT_STAYED && left * TAK_NET_TURN_TICKS <= m->end_tick) {
+            int32_t at = (int32_t)(left * TAK_NET_TURN_TICKS);
+            if (!reported || seat->standing || seat->last_alive_tick > at)
+                seat->last_alive_tick = at;
             seat->standing = 0;
-            seat->last_alive_tick = (int32_t)(left * TAK_NET_TURN_TICKS);
         }
     }
     TAK_Ledger_Place(&rec);

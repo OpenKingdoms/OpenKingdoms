@@ -79,6 +79,18 @@ nothing, so no Victory or Defeat is shown, and its report of the verdict
 is not taken for the leaderboard. A watcher's machine records the battle
 as a replay like anyone else's.
 
+## A beaten player
+
+A player whose army is gone while the others fight on stays as a
+watcher. With Monarch Expendable off that is the moment the monarch
+falls, as in a skirmish. The Defeat banner shows for three seconds,
+then the whole map shows with no fog, and Tab walks the players' views
+as above. The player keeps the seat, so its world is still compared
+with the others and its report of the verdict still counts, but it
+gives no further order. The relay records a beaten player who leaves
+early at the tick the battle beat them, not the tick they left, so
+leaving never lifts their place.
+
 ## Who is watching
 
 From protocol 5 the room state names the watchers after the starts, so
