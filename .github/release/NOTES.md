@@ -2,32 +2,39 @@ OpenKingdoms VERSION_HERE, an engine for Total Annihilation: Kingdoms.
 
 Play in a browser at [openkingdoms.net](https://openkingdoms.net), or download below and play on the desktop.
 
-This release fixes Kirenna's Water Blast, which 0.5.1 broke, and adds the
-Asset Atlas, a page for modders that browses the game's art. Everyone in a
-multiplayer room has to be on this version, so refresh the page after the
-update.
+This release lets a beaten player stay and watch the rest of the battle,
+in a multiplayer game or a skirmish. Until now a multiplayer game looked
+frozen to them. Everyone in a multiplayer room has to be on this
+version, so refresh the page after the update.
 
-## Combat
+## Watching after a defeat
 
-Kirenna's Water Blast goes off again when you cast it at a spot she has to
-walk to. Since 0.5.1 she walked into reach and stood there with her mana
-full. A unit whose script never says it has aimed now fires after two
-seconds once it has stopped with its target in reach, as it did before
-0.5.1. Every other weapon still waits for its script as in the original.
-(#438)
+When your monarch falls with Monarch Expendable off, your army goes with
+it, and you now stay to watch while the others fight on. The Defeat
+banner shows for three seconds, then the whole map shows with no fog.
+Tab looks through each player's eyes in turn and then back to the whole
+map, as it does for a watcher. In a multiplayer game your own fog used
+to stay up, and with nothing of yours left on the map you saw nothing of
+the battle. In a skirmish the statistics screen now waits until one side
+is left. (#441)
 
-## Asset Atlas
+The leaderboard records a beaten player who leaves before the end at
+the moment they were beaten, so leaving early never lifts anyone's
+place. (#441)
 
-[openkingdoms.net/atlas.html](https://openkingdoms.net/atlas.html) lists
-every picture, animation and 3D model in your copy of the game, with
-search, a preview and a 3D view. It reads the game files the game page
-already keeps in your browser, or asks for your game folder. Nothing
-leaves your machine.
+## Messages
 
-Models and scenery that have a Stars of Darien remaster stand beside it
-under one camera. You can keep notes, ratings and tags on any asset and
-share them as a file, export a picture, an animation's frames or a model,
-and see which file a new model has to replace. (#437)
+The line that names a fallen player now shows every time a player or a
+computer falls, the moment its army goes, in a skirmish or a multiplayer
+game. Before, it could be missed when the fall came early in a battle or
+while a battle was ending. A line about another player also asks for the
+original's message sound, which the original game files do not include,
+so it stays silent unless you add one. (#441)
+
+When a multiplayer game stops for good, because the players' battles
+fell out of step or the connection to the game server dropped, the
+message line now says so instead of leaving the battle standing still.
+(#441)
 
 ## Multiplayer compatibility
 
