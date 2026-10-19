@@ -888,11 +888,25 @@ TEST(an_injected_desync_is_caught_within_60_ticks_and_the_outlier_named) {
         ASSERT_EQ_INT(0, cl[5].stream_errors);
         ASSERT(traces_agree() >= 30);
     }
+    /* A word on a snapshot nobody was given restarts no one and holds
+     * no turn back. */
+    uint32_t head = the_room()->clock.head;
+    for (int i = 0; i < 20; i++) {
+        TAK_MsgSnapResult bogus;
+        bogus.snap_id = 999u + (uint32_t)i;
+        bogus.ok = 0;
+        up(&cl[1], TAK_Msg_SnapResultEncode(&bogus, tx, sizeof(tx)));
+        run_for(30);
+    }
+    run_for(2000);
+    ASSERT_EQ_INT(0, cl[1].resets);
+    ASSERT(the_room()->clock.head > head + 30);
 }
 
 /* Two players who part: the host's world settles it, the guest takes
- * its snapshot and plays on. A guest that cannot take it replays the
- * log from turn 0 instead, and either way every trace agrees. */
+ * its snapshot and plays on. When the guest cannot take it both replay
+ * the log from turn 0, as before snapshots, and either way every trace
+ * agrees. */
 TEST(two_players_that_part_take_the_hosts_world) {
     for (int pass = 0; pass < 2; pass++) {
         setup(20, 40, 7);
@@ -906,7 +920,8 @@ TEST(two_players_that_part_take_the_hosts_world) {
         ASSERT(sim1 >= 0);
         ASSERT_EQ_INT(0, rr->clock.halted);
         ASSERT_EQ_INT(1 << sim1, (int)rr->clock.desync.outliers);
-        ASSERT_EQ_INT(0, cl[0].resets + cl[0].snap_loads);
+        ASSERT_EQ_INT(pass ? 1 : 0, cl[0].resets);
+        ASSERT_EQ_INT(0, cl[0].snap_loads);
         ASSERT_EQ_INT(pass ? 0 : 1, cl[1].snap_loads);
         ASSERT_EQ_INT(pass ? 1 : 0, cl[1].resets);
         ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, rr->clock.sim[sim1].status);

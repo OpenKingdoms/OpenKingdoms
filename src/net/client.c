@@ -231,6 +231,9 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
         memset(c->seat_status, TAK_PSTATUS_CONNECTED, sizeof c->seat_status);
         turns_reset(c);
         c->resigned = 0;
+        /* Nothing of a snapshot outlives the match it was for. */
+        c->snap_asked = 0;
+        TAK_NetClient_Free(c);
         c->next_turn = 0;
         c->last_turn_held = 0;
         c->cmd_seq = 0;
@@ -255,6 +258,11 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
         if (c->state == TAK_NC_PLAYING) {
             turns_reset(c);
             c->resync = 1;
+            /* A snapshot for any other turn, whole or part way, is of an
+             * attempt the relay gave up on. */
+            uint32_t ticks = c->start.turn_ticks ? c->start.turn_ticks : 3;
+            if (c->snap_in && c->snap_in_tick != m.first_turn * ticks)
+                TAK_NetClient_SnapshotDrop(c);
         }
         c->next_turn = m.first_turn;
         c->state = TAK_NC_PLAYING;

@@ -1052,6 +1052,11 @@ static int loading_apply_pending_save(TAK_Platform *platform) {
         MP_SnapshotApplied();
         return 0;
     }
+    if (MP_SnapshotApplyFailed(platform)) {
+        Loading_Shutdown();
+        (void)Loading_Init(platform);
+        return -1;
+    }
     strncpy(s_save_refusal, err[0] ? err : "This save could not be loaded.",
             sizeof(s_save_refusal) - 1);
     s_save_refusal[sizeof(s_save_refusal) - 1] = '\0';
@@ -1117,6 +1122,8 @@ static int loading_match_ready(void) {
     TAK_NetClient *c = NetSession_Client();
     if (!c) return 1;
     if (c->state == TAK_NC_PLAYING) {
+        /* A world the relay will restart holds here for that GO. */
+        if (MP_SnapshotRejected()) return 0;
         /* GO arrived. From here the simulation runs on turns. */
         if (!TAK_Match_IsLive()) {
             /* From turn 0, or from a snapshot's turn. */

@@ -100,6 +100,13 @@ int MP_RebuildMatchWorld(TAK_Platform *platform);
 void MP_SnapshotApplied(void);
 /* Whether the last rebuild came from a snapshot. */
 int  MP_RebuiltFromSnapshot(void);
+/* A snapshot that would not apply: the relay is told, and the world is
+ * built again as the match began. 1 when the loading screen has a new
+ * world to load, 0 when this was no snapshot. */
+int  MP_SnapshotApplyFailed(TAK_Platform *platform);
+/* The world loaded is not the one the relay will send turns for, until
+ * the GO that restarts it from the log. */
+int  MP_SnapshotRejected(void);
 
 /* The seat whose sidebar a watcher starts on, 0 based: the first human,
  * else the first computer player. */

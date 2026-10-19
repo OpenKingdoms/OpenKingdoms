@@ -196,6 +196,12 @@ typedef struct TAK_TurnClock {
     /* The world a two way split is settled by, the host's, or -1. */
     int               ref_sim;
     uint32_t          snap_exclude;   /* outliers being flagged now */
+    /* A two way split settled by a snapshot: the world that settled it,
+     * the ones taking it, and how many a match had. Such a match cannot
+     * be told from one a host rewrote, which the ledger hears. */
+    int               split_ref;
+    uint32_t          split_targets;
+    uint32_t          splits_by_snapshot;
 
     uint8_t           started;
     uint8_t           paused;         /* by a player, N-004 */
@@ -286,6 +292,9 @@ void TAK_TurnClock_SetReference(TAK_TurnClock *c, int sim);
 int  TAK_TurnClock_SnapDonor(const TAK_TurnClock *c, uint32_t exclude);
 void TAK_TurnClock_SnapshotDone(TAK_TurnClock *c, int sim, uint32_t from_turn,
                                 uint64_t now_ms);
+/* Replay the log to a world from turn 0, as when it is found wrong after
+ * its snapshot loaded. The turns keep their time. */
+void TAK_TurnClock_Restart(TAK_TurnClock *c, int sim, uint64_t now_ms);
 
 /* Whether a catch up to the head could be sent now: the log still holds
  * every turn of the match. */

@@ -113,9 +113,12 @@ typedef struct TAK_RelayRoom {
         uint32_t targets;
         uint32_t tick, total, got;
         uint8_t *buf;
-        uint64_t asked_ms;
+        uint64_t heard_ms;      /* asked, or the donor's last piece */
         uint32_t sent[TAK_TURN_SIMS_MAX];
     } snap;
+    /* The snapshot each world last took, which alone may later be found
+     * wanting, once. */
+    uint32_t          snap_given[TAK_TURN_SIMS_MAX];
 } TAK_RelayRoom;
 
 struct TAK_Ledger;

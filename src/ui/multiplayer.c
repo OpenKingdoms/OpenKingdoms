@@ -879,6 +879,9 @@ static void mp_config_from_start(const TAK_MsgStartGame *sg,
 static uint32_t mp_snap_hash;
 static int      mp_snap_armed;
 static int      mp_snap_used;
+/* The relay was told this world cannot be the snapshot's, so its next GO
+ * restarts it from the log and nothing may run before that. */
+static int      mp_snap_rejected;
 
 /* Seats count from zero on the wire and players from one. A watcher sees
  * the whole map through the first player's sidebar. */
@@ -898,6 +901,7 @@ int MP_RebuildMatchWorld(TAK_Platform *platform) {
     TAK_Match_End();
     mp_snap_armed = 0;
     mp_snap_used = 0;
+    mp_snap_rejected = 0;
     uint32_t tick = 0;
     TAK_SaveGame *sg = NetSession_TakeSnapshot(&tick);
     uint8_t ticks = c->start.turn_ticks ? c->start.turn_ticks : 3;
@@ -919,7 +923,8 @@ int MP_RebuildMatchWorld(TAK_Platform *platform) {
     if (sg) Save_ReadClose(sg);
     /* A GO for a snapshot this world cannot take: the whole log instead. */
     if (c->next_turn > 0) {
-        (void)TAK_NetClient_SnapshotResult(c, 0);
+        /* Held until the relay's GO for turn 0, when it heard us. */
+        mp_snap_rejected = TAK_NetClient_SnapshotResult(c, 0) == 0;
         c->next_turn = 0;
     }
     fprintf(stderr, "Match: rebuilding the world from the server's turn log\n");
@@ -935,7 +940,27 @@ void MP_SnapshotApplied(void) {
     fprintf(stderr, "Match: the snapshot loaded as %08x, not %08x\n",
             (unsigned)now, (unsigned)mp_snap_hash);
     TAK_NetClient *c = NetSession_Client();
-    if (c) (void)TAK_NetClient_SnapshotResult(c, 0);
+    if (c) mp_snap_rejected = TAK_NetClient_SnapshotResult(c, 0) == 0;
+}
+
+int MP_SnapshotApplyFailed(TAK_Platform *platform) {
+    if (!mp_snap_armed) return 0;
+    mp_snap_armed = 0;
+    TAK_NetClient *c = NetSession_Client();
+    if (!c) return 0;
+    /* Not a reason to leave the match: the relay replays the log, into a
+     * world built as the match began. */
+    fprintf(stderr, "Match: the snapshot would not apply, asking for the log\n");
+    mp_snap_rejected = TAK_NetClient_SnapshotResult(c, 0) == 0;
+    c->next_turn = 0;
+    World_End(platform);
+    return MP_BeginMatchWorld(platform, &c->start) == 0;
+}
+
+int MP_SnapshotRejected(void) {
+    TAK_NetClient *c = NetSession_Client();
+    if (mp_snap_rejected && c && c->resync) mp_snap_rejected = 0;
+    return mp_snap_rejected;
 }
 
 int MP_RebuiltFromSnapshot(void) { return mp_snap_used; }
@@ -944,6 +969,9 @@ int MP_RebuiltFromSnapshot(void) { return mp_snap_used; }
  * a message and a way back rather than a screen that never finishes. */
 int MP_BeginMatchWorld(TAK_Platform *platform, const TAK_MsgStartGame *sg) {
     if (!sg->map_name[0]) return -1;
+    /* A snapshot left over belongs to no world built from the start. */
+    TAK_SaveGame *stale = NetSession_TakeSnapshot(NULL);
+    if (stale) Save_ReadClose(stale);
     BattleConfig cfg;
     mp_config_from_start(sg, &cfg);
     char kingdom[32];

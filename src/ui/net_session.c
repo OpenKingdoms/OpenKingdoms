@@ -40,8 +40,9 @@ static struct {
      * the GO that names its turn, and the id last read. */
     TAK_SaveGame   *snap;
     uint32_t        snap_tick;
-    uint32_t        snap_read_id;
-    uint64_t        snap_since_ms;  /* when the one pending began */
+    /* When the one pending last moved, and how far it had come. */
+    uint64_t        snap_since_ms;
+    uint32_t        snap_progress;
 } g_session;
 
 /* Queue a snapshot going up while the link keeps up, and read one that
@@ -53,11 +54,14 @@ static void session_snapshots(uint64_t now_ms) {
     TAK_NetClient *c = &g_session.client;
     if (c->snap_out && (!g_session.has_link || TAK_NetLink_Backlog() < SNAP_BACKLOG_MAX))
         (void)TAK_NetClient_SnapshotPump(c, 2u * TAK_NET_SNAP_CHUNK);
-    /* One that never finishes arriving, or whose GO never comes, gives
-     * way to the whole log rather than hold the battle behind a plate. */
+    /* One that stops arriving, or whose GO never comes, gives way to the
+     * whole log rather than hold the battle behind a plate. */
+    uint32_t progress = c->snap_in_got + (g_session.snap ? 1u : 0u);
     if (!NetSession_SnapshotPending()) g_session.snap_since_ms = 0;
-    else if (!g_session.snap_since_ms) g_session.snap_since_ms = now_ms ? now_ms : 1;
-    else if (now_ms - g_session.snap_since_ms > SNAP_PENDING_MS) {
+    else if (!g_session.snap_since_ms || progress != g_session.snap_progress) {
+        g_session.snap_since_ms = now_ms ? now_ms : 1;
+        g_session.snap_progress = progress;
+    } else if (now_ms - g_session.snap_since_ms > SNAP_PENDING_MS) {
         fprintf(stderr, "Match: the snapshot never came whole, asking for the log\n");
         if (g_session.snap) Save_ReadClose(g_session.snap);
         g_session.snap = NULL;
@@ -66,8 +70,7 @@ static void session_snapshots(uint64_t now_ms) {
         (void)TAK_NetClient_SnapshotResult(c, 0);
         return;
     }
-    if (!c->snap_in_whole || c->snap_in_id == g_session.snap_read_id) return;
-    g_session.snap_read_id = c->snap_in_id;
+    if (!c->snap_in_whole) return;
     char err[192];
     TAK_SaveGame *sg = Save_ReadMemory(c->snap_in, c->snap_in_len, err, sizeof err);
     if (!sg) fprintf(stderr, "Match: the snapshot cannot be read: %s\n", err);

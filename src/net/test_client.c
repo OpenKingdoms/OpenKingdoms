@@ -1372,6 +1372,19 @@ TEST(a_snapshot_goes_up_in_pieces_and_comes_down_whole) {
     ASSERT_EQ_INT(0, TAK_Msg_SnapResultDecode(&r, f.payload, f.payload_len));
     ASSERT_EQ_INT(4, (int)r.snap_id);
     ASSERT_EQ_INT(1, r.ok);
+    /* A GO for another turn ends a snapshot part way down. */
+    d.snap_id = 6;
+    d.offset = 0;
+    d.data = body;
+    n = TAK_Msg_SnapDataEncode(&d, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1900));
+    ASSERT(g_c.snap_in != NULL);
+    TAK_MsgGo go;
+    go.first_turn = 0;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1950));
+    ASSERT(g_c.snap_in == NULL);
+    ASSERT_EQ_INT(0, (int)g_c.snap_in_len);
     TAK_NetClient_Free(&g_c);
     ASSERT(g_c.snap_in == NULL);
 }

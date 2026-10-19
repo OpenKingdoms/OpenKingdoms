@@ -296,6 +296,9 @@ static void flag_outlier(TAK_TurnClock *c, int sim, uint32_t tick,
                          uint64_t now_ms) {
     TAK_TurnSim *s = &c->sim[sim];
     note_desync(c, tick, 1u << sim, 0);
+    /* Its hashes for later ticks are of the world being replaced, and
+     * would flag it a second time for the one parting. */
+    for (int r = 0; r < TAK_TURN_HASH_ROWS; r++) c->row[r].have &= ~(1u << sim);
     if (s->resynced >= TAK_TURN_SIM_RESYNCS_MAX) {
         /* Rebuilt and parted again: never a loop. It watches its own
          * world unchecked, and the computer plays a seat it held. */
@@ -384,14 +387,16 @@ static void judge(TAK_TurnClock *c, TAK_TurnHashRow *row, uint64_t now_ms) {
     if (n >= 3 && best_count * 2 > n) {
         /* Three or more worlds and a clear majority: the majority plays on
          * and each outlier is resynced. */
-        record_consensus(c, tick, best, now_ms);
-        /* No outlier gives another its world. */
+        /* No outlier gives another its world, nor a watcher found wrong
+         * on the same tick. Kept across the nested judging this does. */
+        uint32_t kept = c->snap_exclude;
         for (int i = 0; i < TAK_TURN_SIMS_MAX; i++)
             if ((have & (1u << i)) && row->hash[i] != best) c->snap_exclude |= 1u << i;
+        record_consensus(c, tick, best, now_ms);
         for (int i = 0; i < TAK_TURN_SIMS_MAX; i++)
             if ((have & (1u << i)) && row->hash[i] != best)
                 flag_outlier(c, i, tick, now_ms);
-        c->snap_exclude = 0;
+        c->snap_exclude = kept;
         return;
     }
     /* Two worlds, or no majority. There is no telling which is right,
@@ -411,8 +416,13 @@ static void judge(TAK_TurnClock *c, TAK_TurnHashRow *row, uint64_t now_ms) {
         if (ref >= 0) {
             note_desync(c, tick, have & ~(1u << ref), 0);
             record_consensus(c, tick, row->hash[ref], now_ms);
-            for (int i = 0; i < TAK_TURN_SIMS_MAX; i++)
-                if ((have & (1u << i)) && i != ref) resync_sim(c, i, ref, now_ms);
+            c->split_ref = ref;
+            c->splits_by_snapshot++;
+            for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
+                if (!(have & (1u << i)) || i == ref) continue;
+                resync_sim(c, i, ref, now_ms);
+                if (c->sim[i].awaiting_snap) c->split_targets |= 1u << i;
+            }
             return;
         }
         note_desync(c, tick, have, 0);
@@ -495,6 +505,7 @@ void TAK_TurnClock_Init(TAK_TurnClock *c, const TAK_TurnClockCfg *cfg,
     c->governor_seat = TAK_NET_SEAT_NONE;
     c->pace_seat = TAK_NET_SEAT_NONE;
     c->ref_sim = -1;
+    c->split_ref = -1;
 }
 
 int TAK_TurnClock_AddSim(TAK_TurnClock *c, uint32_t client_id, uint8_t seat,
@@ -694,7 +705,19 @@ void TAK_TurnClock_SnapshotDone(TAK_TurnClock *c, int sim, uint32_t from_turn,
     if (!valid_sim(c, sim) || !c->sim[sim].awaiting_snap) return;
     c->sim[sim].awaiting_snap = 0;
     if (from_turn > c->head) from_turn = 0;
+    int split = (c->split_targets >> sim) & 1u;
+    c->split_targets &= ~(1u << sim);
     begin_catch_up(c, sim, from_turn, now_ms);
+    /* A split the reference could not settle is settled as before: both
+     * worlds replay the log. */
+    if (split && from_turn == 0) TAK_TurnClock_Restart(c, c->split_ref, now_ms);
+}
+
+void TAK_TurnClock_Restart(TAK_TurnClock *c, int sim, uint64_t now_ms) {
+    if (!valid_sim(c, sim)) return;
+    TAK_TurnSim *s = &c->sim[sim];
+    if (s->status == TAK_PSTATUS_DROPPED || s->status == TAK_PSTATUS_LOST) return;
+    begin_catch_up(c, sim, 0, now_ms);
 }
 
 void TAK_TurnClock_SetPaced(TAK_TurnClock *c, int sim, int paced) {
