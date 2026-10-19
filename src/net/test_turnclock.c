@@ -355,6 +355,35 @@ TEST(an_outlier_is_named_at_its_tick_and_sent_back_to_turn_zero) {
     ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, clk.sim[c].status);
 }
 
+/* A world rebuilt that parts again at the same place is never sent
+ * round a loop: past its limit it is no longer checked, the computer
+ * plays its seat, and the others play on. */
+TEST(a_world_that_keeps_parting_is_left_to_watch) {
+    setup(60, TAK_LEFT_ARMY_REMOVED, 0);
+    int a = TAK_TurnClock_AddSim(&clk, 101, 0, 0);
+    int b = TAK_TurnClock_AddSim(&clk, 102, 1, 0);
+    int c = TAK_TurnClock_AddSim(&clk, 103, 2, 0);
+    TAK_TurnClock_Start(&clk, 0);
+    for (uint64_t t = 0; t <= 1000; t += 10) TAK_TurnClock_Advance(&clk, t);
+    ASSERT_EQ_INT(0, ack(a, 19, 60, 111, 1000));
+    ASSERT_EQ_INT(0, ack(b, 19, 60, 111, 1000));
+    for (int round = 0; round <= TAK_TURN_SIM_RESYNCS_MAX; round++)
+        ASSERT_EQ_INT(0, ack(c, 19, 60, 999, 1000 + (uint64_t)round));
+    ASSERT_EQ_INT(TAK_TURN_SIM_RESYNCS_MAX, count_sent(TAK_MSG_GO, c));
+    ASSERT_EQ_INT(1, clk.sim[c].unchecked);
+    ASSERT_EQ_INT(TAK_NET_SEAT_NONE, clk.sim[c].seat);
+    ASSERT_EQ_INT(TAK_LEFT_COMPUTER_TAKES_OVER, clk.seat_left_as[2]);
+    ASSERT_EQ_INT(0, clk.halted);
+    /* Its hash is not heard again, and the players play on. */
+    uint32_t count = clk.desync.count;
+    ASSERT_EQ_INT(0, ack(c, 19, 60, 999, 1100));
+    ASSERT_EQ_INT((int)count, (int)clk.desync.count);
+    uint32_t head = clk.head;
+    run(1010, 2000, (1u << a) | (1u << b) | (1u << c));
+    ASSERT(clk.head > head);
+    ASSERT_EQ_INT(TAK_TURN_SIM_RESYNCS_MAX, count_sent(TAK_MSG_GO, c));
+}
+
 /* When both clients can rebuild their worlds, two worlds that part are
  * both sent back to turn zero and the match plays on. Past the limit it
  * halts as before. */
@@ -1031,6 +1060,7 @@ int main(void) {
     RUN(a_seat_over_its_budget_and_a_watcher_are_refused);
     RUN(an_ack_for_a_turn_not_yet_closed_is_refused);
     RUN(an_outlier_is_named_at_its_tick_and_sent_back_to_turn_zero);
+    RUN(a_world_that_keeps_parting_is_left_to_watch);
     RUN(two_worlds_that_disagree_are_both_rebuilt_when_they_can_be);
     RUN(two_worlds_that_disagree_halt_the_match);
     RUN(a_catching_up_player_is_checked_against_the_agreed_hash);

@@ -161,6 +161,9 @@ typedef struct Client {
     uint16_t   protocol;                 /* said in hello, 0 the newest */
     uint32_t   build;                    /* said in hello, 0 BUILD */
     uint64_t   content;                  /* said in hello, 0 CONTENT */
+    uint16_t   loose;                    /* game folder models said in hello */
+    uint8_t    last_detail;
+    char       last_chat[TAK_NET_CHAT_MAX];
     char       mod_name[TAK_NET_MOD_NAME_MAX];
     char       mod_version[TAK_NET_MOD_VERSION_MAX];
     TAK_MsgStartGame start;
@@ -212,6 +215,8 @@ static void send_hello(Client *c, int rejoin) {
     memcpy(h.name, c->name, TAK_NET_NAME_MAX);
     memcpy(h.mod_name, c->mod_name, TAK_NET_MOD_NAME_MAX);
     memcpy(h.mod_version, c->mod_version, TAK_NET_MOD_VERSION_MAX);
+    h.loose_models = c->loose;
+    h.loose_hash = c->loose ? 0xab00u + c->loose : 0;
     up(c, TAK_Msg_HelloEncode(&h, tx, sizeof(tx)));
 }
 
@@ -355,7 +360,10 @@ static void client_handle(Client *c, const uint8_t *frame, uint32_t len) {
     }
     case TAK_MSG_REJECT: {
         TAK_MsgReject m;
-        if (!TAK_Msg_RejectDecode(&m, p, n)) c->last_reject = m.reason;
+        if (!TAK_Msg_RejectDecode(&m, p, n)) {
+            c->last_reject = m.reason;
+            c->last_detail = m.detail;
+        }
         break;
     }
     case TAK_MSG_ROOM_STATE:
@@ -366,6 +374,11 @@ static void client_handle(Client *c, const uint8_t *frame, uint32_t len) {
             if (c->room.slot[i].kind == TAK_NSLOT_HUMAN &&
                 c->room.slot[i].client_id == c->session) c->seat = (uint8_t)i;
         break;
+    case TAK_MSG_CHAT: {
+        TAK_MsgChat m;
+        if (!TAK_Msg_ChatDecode(&m, p, n)) memcpy(c->last_chat, m.text, sizeof c->last_chat);
+        break;
+    }
     case TAK_MSG_ROOM_LIST: {
         if (TAK_Msg_RoomListDecode(&c->rooms, p, n)) { c->stream_errors++; break; }
         c->lists++;
@@ -373,7 +386,8 @@ static void client_handle(Client *c, const uint8_t *frame, uint32_t len) {
          * 4 a mod set of 56 bytes a room. */
         uint16_t v = c->protocol ? c->protocol : TAK_NET_PROTOCOL_VERSION;
         size_t want = 2u + 175u * c->rooms.count + (v >= 3 ? 2u * c->rooms.count : 0u) +
-                      (v >= 4 ? 56u * c->rooms.count : 0u);
+                      (v >= 4 ? 56u * c->rooms.count : 0u) +
+                      (v >= 8 ? 10u * c->rooms.count : 0u);
         if (n != want) c->list_len_bad++;
         break;
     }
@@ -504,6 +518,7 @@ static uint16_t g_hello_protocol;
 /* Set, every new client plays this mod set on this data. */
 static const char *g_hello_mod, *g_hello_mod_version;
 static uint64_t g_hello_content;
+static uint16_t g_hello_loose;
 /* Set, every new client types this name. */
 static const char *g_hello_name;
 /* A client at this index sends no token, as one from before tokens. */
@@ -526,6 +541,7 @@ static Client *new_client(int watcher) {
     if (g_hello_mod_version)
         snprintf(c->mod_version, sizeof(c->mod_version), "%s", g_hello_mod_version);
     c->content = g_hello_content;
+    c->loose = g_hello_loose;
     if (ncl == g_blank_token_at) memset(c->token, 0, sizeof(c->token));
     ncl++;
     c->conn = TAK_FakeNet_Connect(&net);
@@ -571,6 +587,7 @@ static void setup(uint32_t latency, uint32_t jitter, uint32_t seed) {
     g_hello_name = NULL;
     g_hello_mod = g_hello_mod_version = NULL;
     g_hello_content = 0;
+    g_hello_loose = 0;
     g_blank_token_at = -1;
     memset(g_team, 0, sizeof g_team);
     for (int i = 0; i < N_MAX; i++) { free(cl[i].inbox.p); free(cl[i].rec.p); }
@@ -960,6 +977,35 @@ TEST(the_room_list_shows_the_hosts_ping_and_older_clients_read_it_as_before) {
     ASSERT_EQ_INT(0, host->stream_errors);
     ASSERT_EQ_INT(0, newer->stream_errors);
     ASSERT(older->done_turns > 20 && host->done_turns > 20);
+}
+
+/* A host whose game folder has models the joiner's lacks keeps it out,
+ * and both are told which folder and how many before any match. */
+TEST(a_model_folder_that_differs_is_named_to_both_sides) {
+    setup(20, 10, 61);
+    g_hello_loose = 20;
+    g_hello_content = 0x5eedull;
+    Client *host = new_client(0);
+    g_hello_loose = 0;
+    g_hello_content = 0;
+    Client *guest = new_client(0);
+    run_for(500);
+    ASSERT(create_room(host, 0, 60));
+    run_for(3000);
+    ASSERT_EQ_INT(1, guest->rooms.count);
+    ASSERT_EQ_INT(TAK_REJECT_DATA_MISMATCH, guest->rooms.room[0].compat);
+    ASSERT_EQ_INT(20, guest->rooms.room[0].loose_models);
+    ASSERT(guest->rooms.room[0].loose_hash == 0xab00u + 20u);
+    ASSERT_EQ_INT(0, guest->list_len_bad);
+
+    join_code(guest, host->room.code, 0);
+    run_for(800);
+    ASSERT_EQ_INT(TAK_REJECT_DATA_MISMATCH, guest->last_reject);
+    ASSERT_EQ_INT(TAK_REJECT_DETAIL_MODELS | 20, guest->last_detail);
+    ASSERT(!guest->have_room);
+    printf("(host reads \"%s\") ", host->last_chat);
+    ASSERT(strstr(host->last_chat, "P1 could not join.") == host->last_chat);
+    ASSERT(strstr(host->last_chat, "Your game folder has 20 models in objects3d") != NULL);
 }
 
 /* A room says which mod set its host plays, and a result is filed
@@ -1836,6 +1882,7 @@ int main(void) {
     RUN(the_starts_reach_newer_clients_and_older_ones_still_play);
     RUN(the_room_list_shows_the_hosts_ping_and_older_clients_read_it_as_before);
     RUN(a_room_names_its_mod_set_and_its_result_is_filed_under_it);
+    RUN(a_model_folder_that_differs_is_named_to_both_sides);
     RUN(a_rejoin_on_another_build_does_not_take_the_seat);
     RUN(a_spectator_joins_mid_game_and_catches_up_without_a_pause);
     RUN(a_watcher_changes_nothing_the_players_receive);

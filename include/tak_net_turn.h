@@ -127,6 +127,10 @@ typedef struct TAK_TurnSim {
     /* Its client rebuilds its world and replays the log when told to,
      * so two worlds that part are both resynced rather than halted. */
     uint8_t  resyncs;
+    /* Times this world was sent back to turn zero, and whether it is
+     * still compared at all: one that keeps parting is left to watch. */
+    uint8_t  resynced;
+    uint8_t  unchecked;
     /* A watcher's hash for a tick the players have not agreed yet. It is
      * checked once they have, and never counts towards the agreement. */
     uint8_t  pend_set;
@@ -254,6 +258,8 @@ void TAK_TurnClock_SetPaced(TAK_TurnClock *c, int sim, int paced);
  * with no majority resyncs them all from turn zero, at most
  * TAK_TURN_RESYNCS_MAX times a match, and halts after that. */
 #define TAK_TURN_RESYNCS_MAX 4
+/* How often one world may be rebuilt before it is no longer checked. */
+#define TAK_TURN_SIM_RESYNCS_MAX 2
 void TAK_TurnClock_SetResyncs(TAK_TurnClock *c, int sim, int on);
 
 /* Whether a catch up to the head could be sent now: the log still holds

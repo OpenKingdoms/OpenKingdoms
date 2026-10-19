@@ -177,6 +177,8 @@ static void fill_hello(TAK_MsgHello *h, const char *player_name) {
         h->content_hash = fp->content;
         for (int g = 0; g < TAK_NET_GROUP_HASHES && g < TAK_DATA_GROUP_COUNT; g++)
             h->group_hash[g] = fp->group[g];
+        h->loose_models = (uint16_t)(fp->loose_models < 0xffff ? fp->loose_models : 0xffff);
+        h->loose_hash = fp->loose_hash;
     }
     /* The mod set's name beside those hashes, which a room shows on its
      * row and files its results under. The hashes still decide. */

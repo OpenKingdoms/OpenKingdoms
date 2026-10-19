@@ -590,6 +590,8 @@ static void summary_mod(const TAK_RelayRoom *rr, TAK_RoomSummary *s) {
     memcpy(s->mod_name, rr->mod_name, sizeof s->mod_name);
     memcpy(s->mod_version, rr->mod_version, sizeof s->mod_version);
     s->content_hash = rr->content_hash;
+    s->loose_models = rr->loose_models;
+    s->loose_hash = rr->loose_hash;
 }
 
 static void on_list(TAK_Relay *r, TAK_RelayClient *cl) {
@@ -701,6 +703,8 @@ static void on_create(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgCreateRoom
     memcpy(rr->group_hash, cl->hello.group_hash, sizeof(rr->group_hash));
     memcpy(rr->mod_name, cl->hello.mod_name, sizeof(rr->mod_name));
     memcpy(rr->mod_version, cl->hello.mod_version, sizeof(rr->mod_version));
+    rr->loose_models = cl->hello.loose_models;
+    rr->loose_hash = cl->hello.loose_hash;
     rr->protocol = cl->hello.protocol_version;
     cl->room = room_index(r, rr);
     send_room_state(r, rr);
@@ -808,6 +812,22 @@ static void note_takeover(TAK_Relay *r, TAK_RelayRoom *rr, int sim, TAK_RelayCli
     memcpy(rr->seat_token[seat], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
 }
 
+/* The host hears who was turned away for a game folder whose models
+ * differ, and what to change, while the room is still a lobby. */
+static void tell_host_models(TAK_Relay *r, TAK_RelayRoom *rr,
+                             const TAK_RelayClient *cl) {
+    TAK_RelayClient *host = TAK_Relay_FindClient(r, rr->room.host_client_id);
+    if (!host || rr->room.status > TAK_ROOM_LOCKED) return;
+    TAK_MsgChat m;
+    memset(&m, 0, sizeof m);
+    m.scope = TAK_CHAT_SYSTEM;
+    m.from_seat = TAK_NET_SEAT_NONE;
+    m.to_seat = TAK_NET_SEAT_NONE;
+    TAK_Net_ModelFolderAdvice(m.text, sizeof m.text, cl->hello.name,
+                              rr->loose_models, cl->hello.loose_models);
+    send_frame(r, host, r->out, TAK_Msg_ChatEncode(&m, r->out, sizeof(r->out)));
+}
+
 static void on_join(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgJoinRoom *m) {
     if (cl->room >= 0) { send_reject(r, cl, TAK_REJECT_NOT_ALLOWED, 0); return; }
     TAK_RelayRoom *rr = m->room_id ? TAK_Relay_FindRoom(r, m->room_id)
@@ -825,6 +845,12 @@ static void on_join(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgJoinRoom *m)
         uint8_t group = TAK_NET_SEAT_NONE;
         for (int g = 0; g < TAK_NET_GROUP_HASHES; g++)
             if (cl->hello.group_hash[g] != rr->group_hash[g]) { group = (uint8_t)g; break; }
+        if (cl->hello.protocol_version >= 8 && rr->protocol >= 8 &&
+            cl->hello.loose_hash != rr->loose_hash) {
+            group = (uint8_t)(TAK_REJECT_DETAIL_MODELS |
+                              (rr->loose_models < 127 ? rr->loose_models : 127));
+            tell_host_models(r, rr, cl);
+        }
         send_reject(r, cl, TAK_REJECT_DATA_MISMATCH, group);
         return;
     }

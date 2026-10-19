@@ -24167,12 +24167,12 @@ TEST(skirmish_lost_battle_plays_on_between_the_computers) {
 
     /* One computer left: the battle stops where it stands, quietly, but
      * for the line that names the fallen one and its cue. */
-    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("MessageArrived"));
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("#fallen"));
     Units_KillAllOf(3);
     for (int t = 0; t < 40 && !world->skirmish_game_over; t++) InGame_DebugRunSimTicks(30);
     ASSERT_EQ_INT(1, world->skirmish_game_over);
     ASSERT_EQ_INT(1, fallen_lines_for(3));
-    ASSERT_EQ_INT(1, GameSound_DebugCountPrefix("MessageArrived"));
+    ASSERT_EQ_INT(1, GameSound_DebugCountPrefix("#fallen"));
     ASSERT_EQ_INT(0, InGame_PlayingOn());
     ASSERT_EQ_INT(0, InGame_PlayOn());
     ASSERT_EQ_INT(end_tick, world->skirmish_end_tick);
@@ -24290,6 +24290,125 @@ TEST(a_seat_beaten_in_a_match_watches_the_rest_of_it) {
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
+}
+
+/* A beaten seat's match played as frames, the monarch falling at one
+ * second. look_around presses Tab, scrolls and clicks as a watcher does.
+ * Fills hash[k] with the hash it reported for tick 60 * (k + 1) and
+ * says whether it gave its seat up to watch. */
+#define BW_HASHES 16
+static int beaten_watch_run(TAK_Platform *platform, int look_around,
+                            uint32_t hash[BW_HASHES], int *resigned) {
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "Angvir's Maze", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 0;
+    cfg.players[1].kind = TAK_SLOT_HUMAN;
+    cfg.players[2].kind = TAK_SLOT_AI;
+    cfg.players[2].side = TAK_SIDE_VERUNA;
+    cfg.players[2].team = 3;
+    cfg.players[2].color = 2;
+    if (World_BeginLoad(platform, &cfg, cfg.map_name, "aramon") != 0) return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 21);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1000);
+    n = pl_encode_start(msg, sizeof msg, 0);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1100);
+    if (pl_run_loading(platform, 900) != GAMESTATE_GAME_LOADING) return -1;
+    TAK_MsgGo go;
+    go.first_turn = 0;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1200);
+    if (pl_run_loading(platform, 8) != GAMESTATE_IN_GAME) return -1;
+    if (InGame_Init(platform) != 0) return -1;
+
+    TAK_MsgTurn turn;
+    memset(&turn, 0, sizeof turn);
+    turn.empty_run = 40;
+    n = TAK_Msg_TurnEncode(&turn, msg, sizeof msg);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1300);
+    uint32_t next_turn = 40;
+    (void)TAK_Match_Pump();
+    InGame_DebugRunSimTicks(60);
+    int monarch = end_find_monarch(1);
+    if (monarch < 0 || Units_DebugKillHandle(monarch) != monarch) return -1;
+
+    memset(hash, 0, BW_HASHES * sizeof hash[0]);
+    *resigned = 0;
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 6;
+    for (int frame = 0; frame < 220 && TAK_CmdQueue_Tick() < 60u * BW_HASHES; frame++) {
+        turn.turn = next_turn;
+        turn.empty_run = 2;
+        next_turn += 2;
+        n = TAK_Msg_TurnEncode(&turn, msg, sizeof msg);
+        (void)TAK_NetClient_OnMessage(c, msg, n, 1400 + (uint64_t)frame * 100);
+        if (look_around) {
+            InGame_DebugMouse(1, 40 + (frame * 37) % 560, 30 + (frame * 23) % 400,
+                              frame % 7 == 0 ? SDL_BUTTON_LMASK : 0);
+            if (frame % 9 == 0) InGame_DebugKeyFrame(SDL_SCANCODE_TAB, NULL);
+            else if (frame % 9 == 3) InGame_DebugKeyFrame(SDL_SCANCODE_RIGHT, NULL);
+            else if (frame % 9 == 6) InGame_DebugKeyFrame(SDL_SCANCODE_DOWN, NULL);
+            else InGame_DebugKeyFrame(0, NULL);
+        }
+        timer.accumulator = timer.sim_dt * 6.0;
+        (void)InGame_Tick(platform, &timer);
+        uint8_t out[TAK_NET_FRAME_MAX];
+        size_t got;
+        while ((got = TAK_NetClient_TakeMessage(c, out, sizeof out)) > 0) {
+            TAK_NetFrame f;
+            if (TAK_Net_Split(out, got, &f) != 0) continue;
+            TAK_MsgAck a;
+            TAK_MsgRoomEdit e;
+            if (f.type == TAK_MSG_ACK && TAK_Msg_AckDecode(&a, f.payload, f.payload_len) == 0 &&
+                a.hash_tick != TAK_NET_NO_HASH && a.hash_tick % 60 == 0 && a.hash_tick > 0 &&
+                a.hash_tick / 60 <= BW_HASHES)
+                hash[a.hash_tick / 60 - 1] = (uint32_t)a.state_hash;
+            if (f.type == TAK_MSG_ROOM_EDIT &&
+                TAK_Msg_RoomEditDecode(&e, f.payload, f.payload_len) == 0 &&
+                e.field == TAK_EDIT_WATCH)
+                (*resigned)++;
+        }
+    }
+    InGame_DebugMouse(0, 0, 0, 0);
+    int reached = (int)TAK_CmdQueue_Tick();
+    TAK_Match_End();
+    NetSession_Disconnect();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(platform);
+    Settings_SetStr("RejoinMatch", "");
+    return reached;
+}
+
+/* What a beaten seat does while it watches is the view's alone: Tab,
+ * the camera and the mouse leave the battle where the plain run left
+ * it, hash for hash, and the seat is given up to watch once. */
+TEST(a_beaten_seat_looking_around_keeps_the_battles_hash) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    uint32_t plain[BW_HASHES], looked[BW_HASHES];
+    int resigned_plain = 0, resigned_looked = 0;
+    int reached_plain = beaten_watch_run(&platform, 0, plain, &resigned_plain);
+    int reached_looked = beaten_watch_run(&platform, 1, looked, &resigned_looked);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    printf("(ticks %d and %d) ", reached_plain, reached_looked);
+    ASSERT(reached_plain >= 60 * BW_HASHES);
+    ASSERT(reached_looked >= 60 * BW_HASHES);
+    for (int k = 0; k < BW_HASHES; k++) {
+        ASSERT(plain[k] != 0);
+        ASSERT_EQ_INT((int)plain[k], (int)looked[k]);
+    }
+    ASSERT_EQ_INT(1, resigned_plain);
+    ASSERT_EQ_INT(1, resigned_looked);
 }
 
 /* Monarch Expendable on: the original keeps a player in the battle
@@ -30151,6 +30270,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_player_whose_tab_closed_gets_back_into_the_match);
     RUN_UI_TEST(a_match_reports_the_verdict_to_the_server_once);
     RUN_UI_TEST(a_seat_beaten_in_a_match_watches_the_rest_of_it);
+    RUN_UI_TEST(a_beaten_seat_looking_around_keeps_the_battles_hash);
     RUN_UI_TEST(a_skirmish_still_starts_the_moment_its_world_is_built);
     RUN_UI_TEST(a_frame_the_builder_is_walking_to_is_not_abandoned);
     RUN_UI_TEST(mp_room_follows_the_servers_later_snapshot);

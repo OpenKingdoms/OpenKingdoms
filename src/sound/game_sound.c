@@ -8,6 +8,7 @@
  */
 
 #include "tak_game_sound.h"
+#include "tak_fallen_cue.h"
 #include "tak_sound.h"
 #include "tak_soundclass.h"
 #include "tak_hpi.h"
@@ -195,6 +196,25 @@ void GameSound_WeaponHit(const char *hitclass, const char *material,
 
 void GameSound_PlayUI(const char *wav_name) {
     play_flat(wav_name, 0x7f, 7);
+}
+
+/* The fallen player cue, made once and kept beside the named sounds. */
+#define FALLEN_CUE_NAME "#fallen"
+void GameSound_PlayFallen(void) {
+    TAK_SoundEffect *sfx = NULL;
+    if (!cache_lookup(FALLEN_CUE_NAME, &sfx)) {
+        size_t n = TAK_FallenCue_WavBytes();
+        uint8_t *wav = (uint8_t *)tak_malloc(n);
+        if (wav && TAK_FallenCue_Wav(wav, n) == n)
+            sfx = TAK_Sound_LoadWAVFromMemory(wav, (uint32_t)n);
+        tak_free(wav);
+        if (!cache_insert(FALLEN_CUE_NAME, sfx)) {
+            TAK_Sound_Unload(sfx);
+            sfx = NULL;
+        }
+    }
+    record_event(FALLEN_CUE_NAME, 0x7f, 0x40, 7, 0, 0, 0, sfx != NULL);
+    if (sfx) (void)TAK_Sound_Play(sfx, 0x7f, 0x40, 7);
 }
 
 int GameSound_Play2D(const char *wav_name, int volume, int priority) {

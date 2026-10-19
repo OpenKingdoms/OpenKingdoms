@@ -29,6 +29,8 @@ void GameSound_WeaponHit(const char *hitclass, const char *material,
 
 /* Interface cue: centre pan, full volume, priority 7 (legacy:221090). */
 void GameSound_PlayUI(const char *wav_name);
+/* The cue a fallen player is announced with, on every machine (D-043). */
+void GameSound_PlayFallen(void);
 
 /* Any centre-panned play with an explicit volume and priority. Widget
  * clicks use 0x55 at priority 4 (legacy:332867). 1 when it plays, 0

@@ -85,6 +85,11 @@ static struct {
     uint8_t sd_was_paused;
     uint8_t sd_prev_enter, sd_prev_esc;
     uint8_t catching_up;   /* this frame ran extra ticks to catch the match up */
+    /* Rebuilt by a resync and replaying behind a plate, at least to the
+     * tick the old world had reached. */
+    uint8_t rejoining;
+    uint32_t rejoin_until;
+    uint32_t seat_gone_ticks;
     /* Who played each seat at the last tick, and the line that says a
      * seat changed hands, with the tick it changed on. */
     uint8_t  seat_kind[TAK_MAX_PLAYERS];
@@ -128,6 +133,11 @@ int InGame_TakeResync(void) {
     int r = ig_resync;
     ig_resync = 0;
     return r;
+}
+
+void InGame_SetRejoining(uint32_t until_tick) {
+    ig.rejoining = 1;
+    ig.rejoin_until = until_tick;
 }
 
 static const TAK_View *ig_view(void) {
@@ -360,9 +370,9 @@ static void InGame_AnnounceFallen(const GameWorld *world, int player_id) {
                      name, at + 2);
     else snprintf(line, sizeof line, "%s", form);
     Chat_Push(line, CHAT_TYPE_MINE, player_id, SDL_GetTicks());
-    /* A line about another player comes with the message cue
-     * (legacy:205815). */
-    if (player_id != ig.own_seat) GameSound_PlayUI("MessageArrived");
+    /* Every fall is heard, our own cue (D-043), but not the old ones a
+     * catch up replays. */
+    if (TAK_Match_TicksBehind() <= SIM_TICKS_PER_SECOND) GameSound_PlayFallen();
 }
 
 /* The verdict belongs to the simulation and is the same on every
@@ -452,6 +462,21 @@ static void InGame_EvaluateSkirmishRules(GameWorld *world) {
         have[p] = player_units_present(world, p, units, unit_count);
         if (ig.had_units[p] && have[p] <= 0) InGame_AnnounceFallen(world, p);
         ig.had_units[p] = (uint8_t)(have[p] > 0);
+    }
+    /* The relay gave this seat to the computer after its world kept
+     * parting from the others. Held five seconds, since a seat coming
+     * back after a drop is the computer's for a turn or two. */
+    int gone = TAK_Match_IsLive() && !ig.beaten && !ig.rejoining &&
+               ig.own_seat >= 1 && ig.own_seat <= TAK_MAX_PLAYERS &&
+               TAK_Match_TicksBehind() <= SIM_TICKS_PER_SECOND &&
+               (world->resigned[ig.own_seat] ||
+                world->cfg.players[ig.own_seat - 1].kind == TAK_SLOT_AI);
+    ig.seat_gone_ticks = gone ? ig.seat_gone_ticks + 1 : 0;
+    if (ig.seat_gone_ticks > 5u * SIM_TICKS_PER_SECOND) {
+        ig_watch_beaten(world->skirmish_elapsed_ticks);
+        Chat_Push("Your battle kept going out of step, so the computer plays your "
+                  "army and you watch.", CHAT_TYPE_NOTICE, CHAT_OWNER_SYSTEM,
+                  SDL_GetTicks());
     }
     if (world->skirmish_game_over) return;
     int built = 0;
@@ -1927,9 +1952,10 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * frame spends its budget catching up rather than the four ticks a
      * frame the clock allows. */
     ig.catching_up = 0;
-    if (TAK_Match_IsLive() && TAK_Match_TicksBehind() > SIM_TICKS_PER_SECOND) {
+    if (TAK_Match_IsLive() &&
+        (ig.rejoining || TAK_Match_TicksBehind() > SIM_TICKS_PER_SECOND)) {
         ig.catching_up = 1;
-        uint64_t until = SDL_GetTicks64() + 12;
+        uint64_t until = SDL_GetTicks64() + (ig.rejoining ? 50 : 12);
         while (SDL_GetTicks64() < until) {
             /* The queue takes 128 turns at a time. */
             if (!TAK_Match_CanAdvance() && TAK_Match_Pump() == 0) break;
@@ -1944,6 +1970,21 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * (legacy:242401-242416). The number on screen does not move. */
     GameSpeed_NoteFrame(sim_ticks, timer->max_ticks_per_frame);
     GameSpeed_AgeMessage(Timer_GetFrameDT(timer));
+
+    /* After a resync the replay runs behind a plate, not on the screen,
+     * until the battle is back at the present. */
+    if (ig.rejoining) {
+        if (TAK_CmdQueue_Tick() >= ig.rejoin_until &&
+            TAK_Match_TicksBehind() <= SIM_TICKS_PER_SECOND) {
+            ig.rejoining = 0;
+        } else {
+            if (off) SDL_FillRect(off, NULL, SDL_MapRGBA(off->format, 0, 0, 0, 255));
+            HUD_DrawMessageLine(platform, "Rejoining the battle...");
+            UI_Present(platform);
+            memcpy(ig.prev_keys, SDL_GetKeyboardState(NULL), sizeof(ig.prev_keys));
+            return GAMESTATE_IN_GAME;
+        }
+    }
 
     /* The statistics screen replaces the battle view and owns the
      * input until one of its buttons leaves (legacy:244079-244086).

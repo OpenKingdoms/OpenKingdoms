@@ -930,6 +930,41 @@ TEST(a_changed_model_moves_the_units_group) {
     ASSERT(c.content != a.content);
 }
 
+static void write_text_file(const char *path, const char *text);
+
+/* A model in the game folder's objects3d is the one the simulation
+ * loads, so it is the one hashed, and one only the folder has counts. */
+TEST(a_model_in_the_game_folder_moves_the_units_group) {
+    TestHPIEntry m[6];
+    memcpy(m, k_fp_base, sizeof k_fp_base);
+    TestHPIEntry model = { "objects3d/aramon.3do", "\x01\x00\x02", 1000, 3 };
+    m[5] = model;
+    TAK_DataFingerprint archive, loose;
+    ASSERT_EQ_INT(0, fp_mount(m, 6, NULL, 0, &archive));
+    ASSERT_EQ_INT(0, archive.loose_models);
+
+    ensure_clean_vfs();
+    arc_dir_create();
+    tak_test_mkdir("test_vfs_archives_tmp/ObjectS3D");
+    write_text_file("test_vfs_archives_tmp/ObjectS3D/Aramon.3do", "\x05\x06");
+    write_text_file("test_vfs_archives_tmp/ObjectS3D/extra.3do", "\x04");
+    int w = test_write_hpi("test_vfs_archives_tmp/alpha.hpi", m, 6);
+    int rc = w == 0 ? VFS_Init(ARC_DIR, NULL) : -1;
+    if (rc == 0) rc = TAK_DataFingerprint_Compute(&loose);
+    VFS_Shutdown();
+    remove("test_vfs_archives_tmp/ObjectS3D/Aramon.3do");
+    remove("test_vfs_archives_tmp/ObjectS3D/extra.3do");
+    tak_test_rmdir("test_vfs_archives_tmp/ObjectS3D");
+    arc_dir_remove();
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT(2, loose.loose_models);
+    ASSERT(loose.loose_hash != 0);
+    ASSERT_EQ_INT(3, loose.files[TAK_DATA_GROUP_UNITS]);
+    ASSERT(loose.group[TAK_DATA_GROUP_UNITS] != archive.group[TAK_DATA_GROUP_UNITS]);
+    for (int g = 0; g < TAK_DATA_GROUP_COUNT; g++)
+        if (g != TAK_DATA_GROUP_UNITS) ASSERT(loose.group[g] == archive.group[g]);
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  *  Mods
  *
@@ -1195,6 +1230,7 @@ int main(void) {
     RUN(the_data_fingerprint_ignores_packing_case_and_line_ends);
     RUN(a_changed_stat_or_script_moves_its_own_group_only);
     RUN(a_changed_model_moves_the_units_group);
+    RUN(a_model_in_the_game_folder_moves_the_units_group);
     RUN(a_mod_wins_over_the_game_and_a_later_mod_over_an_earlier_one);
     RUN(a_loose_file_in_a_mod_folder_wins_over_everything);
     RUN(a_tak_enhanced_preset_reads_as_a_mod_set);

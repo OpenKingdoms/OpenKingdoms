@@ -43,6 +43,7 @@ set(TAK_CORE_SOURCES
     sound/music.c
     sound/soundclass.c
     sound/game_sound.c
+    sound/fallen_cue.c
     sound/ambient.c
 )
 
@@ -476,6 +477,7 @@ set(TAK_SCREEN_TEST_SOURCES
     sound/music.c
     sound/soundclass.c
     sound/game_sound.c
+    sound/fallen_cue.c
     sound/ambient.c
     game/ai.c
     game/game_speed.c
@@ -767,6 +769,7 @@ add_executable(test_unit_stall
     sound/music.c
     sound/soundclass.c
     sound/game_sound.c
+    sound/fallen_cue.c
     sound/ambient.c
     game/ai.c
     game/game_speed.c
@@ -1373,6 +1376,7 @@ add_executable(test_sound
     sound/sound.c
     sound/soundclass.c
     sound/game_sound.c
+    sound/fallen_cue.c
     core/parser/tdf_parser.c
     core/hpi/hpi_vfs.c
     core/hpi/hpi.c
