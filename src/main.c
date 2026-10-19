@@ -670,7 +670,7 @@ static void app_frame(AppState *app) {
                     }
                     g_resync_sel_n = 0;
                     Chat_Push(MP_RebuiltFromSnapshot()
-                              ? "The battle went out of step and was brought back in step from another player's."
+                              ? "The battle went out of step and was set right from another player's game."
                               : "The battle went out of step and is rebuilt from the server's record.",
                               CHAT_TYPE_NOTICE, CHAT_OWNER_SYSTEM, SDL_GetTicks());
                 } else {
