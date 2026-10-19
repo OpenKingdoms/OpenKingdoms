@@ -154,8 +154,10 @@
  * 50: an aim its script never answers fires after 120 ticks with the
  * unit stopped in reach. 51: a skirmish the player lost plays on after
  * the Defeat banner while two sides still fight, and its statistics
- * wait for the end. */
-#define TAK_ENGINE_BUILD_ID           51
+ * wait for the end. 52: a world that parts is rebuilt from another
+ * player's snapshot, which every player in the room has to be able to
+ * give and take, so an older build is told to reload or update. */
+#define TAK_ENGINE_BUILD_ID           52
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

@@ -329,8 +329,8 @@ static const char *watch_refusal(const TAK_RoomSummary *r) {
         return advice;
     }
     if (r->compat != TAK_REJECT_GAME_CLOSED && r->compat != 0)
-        return "That game is on another version of OpenKingdoms. Reload the page, or "
-               "update the game, to watch it.";
+        return "That game is on another version of OpenKingdoms. Reload the page or "
+               "update the game, and have the host do the same, to watch it.";
     if (!(r->flags & TAK_ROOMF_ALLOW_WATCHING))
         return "That game is under way and its host does not allow watching.";
     if (r->watchers >= TAK_NET_WATCHERS_MAX)
@@ -440,8 +440,9 @@ static void join_selected(void) {
         } else if (r->compat == TAK_REJECT_NEEDS_NEWER ||
                    r->compat == TAK_REJECT_DETERMINISM_CLASS ||
                    r->compat == TAK_REJECT_PROTOCOL_VERSION) {
-            set_status("That game is on another version of OpenKingdoms. Reload the page, "
-                       "or update the game, to join it.");
+            set_status("That game is on another version of OpenKingdoms. Everyone needs "
+                       "the same one: reload the page or update the game, and have the "
+                       "host do the same.");
         } else {
             set_status(TAK_Net_RejectText(r->compat));
         }
