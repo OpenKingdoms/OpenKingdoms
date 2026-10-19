@@ -42,6 +42,9 @@
 #include "tak_world.h"
 #include "tak_map_browser.h"
 #include "tak_web_stats.h"
+#include "tak_savegame.h"
+#include "tak_loading.h"
+#include "tak_sim_hash.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -871,14 +874,71 @@ static void mp_config_from_start(const TAK_MsgStartGame *sg,
     }
 }
 
+/* The hash a world loaded from a snapshot has to come up with, armed
+ * until the load says whether it did. */
+static uint32_t mp_snap_hash;
+static int      mp_snap_armed;
+static int      mp_snap_used;
+
+/* Seats count from zero on the wire and players from one. A watcher sees
+ * the whole map through the first player's sidebar. */
+static void mp_local_seat(const TAK_MsgStartGame *sg) {
+    if (sg->your_seat < TAK_NET_SEATS) {
+        Units_SetLocalPlayer((int)sg->your_seat + 1);
+        return;
+    }
+    Units_SetLocalPlayer(MP_WatchFirstSeat(sg) + 1);
+    Fog_SetSeeAll(1);
+}
+
 int MP_RebuildMatchWorld(TAK_Platform *platform) {
     TAK_NetClient *c = NetSession_Client();
     if (!c) return -1;
     c->resync = 0;
     TAK_Match_End();
+    mp_snap_armed = 0;
+    mp_snap_used = 0;
+    uint32_t tick = 0;
+    TAK_SaveGame *sg = NetSession_TakeSnapshot(&tick);
+    uint8_t ticks = c->start.turn_ticks ? c->start.turn_ticks : 3;
+    if (sg && c->next_turn > 0 && tick == c->next_turn * (uint32_t)ticks) {
+        const TAK_SaveInfo *info = Save_Info(sg);
+        fprintf(stderr, "Match: rebuilding the world from a snapshot of tick %u\n",
+                (unsigned)tick);
+        if (World_BeginLoad(platform, &info->cfg, info->map_name, info->map_kingdom) == 0) {
+            mp_local_seat(&c->start);
+            /* After BeginLoad: the snapshot carries the armies. */
+            World_SetRestoring(1);
+            mp_snap_hash = info->sim_state_hash;
+            mp_snap_armed = 1;
+            mp_snap_used = 1;
+            Loading_SetPendingSave(sg);
+            return 0;
+        }
+    }
+    if (sg) Save_ReadClose(sg);
+    /* A GO for a snapshot this world cannot take: the whole log instead. */
+    if (c->next_turn > 0) {
+        (void)TAK_NetClient_SnapshotResult(c, 0);
+        c->next_turn = 0;
+    }
     fprintf(stderr, "Match: rebuilding the world from the server's turn log\n");
     return MP_BeginMatchWorld(platform, &c->start);
 }
+
+void MP_SnapshotApplied(void) {
+    if (!mp_snap_armed) return;
+    mp_snap_armed = 0;
+    uint32_t now = TAK_SimHash();
+    if (now == mp_snap_hash) return;
+    /* Not the world that was sent. The relay replays the log instead. */
+    fprintf(stderr, "Match: the snapshot loaded as %08x, not %08x\n",
+            (unsigned)now, (unsigned)mp_snap_hash);
+    TAK_NetClient *c = NetSession_Client();
+    if (c) (void)TAK_NetClient_SnapshotResult(c, 0);
+}
+
+int MP_RebuiltFromSnapshot(void) { return mp_snap_used; }
 
 /* Build it. Returns 0, or -1 when this install cannot, which is worth
  * a message and a way back rather than a screen that never finishes. */
@@ -889,18 +949,9 @@ int MP_BeginMatchWorld(TAK_Platform *platform, const TAK_MsgStartGame *sg) {
     char kingdom[32];
     mp_map_kingdom(sg->map_name, kingdom, sizeof kingdom);
     if (World_BeginLoad(platform, &cfg, sg->map_name, kingdom) != 0) return -1;
-    /* Seats count from zero on the wire and players from one in the
-     * simulation. Without this every client plays the first seat: same
-     * world, same fog, same sidebar, and one army nobody is driving. */
-    if (sg->your_seat < TAK_NET_SEATS) {
-        Units_SetLocalPlayer((int)sg->your_seat + 1);
-        return 0;
-    }
-    /* A watcher plays no seat. It sees the whole map, and the sidebar is
-     * the first player's until it looks through a seat of its own
-     * choosing. */
-    Units_SetLocalPlayer(MP_WatchFirstSeat(sg) + 1);
-    Fog_SetSeeAll(1);
+    /* Without this every client plays the first seat: same world, same
+     * fog, same sidebar, and one army nobody is driving. */
+    mp_local_seat(sg);
     return 0;
 }
 

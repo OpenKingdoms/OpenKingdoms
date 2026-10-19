@@ -162,6 +162,18 @@ typedef struct Client {
     uint32_t   build;                    /* said in hello, 0 BUILD */
     uint64_t   content;                  /* said in hello, 0 CONTENT */
     uint16_t   loose;                    /* game folder models said in hello */
+    /* Snapshots: one asked of this world, one coming down to replace it,
+     * and the world and trace a replay of the stream starts from. */
+    uint32_t   snap_asked;
+    uint32_t   snap_in_id, snap_in_tick;
+    Bytes      snap_in;
+    int        snap_in_whole;
+    int        snap_refuse;              /* says it could not take one */
+    int        snap_loads;
+    int        has_base;
+    ToyWorld   base_world;
+    uint32_t   base_done, base_trace_len;
+    uint64_t   base_trace[TRACE_MAX];
     uint8_t    last_detail;
     char       last_chat[TAK_NET_CHAT_MAX];
     char       mod_name[TAK_NET_MOD_NAME_MAX];
@@ -254,6 +266,31 @@ static void send_cmd(Client *c) {
     up(c, TAK_Msg_CmdEncode(&m, tx, sizeof(tx)));
 }
 
+/* A snapshot of a toy world: the world, the trace so far, and filler so
+ * it takes several pieces. */
+#define SNAP_TOY_BYTES 70000u
+static void snap_send(Client *c, const ToyWorld *w) {
+    static uint8_t buf[SNAP_TOY_BYTES];
+    memset(buf, 0, sizeof buf);
+    memcpy(buf, w, sizeof *w);
+    uint32_t tl = c->trace_len < TRACE_MAX ? c->trace_len : TRACE_MAX;
+    if (sizeof *w + 4u + tl * 8u > sizeof buf) tl = 0;
+    tak_put_u32(buf + sizeof *w, tl);
+    memcpy(buf + sizeof *w + 4u, c->trace, tl * 8u);
+    for (uint32_t off = 0; off < sizeof buf; off += TAK_NET_SNAP_CHUNK) {
+        TAK_MsgSnapData m;
+        m.snap_id = c->snap_asked;
+        m.tick = w->tick;
+        m.total = sizeof buf;
+        m.offset = off;
+        uint32_t left = (uint32_t)sizeof buf - off;
+        m.len = (uint16_t)(left < TAK_NET_SNAP_CHUNK ? left : TAK_NET_SNAP_CHUNK);
+        m.data = buf + off;
+        up(c, TAK_Msg_SnapDataEncode(&m, tx, sizeof(tx)));
+    }
+    c->snap_asked = 0;
+}
+
 /* One TURN frame into a world, live or replayed. Hashes every 60 ticks,
  * and a live client acknowledges each one with its hash. */
 static int run_turns(ToyWorld *w, uint64_t *trace, uint32_t *trace_len,
@@ -307,6 +344,7 @@ static int run_turns(ToyWorld *w, uint64_t *trace, uint32_t *trace_len,
                 if (*trace_len < idx + 1) *trace_len = idx + 1;
             }
             if (live) send_ack(live, *done - 1, w->tick, h);
+            if (live && live->snap_asked) snap_send(live, w);
         }
     }
     return 0;
@@ -345,6 +383,27 @@ static void start_over(Client *c) {
     c->rec.len = 0;
     c->sim_off = 0;
     c->trace_len = 0;
+    c->has_base = 0;
+}
+
+/* The snapshot that came down becomes this world, from turn `first`. */
+static void snap_load(Client *c, uint32_t first) {
+    const uint8_t *b = c->snap_in.p;
+    memcpy(&c->world, b, sizeof c->world);
+    uint32_t tl = tak_get_u32(b + sizeof c->world);
+    memcpy(c->trace, b + sizeof c->world + 4u, tl * 8u);
+    c->trace_len = tl;
+    c->done_turns = first;
+    c->rec.len = 0;
+    c->sim_off = 0;
+    c->has_base = 1;
+    c->base_world = c->world;
+    c->base_done = first;
+    c->base_trace_len = tl;
+    memcpy(c->base_trace, c->trace, tl * 8u);
+    c->snap_loads++;
+    c->snap_in.len = 0;
+    c->snap_in_whole = 0;
 }
 
 static void client_handle(Client *c, const uint8_t *frame, uint32_t len) {
@@ -416,8 +475,43 @@ static void client_handle(Client *c, const uint8_t *frame, uint32_t len) {
         if (m.first_turn == 0) {
             if (c->started) c->resets++;
             start_over(c);
+        } else if (c->snap_in_whole &&
+                   m.first_turn * TAK_NET_TURN_TICKS == c->snap_in_tick) {
+            snap_load(c, m.first_turn);
         }
         c->started = 1;
+        break;
+    }
+    case TAK_MSG_SNAP_REQUEST: {
+        TAK_MsgSnapRequest m;
+        if (TAK_Msg_SnapRequestDecode(&m, p, n)) { c->stream_errors++; break; }
+        c->snap_asked = m.snap_id;
+        break;
+    }
+    case TAK_MSG_SNAP_DATA: {
+        TAK_MsgSnapData m;
+        if (TAK_Msg_SnapDataDecode(&m, p, n)) { c->stream_errors++; break; }
+        if (m.offset == 0) { c->snap_in.len = 0; c->snap_in_whole = 0; }
+        if (m.offset != c->snap_in.len) { c->stream_errors++; break; }
+        c->snap_in_id = m.snap_id;
+        c->snap_in_tick = m.tick;
+        for (uint16_t i = 0; i < m.len; i++) {
+            if (c->snap_in.len + 1 > c->snap_in.cap) {
+                size_t cap = c->snap_in.cap ? c->snap_in.cap * 2 : 4096;
+                uint8_t *q = (uint8_t *)realloc(c->snap_in.p, cap);
+                if (!q) break;
+                c->snap_in.p = q;
+                c->snap_in.cap = cap;
+            }
+            c->snap_in.p[c->snap_in.len++] = m.data[i];
+        }
+        if (c->snap_in.len == m.total) {
+            c->snap_in_whole = !c->snap_refuse;
+            TAK_MsgSnapResult r;
+            r.snap_id = m.snap_id;
+            r.ok = (uint8_t)!c->snap_refuse;
+            up(c, TAK_Msg_SnapResultEncode(&r, tx, sizeof(tx)));
+        }
         break;
     }
     case TAK_MSG_TURN:
@@ -528,6 +622,7 @@ static Client *new_client(int watcher) {
     Client *c = &cl[ncl];
     free(c->inbox.p);
     free(c->rec.p);
+    free(c->snap_in.p);
     memset(c, 0, sizeof(*c));
     c->protocol = g_hello_protocol;
     c->used = 1;
@@ -686,6 +781,12 @@ static uint32_t replay(const Client *c, uint64_t *out) {
     ToyWorld w;
     uint32_t done = 0, len = 0;
     toy_reset(&w, c->seed, c->computers);
+    if (c->has_base) {
+        w = c->base_world;
+        done = c->base_done;
+        len = c->base_trace_len;
+        memcpy(out, c->base_trace, len * sizeof out[0]);
+    }
     for (size_t off = 0; off < c->rec.len;) {
         uint32_t n = tak_get_u32(c->rec.p + off);
         if (run_turns(&w, out, &len, &done, c->rec.p + off + 4, n, NULL)) return 0;
@@ -752,23 +853,88 @@ TEST(eight_clients_agree_under_jitter_and_loss) {
     ASSERT(traces_agree() >= 50);
 }
 
+/* The outlier takes a sound world's snapshot and only the turns after
+ * it, and every trace agrees afterwards. A client before protocol 9 is
+ * sent back to turn 0 as it always was. */
 TEST(an_injected_desync_is_caught_within_60_ticks_and_the_outlier_named) {
-    setup(20, 40, 5);
-    ASSERT(start_match(8, TAK_ROOMF_AI_TAKES_OVER, 60));
-    cl[5].desync_at_tick = 1234;
-    run_for(40000);
+    for (int pass = 0; pass < 2; pass++) {
+        setup(20, 40, 5);
+        g_hello_protocol = pass == 0 ? 0 : 8;
+        ASSERT(start_match(8, TAK_ROOMF_AI_TAKES_OVER, 60));
+        g_hello_protocol = 0;
+        cl[5].desync_at_tick = 1234;
+        run_for(40000);
 
+        TAK_RelayRoom *rr = the_room();
+        ASSERT_NOT_NULL(rr);
+        int sim5 = TAK_TurnClock_SimOf(&rr->clock, cl[5].session);
+        ASSERT(sim5 >= 0);
+        ASSERT_EQ_INT(1, (int)rr->clock.desync.count);
+        ASSERT_EQ_INT(1260, (int)rr->clock.desync.tick);      /* the next hash tick */
+        ASSERT_EQ_INT(1 << sim5, (int)rr->clock.desync.outliers);
+        ASSERT_EQ_INT(0, rr->clock.desync.halted);             /* the majority played on */
+        ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, rr->clock.sim[sim5].status);
+        if (pass == 0) {
+            /* From the snapshot, never from turn 0. */
+            ASSERT_EQ_INT(0, cl[5].resets);
+            ASSERT_EQ_INT(1, cl[5].snap_loads);
+            ASSERT(cl[5].base_done > 0);
+            ASSERT_EQ_INT(1, (int)relay.snaps_delivered);
+            ASSERT_EQ_INT(0, (int)relay.snaps_failed);
+        } else {
+            ASSERT_EQ_INT(1, cl[5].resets);
+            ASSERT_EQ_INT(0, cl[5].snap_loads);
+        }
+        ASSERT_EQ_INT(0, cl[5].stream_errors);
+        ASSERT(traces_agree() >= 30);
+    }
+}
+
+/* Two players who part: the host's world settles it, the guest takes
+ * its snapshot and plays on. A guest that cannot take it replays the
+ * log from turn 0 instead, and either way every trace agrees. */
+TEST(two_players_that_part_take_the_hosts_world) {
+    for (int pass = 0; pass < 2; pass++) {
+        setup(20, 40, 7);
+        ASSERT(start_match(2, TAK_ROOMF_AI_TAKES_OVER, 60));
+        cl[1].desync_at_tick = 1234;
+        cl[1].snap_refuse = pass;
+        run_for(40000);
+        TAK_RelayRoom *rr = the_room();
+        ASSERT_NOT_NULL(rr);
+        int sim1 = TAK_TurnClock_SimOf(&rr->clock, cl[1].session);
+        ASSERT(sim1 >= 0);
+        ASSERT_EQ_INT(0, rr->clock.halted);
+        ASSERT_EQ_INT(1 << sim1, (int)rr->clock.desync.outliers);
+        ASSERT_EQ_INT(0, cl[0].resets + cl[0].snap_loads);
+        ASSERT_EQ_INT(pass ? 0 : 1, cl[1].snap_loads);
+        ASSERT_EQ_INT(pass ? 1 : 0, cl[1].resets);
+        ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, rr->clock.sim[sim1].status);
+        ASSERT(traces_agree() >= 30);
+    }
+}
+
+/* A donor that goes before its snapshot is whole leaves the parted world
+ * to replay the log from turn 0. */
+TEST(a_donor_that_goes_leaves_the_log) {
+    setup(20, 20, 17);
+    ASSERT(start_match(3, TAK_ROOMF_AI_TAKES_OVER, 60));
+    cl[2].desync_at_tick = 1234;
+    /* The host is the donor and goes the moment it is asked. */
+    run_for(1000);
+    for (int i = 0; i < 60 && !cl[0].snap_asked; i++) {
+        uint64_t until = g_now + 400;
+        while (g_now < until) step();
+    }
+    ASSERT(cl[0].snap_asked);
+    cl[0].close_at = g_now;
+    run_for(40000);
     TAK_RelayRoom *rr = the_room();
     ASSERT_NOT_NULL(rr);
-    int sim5 = TAK_TurnClock_SimOf(&rr->clock, cl[5].session);
-    ASSERT(sim5 >= 0);
-    ASSERT_EQ_INT(1, (int)rr->clock.desync.count);
-    ASSERT_EQ_INT(1260, (int)rr->clock.desync.tick);      /* the next hash tick */
-    ASSERT_EQ_INT(1 << sim5, (int)rr->clock.desync.outliers);
-    ASSERT_EQ_INT(0, rr->clock.desync.halted);             /* the majority played on */
-    ASSERT_EQ_INT(1, cl[5].resets);                        /* and the outlier resynced */
-    ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, rr->clock.sim[sim5].status);
-    ASSERT(traces_agree() >= 30);
+    ASSERT_EQ_INT(1, cl[2].resets);
+    ASSERT_EQ_INT(0, cl[2].snap_loads);
+    ASSERT(relay.snaps_failed >= 1);
+    ASSERT_EQ_INT(0, rr->snap.active);
 }
 
 TEST(a_slow_client_engages_the_governor_and_everyone_still_agrees) {
@@ -1766,7 +1932,7 @@ TEST(a_watcher_changes_nothing_the_players_receive) {
             continue;
         }
         /* The wrong watcher was the one put right, and nobody else. */
-        ASSERT(w2->resets >= 1);
+        ASSERT(w2->resets + w2->snap_loads >= 1);
         ASSERT_EQ_INT(0, cl[0].resets + cl[1].resets + cl[2].resets);
         ASSERT_EQ_INT((int)head_alone, (int)rr->clock.head);
         ASSERT_EQ_INT((int)agreed_alone, (int)agreed);
@@ -1875,6 +2041,8 @@ int main(void) {
     TEST_SUITE("Relay loopback, eight clients in one process");
     RUN(eight_clients_agree_under_jitter_and_loss);
     RUN(an_injected_desync_is_caught_within_60_ticks_and_the_outlier_named);
+    RUN(two_players_that_part_take_the_hosts_world);
+    RUN(a_donor_that_goes_leaves_the_log);
     RUN(a_slow_client_engages_the_governor_and_everyone_still_agrees);
     RUN(a_reconnect_by_fast_forward_matches_the_live_trace);
     RUN(a_silent_player_is_replaced_by_the_computer_then_reclaims_the_seat);

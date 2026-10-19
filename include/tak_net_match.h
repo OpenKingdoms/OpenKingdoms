@@ -29,6 +29,17 @@
 /* A match has started. `turn_ticks` is how many simulation ticks one
  * turn covers, which the server names in START_GAME. */
 void TAK_Match_Begin(TAK_NetClient *client, uint8_t seat, uint8_t turn_ticks);
+/* The same from `first_turn`, for a world loaded from a snapshot taken
+ * at that turn's tick: the queue keeps the tick and drops its orders,
+ * which the turns from here carry again. */
+/* The relay asked for this world. The game answers with a save of it
+ * taken between two ticks on a hashed one, or NULL when it cannot, and
+ * the bytes become the session's. */
+int  TAK_Match_SnapshotAsked(void);
+void TAK_Match_SnapshotGive(uint8_t *bytes, uint32_t len, uint32_t tick);
+
+void TAK_Match_BeginAt(TAK_NetClient *client, uint8_t seat, uint8_t turn_ticks,
+                       uint32_t first_turn);
 
 void TAK_Match_End(void);
 

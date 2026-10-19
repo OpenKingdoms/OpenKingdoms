@@ -91,9 +91,15 @@ int         Multiplayer_MapChooserWidgetHidden(const char *name);
  * rejoining or watching. A watcher sees the whole map. 0 on success. */
 struct TAK_MsgStartGame;
 int MP_BeginMatchWorld(TAK_Platform *platform, const struct TAK_MsgStartGame *sg);
-/* The match world again, from the START_GAME the session holds, after a
- * resync. The battle and its world must already be ended. */
+/* The match world again after a resync: from the snapshot the session
+ * holds when the GO names its turn, else from the START_GAME and the
+ * whole log. The battle and its world must already be ended. */
 int MP_RebuildMatchWorld(TAK_Platform *platform);
+/* After a world rebuilt from a snapshot is loaded: checks it hashes as
+ * the one sent, and asks the relay for the whole log when it does not. */
+void MP_SnapshotApplied(void);
+/* Whether the last rebuild came from a snapshot. */
+int  MP_RebuiltFromSnapshot(void);
 
 /* The seat whose sidebar a watcher starts on, 0 based: the first human,
  * else the first computer player. */

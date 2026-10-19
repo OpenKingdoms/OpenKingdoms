@@ -104,6 +104,18 @@ typedef struct TAK_RelayRoom {
     uint64_t          started_ms;
     uint32_t          ledger_id;
     uint32_t          result_sims;
+    /* A snapshot on its way from a sound world to parted ones, one at a
+     * time: who gives it, who waits for it, and how far each has it. */
+    struct {
+        uint8_t  active, whole, abort;
+        uint32_t id;
+        int      donor;
+        uint32_t targets;
+        uint32_t tick, total, got;
+        uint8_t *buf;
+        uint64_t asked_ms;
+        uint32_t sent[TAK_TURN_SIMS_MAX];
+    } snap;
 } TAK_RelayRoom;
 
 struct TAK_Ledger;
@@ -116,6 +128,9 @@ typedef struct TAK_Relay {
     uint32_t         next_client_id;
     uint32_t         next_room_id;
     uint32_t         next_match_id;
+    uint32_t         next_snap_id;
+    uint32_t         snaps_delivered;
+    uint32_t         snaps_failed;
     uint32_t         rng;
     TAK_RelayClient  client[TAK_RELAY_CLIENTS_MAX];
     TAK_RelayRoom    room[TAK_RELAY_ROOMS_MAX];

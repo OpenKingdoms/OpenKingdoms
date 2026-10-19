@@ -7,6 +7,7 @@
  */
 
 #include "tak_ingame.h"
+#include "tak_savegame.h"
 #include "tak_settings.h"
 #include "tak_gameloop.h"
 #include "tak_game_speed.h"
@@ -671,6 +672,30 @@ const char *InGame_SeatNotice(void) {
     return ig.seat_notice;
 }
 
+/* The battle hidden while it rejoins the others. */
+static void ig_rejoin_plate(TAK_Platform *platform, SDL_Surface *off) {
+    if (off) SDL_FillRect(off, NULL, SDL_MapRGBA(off->format, 0, 0, 0, 255));
+    HUD_DrawMessageLine(platform, "Rejoining the battle...");
+    UI_Present(platform);
+    memcpy(ig.prev_keys, SDL_GetKeyboardState(NULL), sizeof(ig.prev_keys));
+}
+
+/* The relay asked for this world to rebuild one that parted. It goes
+ * between two ticks on a hashed one, the way a save is taken. */
+static void ig_give_snapshot(void) {
+    if (!TAK_Match_SnapshotAsked()) return;
+    uint32_t tick = TAK_CmdQueue_Tick();
+    if (tick % TAK_NET_HASH_TICKS != 0) return;
+    char err[160];
+    size_t len = 0;
+    double t0 = prof_now_ms();
+    uint8_t *bytes = Save_WriteMemory(&len, err, sizeof err);
+    if (!bytes) fprintf(stderr, "Match: no snapshot of this world: %s\n", err);
+    else fprintf(stderr, "Match: snapshot of tick %u, %u bytes in %.1f ms\n",
+                 (unsigned)tick, (unsigned)len, prof_now_ms() - t0);
+    TAK_Match_SnapshotGive(bytes, (uint32_t)len, tick);
+}
+
 static void InGame_SimulationStep(GameWorld *world) {
     if (!world || !world->loaded) return;
     /* A dialog is up: the clock stops and the battle holds where it
@@ -775,6 +800,7 @@ static void InGame_SimulationStep(GameWorld *world) {
      * as it ends and changes nothing. */
     BattleRecord_Tick(world);
     PerfProbe_AfterTick(world, prof_now_ms() - t0);
+    ig_give_snapshot();
 }
 
 void InGame_DebugRunSimTicks(int ticks) {
@@ -1932,6 +1958,12 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             return GAMESTATE_GAME_LOADING;
         }
     }
+    /* A snapshot is coming to replace this world, which stops behind the
+     * plate until the GO that brings it. */
+    if (TAK_Match_IsLive() && NetSession_SnapshotPending()) {
+        ig_rejoin_plate(platform, off);
+        return GAMESTATE_IN_GAME;
+    }
     TAK_Match_Pump();
     /* Whoever began or stopped watching, as a system line. */
     {
@@ -1978,10 +2010,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             TAK_Match_TicksBehind() <= SIM_TICKS_PER_SECOND) {
             ig.rejoining = 0;
         } else {
-            if (off) SDL_FillRect(off, NULL, SDL_MapRGBA(off->format, 0, 0, 0, 255));
-            HUD_DrawMessageLine(platform, "Rejoining the battle...");
-            UI_Present(platform);
-            memcpy(ig.prev_keys, SDL_GetKeyboardState(NULL), sizeof(ig.prev_keys));
+            ig_rejoin_plate(platform, off);
             return GAMESTATE_IN_GAME;
         }
     }

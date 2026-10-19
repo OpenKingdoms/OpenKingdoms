@@ -99,6 +99,8 @@ static int g_battle_in_match;
  * and the tick the one before had reached. */
 static int g_resync_rebuild;
 static uint32_t g_resync_from_tick;
+/* Where the player was looking, which the rebuilt battle keeps. */
+static int32_t g_resync_cam_x, g_resync_cam_y;
 
 static void battle_began(void) {
     const GameWorld *w = World_Get();
@@ -654,7 +656,11 @@ static void app_frame(AppState *app) {
                 if (g_resync_rebuild) {
                     g_resync_rebuild = 0;
                     InGame_SetRejoining(g_resync_from_tick);
-                    Chat_Push("The battle went out of step and is rebuilt from the server's record.",
+                    GameWorld *rw = World_Get();
+                    if (rw) { rw->cam_x = g_resync_cam_x; rw->cam_y = g_resync_cam_y; }
+                    Chat_Push(MP_RebuiltFromSnapshot()
+                              ? "The battle went out of step and was brought back in step from another player's."
+                              : "The battle went out of step and is rebuilt from the server's record.",
                               CHAT_TYPE_NOTICE, CHAT_OWNER_SYSTEM, SDL_GetTicks());
                 } else {
                     battle_began();
@@ -696,6 +702,10 @@ static void app_frame(AppState *app) {
                 /* A resync: the match goes on, so it is not left. The
                  * world is built again and the log replays into it. */
                 g_resync_from_tick = TAK_CmdQueue_Tick();
+                if (World_Get()) {
+                    g_resync_cam_x = World_Get()->cam_x;
+                    g_resync_cam_y = World_Get()->cam_y;
+                }
                 TAK_Match_End();
                 InGame_Shutdown();
                 World_End(&app->platform);

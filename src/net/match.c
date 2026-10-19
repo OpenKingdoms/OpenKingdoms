@@ -7,6 +7,7 @@
 #include "tak_net_match.h"
 
 #include "tak_command_queue.h"
+#include "tak_memory.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -67,6 +68,30 @@ void TAK_Match_Begin(TAK_NetClient *client, uint8_t seat, uint8_t turn_ticks) {
     /* Every command now arrives already stamped with the tick its turn
      * owns, so the queue adds no delay of its own. */
     TAK_CmdQueue_Reset(0);
+}
+
+void TAK_Match_BeginAt(TAK_NetClient *client, uint8_t seat, uint8_t turn_ticks,
+                       uint32_t first_turn) {
+    if (first_turn == 0) { TAK_Match_Begin(client, seat, turn_ticks); return; }
+    memset(&g_match, 0, sizeof g_match);
+    g_match.client = client;
+    g_match.seat = seat;
+    g_match.turn_ticks = turn_ticks ? turn_ticks : 3;
+    g_match.live = 1;
+    g_match.turns_taken = first_turn;
+    g_match.last_turn = first_turn - 1;
+    /* The world came from a snapshot at this turn's tick. What its queue
+     * held came from turns the log hands over again, so it goes. */
+    TAK_CmdQueue_Restore(first_turn * (uint32_t)g_match.turn_ticks, 0, TAK_CmdQueue_Arrival());
+}
+
+int TAK_Match_SnapshotAsked(void) {
+    return g_match.live && g_match.client && g_match.client->snap_asked != 0;
+}
+
+void TAK_Match_SnapshotGive(uint8_t *bytes, uint32_t len, uint32_t tick) {
+    if (!g_match.live || !g_match.client) { tak_free(bytes); return; }
+    (void)TAK_NetClient_SnapshotGive(g_match.client, bytes, len, tick);
 }
 
 void TAK_Match_End(void) {

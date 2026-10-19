@@ -65,6 +65,13 @@ const char *NetSession_Why(void);
  * snapshot from, and to ask for things through. NULL when off. */
 TAK_NetClient *NetSession_Client(void);
 
+/* A snapshot that came down whole and reads as a save, taken over by
+ * the caller, with the queue tick it was saved at. NULL when none. */
+struct TAK_SaveGame;
+struct TAK_SaveGame *NetSession_TakeSnapshot(uint32_t *tick);
+/* A snapshot is coming down or waiting for its GO. */
+int NetSession_SnapshotPending(void);
+
 /* A session with no link under it, for a test. Everything above
  * behaves the same and messages are fed in with
  * TAK_NetClient_OnMessage, which is how the screens are tested with no

@@ -11,6 +11,7 @@
 #include "tak_net_link.h"
 #include "tak_net_player.h"
 #include "tak_settings.h"
+#include "tak_savegame.h"
 
 #include <SDL.h>
 #include <stdint.h>
@@ -35,7 +36,42 @@ static struct {
     TAK_NetClient   client;
     const char     *why;
     uint8_t         has_link;
+    /* A snapshot that came down whole and reads as a save, waiting for
+     * the GO that names its turn, and the id last read. */
+    TAK_SaveGame   *snap;
+    uint32_t        snap_tick;
+    uint32_t        snap_read_id;
 } g_session;
+
+/* Queue a snapshot going up while the link keeps up, and read one that
+ * came down, telling the relay whether it can be taken. */
+#define SNAP_BACKLOG_MAX (48u * 1024u)
+static void session_snapshots(void) {
+    TAK_NetClient *c = &g_session.client;
+    if (c->snap_out && (!g_session.has_link || TAK_NetLink_Backlog() < SNAP_BACKLOG_MAX))
+        (void)TAK_NetClient_SnapshotPump(c, 2u * TAK_NET_SNAP_CHUNK);
+    if (!c->snap_in_whole || c->snap_in_id == g_session.snap_read_id) return;
+    g_session.snap_read_id = c->snap_in_id;
+    char err[192];
+    TAK_SaveGame *sg = Save_ReadMemory(c->snap_in, c->snap_in_len, err, sizeof err);
+    if (!sg) fprintf(stderr, "Match: the snapshot cannot be read: %s\n", err);
+    if (g_session.snap) Save_ReadClose(g_session.snap);
+    g_session.snap = sg;
+    g_session.snap_tick = c->snap_in_tick;
+    TAK_NetClient_SnapshotDrop(c);
+    (void)TAK_NetClient_SnapshotResult(c, sg != NULL);
+}
+
+int NetSession_SnapshotPending(void) {
+    return g_session.snap != NULL || g_session.client.snap_in_len > 0;
+}
+
+TAK_SaveGame *NetSession_TakeSnapshot(uint32_t *tick) {
+    TAK_SaveGame *sg = g_session.snap;
+    if (tick) *tick = sg ? g_session.snap_tick : 0;
+    g_session.snap = NULL;
+    return sg;
+}
 
 #ifdef __EMSCRIPTEN__
 /* The page's own origin as a WebSocket address. A page served over
@@ -230,6 +266,8 @@ void NetSession_BeginWithoutLink(const char *player_name) {
 
 void NetSession_Disconnect(void) {
     if (g_session.has_link) TAK_NetLink_Close();
+    if (g_session.snap) Save_ReadClose(g_session.snap);
+    TAK_NetClient_Free(&g_session.client);
     memset(&g_session, 0, sizeof g_session);
     g_session.state = NET_SESSION_OFF;
 }
@@ -258,6 +296,7 @@ void NetSession_Tick(uint64_t now_ms) {
         g_session.state == NET_SESSION_FAILED) {
         return;
     }
+    session_snapshots();
     if (g_session.has_link) {
         TAK_NetClient_Heartbeat(&g_session.client, now_ms);
         TAK_NetLink_Pump(&g_session.client, now_ms);

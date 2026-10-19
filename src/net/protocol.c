@@ -652,6 +652,72 @@ int TAK_Msg_GoDecode(TAK_MsgGo *m, const void *p, size_t len) {
     return done(&r);
 }
 
+size_t TAK_Msg_SnapRequestEncode(const TAK_MsgSnapRequest *m, void *out, size_t cap) {
+    TAK_ByteWriter w;
+    begin(&w, out, cap, TAK_MSG_SNAP_REQUEST);
+    TAK_BW_U32(&w, m->snap_id);
+    return finish(&w);
+}
+
+int TAK_Msg_SnapRequestDecode(TAK_MsgSnapRequest *m, const void *p, size_t len) {
+    TAK_ByteReader r;
+    memset(m, 0, sizeof(*m));
+    TAK_BR_Init(&r, p, len);
+    m->snap_id = TAK_BR_U32(&r);
+    return done(&r);
+}
+
+size_t TAK_Msg_SnapDataEncode(const TAK_MsgSnapData *m, void *out, size_t cap) {
+    if (m->len > TAK_NET_SNAP_CHUNK || m->total > TAK_NET_SNAP_MAX) return 0;
+    if ((uint64_t)m->offset + m->len > m->total) return 0;
+    if (m->len && !m->data) return 0;
+    TAK_ByteWriter w;
+    begin(&w, out, cap, TAK_MSG_SNAP_DATA);
+    TAK_BW_U32(&w, m->snap_id);
+    TAK_BW_U32(&w, m->tick);
+    TAK_BW_U32(&w, m->total);
+    TAK_BW_U32(&w, m->offset);
+    TAK_BW_U16(&w, m->len);
+    if (m->len) TAK_BW_Bytes(&w, m->data, m->len);
+    return finish(&w);
+}
+
+int TAK_Msg_SnapDataDecode(TAK_MsgSnapData *m, const void *p, size_t len) {
+    TAK_ByteReader r;
+    memset(m, 0, sizeof(*m));
+    TAK_BR_Init(&r, p, len);
+    m->snap_id = TAK_BR_U32(&r);
+    m->tick = TAK_BR_U32(&r);
+    m->total = TAK_BR_U32(&r);
+    m->offset = TAK_BR_U32(&r);
+    m->len = TAK_BR_U16(&r);
+    if (!TAK_BR_Ok(&r) || m->len > TAK_NET_SNAP_CHUNK || m->total > TAK_NET_SNAP_MAX ||
+        (uint64_t)m->offset + m->len > m->total) return -1;
+    if (m->len) {
+        m->data = TAK_BR_Take(&r, m->len);
+        if (!m->data) return -1;
+    }
+    return done(&r);
+}
+
+size_t TAK_Msg_SnapResultEncode(const TAK_MsgSnapResult *m, void *out, size_t cap) {
+    TAK_ByteWriter w;
+    begin(&w, out, cap, TAK_MSG_SNAP_RESULT);
+    TAK_BW_U32(&w, m->snap_id);
+    TAK_BW_U8(&w, m->ok ? 1 : 0);
+    return finish(&w);
+}
+
+int TAK_Msg_SnapResultDecode(TAK_MsgSnapResult *m, const void *p, size_t len) {
+    TAK_ByteReader r;
+    memset(m, 0, sizeof(*m));
+    TAK_BR_Init(&r, p, len);
+    m->snap_id = TAK_BR_U32(&r);
+    m->ok = TAK_BR_U8(&r);
+    if (m->ok > 1) return -1;
+    return done(&r);
+}
+
 /* ── In game ────────────────────────────────────────────────────────── */
 
 size_t TAK_Msg_CmdEncode(const TAK_MsgCmd *m, void *out, size_t cap) {
@@ -1036,6 +1102,9 @@ int TAK_Net_Validate(const void *data, size_t len) {
         TAK_MsgLoadState loadstate;
         TAK_MsgLoaded loaded;
         TAK_MsgGo go;
+        TAK_MsgSnapRequest snapreq;
+        TAK_MsgSnapData snapdata;
+        TAK_MsgSnapResult snapres;
         TAK_MsgCmd cmd;
         TAK_MsgTurn turn;
         TAK_MsgAck ack;
@@ -1065,6 +1134,9 @@ int TAK_Net_Validate(const void *data, size_t len) {
     case TAK_MSG_LOAD_STATE:    return TAK_Msg_LoadStateDecode(&m.loadstate, p, n);
     case TAK_MSG_LOADED:        return TAK_Msg_LoadedDecode(&m.loaded, p, n);
     case TAK_MSG_GO:            return TAK_Msg_GoDecode(&m.go, p, n);
+    case TAK_MSG_SNAP_REQUEST:  return TAK_Msg_SnapRequestDecode(&m.snapreq, p, n);
+    case TAK_MSG_SNAP_DATA:     return TAK_Msg_SnapDataDecode(&m.snapdata, p, n);
+    case TAK_MSG_SNAP_RESULT:   return TAK_Msg_SnapResultDecode(&m.snapres, p, n);
     case TAK_MSG_CMD:           return TAK_Msg_CmdDecode(&m.cmd, p, n);
     case TAK_MSG_TURN:          return TAK_Msg_TurnDecode(&m.turn, p, n);
     case TAK_MSG_ACK:           return TAK_Msg_AckDecode(&m.ack, p, n);

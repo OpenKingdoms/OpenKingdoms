@@ -121,7 +121,15 @@ typedef struct TAK_SaveInfo {
  * back. Returns 0, or -1 with a reason in `err`. */
 int Save_Write(const char *path, char *err, size_t err_cap);
 
+/* The same battle as bytes, for a match snapshot: no camera and no
+ * picture, since both belong to whoever looks. The caller frees with
+ * tak_free. NULL with a reason in `err`. */
+uint8_t *Save_WriteMemory(size_t *out_len, char *err, size_t err_cap);
+
 typedef struct TAK_SaveGame TAK_SaveGame;
+
+/* Save_Read over bytes in memory, which are copied. */
+TAK_SaveGame *Save_ReadMemory(const void *bytes, size_t len, char *err, size_t err_cap);
 
 /* Open a save and decode the light state. The world does not have to
  * exist yet. A save whose map is missing, or whose terrain has changed

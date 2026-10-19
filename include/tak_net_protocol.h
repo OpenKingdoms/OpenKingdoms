@@ -41,9 +41,11 @@
  * and it rebuilds its world, so two worlds that part are resynced
  * rather than halted. 8: HELLO and the room list carry the models in
  * the game folder's objects3d, so a lobby can say that folder is what
- * differs. 2 to 8 share a room. The relay speaks every version and
- * writes each client the one it said hello with. */
-#define TAK_NET_PROTOCOL_VERSION      8
+ * differs. 9: a world that parts is rebuilt from another client's
+ * snapshot (SNAP_REQUEST, SNAP_DATA, SNAP_RESULT) and the turns after it,
+ * not from turn 0. 2 to 9 share a room. The relay speaks every version
+ * and writes each client the one it said hello with. */
+#define TAK_NET_PROTOCOL_VERSION      9
 #define TAK_NET_PROTOCOL_MIN          1
 
 /* The simulation a client plays, sent as engine_build_id. A room holds
@@ -234,6 +236,12 @@ typedef enum TAK_NetMsg {
     TAK_MSG_ACK             = 50,
     TAK_MSG_PACE            = 51,
     TAK_MSG_PLAYER_STATUS   = 52,
+    /* Protocol 9: the relay asks a sound client for its world, the
+     * client sends it a piece at a time, the relay passes it on to the
+     * one that parted, and that one says whether it could take it. */
+    TAK_MSG_SNAP_REQUEST    = 53,
+    TAK_MSG_SNAP_DATA       = 54,
+    TAK_MSG_SNAP_RESULT     = 55,
 
     /* The leaderboard. A client reports the end screen's tallies when
      * the verdict fires. */
@@ -647,6 +655,32 @@ typedef struct TAK_MsgGo {
     uint32_t first_turn;
 } TAK_MsgGo;
 
+/* A snapshot is a save of the whole world in memory, taken between two
+ * ticks at a tick the hash is reported on, and the turns after it. */
+#define TAK_NET_SNAP_CHUNK  16384u
+#define TAK_NET_SNAP_MAX    (32u << 20)
+
+typedef struct TAK_MsgSnapRequest {
+    uint32_t snap_id;
+} TAK_MsgSnapRequest;
+
+/* One piece. `tick` is the queue tick the world was saved at, a whole
+ * number of turns. A total of 0 is a donor saying it cannot. Decode
+ * points `data` into the caller's frame and copies nothing. */
+typedef struct TAK_MsgSnapData {
+    uint32_t       snap_id;
+    uint32_t       tick;
+    uint32_t       total;
+    uint32_t       offset;
+    uint16_t       len;
+    const uint8_t *data;
+} TAK_MsgSnapData;
+
+typedef struct TAK_MsgSnapResult {
+    uint32_t snap_id;
+    uint8_t  ok;
+} TAK_MsgSnapResult;
+
 /* A command as it crosses this layer: bytes we do not interpret. Decode
  * points into the caller's frame buffer and copies nothing, so the blobs
  * are valid only while that buffer is. */
@@ -826,6 +860,12 @@ int    TAK_Msg_LoadedDecode(TAK_MsgLoaded *m, const void *p, size_t len);
 
 size_t TAK_Msg_GoEncode(const TAK_MsgGo *m, void *out, size_t cap);
 int    TAK_Msg_GoDecode(TAK_MsgGo *m, const void *p, size_t len);
+size_t TAK_Msg_SnapRequestEncode(const TAK_MsgSnapRequest *m, void *out, size_t cap);
+int    TAK_Msg_SnapRequestDecode(TAK_MsgSnapRequest *m, const void *p, size_t len);
+size_t TAK_Msg_SnapDataEncode(const TAK_MsgSnapData *m, void *out, size_t cap);
+int    TAK_Msg_SnapDataDecode(TAK_MsgSnapData *m, const void *p, size_t len);
+size_t TAK_Msg_SnapResultEncode(const TAK_MsgSnapResult *m, void *out, size_t cap);
+int    TAK_Msg_SnapResultDecode(TAK_MsgSnapResult *m, const void *p, size_t len);
 
 size_t TAK_Msg_CmdEncode(const TAK_MsgCmd *m, void *out, size_t cap);
 int    TAK_Msg_CmdDecode(TAK_MsgCmd *m, const void *p, size_t len);

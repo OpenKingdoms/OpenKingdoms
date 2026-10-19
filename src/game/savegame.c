@@ -2900,16 +2900,13 @@ void Save_SetThumbnail(const uint8_t *rgb, int w, int h) {
     s_thumb_h = h;
 }
 
-int Save_Write(const char *path, char *err, size_t err_cap) {
-    if (err && err_cap) err[0] = '\0';
-    if (!path) {
-        set_err(err, err_cap, "No file name was given for the save.");
-        return -1;
-    }
+/* The battle as a container ready to finish. A save the player keeps
+ * carries the camera and the picture, a snapshot for a match neither. */
+static TAK_SaveWriter *save_compose(int keep, char *err, size_t err_cap) {
     GameWorld *w = World_Get();
     if (!w) {
         set_err(err, err_cap, "There is no battle in progress to save.");
-        return -1;
+        return NULL;
     }
     /* A world part way through the loading screen has a map name and
      * little else: no fog, no occupancy layer, no features and no
@@ -2917,7 +2914,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
     if (!w->loaded) {
         set_err(err, err_cap, "The battle is still loading and cannot be "
                               "saved yet.");
-        return -1;
+        return NULL;
     }
 
     int slots = 0;
@@ -2958,7 +2955,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
     if (defset_collect(&set, w) != 0 || defords_init(&ords) != 0) {
         tak_free(set.refs);
         set_err(err, err_cap, "Ran out of memory building the save.");
-        return -1;
+        return NULL;
     }
 
     TAK_StringTable *strings = StringTable_New();
@@ -2994,7 +2991,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
         tak_free(set.refs);
         defords_free(&ords);
         set_err(err, err_cap, "Ran out of memory building the save.");
-        return -1;
+        return NULL;
     }
 
     int written = 0;
@@ -3061,7 +3058,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
         buf_free(&occ);
         buf_free(&cmdq);
         set_err(err, err_cap, "Ran out of memory building the save.");
-        return -1;
+        return NULL;
     }
 
     uint8_t cfgb[CFGB_WRITE_BYTES];
@@ -3128,14 +3125,14 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
         buf_free(&brec);
     }
     /* The camera is local view state, so an older reader may skip it. */
-    if (rc == 0) rc = Save_AddSection(writer, TAK_SECT_CAMR, VER_CAMR, 0,
-                                      camr, sizeof(camr));
+    if (rc == 0 && keep) rc = Save_AddSection(writer, TAK_SECT_CAMR, VER_CAMR, 0,
+                                              camr, sizeof(camr));
 
     /* And the picture of the battle, when the caller gave one. It is
      * the last thing added and the only one that may be missing: a
      * save without a picture is a save, and a battle the player cannot
      * write because no panel could be painted is not. */
-    if (rc == 0 && s_thumb && s_thumb_w > 0 && s_thumb_h > 0) {
+    if (rc == 0 && keep && s_thumb && s_thumb_w > 0 && s_thumb_h > 0) {
         size_t thmb_px = (size_t)s_thumb_w * (size_t)s_thumb_h * 3u;
         uint8_t *thmb = (uint8_t *)tak_malloc(TAK_THMB_HEADER_BYTES + thmb_px);
         if (thmb) {
@@ -3150,7 +3147,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
         }
     }
     /* Used or not, it belongs to that save and not to the next one. */
-    Save_SetThumbnail(NULL, 0, 0);
+    if (keep) Save_SetThumbnail(NULL, 0, 0);
     tak_free(strt);
     tak_free(defs);
     tak_free(unit_recs);
@@ -3166,13 +3163,42 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
     if (rc != 0) {
         Save_EndWrite(writer);
         set_err(err, err_cap, "Ran out of memory building the save.");
+        return NULL;
+    }
+    return writer;
+}
+
+int Save_Write(const char *path, char *err, size_t err_cap) {
+    if (err && err_cap) err[0] = '\0';
+    if (!path) {
+        set_err(err, err_cap, "No file name was given for the save.");
         return -1;
     }
-
-    rc = Save_FinishToFile(writer, path, err, err_cap);
+    TAK_SaveWriter *writer = save_compose(1, err, err_cap);
+    if (!writer) return -1;
+    int rc = Save_FinishToFile(writer, path, err, err_cap);
     Save_EndWrite(writer);
     return rc;
 }
+
+uint8_t *Save_WriteMemory(size_t *out_len, char *err, size_t err_cap) {
+    if (err && err_cap) err[0] = '\0';
+    if (out_len) *out_len = 0;
+    TAK_SaveWriter *writer = save_compose(0, err, err_cap);
+    if (!writer) return NULL;
+    size_t len = 0;
+    const uint8_t *bytes = Save_FinishToMemory(writer, &len);
+    uint8_t *copy = bytes && len ? (uint8_t *)tak_malloc(len) : NULL;
+    if (copy) memcpy(copy, bytes, len);
+    Save_EndWrite(writer);
+    if (!copy) {
+        set_err(err, err_cap, "Ran out of memory building the save.");
+        return NULL;
+    }
+    if (out_len) *out_len = len;
+    return copy;
+}
+
 
 /* ── reading ──────────────────────────────────────────────────────── */
 
@@ -3207,16 +3233,27 @@ static void declare_known(TAK_SaveReader *r) {
     Save_DeclareKnown(r, TAK_SECT_BREC, VER_BREC);
 }
 
+static TAK_SaveGame *save_open(TAK_SaveReader *r, char *err, size_t err_cap);
+
 TAK_SaveGame *Save_Read(const char *path, char *err, size_t err_cap) {
     if (err && err_cap) err[0] = '\0';
     if (!path) {
         set_err(err, err_cap, "No file name was given for the save.");
         return NULL;
     }
-
     TAK_SaveReader *r = Save_OpenFile(path, err, err_cap);
-    if (!r) return NULL;
+    return r ? save_open(r, err, err_cap) : NULL;
+}
 
+TAK_SaveGame *Save_ReadMemory(const void *bytes, size_t len, char *err, size_t err_cap) {
+    if (err && err_cap) err[0] = '\0';
+    TAK_SaveReader *r = bytes && len ? Save_OpenMemory(bytes, len, err, err_cap) : NULL;
+    if (!r && err && err_cap && !err[0]) set_err(err, err_cap, "The save is empty.");
+    return r ? save_open(r, err, err_cap) : NULL;
+}
+
+/* Validate an opened container and decode its light state. */
+static TAK_SaveGame *save_open(TAK_SaveReader *r, char *err, size_t err_cap) {
     declare_known(r);
     if (Save_Validate(r, err, err_cap) != 0) {
         Save_Close(r);

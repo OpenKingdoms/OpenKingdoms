@@ -12,6 +12,7 @@
 #include "tak_settings.h"
 #include "tak_sim_hash.h"
 #include "tak_loading.h"
+#include "tak_multiplayer.h"
 #include "tak_maps.h"
 #include "tak_gameloop.h"
 #include "tak_gui.h"
@@ -1047,7 +1048,10 @@ static int loading_apply_pending_save(TAK_Platform *platform) {
     int rc = Save_Apply(s_pending_save, err, sizeof(err));
     Save_ReadClose(s_pending_save);
     s_pending_save = NULL;
-    if (rc == 0) return 0;
+    if (rc == 0) {
+        MP_SnapshotApplied();
+        return 0;
+    }
     strncpy(s_save_refusal, err[0] ? err : "This save could not be loaded.",
             sizeof(s_save_refusal) - 1);
     s_save_refusal[sizeof(s_save_refusal) - 1] = '\0';
@@ -1115,7 +1119,8 @@ static int loading_match_ready(void) {
     if (c->state == TAK_NC_PLAYING) {
         /* GO arrived. From here the simulation runs on turns. */
         if (!TAK_Match_IsLive()) {
-            TAK_Match_Begin(c, c->seat, c->start.turn_ticks);
+            /* From turn 0, or from a snapshot's turn. */
+            TAK_Match_BeginAt(c, c->seat, c->start.turn_ticks, c->next_turn);
             /* A tab that closes now finds its way back (#293). */
             Settings_SetStr("RejoinMatch", "1");
             Settings_Save();
