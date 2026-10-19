@@ -460,8 +460,8 @@ world again and replay the log to the present (protocol 7). A match halts
 with a report only when a client is too old to do that, or after four such
 resyncs. From protocol 9 the parted world is rebuilt from a snapshot of a
 sound one instead, so it replays seconds of turns rather than the whole
-match. An outlier takes the world of a client that agreed, a player's
-before a watcher's. Two worlds that cannot be told apart by a vote take
+match. An outlier takes the world of a client that agreed, one keeping up
+before one that lags and a player's before a watcher's. Two worlds that cannot be told apart by a vote take
 the host's, which settles the split. The snapshot is a save of the whole
 world held in memory, without the camera or the picture, taken where a
 save is taken and loaded the way a save is loaded. The parted client
@@ -470,8 +470,9 @@ match at the snapshot's turn and drops the orders its queue held, which
 come again with the turns. Until the snapshot arrives the parted world is
 neither heard nor allowed to order. The whole log from turn 0 is still the
 answer when the donor goes or takes longer than 30 seconds, when the
-snapshot cannot be read or loads as another world, or when a client is
-older than protocol 9. A watcher's world
+snapshot cannot be read, loads as another world or has not arrived whole
+within 60 seconds, when the parted client drops before it arrives, or
+when a client is older than protocol 9. A watcher's world
 never counts: its hash is checked against what the players agreed, and a
 watcher that differs is resynced alone. A rebuilt world shows "Rejoining
 the battle" from the moment its snapshot starts to arrive until it has
