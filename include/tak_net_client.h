@@ -120,6 +120,9 @@ typedef struct TAK_NetClient {
      * lockstep in one sentence. */
     uint32_t next_turn;
     uint32_t last_turn_held;
+    /* A GO came in the middle of a match: the server restarts this world
+     * from its turn log, and the battle has to be built again. */
+    uint8_t  resync;
     /* Ours and rising. It is not what orders the commands, the turn
      * is, but it lets the server see a gap. */
     uint32_t cmd_seq;

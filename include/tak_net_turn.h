@@ -124,6 +124,9 @@ typedef struct TAK_TurnSim {
      * reached the head, and live turns wait in the log until it has. */
     uint8_t  paced;
     uint8_t  streaming;
+    /* Its client rebuilds its world and replays the log when told to,
+     * so two worlds that part are both resynced rather than halted. */
+    uint8_t  resyncs;
     /* A watcher's hash for a tick the players have not agreed yet. It is
      * checked once they have, and never counts towards the agreement. */
     uint8_t  pend_set;
@@ -179,6 +182,7 @@ typedef struct TAK_TurnClock {
     uint8_t           started;
     uint8_t           paused;         /* by a player, N-004 */
     uint8_t           halted;         /* by a desync with no majority */
+    uint8_t           resyncs_done;   /* no-majority desyncs resynced so far */
     uint8_t           ended;
     uint32_t          head;           /* turns closed so far */
     uint64_t          next_close_ms;
@@ -244,6 +248,13 @@ int TAK_TurnClock_SetSpeed(TAK_TurnClock *c, int sim, uint8_t speed,
 /* Replay the log to this simulation at the pace it acknowledges, rather
  * than all at once. Set before its catch up begins. */
 void TAK_TurnClock_SetPaced(TAK_TurnClock *c, int sim, int paced);
+
+/* This simulation's client can rebuild its world from the log in the
+ * middle of a match. With every disagreeing world able to, a desync
+ * with no majority resyncs them all from turn zero, at most
+ * TAK_TURN_RESYNCS_MAX times a match, and halts after that. */
+#define TAK_TURN_RESYNCS_MAX 4
+void TAK_TurnClock_SetResyncs(TAK_TurnClock *c, int sim, int on);
 
 /* Whether a catch up to the head could be sent now: the log still holds
  * every turn of the match. */

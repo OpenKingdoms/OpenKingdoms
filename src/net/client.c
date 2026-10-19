@@ -234,6 +234,12 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
     case TAK_MSG_GO: {
         TAK_MsgGo m;
         if (TAK_Msg_GoDecode(&m, f.payload, f.payload_len) != 0) return -1;
+        /* Already playing: a resync. What is held belongs to the world
+         * being thrown away, and the log comes again from first_turn. */
+        if (c->state == TAK_NC_PLAYING) {
+            turns_reset(c);
+            c->resync = 1;
+        }
         c->next_turn = m.first_turn;
         c->state = TAK_NC_PLAYING;
         raise_event(c, TAK_NC_EV_GO);

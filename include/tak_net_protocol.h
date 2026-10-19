@@ -37,9 +37,11 @@
  * way lists a data mismatch as one. 6: a seated JOIN_ROOM may take a
  * computer seat in a match under way when the room has
  * TAK_ROOMF_DROP_IN, and the turn stream carries TAK_SYS_SEAT_TAKEOVER.
- * 2 to 6 share a room. The relay speaks every version and writes each
- * client the one it said hello with. */
-#define TAK_NET_PROTOCOL_VERSION      6
+ * 7: a GO in the middle of a match restarts the client from the log,
+ * and it rebuilds its world, so two worlds that part are resynced
+ * rather than halted. 2 to 7 share a room. The relay speaks every
+ * version and writes each client the one it said hello with. */
+#define TAK_NET_PROTOCOL_VERSION      7
 #define TAK_NET_PROTOCOL_MIN          1
 
 /* The simulation a client plays, sent as engine_build_id. A room holds

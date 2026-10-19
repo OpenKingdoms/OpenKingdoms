@@ -1273,6 +1273,26 @@ TEST(a_battle_says_whom_it_is_slowing_down_for) {
     TAK_Match_End();
 }
 
+/* A GO while the match is already playing is a resync: what is held
+ * belongs to the world being thrown away, and the battle is rebuilt. */
+TEST(a_go_in_the_middle_of_a_match_asks_for_a_rebuild) {
+    ASSERT_EQ_INT(0, both_playing());
+    TAK_Relay_Tick(&g_relay, 1650);
+    settle2(1650);
+    ASSERT(TAK_NetClient_TurnsHeld(&g_c) > 0);
+    ASSERT_EQ_INT(0, g_c.resync);
+    uint8_t msg[64];
+    TAK_MsgGo go;
+    go.first_turn = 0;
+    size_t n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1700));
+    ASSERT_EQ_INT(1, g_c.resync);
+    ASSERT_EQ_INT(0, (int)TAK_NetClient_TurnsHeld(&g_c));
+    ASSERT_EQ_INT(0, (int)g_c.next_turn);
+    ASSERT_EQ_INT(TAK_NC_PLAYING, g_c.state);
+}
+
 TEST(a_finished_tick_is_acknowledged_and_hashed_on_the_sixtieth) {
     ASSERT_EQ_INT(0, both_playing());
     TAK_Match_Begin(&g_c, g_c.seat, g_c.start.turn_ticks);
@@ -2316,6 +2336,7 @@ int main(void) {
 
     TEST_SUITE("The verdict, for the leaderboard");
     RUN(a_battle_says_whom_it_is_waiting_for);
+    RUN(a_go_in_the_middle_of_a_match_asks_for_a_rebuild);
     RUN(a_battle_says_whom_it_is_slowing_down_for);
     RUN(a_player_who_falls_behind_is_named_until_they_catch_up);
     RUN(a_verdict_is_reported_once_and_only_while_playing);

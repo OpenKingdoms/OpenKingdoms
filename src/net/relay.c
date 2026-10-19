@@ -107,6 +107,12 @@ static int reads_paced(const TAK_RelayClient *cl) {
     return cl->hello.protocol_version >= 5;
 }
 
+/* From protocol 7 a client rebuilds its world when a GO restarts it
+ * from the log in the middle of a match. */
+static int resyncs(const TAK_RelayClient *cl) {
+    return cl->hello.protocol_version >= 7;
+}
+
 static int token_set(const uint8_t *t) {
     for (int i = 0; i < TAK_NET_TOKEN_BYTES; i++) if (t[i]) return 1;
     return 0;
@@ -327,6 +333,7 @@ static void begin_match(TAK_Relay *r, TAK_RelayRoom *rr) {
         if (sim >= 0) {
             memcpy(rr->sim_token[sim], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
             TAK_TurnClock_SetPaced(&rr->clock, sim, reads_paced(cl));
+            TAK_TurnClock_SetResyncs(&rr->clock, sim, resyncs(cl));
         }
         if (seat < TAK_NET_SEATS)
             memcpy(rr->seat_token[seat], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
@@ -538,6 +545,7 @@ static void on_hello(TAK_Relay *r, TAK_RelayClient *cl, TAK_MsgHello *h) {
         cl->id = old_id;
         cl->room = room_index(r, back);
         TAK_TurnClock_SetPaced(&back->clock, sim, reads_paced(cl));
+        TAK_TurnClock_SetResyncs(&back->clock, sim, resyncs(cl));
     }
 
     TAK_MsgWelcome w;
@@ -774,6 +782,7 @@ static void join_dropin(TAK_Relay *r, TAK_RelayClient *cl, TAK_RelayRoom *rr,
     rr->dropin_before[seat] = before;
     memcpy(rr->sim_token[sim], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
     TAK_TurnClock_SetPaced(&rr->clock, sim, reads_paced(cl));
+    TAK_TurnClock_SetResyncs(&rr->clock, sim, resyncs(cl));
     cl->room = room_index(r, rr);
     send_room_state(r, rr);
     send_start_game(r, rr, cl);
@@ -858,6 +867,7 @@ static void on_join(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgJoinRoom *m)
          * anyone and without moving a turn. */
         memcpy(rr->sim_token[sim], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
         TAK_TurnClock_SetPaced(&rr->clock, sim, reads_paced(cl));
+        TAK_TurnClock_SetResyncs(&rr->clock, sim, resyncs(cl));
         send_start_game(r, rr, cl);
         (void)TAK_TurnClock_Reconnect(&rr->clock, sim, 0, r->now);
     }

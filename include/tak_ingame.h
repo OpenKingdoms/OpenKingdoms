@@ -33,6 +33,11 @@ void InGame_Shutdown(void);
  * skirmish without paying software-render cost per frame. */
 void InGame_DebugRunSimTicks(int ticks);
 
+/* 1 once when InGame_Tick left the battle because the server restarted
+ * this world from its turn log. The caller ends the match world without
+ * leaving the match and builds it again with MP_RebuildMatchWorld. */
+int InGame_TakeResync(void);
+
 /* "Zach takes over from the computer." for five seconds of battle after
  * a seat changes hands, else NULL. */
 const char *InGame_SeatNotice(void);
