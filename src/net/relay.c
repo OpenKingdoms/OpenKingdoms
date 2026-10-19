@@ -239,9 +239,12 @@ static void on_snap_result(TAK_Relay *r, TAK_RelayRoom *rr, int sim,
  * whole snapshot on to the worlds waiting for it, a slice at a time. */
 static void snap_tick(TAK_Relay *r, TAK_RelayRoom *rr) {
     if (!rr->snap.active) return;
+    /* A target that went, or took the log instead, waits no more. */
     for (int s = 0; s < TAK_TURN_SIMS_MAX; s++) {
         const TAK_TurnSim *ts = &rr->clock.sim[s];
-        if ((rr->snap.targets & (1u << s)) && (!ts->in_use || !ts->awaiting_snap))
+        if ((rr->snap.targets & (1u << s)) &&
+            (!ts->in_use || !ts->awaiting_snap || ts->status == TAK_PSTATUS_DROPPED ||
+             !TAK_Relay_FindClient(r, ts->client_id)))
             rr->snap.targets &= ~(1u << s);
     }
     const TAK_TurnSim *donor = &rr->clock.sim[rr->snap.donor];

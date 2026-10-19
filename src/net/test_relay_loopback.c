@@ -937,6 +937,32 @@ TEST(a_donor_that_goes_leaves_the_log) {
     ASSERT_EQ_INT(0, rr->snap.active);
 }
 
+/* A parted client that drops while its snapshot is on the way comes
+ * back to the whole log like any rejoin, and nothing waits on it. */
+TEST(a_parted_client_that_drops_rejoins_from_the_log) {
+    setup(20, 20, 19);
+    ASSERT(start_match(3, TAK_ROOMF_AI_TAKES_OVER, 60));
+    cl[2].desync_at_tick = 1234;
+    run_for(1000);
+    for (int i = 0; i < 60 && !cl[0].snap_asked; i++) {
+        uint64_t until = g_now + 400;
+        while (g_now < until) step();
+    }
+    ASSERT(cl[0].snap_asked);
+    cl[2].close_at = g_now;
+    cl[2].rejoin_at = g_now + 3000;
+    run_for(40000);
+    TAK_RelayRoom *rr = the_room();
+    ASSERT_NOT_NULL(rr);
+    int sim2 = TAK_TurnClock_SimOf(&rr->clock, cl[2].session);
+    ASSERT(sim2 >= 0);
+    ASSERT_EQ_INT(0, rr->clock.sim[sim2].awaiting_snap);
+    ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, rr->clock.sim[sim2].status);
+    ASSERT_EQ_INT(0, rr->snap.active);
+    ASSERT_EQ_INT(0, cl[2].stream_errors);
+    ASSERT(traces_agree() >= 30);
+}
+
 TEST(a_slow_client_engages_the_governor_and_everyone_still_agrees) {
     setup(20, 20, 9);
     ASSERT(start_match(4, TAK_ROOMF_AI_TAKES_OVER, 60));
@@ -2043,6 +2069,7 @@ int main(void) {
     RUN(an_injected_desync_is_caught_within_60_ticks_and_the_outlier_named);
     RUN(two_players_that_part_take_the_hosts_world);
     RUN(a_donor_that_goes_leaves_the_log);
+    RUN(a_parted_client_that_drops_rejoins_from_the_log);
     RUN(a_slow_client_engages_the_governor_and_everyone_still_agrees);
     RUN(a_reconnect_by_fast_forward_matches_the_live_trace);
     RUN(a_silent_player_is_replaced_by_the_computer_then_reclaims_the_seat);

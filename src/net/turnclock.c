@@ -566,6 +566,7 @@ static void drop_sim(TAK_TurnClock *c, int sim, uint8_t left_as,
     s->streaming = 0;
     s->behind = 0;
     s->reclaim = 0;
+    s->awaiting_snap = 0;
     if (s->seat != TAK_NET_SEAT_NONE) {
         uint8_t blob[8];
         size_t n = TAK_Sys_PlayerLeft(s->seat, left_as, blob, sizeof(blob));
@@ -626,6 +627,8 @@ static void stream(TAK_TurnClock *c, int sim) {
 static void begin_catch_up(TAK_TurnClock *c, int sim, uint32_t from_turn,
                            uint64_t now_ms) {
     TAK_TurnSim *s = &c->sim[sim];
+    /* Whatever it waited for, it replays the log from here now. */
+    s->awaiting_snap = 0;
     s->status = TAK_PSTATUS_CATCHING_UP;
     s->done_turns = from_turn;
     s->last_heard_ms = now_ms;
@@ -718,6 +721,8 @@ void TAK_TurnClock_Disconnect(TAK_TurnClock *c, int sim, uint64_t now_ms) {
     if (!valid_sim(c, sim)) return;
     TAK_TurnSim *s = &c->sim[sim];
     if (s->status == TAK_PSTATUS_DROPPED) return;
+    /* A snapshot on its way goes nowhere now. A return replays the log. */
+    s->awaiting_snap = 0;
     /* A drop in that never took its seat leaves no trace in the match. */
     if (s->takeover) { TAK_TurnClock_Forget(c, sim, now_ms); return; }
     if (s->seat == TAK_NET_SEAT_NONE) {
