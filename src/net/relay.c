@@ -845,8 +845,11 @@ static void on_join(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgJoinRoom *m)
         uint8_t group = TAK_NET_SEAT_NONE;
         for (int g = 0; g < TAK_NET_GROUP_HASHES; g++)
             if (cl->hello.group_hash[g] != rr->group_hash[g]) { group = (uint8_t)g; break; }
+        /* Only the game folder models differ when both play one mod set. */
         if (cl->hello.protocol_version >= 8 && rr->protocol >= 8 &&
-            cl->hello.loose_hash != rr->loose_hash) {
+            cl->hello.loose_hash != rr->loose_hash &&
+            strncmp(cl->hello.mod_name, rr->mod_name, TAK_NET_MOD_NAME_MAX) == 0 &&
+            strncmp(cl->hello.mod_version, rr->mod_version, TAK_NET_MOD_VERSION_MAX) == 0) {
             group = (uint8_t)(TAK_REJECT_DETAIL_MODELS |
                               (rr->loose_models < 127 ? rr->loose_models : 127));
             tell_host_models(r, rr, cl);

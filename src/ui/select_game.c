@@ -306,11 +306,14 @@ int SelectGame_RowWatchable(int index) {
            r->watchers < TAK_NET_WATCHERS_MAX;
 }
 
-/* A greyed row whose host has other models in its game folder's
- * objects3d says so, since no mod set fixes that. */
+/* A greyed row whose host plays our mod set with other models in its
+ * game folder's objects3d says so, since no mod set fixes that. */
 static int models_advice(const TAK_RoomSummary *r, char *out, size_t cap) {
     const TAK_DataFingerprint *fp = TAK_DataFingerprint_Get();
     if (!fp || r->compat != TAK_REJECT_DATA_MISMATCH || fp->loose_hash == r->loose_hash)
+        return 0;
+    if (tak_stricmp(r->mod_name, TAK_ModSet_ActiveModName()) != 0 ||
+        tak_stricmp(r->mod_version, TAK_ModSet_ActiveVersion()) != 0)
         return 0;
     TAK_Net_ModelFolderAdvice(out, cap, NULL, fp->loose_models, r->loose_models);
     return 1;

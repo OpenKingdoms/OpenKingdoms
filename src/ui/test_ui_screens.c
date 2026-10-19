@@ -646,6 +646,13 @@ TEST(iron_plague_is_detected_from_the_files_present) {
     ASSERT_EQ_INT(1, sides_seen);
 }
 
+/* The sides a case before kept for the skirmish lobby, forgotten, so a
+ * lobby opens on its lineup's own. */
+static void bs_forget_kept_sides(void) {
+    Settings_SetInt(TAK_GAMEOPTS_SKIRMISH ".Side", -1);
+    Settings_SetInt(TAK_GAMEOPTS_SKIRMISH ".EnemySide", -1);
+}
+
 /* The side button steps through the sides the data offers, a computer
  * row the same as a human one (legacy:134955-134972, legacy:136219).
  * Iron Plague's side data adds Creon as side 7, past the three sides
@@ -657,6 +664,7 @@ TEST(skirmish_lobby_offers_creon_after_zhon) {
         VFS_Shutdown();
         SKIP("install has no Iron Plague");
     }
+    bs_forget_kept_sides();
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -731,6 +739,7 @@ TEST(an_automatic_skirmish_takes_its_map_seed_and_sight) {
  * appears nowhere. */
 TEST(skirmish_lobby_offers_four_sides_in_the_base_game) {
     if (mount_base_game() != 0) SKIP("no game dir");
+    bs_forget_kept_sides();
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -2089,6 +2098,23 @@ TEST(a_game_this_build_cannot_join_is_listed_rather_than_hidden) {
     ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
     ASSERT_EQ_STR("That game plays TAK Enhanced 1.4, which you do not have.", SelectGame_Status());
     ASSERT_EQ_INT(0, save_and_check_canvas("test_ui_select_game_greyed.bmp"));
+
+    /* On our own mod set, a host with other game folder models is told
+     * apart by that folder and its count. */
+    snprintf(rl.room[1].mod_name, sizeof rl.room[1].mod_name, "%s", TAK_ModSet_ActiveModName());
+    snprintf(rl.room[1].mod_version, sizeof rl.room[1].mod_version, "%s",
+             TAK_ModSet_ActiveVersion());
+    const TAK_DataFingerprint *fp = TAK_DataFingerprint_Get();
+    ASSERT_NOT_NULL(fp);
+    rl.room[1].loose_models = 7;
+    rl.room[1].loose_hash = fp->loose_hash ^ 0x77u;
+    n = TAK_Msg_RoomListEncode(&rl, msg, sizeof msg);
+    sg_feed(msg, n);
+    (void)SelectGame_Tick(&platform, 1.0f / 60.0f);
+    SelectGame_SelectRow(1);
+    char want[TAK_NET_CHAT_MAX];
+    TAK_Net_ModelFolderAdvice(want, sizeof want, NULL, fp->loose_models, 7);
+    ASSERT_EQ_STR(want, SelectGame_Status());
 
     SelectGame_Shutdown();
     NetSession_Disconnect();
