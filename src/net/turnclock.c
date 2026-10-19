@@ -429,12 +429,16 @@ static void judge(TAK_TurnClock *c, TAK_TurnHashRow *row, uint64_t now_ms) {
             record_consensus(c, tick, row->hash[ref], now_ms);
             c->split_ref = ref;
             c->splits_by_snapshot++;
+            int fell_back = 0;
             for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
                 /* A world that agrees with the reference keeps its own. */
                 if (!(parted & (1u << i))) continue;
                 resync_sim(c, i, ref, now_ms);
                 if (c->sim[i].awaiting_snap) c->split_targets |= 1u << i;
+                else fell_back = 1;
             }
+            /* One sent to the log at once means the reference goes too. */
+            if (fell_back) TAK_TurnClock_Restart(c, ref, now_ms);
             return;
         }
         note_desync(c, tick, have, 0);

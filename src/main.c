@@ -662,10 +662,11 @@ static void app_frame(AppState *app) {
                     InGame_SetRejoining(g_resync_from_tick);
                     GameWorld *rw = World_Get();
                     if (rw) { rw->cam_x = g_resync_cam_x; rw->cam_y = g_resync_cam_y; }
+                    int kept = 0;
                     for (int i = 0; i < g_resync_sel_n; i++) {
                         int h = Units_FindByStableId(g_resync_sel[i]);
                         if (h < 0) continue;
-                        if (i == 0) Units_SelectSingle(h);
+                        if (!kept++) Units_SelectSingle(h);
                         else Units_SelectAdd(h);
                     }
                     g_resync_sel_n = 0;
