@@ -333,13 +333,19 @@ static int can_donate(const TAK_TurnClock *c, int i, uint32_t exclude) {
 }
 
 int TAK_TurnClock_SnapDonor(const TAK_TurnClock *c, uint32_t exclude) {
-    if (c->ref_sim >= 0 && c->ref_sim < TAK_TURN_SIMS_MAX && can_donate(c, c->ref_sim, exclude))
-        return c->ref_sim;
-    /* A player before a watcher: a watcher's world is checked late. */
-    for (int pass = 0; pass < 2; pass++)
+    /* One keeping up before one lagging, which may be a tab in the
+     * background that will not reach a hashed tick soon, and a player
+     * before a watcher, whose world is checked late. */
+    for (int pass = 0; pass < 4; pass++) {
+        int lagging_ok = pass >= 2, watcher_ok = pass % 2 == 1;
+        if (c->ref_sim >= 0 && c->ref_sim < TAK_TURN_SIMS_MAX && can_donate(c, c->ref_sim, exclude) &&
+            (lagging_ok || c->sim[c->ref_sim].status == TAK_PSTATUS_CONNECTED))
+            return c->ref_sim;
         for (int i = 0; i < TAK_TURN_SIMS_MAX; i++)
             if (can_donate(c, i, exclude) &&
-                (pass == 1 || c->sim[i].seat != TAK_NET_SEAT_NONE)) return i;
+                (lagging_ok || c->sim[i].status == TAK_PSTATUS_CONNECTED) &&
+                (watcher_ok || c->sim[i].seat != TAK_NET_SEAT_NONE)) return i;
+    }
     return -1;
 }
 
