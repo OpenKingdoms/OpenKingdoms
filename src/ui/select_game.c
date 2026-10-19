@@ -85,6 +85,7 @@ static struct {
     /* Asked for a room list and waiting, so the screen can say so
      * rather than showing an empty list that looks like no games. */
     int  listing;
+    int  keep_status;   /* a refusal's words outlast the next list */
     /* How many rooms the last list held. */
     int  rooms_shown;
 
@@ -247,7 +248,7 @@ static void ask_for_rooms(void) {
     if (!c) return;
     if (TAK_NetClient_ListRooms(c) == 0) {
         sg.listing = 1;
-        set_status("Looking for games.");
+        if (!sg.keep_status) set_status("Looking for games.");
     }
 }
 
@@ -305,9 +306,23 @@ int SelectGame_RowWatchable(int index) {
            r->watchers < TAK_NET_WATCHERS_MAX;
 }
 
+/* A greyed row whose host plays our mod set with other models in its
+ * game folder's objects3d says so, since no mod set fixes that. */
+static int models_advice(const TAK_RoomSummary *r, char *out, size_t cap) {
+    const TAK_DataFingerprint *fp = TAK_DataFingerprint_Get();
+    if (!fp || r->compat != TAK_REJECT_DATA_MISMATCH || fp->loose_hash == r->loose_hash)
+        return 0;
+    if (tak_stricmp(r->mod_name, TAK_ModSet_ActiveModName()) != 0 ||
+        tak_stricmp(r->mod_version, TAK_ModSet_ActiveVersion()) != 0)
+        return 0;
+    TAK_Net_ModelFolderAdvice(out, cap, NULL, fp->loose_models, r->loose_models);
+    return 1;
+}
+
 /* Why a game under way cannot be watched, or NULL when it can. */
 static const char *watch_refusal(const TAK_RoomSummary *r) {
     static char advice[SG_STATUS_MAX];
+    if (models_advice(r, advice, sizeof advice)) return advice;
     if (r->compat == TAK_REJECT_DATA_MISMATCH) {
         TAK_ModSet_JoinAdvice(r->mod_name, r->mod_version, r->content_hash,
                               advice, sizeof advice);
@@ -347,6 +362,14 @@ void SelectGame_WatchRow(int index) {
  * differs, so the player knows whether it is a mod, a unit file or a
  * script (docs/MULTIPLAYER.md). */
 static void say_refusal(const TAK_MsgReject *r) {
+    if (r->reason == TAK_REJECT_DATA_MISMATCH && (r->detail & TAK_REJECT_DETAIL_MODELS)) {
+        const TAK_DataFingerprint *fp = TAK_DataFingerprint_Get();
+        char line[SG_STATUS_MAX];
+        TAK_Net_ModelFolderAdvice(line, sizeof line, NULL, fp ? fp->loose_models : 0,
+                                  r->detail & 0x7f);
+        set_status(line);
+        return;
+    }
     if (r->reason == TAK_REJECT_DATA_MISMATCH && r->detail < TAK_DATA_GROUP_COUNT) {
         char line[160];
         snprintf(line, sizeof line,
@@ -389,6 +412,16 @@ static void join_selected(void) {
          * without a word, which left players wondering why a friend's
          * game was invisible. The row stays and says why, naming the
          * mod set it needs when the host said which. */
+        char why[SG_STATUS_MAX];
+        if (models_advice(r, why, sizeof why)) {
+            /* Asked anyway, so the host hears who was turned away. */
+            TAK_MsgJoinRoom jr;
+            memset(&jr, 0, sizeof jr);
+            jr.room_id = r->room_id;
+            (void)TAK_NetClient_JoinRoom(c, &jr);
+            set_status(why);
+            return;
+        }
         if (r->compat == TAK_REJECT_DATA_MISMATCH) {
             /* The mod registry may have what it plays: the first Join
              * asks, the second fetches (tak_mod_fetch.h). */
@@ -629,7 +662,27 @@ static void draw_status(void) {
     if (!off || !help) return;
     int tw = Font_MeasureString(sg.font_help, line);
     SDL_Rect r = help->rect;
-    Font_DrawString(sg.font_help, off, r.x + (r.w - tw) / 2, r.y + 2, line);
+    if (tw <= r.w - 8) {
+        Font_DrawString(sg.font_help, off, r.x + (r.w - tw) / 2, r.y + 2, line);
+        return;
+    }
+    /* Longer than the strip: it runs through it, again and again, drawn
+     * on a copy of the strip so nothing spills past its ends. */
+    SDL_Surface *tmp = SDL_CreateRGBSurfaceWithFormat(0, r.w, r.h, 32, off->format->format);
+    if (!tmp) return;
+    SDL_BlendMode mode;
+    SDL_GetSurfaceBlendMode(off, &mode);
+    SDL_SetSurfaceBlendMode(off, SDL_BLENDMODE_NONE);
+    SDL_SetSurfaceBlendMode(tmp, SDL_BLENDMODE_NONE);
+    SDL_BlitSurface(off, &r, tmp, NULL);
+    int period = tw + r.w / 2;
+    int shift = (int)((SDL_GetTicks() / 16u) % (uint32_t)period) - r.w / 3;
+    if (shift < 0) shift = 0;
+    Font_DrawString(sg.font_help, tmp, 4 - shift, 2, line);
+    Font_DrawString(sg.font_help, tmp, 4 - shift + period, 2, line);
+    SDL_BlitSurface(tmp, NULL, off, &r);
+    SDL_SetSurfaceBlendMode(off, mode);
+    SDL_FreeSurface(tmp);
 }
 
 /* ── the screen ────────────────────────────────────────────────────── */
@@ -733,7 +786,10 @@ static void fill_info(void) {
     set_label("Creon",          r ? yes_no(r->flags & TAK_ROOMF_IRON_PLAGUE) : "");
     /* Whose data the game runs on: the same as ours, which is our mod
      * set by name, or not, and then which mod set it needs. */
-    if (r && r->compat == TAK_REJECT_DATA_MISMATCH) {
+    char models[SG_STATUS_MAX];
+    if (r && models_advice(r, models, sizeof models)) {
+        set_status(models);
+    } else if (r && r->compat == TAK_REJECT_DATA_MISMATCH) {
         char line[SG_STATUS_MAX];
         TAK_ModSet_JoinAdvice(r->mod_name, r->mod_version, r->content_hash,
                               line, sizeof line);
@@ -877,12 +933,14 @@ static void take_events(TAK_Platform *platform) {
             /* The relay also sends the list again with each heartbeat,
              * for the host pings, and that must not wipe a line the
              * player has not read yet. */
+            /* A refusal's words stay over the list that follows it. */
             if (room_count() == 0) {
-                set_status("No games yet. Host one.");
+                if (!sg.keep_status) set_status("No games yet. Host one.");
             } else {
-                if (sg.listing || sg.rooms_shown == 0) set_status("");
+                if ((sg.listing || sg.rooms_shown == 0) && !sg.keep_status) set_status("");
                 if (sg.selected >= room_count()) sg.selected = -1;
             }
+            sg.keep_status = 0;
             sg.listing = 0;
             sg.rooms_shown = room_count();
             clamp_scroll();
@@ -901,6 +959,7 @@ static void take_events(TAK_Platform *platform) {
             break;
         case TAK_NC_EV_REFUSED:
             say_refusal(&c->reject);
+            sg.keep_status = 1;
             /* A link to a game that is gone or cannot be joined leaves
              * the player on the list of the games there are. Wanting a
              * name keeps the code for when one is typed. */

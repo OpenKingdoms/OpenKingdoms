@@ -215,6 +215,7 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
         c->seat = m.your_seat;
         memset(c->seat_status, TAK_PSTATUS_CONNECTED, sizeof c->seat_status);
         turns_reset(c);
+        c->resigned = 0;
         c->next_turn = 0;
         c->last_turn_held = 0;
         c->cmd_seq = 0;
@@ -369,6 +370,18 @@ int TAK_NetClient_EditRoom(TAK_NetClient *c, const TAK_MsgRoomEdit *m) {
         if (c->seat == TAK_NET_SEAT_NONE) return -1;
         e.seat = c->seat;
     }
+    QUEUE_ENCODED(c, TAK_Msg_RoomEditEncode(&e, _f, sizeof _f));
+}
+
+int TAK_NetClient_Resign(TAK_NetClient *c) {
+    if (c->state != TAK_NC_PLAYING || c->seat == TAK_NET_SEAT_NONE) return -1;
+    if (c->resigned) return 0;
+    c->resigned = 1;
+    TAK_MsgRoomEdit e;
+    memset(&e, 0, sizeof e);
+    e.field = TAK_EDIT_WATCH;
+    e.seat = c->seat;
+    e.value = 1;
     QUEUE_ENCODED(c, TAK_Msg_RoomEditEncode(&e, _f, sizeof _f));
 }
 

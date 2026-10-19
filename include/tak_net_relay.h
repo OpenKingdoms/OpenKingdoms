@@ -70,6 +70,9 @@ typedef struct TAK_RelayRoom {
      * protocol 4. With content_hash it is what a result is filed under. */
     char              mod_name[TAK_NET_MOD_NAME_MAX];
     char              mod_version[TAK_NET_MOD_VERSION_MAX];
+    /* The host's game folder models, 0 before protocol 8. */
+    uint16_t          loose_models;
+    uint64_t          loose_hash;
     /* The host's protocol version. A room holds clients of one, so every
      * member reads the room the same way. */
     uint16_t          protocol;

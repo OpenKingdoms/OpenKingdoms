@@ -58,6 +58,7 @@
 #include "tak_multiplayer.h"
 #include "tak_net_session.h"
 #include "tak_net_match.h"
+#include "tak_command_queue.h"
 #include "tak_chat.h"
 #include "tak_select_game.h"
 #include "tak_world.h"
@@ -94,8 +95,10 @@ EM_JS(void, web_screen, (const char *id, int x, int y, int w, int h), {
  * lost connection. */
 static int g_battle_in_match;
 
-/* The battle being built is a resync of the one before, not a new one. */
+/* The battle being built is a resync of the one before, not a new one,
+ * and the tick the one before had reached. */
 static int g_resync_rebuild;
+static uint32_t g_resync_from_tick;
 
 static void battle_began(void) {
     const GameWorld *w = World_Get();
@@ -650,6 +653,7 @@ static void app_frame(AppState *app) {
                 Replay_RecordBattle();
                 if (g_resync_rebuild) {
                     g_resync_rebuild = 0;
+                    InGame_SetRejoining(g_resync_from_tick);
                     Chat_Push("The battle went out of step and is rebuilt from the server's record.",
                               CHAT_TYPE_NOTICE, CHAT_OWNER_SYSTEM, SDL_GetTicks());
                 } else {
@@ -691,6 +695,7 @@ static void app_frame(AppState *app) {
             if (next_state != GAMESTATE_IN_GAME && InGame_TakeResync()) {
                 /* A resync: the match goes on, so it is not left. The
                  * world is built again and the log replays into it. */
+                g_resync_from_tick = TAK_CmdQueue_Tick();
                 TAK_Match_End();
                 InGame_Shutdown();
                 World_End(&app->platform);

@@ -6,6 +6,7 @@
 
 #include "test_framework.h"
 #include "tak_sound.h"
+#include "tak_fallen_cue.h"
 #include "tak_game_sound.h"
 #include "tak_memory.h"
 #include "tak_hpi.h"
@@ -340,6 +341,30 @@ static void scan_source_tree(const char *dir, EncodingScan *r) {
 #endif
 }
 
+/* The fallen cue is made here, not read from the game's files: a mono
+ * 16 bit WAV of about a second that decodes, loud but never clipped. */
+TEST(the_fallen_cue_is_a_second_of_sound) {
+    size_t n = TAK_FallenCue_WavBytes();
+    uint8_t *wav = (uint8_t *)malloc(n);
+    ASSERT_NOT_NULL(wav);
+    ASSERT_EQ_INT(0, (int)TAK_FallenCue_Wav(wav, n - 1));
+    ASSERT_EQ_INT((int)n, (int)TAK_FallenCue_Wav(wav, n));
+    ASSERT(memcmp(wav, "RIFF", 4) == 0 && memcmp(wav + 8, "WAVE", 4) == 0);
+    int frames = (int)((n - 44) / 2);
+    ASSERT(frames > 22050 && frames < 2 * 22050);
+    int peak = 0;
+    for (int i = 0; i < frames; i++) {
+        int v = (int16_t)(wav[44 + 2 * i] | (wav[45 + 2 * i] << 8));
+        if (v < 0) v = -v;
+        if (v > peak) peak = v;
+    }
+    ASSERT(peak > 8000 && peak < 32767);
+    TAK_SoundEffect *sfx = TAK_Sound_LoadWAVFromMemory(wav, (uint32_t)n);
+    ASSERT_NOT_NULL(sfx);
+    TAK_Sound_Unload(sfx);
+    free(wav);
+}
+
 /* No source carries text saved through a cp1252 round trip. The sound
  * change once re-saved a header that way and turned its box-drawing,
  * arrow, section and dash characters into mojibake. */
@@ -357,6 +382,7 @@ int main(void) {
     TEST_SUITE("sound");
     tak_mem_init();
     RUN(spatialize_volume_is_two_step);
+    RUN(the_fallen_cue_is_a_second_of_sound);
     RUN(spatialize_pan_runs_across_viewport_width);
     RUN(choose_victim_steals_strictly_lower_priority_only);
     RUN(debug_recorder_keeps_events_in_order);

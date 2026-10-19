@@ -331,7 +331,12 @@ int TAK_Match_IsWatching(void) {
 }
 
 void TAK_Match_SetBeaten(void) {
-    if (g_match.live) g_match.beaten = 1;
+    if (!g_match.live || g_match.beaten) return;
+    g_match.beaten = 1;
+    /* A beaten seat watches: its world no longer votes when the players'
+     * worlds are compared, and one that parts is rebuilt alone. */
+    if (g_match.client && g_match.seat != TAK_NET_SEAT_NONE)
+        (void)TAK_NetClient_Resign(g_match.client);
 }
 
 /* How many of `list` are called `name`. */

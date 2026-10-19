@@ -528,6 +528,9 @@ Third-party components keep their own licences: FFmpeg (LGPL 2.1 or
 later, built with only the Bink video and audio decoders so the menu doors
 and cut scenes play with their sound), SDL2 (zlib), miniaudio
 (public domain / MIT-0), stb_image (MIT / public domain), miniz (MIT).
+The low horn and drum that mark a fallen player are our own, made by the
+engine from sine waves at run time (src/sound/fallen_cue.c), so no
+recording is involved and it is covered by the project's licence.
 
 *Total Annihilation: Kingdoms* is a trademark of its respective owners.
 This project is not affiliated with, endorsed by, or supported by Cavedog

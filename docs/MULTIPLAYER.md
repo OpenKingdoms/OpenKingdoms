@@ -154,7 +154,9 @@ the rest of this document is still design.
   with Tab, and gives no order. Its world never counts when the players'
   worlds are compared, and its arrival moves no turn. The players see
   who is watching. A player beaten while the others fight on watches the
-  same way and keeps the seat. See docs/notes/2026-09-30-watching-a-match.md.
+  same way. The beaten client gives its seat up to watch, so from then on
+  its world is checked like a watcher's and never counts. See
+  docs/notes/2026-09-30-watching-a-match.md.
 - Co-op against the computer with drop in seats (#292, N-010). A
   hosted room lets players drop in. A leaving player's army goes to the
   computer when the seat was a computer's at the start or a human of the
@@ -223,13 +225,16 @@ can skip it.
   expansion flag, a 128 bit device token, the display name, the client kind
   and a server access key when one is needed. From protocol 4 it also
   names the mod set the client mounted and its version, "Vanilla" for the
-  game itself.
+  game itself. From protocol 8 it carries how many models the game folder's
+  objects3d holds and their hash.
 - WELCOME from the server carries the session id, the server name and flags,
   the message of the day, the protocol range it supports and the newest
   client build it knows about, which drives the update notice.
 - REJECT carries a reason code. The codes reuse the original's vocabulary and
   add data mismatch, engine version, server password, banned and rate
-  limited.
+  limited. A data mismatch names the group that differs, or with its top
+  bit set says the game folder models differ and carries the host's count
+  of them.
 - PING and PONG go every 2 seconds, the original's heartbeat cadence,
   carrying timestamps. The round trip fills the battle room's Ping column.
   These are application messages because a browser page cannot send a
@@ -249,7 +254,8 @@ can skip it.
   fingerprint, as one block a room after the pings. A game under way is
   listed as closed to players, and from protocol 5 as a data mismatch
   instead to a client whose data differs, since that client could not
-  watch it.
+  watch it. From protocol 8 each room carries its host's count and hash of
+  game folder models, after the mod sets.
 - CREATE_ROOM, JOIN_ROOM by id or by a six character code with an optional
   password and a watcher flag, and LEAVE_ROOM.
 - ROOM_EDIT changes one field. The server checks it against the editor's
@@ -446,7 +452,11 @@ world again and replay the log to the present (protocol 7). A match halts
 with a report only when a client is too old to do that, or after four such
 resyncs. A watcher's world
 never counts: its hash is checked against what the players agreed, and a
-watcher that differs is resynced alone. Each client writes a desync bundle locally holding the replay, its hash
+watcher that differs is resynced alone. A rebuilt world shows "Rejoining
+the battle" until it has caught up, and the others are never paused for
+it. A world that is rebuilt twice and parts again is never sent round a
+loop. It is no longer checked, the computer plays a seat it held, and the
+player is told so and watches. Each client writes a desync bundle locally holding the replay, its hash
 trace and the per subsystem breakdown at the mismatch tick, which is a
 complete reproducer.
 
@@ -479,7 +489,18 @@ greeting, the five the protocol carries:
 | ai | `ai/*.txt` |
 
 Each file is read through the VFS, so a loose file that overrides an archive
-is the one hashed. Its path is case folded and loses a leading `data/`, so
+is the one hashed. A model in the game folder's own objects3d is read
+first, the way the model loader reads it (#202), and a model only that
+folder has is hashed too. Some installs ship such a folder (the GOG one
+has 20 building models in it) and others do not, and a unit's model
+decides where a blast reaches it, so two players who differ only there
+would part minutes into a match. The fingerprint also counts those models
+and hashes them apart, the greeting carries both from protocol 8, and the
+lobby says that folder is what differs. A greyed row and a refused join
+say "The host's game folder has 20 models in objects3d that yours does
+not. Both players need the same files: both include the objects3d folder,
+or both leave it out." The host sees the same in the room's chat, naming
+who could not join. Its path is case folded and loses a leading `data/`, so
 the loose and archive layouts agree, and the files go in sorted by path, so
 how an archive is packed changes nothing. Text files lose their carriage
 returns, which the parsers ignore anyway, and scripts and models are

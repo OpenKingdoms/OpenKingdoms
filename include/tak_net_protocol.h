@@ -39,9 +39,11 @@
  * TAK_ROOMF_DROP_IN, and the turn stream carries TAK_SYS_SEAT_TAKEOVER.
  * 7: a GO in the middle of a match restarts the client from the log,
  * and it rebuilds its world, so two worlds that part are resynced
- * rather than halted. 2 to 7 share a room. The relay speaks every
- * version and writes each client the one it said hello with. */
-#define TAK_NET_PROTOCOL_VERSION      7
+ * rather than halted. 8: HELLO and the room list carry the models in
+ * the game folder's objects3d, so a lobby can say that folder is what
+ * differs. 2 to 8 share a room. The relay speaks every version and
+ * writes each client the one it said hello with. */
+#define TAK_NET_PROTOCOL_VERSION      8
 #define TAK_NET_PROTOCOL_MIN          1
 
 /* The simulation a client plays, sent as engine_build_id. A room holds
@@ -258,7 +260,7 @@ typedef enum TAK_NetReject {
     TAK_REJECT_NO_WATCHING       = 9,
     TAK_REJECT_CREATOR_LEFT      = 10,
 
-    TAK_REJECT_DATA_MISMATCH     = 16,
+    TAK_REJECT_DATA_MISMATCH     = 16,   /* detail: the group, or below */
     TAK_REJECT_ENGINE_VERSION    = 17,
     TAK_REJECT_SERVER_PASSWORD   = 18,
     TAK_REJECT_BANNED            = 19,
@@ -442,6 +444,10 @@ typedef struct TAK_MsgHello {
      * decide who plays whom. Sent when protocol_version is 4 or more. */
     char     mod_name[TAK_NET_MOD_NAME_MAX];
     char     mod_version[TAK_NET_MOD_VERSION_MAX];
+    /* The models in the game folder's objects3d and their hash, 0 for
+     * none. Protocol 8 on. */
+    uint16_t loose_models;
+    uint64_t loose_hash;
 } TAK_MsgHello;
 
 typedef struct TAK_MsgWelcome {
@@ -501,6 +507,9 @@ typedef struct TAK_RoomSummary {
     char     mod_name[TAK_NET_MOD_NAME_MAX];
     char     mod_version[TAK_NET_MOD_VERSION_MAX];
     uint64_t content_hash;
+    /* The host's game folder models, as its hello said. Protocol 8 on. */
+    uint16_t loose_models;
+    uint64_t loose_hash;
 } TAK_RoomSummary;
 
 typedef struct TAK_MsgRoomList {
@@ -862,8 +871,19 @@ typedef struct TAK_SysCmd {
 } TAK_SysCmd;
 int TAK_Sys_Decode(TAK_SysCmd *out, const void *p, size_t len);
 
+/* A data mismatch's detail when the game folder models differ: this
+ * bit and the host's count of them, at most 127. */
+#define TAK_REJECT_DETAIL_MODELS 0x80u
+
 /* Reject text the client shows. Never NULL. */
 const char *TAK_Net_RejectText(uint8_t reason);
+
+/* Why two players whose game folder models differ cannot play, naming
+ * the folder and the count. For the joiner, joiner is NULL and mine and
+ * theirs are its count and the host's. For the host, joiner names who
+ * was turned away, mine is the host's count and theirs the joiner's. */
+void TAK_Net_ModelFolderAdvice(char *out, size_t cap, const char *joiner,
+                               int mine, int theirs);
 
 /* Compare two secrets held in fixed width fields, a room password or a
  * server key, taking the same time however much of them matches. */

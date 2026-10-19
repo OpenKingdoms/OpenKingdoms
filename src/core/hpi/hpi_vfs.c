@@ -835,6 +835,30 @@ int VFS_ReadGameFile(const char *relative, void **out_data, uint32_t *out_size) 
     return 0;
 }
 
+int VFS_ListGameFiles(const char *folder, const char *extension,
+                      char ***out_names, int *out_count) {
+    if (!out_names || !out_count) return -1;
+    *out_names = NULL;
+    *out_count = 0;
+    if (!vfs_initialized || !game_root || !folder || !extension) return -1;
+    char actual[256], dir[4096];
+    if (find_dir_entry_ci(game_root, folder, actual, sizeof(actual)) != 0) return 0;
+    if (build_loose_path(dir, sizeof(dir), game_root, actual) != 0) return -1;
+    char **paths = NULL;
+    int n = 0;
+    if (scan_directory(dir, extension, &paths, &n) != 0) return 0;
+    /* The full paths become bare names, in place. */
+    for (int i = 0; i < n; i++) {
+        const char *leaf = paths[i];
+        for (const char *c = paths[i]; *c; c++)
+            if (*c == '/' || *c == '\\') leaf = c + 1;
+        memmove(paths[i], leaf, strlen(leaf) + 1);
+    }
+    *out_names = paths;
+    *out_count = n;
+    return 0;
+}
+
 int VFS_ReadFile(const char *path, void **out_data, uint32_t *out_size) {
     g_read_calls++;
     if (!path || !out_data || !out_size) return -1;

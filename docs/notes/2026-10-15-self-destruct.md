@@ -60,6 +60,7 @@ dying ones counted, drop to none. The original picks the line with the
 C library's rand, which no other machine shares. The engine picks it
 from the battle tick and the seat, so every machine shows the same
 line. The original also plays MessageArrived for a line about another
-player, and so does the engine, every time a player falls, the
-computer included. The shipped archives carry no MessageArrived.wav, so
-with the original's files the cue plays nothing, there or here.
+player. The shipped archives carry no MessageArrived.wav, so with the
+original's files that cue plays nothing. The engine plays a cue of its
+own instead (D-043), every time a player falls, the computer included,
+on every machine. A battle being caught up to the present skips it.

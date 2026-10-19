@@ -123,6 +123,8 @@ typedef struct TAK_NetClient {
     /* A GO came in the middle of a match: the server restarts this world
      * from its turn log, and the battle has to be built again. */
     uint8_t  resync;
+    /* The seat was given up to watch, once a match. */
+    uint8_t  resigned;
     /* Ours and rising. It is not what orders the commands, the turn
      * is, but it lets the server see a gap. */
     uint32_t cmd_seq;
@@ -201,6 +203,10 @@ int TAK_NetClient_LeaveRoom(TAK_NetClient *c);
  * and a screen should not have to know that. A host only field, a kick
  * or a block, keeps the seat the caller put in it. */
 int TAK_NetClient_EditRoom(TAK_NetClient *c, const TAK_MsgRoomEdit *m);
+/* In a match: give up the seat and watch. The world stays and keeps
+ * reporting its hash, which is checked against the players' and never
+ * counted with them. */
+int TAK_NetClient_Resign(TAK_NetClient *c);
 int TAK_NetClient_Chat(TAK_NetClient *c, const TAK_MsgChat *m);
 int TAK_NetClient_Start(TAK_NetClient *c);
 

@@ -1013,10 +1013,35 @@ static void mp_draw_chat(SimpleScreen *s) {
     snprintf(typed, sizeof typed, "%s_", mp_chat.typing);
     Font_DrawString(mp_font, off, x, y, typed);
     y -= lh;
+    /* A long line, such as the server's word on who could not join,
+     * wraps at the box's edge, its last row lowest. */
+    int width = r.w - 32;   /* clear of the scroll bar */
     for (int i = mp_chat.count - 1; i >= 0 && y >= r.y; i--) {
         const char *line = mp_chat.lines[(mp_chat.head + i) % MP_CHAT_LINES];
-        Font_DrawString(mp_font, off, x, y, line);
-        y -= lh;
+        char rows[8][sizeof mp_chat.lines[0]];
+        int nrows = 0;
+        const char *p = line;
+        while (*p && nrows < 8) {
+            size_t len = strlen(p), cut = len, fit = 0;
+            char *row = rows[nrows];
+            for (size_t k = 1; k <= len; k++) {
+                if (p[k] != ' ' && p[k] != '\0') continue;
+                memcpy(row, p, k);
+                row[k] = '\0';
+                if (fit && Font_MeasureString(mp_font, row) > width) break;
+                fit = k;
+            }
+            if (fit && fit < len) cut = fit;
+            memcpy(row, p, cut);
+            row[cut] = '\0';
+            nrows++;
+            p += cut;
+            while (*p == ' ') p++;
+        }
+        for (int k = nrows - 1; k >= 0 && y >= r.y; k--) {
+            Font_DrawString(mp_font, off, x, y, rows[k]);
+            y -= lh;
+        }
     }
 }
 

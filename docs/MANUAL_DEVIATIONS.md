@@ -2241,6 +2241,21 @@ Format per entry:
 - Citation: the aimed port (legacy:223392-223395) and the fire gate
   that waits for it (legacy:249328-249384). The manual is silent.
 
+## D-043: A fallen player is marked by a low horn
+
+- Change: when a player's last unit is gone, beside the line that names
+  them, the engine plays a cue of its own, a low horn over a muffled
+  drum lasting about a second. It plays for every player who falls,
+  computer or human, in a skirmish and in a match, on every machine, at
+  the sound volume. A battle being caught up to the present stays quiet.
+- Why: the original plays MessageArrived for that line, and the shipped
+  archives have no such file, so the fall passed in silence. The owner
+  wants a sound there. The cue is made by the engine from sine waves at
+  run time (src/sound/fallen_cue.c), so no recording ships.
+- Citation: the line and its cue (legacy:206939-207005,
+  legacy:227378-227387), docs/notes/2026-10-15-self-destruct.md. The
+  manual is silent.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

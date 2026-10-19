@@ -39,6 +39,10 @@ typedef struct TAK_DataFingerprint {
     uint64_t content;
     uint64_t group[TAK_DATA_GROUP_COUNT];
     int      files[TAK_DATA_GROUP_COUNT];
+    /* The models in the game folder's objects3d, which the simulation
+     * loads before the archives': how many, and their hash (0 for none). */
+    int      loose_models;
+    uint64_t loose_hash;
 } TAK_DataFingerprint;
 
 /* Hash what is mounted now. 0 on success, -1 with no VFS. */

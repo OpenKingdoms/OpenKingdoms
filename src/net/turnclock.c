@@ -261,6 +261,7 @@ static void begin_catch_up(TAK_TurnClock *c, int sim, uint32_t from_turn,
 
 static void flag_outlier(TAK_TurnClock *c, int sim, uint32_t tick,
                          uint64_t now_ms);
+static void rejudge(TAK_TurnClock *c, uint64_t now_ms);
 
 /* The players agreed a tick. A watcher that reported it first is checked
  * now, and only the watcher is resynced when it differs. */
@@ -273,7 +274,7 @@ static void record_consensus(TAK_TurnClock *c, uint32_t tick, uint64_t hash,
     h->hash = hash;
     for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
         TAK_TurnSim *s = &c->sim[i];
-        if (!s->in_use || !s->pend_set || s->pend_tick != tick) continue;
+        if (!s->in_use || s->unchecked || !s->pend_set || s->pend_tick != tick) continue;
         s->pend_set = 0;
         if (s->pend_hash != hash) flag_outlier(c, i, tick, now_ms);
     }
@@ -292,7 +293,32 @@ static void note_desync(TAK_TurnClock *c, uint32_t tick, uint32_t sims,
  * and replays the log, which is the resync. */
 static void flag_outlier(TAK_TurnClock *c, int sim, uint32_t tick,
                          uint64_t now_ms) {
+    TAK_TurnSim *s = &c->sim[sim];
     note_desync(c, tick, 1u << sim, 0);
+    if (s->resynced >= TAK_TURN_SIM_RESYNCS_MAX) {
+        /* Rebuilt and parted again: never a loop. It watches its own
+         * world unchecked, and the computer plays a seat it held. */
+        s->unchecked = 1;
+        s->pend_set = 0;
+        if (s->takeover || s->reclaim) {
+            /* A seat it was coming back to stays with the computer. */
+            s->takeover = 0;
+            s->reclaim = 0;
+            s->seat = TAK_NET_SEAT_NONE;
+        } else if (s->seat != TAK_NET_SEAT_NONE) {
+            uint8_t blob[8];
+            size_t n = TAK_Sys_PlayerLeft(s->seat, TAK_LEFT_COMPUTER_TAKES_OVER,
+                                          blob, sizeof(blob));
+            (void)TAK_TurnClock_System(c, blob, (uint16_t)n);
+            c->seat_left_turn[s->seat] = c->head;
+            c->seat_left_as[s->seat] = TAK_LEFT_COMPUTER_TAKES_OVER;
+            emit_status(c, sim, 0);
+            s->seat = TAK_NET_SEAT_NONE;
+        }
+        rejudge(c, now_ms);
+        return;
+    }
+    s->resynced++;
     begin_catch_up(c, sim, 0, now_ms);
 }
 
@@ -353,6 +379,7 @@ static void rejudge(TAK_TurnClock *c, uint64_t now_ms) {
 
 static void report_hash(TAK_TurnClock *c, int sim, uint32_t tick,
                         uint64_t hash, uint64_t now_ms) {
+    if (c->sim[sim].unchecked) return;
     const TAK_TurnConsensus *h =
         &c->history[(tick / TAK_NET_HASH_TICKS) % TAK_TURN_HASH_HISTORY];
     if (h->set && h->tick == tick) {

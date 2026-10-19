@@ -1,6 +1,8 @@
 #ifndef TAK_INGAME_H
 #define TAK_INGAME_H
 
+#include <stdint.h>
+
 #include "tak_platform.h"
 #include "tak_gameloop.h"
 
@@ -37,6 +39,9 @@ void InGame_DebugRunSimTicks(int ticks);
  * this world from its turn log. The caller ends the match world without
  * leaving the match and builds it again with MP_RebuildMatchWorld. */
 int InGame_TakeResync(void);
+/* The battle just built is a resync: it replays to the present behind a
+ * "Rejoining the battle" plate rather than on screen. */
+void InGame_SetRejoining(uint32_t until_tick);
 
 /* "Zach takes over from the computer." for five seconds of battle after
  * a seat changes hands, else NULL. */

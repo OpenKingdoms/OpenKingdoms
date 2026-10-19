@@ -42,6 +42,14 @@ When two archives hold the same file the newer copy wins, which is how a
 patch or the expansion overrides the base game. A `.kmp` only ever
 contributes its map, so adding one cannot change anything else.
 
+Some installs also have an `objects3d` folder of loose models beside the
+archives. The GOG one has 20 building models there, and a model in that
+folder is used in place of the archive's. The models decide where shots
+and blasts reach a unit, so for multiplayer both players need the same
+files: both include the `objects3d` folder, or both leave it out. In the
+browser the folder button carries it along and the archive button does
+not. The lobby says so when that folder is what differs.
+
 ---
 
 ## Pointing OpenKingdoms at them
