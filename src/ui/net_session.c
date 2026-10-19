@@ -41,15 +41,31 @@ static struct {
     TAK_SaveGame   *snap;
     uint32_t        snap_tick;
     uint32_t        snap_read_id;
+    uint64_t        snap_since_ms;  /* when the one pending began */
 } g_session;
 
 /* Queue a snapshot going up while the link keeps up, and read one that
  * came down, telling the relay whether it can be taken. */
+int NetSession_SnapshotPending(void);
 #define SNAP_BACKLOG_MAX (48u * 1024u)
-static void session_snapshots(void) {
+#define SNAP_PENDING_MS  60000u
+static void session_snapshots(uint64_t now_ms) {
     TAK_NetClient *c = &g_session.client;
     if (c->snap_out && (!g_session.has_link || TAK_NetLink_Backlog() < SNAP_BACKLOG_MAX))
         (void)TAK_NetClient_SnapshotPump(c, 2u * TAK_NET_SNAP_CHUNK);
+    /* One that never finishes arriving, or whose GO never comes, gives
+     * way to the whole log rather than hold the battle behind a plate. */
+    if (!NetSession_SnapshotPending()) g_session.snap_since_ms = 0;
+    else if (!g_session.snap_since_ms) g_session.snap_since_ms = now_ms ? now_ms : 1;
+    else if (now_ms - g_session.snap_since_ms > SNAP_PENDING_MS) {
+        fprintf(stderr, "Match: the snapshot never came whole, asking for the log\n");
+        if (g_session.snap) Save_ReadClose(g_session.snap);
+        g_session.snap = NULL;
+        g_session.snap_since_ms = 0;
+        TAK_NetClient_SnapshotDrop(c);
+        (void)TAK_NetClient_SnapshotResult(c, 0);
+        return;
+    }
     if (!c->snap_in_whole || c->snap_in_id == g_session.snap_read_id) return;
     g_session.snap_read_id = c->snap_in_id;
     char err[192];
@@ -296,7 +312,7 @@ void NetSession_Tick(uint64_t now_ms) {
         g_session.state == NET_SESSION_FAILED) {
         return;
     }
-    session_snapshots();
+    session_snapshots(now_ms);
     if (g_session.has_link) {
         TAK_NetClient_Heartbeat(&g_session.client, now_ms);
         TAK_NetLink_Pump(&g_session.client, now_ms);

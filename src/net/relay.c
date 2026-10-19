@@ -217,8 +217,9 @@ static void on_snap_data(TAK_Relay *r, TAK_RelayRoom *rr, int sim,
 static void on_snap_result(TAK_Relay *r, TAK_RelayRoom *rr, int sim,
                            const TAK_MsgSnapResult *m) {
     uint32_t bit = 1u << sim;
-    if (rr->snap.active && m->snap_id == rr->snap.id && (rr->snap.targets & bit) &&
-        rr->snap.whole && rr->snap.sent[sim] >= rr->snap.total) {
+    if (rr->snap.active && m->snap_id == rr->snap.id && (rr->snap.targets & bit)) {
+        /* A yes before the whole of it went is a word too early. */
+        if (m->ok && !(rr->snap.whole && rr->snap.sent[sim] >= rr->snap.total)) return;
         rr->snap.targets &= ~bit;
         TAK_TurnClock_SnapshotDone(&rr->clock, sim,
                                    m->ok ? rr->snap.tick / TAK_NET_TURN_TICKS : 0, r->now);

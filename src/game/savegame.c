@@ -409,7 +409,12 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 /* Version 17 on: the ticks a paralyzer still holds the unit. An older
  * record reads back free. */
 #define U_PARALYZED     (U_CLOAK_WAIT + 2u)
-#define U_END           (U_PARALYZED + 2u)
+/* Version 18 on: a magic death's ports and the whiteout left, which the
+ * hash reads. An older record reads back an ordinary death. */
+#define U_MAGIC_DEATH   (U_PARALYZED + 2u)
+#define U_DEATH_DONE    (U_MAGIC_DEATH + 1u)
+#define U_MAGIC_FADE    (U_DEATH_DONE + 1u)
+#define U_END           (U_MAGIC_FADE + 1u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -626,7 +631,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 17
+#define VER_UNIT 18
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 4
@@ -1240,6 +1245,9 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
                                       (u->cloaked ? 2u : 0u)));
     tak_put_u16(r + U_CLOAK_WAIT, u->cloak_wait);
     tak_put_u16(r + U_PARALYZED, u->paralyzed_ticks);
+    tak_put_u8(r + U_MAGIC_DEATH, u->magic_death);
+    tak_put_u8(r + U_DEATH_DONE, u->death_finished);
+    tak_put_u8(r + U_MAGIC_FADE, u->magic_death_fade);
     /* Bit 2 marks a held order on a site out of sight, bits 3-4 its
      * facing. */
     tak_put_u8(r + U_BUILD_ENDLESS, (uint8_t)((u->build_endless ? 1u : 0u) |
@@ -1515,6 +1523,9 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->cloaked = (cloak & 2u) ? 1 : 0;
     u->cloak_wait = tak_get_u16(r + U_CLOAK_WAIT);
     u->paralyzed_ticks = tak_get_u16(r + U_PARALYZED);
+    u->magic_death = tak_get_u8(r + U_MAGIC_DEATH);
+    u->death_finished = tak_get_u8(r + U_DEATH_DONE);
+    u->magic_death_fade = tak_get_u8(r + U_MAGIC_FADE);
     uint8_t summons = tak_get_u8(r + U_BUILD_ENDLESS);
     u->build_endless = (summons & 1u) ? 1 : 0;
     u->build_held = (summons & 2u) ? 1 : 0;
