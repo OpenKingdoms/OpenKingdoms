@@ -2,71 +2,41 @@ OpenKingdoms VERSION_HERE, an engine for Total Annihilation: Kingdoms.
 
 Play in a browser at [openkingdoms.net](https://openkingdoms.net), or download below and play on the desktop.
 
-This release finds and fixes why multiplayer games fell out of step, and
-lets a beaten player stay and watch the rest of the battle. Everyone in a
-multiplayer room has to be on this version, so refresh the page after the
-update.
+This release makes a multiplayer battle that falls out of step catch up in
+seconds instead of replaying the whole match. All players need 0.5.5:
+browser players just reload the page.
 
-## Multiplayer games that fell out of step
+## Rejoining in seconds
 
-Some copies of the game, the GOG one among them, have an objects3d folder
-of 20 building models beside the archives, and the game uses those models
-in place of the archives' own. A model decides where a blast reaches a
-building. So a player with that folder and a player without it played
-slightly different battles, and the game stopped with "the players'
-battles no longer agree", often many minutes in. The lobby now checks
-those models too. When they differ, the game is greyed in the list and
-says which folder and how many models, and the host's room says who could
-not join and why. Both players need the same files: both include the
-objects3d folder, or both leave it out. In the browser, Choose game folder
-brings the folder along and Choose game files does not. (#444)
+When one player's battle falls out of step with the others, it no longer
+starts again from the first second and replays the whole match behind the
+"Rejoining the battle" screen, which late in a long game took a minute or
+more. The game server now asks another player's game for its battle as it
+stands, passes it on, and the player who fell out of step carries on from
+there with only the last few seconds to catch up. Their camera and the
+units they had selected stay as they were, and everyone else plays on
+without a pause. When two players disagree and there is no way to tell
+which is right, the host's battle settles it, once a game. Such a game
+still goes on the record but does not count for the standings, since a
+host could change a battle that way. If a battle cannot be brought back
+this way, for instance because the other player left at that moment, the
+old way of replaying the match is still there as a fallback, and a battle
+that keeps falling out of step is never sent round in a loop. (#446)
 
-When two battles do fall out of step, they are rebuilt from the game
-server's record instead of stopping. The rebuilt player sees "Rejoining
-the battle" until they are back at the present, and everyone else plays
-on without a pause. A battle that falls out of step again after two
-rebuilds is not rebuilt a third time. The computer takes over that
-player's army and they watch, and the message line says so. (#443, #444)
+## Smaller changes
 
-## Watching after a defeat
-
-When your monarch falls with Monarch Expendable off, your army goes with
-it, and you now stay to watch while the others fight on. The Defeat
-banner shows for three seconds, then the whole map shows with no fog.
-Tab looks through each player's eyes in turn and then back to the whole
-map, as it does for a watcher. In a multiplayer game your own fog used
-to stay up, and with nothing of yours left on the map you saw nothing of
-the battle. In a skirmish the statistics screen now waits until one side
-is left. (#441)
-
-A beaten player gives up their seat to watch, so their battle is checked
-like a watcher's and never decides whether the players agree. (#444)
-
-The leaderboard records a beaten player who leaves before the end at
-the moment they were beaten, so leaving early never lifts anyone's
-place. (#441)
-
-## Messages
-
-The line that names a fallen player now shows every time a player or a
-computer falls, the moment its army goes, in a skirmish or a multiplayer
-game. Before, it could be missed when the fall came early in a battle or
-while a battle was ending. (#441)
-
-A short low horn over a muffled drum now sounds with that line, for every
-player who falls. The original asks for a message sound there that its
-game files do not include, so a fall used to pass in silence. The new
-sound is made by the game itself and follows the sound volume. (#444)
-
-When a multiplayer game stops for good, because the connection to the
-game server dropped, the message line now says so instead of leaving the
-battle standing still. (#441)
+- A unit fading out of a magic death is now kept in a saved game, so a
+  battle saved at that moment loads exactly as it was. (#446)
+- A game on another version of OpenKingdoms now says to reload the page
+  or update the game, and a full game says it is full. (#446)
+- In the browser, the "Add 3D models" button now takes .3do models picked
+  one by one, as dropping them on the page already did. (#446)
 
 ## Multiplayer compatibility
 
-Everyone in a room must be on the same version. A room hosted on an older
-or newer version is greyed in the list with the reason. After an update,
-refresh the page before you host or join, and have everyone else in the
-room do the same. Desktop builds older than this one cannot join games
-hosted with it, and the other way round. Replays play only on the version
-that recorded them.
+Everyone in a room must be on the same version. A room hosted on another
+version is greyed in the list and says to reload or update. After an
+update, refresh the page before you host or join, and have everyone else
+in the room do the same. Desktop builds older than this one cannot join
+games hosted with it, and the other way round. Replays play only on the
+version that recorded them.
