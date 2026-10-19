@@ -134,6 +134,8 @@ typedef struct TAK_NetClient {
     uint32_t snap_in_id, snap_in_tick, snap_in_len, snap_in_got;
     uint8_t *snap_in;
     uint8_t  snap_in_whole;
+    /* Told its world is being replaced: it stops until the GO. */
+    uint8_t  snap_waiting;
     /* Ours and rising. It is not what orders the commands, the turn
      * is, but it lets the server see a gap. */
     uint32_t cmd_seq;

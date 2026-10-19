@@ -934,6 +934,13 @@ int MP_RebuildMatchWorld(TAK_Platform *platform) {
 void MP_SnapshotApplied(void) {
     if (!mp_snap_armed) return;
     mp_snap_armed = 0;
+    /* The donor's own verdict came with its world. This machine reads
+     * its seat's afresh; the hash leaves both out for that reason. */
+    GameWorld *w = World_Get();
+    if (w) {
+        w->skirmish_local_result = 0;
+        w->skirmish_end_reason[0] = '\0';
+    }
     uint32_t now = TAK_SimHash();
     if (now == mp_snap_hash) return;
     /* Not the world that was sent. The relay replays the log instead. */

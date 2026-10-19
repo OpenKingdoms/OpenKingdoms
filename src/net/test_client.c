@@ -1306,8 +1306,16 @@ TEST(a_snapshot_goes_up_in_pieces_and_comes_down_whole) {
     while (TAK_NetClient_TakeMessage(&g_c, msg, sizeof msg) > 0) { }
     TAK_MsgSnapRequest rq;
     rq.snap_id = 9;
+    rq.wait = 0;
     size_t n = TAK_Msg_SnapRequestEncode(&rq, msg, sizeof msg);
     ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1700));
+    ASSERT_EQ_INT(9, (int)g_c.snap_asked);
+    /* Told to wait instead, its world stops for the GO. */
+    rq.snap_id = 10;
+    rq.wait = 1;
+    n = TAK_Msg_SnapRequestEncode(&rq, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1700));
+    ASSERT_EQ_INT(1, g_c.snap_waiting);
     ASSERT_EQ_INT(9, (int)g_c.snap_asked);
 
     uint32_t total = 3 * TAK_NET_SNAP_CHUNK + 100;

@@ -43,17 +43,23 @@ static struct {
     /* When the one pending last moved, and how far it had come. */
     uint64_t        snap_since_ms;
     uint32_t        snap_progress;
+    uint64_t        snap_piece_ms;  /* the last piece sent up */
 } g_session;
 
 /* Queue a snapshot going up while the link keeps up, and read one that
  * came down, telling the relay whether it can be taken. */
 int NetSession_SnapshotPending(void);
-#define SNAP_BACKLOG_MAX (48u * 1024u)
+#define SNAP_BACKLOG_MAX (32u * 1024u)
 #define SNAP_PENDING_MS  60000u
+/* A piece every 50 ms at most, about 320 KB a second: the uplink that
+ * carries it carries this player's acks and orders too. */
+#define SNAP_PIECE_MS    50u
 static void session_snapshots(uint64_t now_ms) {
     TAK_NetClient *c = &g_session.client;
-    if (c->snap_out && (!g_session.has_link || TAK_NetLink_Backlog() < SNAP_BACKLOG_MAX))
-        (void)TAK_NetClient_SnapshotPump(c, 2u * TAK_NET_SNAP_CHUNK);
+    if (c->snap_out && (!g_session.has_link || TAK_NetLink_Backlog() < SNAP_BACKLOG_MAX) &&
+        (!g_session.has_link || now_ms - g_session.snap_piece_ms >= SNAP_PIECE_MS)) {
+        if (TAK_NetClient_SnapshotPump(c, TAK_NET_SNAP_CHUNK)) g_session.snap_piece_ms = now_ms;
+    }
     /* One that stops arriving, or whose GO never comes, gives way to the
      * whole log rather than hold the battle behind a plate. */
     uint32_t progress = c->snap_in_got + (g_session.snap ? 1u : 0u);
@@ -66,6 +72,7 @@ static void session_snapshots(uint64_t now_ms) {
         if (g_session.snap) Save_ReadClose(g_session.snap);
         g_session.snap = NULL;
         g_session.snap_since_ms = 0;
+        c->snap_waiting = 0;
         TAK_NetClient_SnapshotDrop(c);
         (void)TAK_NetClient_SnapshotResult(c, 0);
         return;
@@ -82,7 +89,8 @@ static void session_snapshots(uint64_t now_ms) {
 }
 
 int NetSession_SnapshotPending(void) {
-    return g_session.snap != NULL || g_session.client.snap_in_len > 0;
+    return g_session.snap != NULL || g_session.client.snap_in_len > 0 ||
+           g_session.client.snap_waiting;
 }
 
 TAK_SaveGame *NetSession_TakeSnapshot(uint32_t *tick) {

@@ -656,6 +656,7 @@ size_t TAK_Msg_SnapRequestEncode(const TAK_MsgSnapRequest *m, void *out, size_t 
     TAK_ByteWriter w;
     begin(&w, out, cap, TAK_MSG_SNAP_REQUEST);
     TAK_BW_U32(&w, m->snap_id);
+    TAK_BW_U8(&w, m->wait ? 1 : 0);
     return finish(&w);
 }
 
@@ -664,6 +665,8 @@ int TAK_Msg_SnapRequestDecode(TAK_MsgSnapRequest *m, const void *p, size_t len) 
     memset(m, 0, sizeof(*m));
     TAK_BR_Init(&r, p, len);
     m->snap_id = TAK_BR_U32(&r);
+    m->wait = TAK_BR_U8(&r);
+    if (m->wait > 1) return -1;
     return done(&r);
 }
 

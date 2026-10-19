@@ -662,8 +662,11 @@ typedef struct TAK_MsgGo {
 #define TAK_NET_SNAP_CHUNK  16384u
 #define TAK_NET_SNAP_MAX    (32u << 20)
 
+/* To a donor, wait 0: give your world. To the world that parted, wait
+ * 1: stop, your world is being replaced. */
 typedef struct TAK_MsgSnapRequest {
     uint32_t snap_id;
+    uint8_t  wait;
 } TAK_MsgSnapRequest;
 
 /* One piece. `tick` is the queue tick the world was saved at, a whole

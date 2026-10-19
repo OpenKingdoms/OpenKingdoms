@@ -140,8 +140,20 @@ static void clock_send(void *user, int sim, const uint8_t *f, size_t n) {
 /* How long a donor has to send its world, and how much a parted client
  * is sent a tick when the transport cannot say what it holds. */
 #define SNAP_DONOR_MS      30000u
+#define SNAP_TARGET_MS     30000u
 #define SNAP_TICK_BYTES    (4u * TAK_NET_SNAP_CHUNK)
-#define SNAP_QUEUE_BYTES   (64u * 1024u)
+#define SNAP_QUEUE_BYTES   (48u * 1024u)
+
+/* The world that parted stops where it is, behind its plate, rather than
+ * play on a battle nobody else is in while its snapshot comes. */
+static void snap_tell_target(TAK_Relay *r, TAK_RelayRoom *rr, int sim) {
+    TAK_RelayClient *tc = TAK_Relay_FindClient(r, rr->clock.sim[sim].client_id);
+    if (!tc) return;
+    TAK_MsgSnapRequest m;
+    m.snap_id = rr->snap.id;
+    m.wait = 1;
+    send_frame(r, tc, r->out, TAK_Msg_SnapRequestEncode(&m, r->out, sizeof(r->out)));
+}
 
 static void snap_release(TAK_RelayRoom *rr) {
     free(rr->snap.buf);
@@ -159,6 +171,8 @@ static int relay_snap(void *user, int sim, int donor) {
         if (rr->snap.donor == sim) { rr->snap.abort = 1; return -1; }
         rr->snap.targets |= 1u << sim;
         rr->snap.sent[sim] = 0;
+        rr->snap.sent_ms[sim] = 0;
+        snap_tell_target(r, rr, sim);
         return 0;
     }
     TAK_RelayClient *dc = TAK_Relay_FindClient(r, rr->clock.sim[donor].client_id);
@@ -171,7 +185,9 @@ static int relay_snap(void *user, int sim, int donor) {
     rr->snap.heard_ms = r->now;
     TAK_MsgSnapRequest m;
     m.snap_id = rr->snap.id;
+    m.wait = 0;
     send_frame(r, dc, r->out, TAK_Msg_SnapRequestEncode(&m, r->out, sizeof(r->out)));
+    snap_tell_target(r, rr, sim);
     fprintf(stderr, "relay: room %u asks sim %d for a snapshot for sim %d\n",
             (unsigned)rr->room.id, donor, sim);
     return 0;
@@ -279,9 +295,18 @@ static void snap_tick(TAK_Relay *r, TAK_RelayRoom *rr) {
             if (!n) { rr->snap.abort = 1; return; }
             send_frame(r, cl, r->out, n);
             rr->snap.sent[s] += m.len;
+            rr->snap.sent_ms[s] = r->now;
             budget = budget > n ? budget - n : 0;
         }
+        /* Sent whole and never answered: it gets the log. */
+        if (rr->snap.sent[s] >= rr->snap.total && rr->snap.sent_ms[s] &&
+            r->now - rr->snap.sent_ms[s] > SNAP_TARGET_MS) {
+            rr->snap.targets &= ~(1u << s);
+            TAK_TurnClock_SnapshotDone(&rr->clock, s, 0, r->now);
+            r->snaps_failed++;
+        }
     }
+    if (!rr->snap.targets) snap_release(rr);
 }
 
 /* ── Leaving and closing ──────────────────────────────────────────────── */
@@ -564,6 +589,8 @@ static void on_match_result(TAK_Relay *r, TAK_RelayClient *cl,
      * seats that are scored. Not a refusal, just not evidence, and nor
      * is a drop in that has not taken its seat yet. */
     if (rr->clock.sim[sim].seat == TAK_NET_SEAT_NONE || rr->clock.sim[sim].takeover) return;
+    /* Nor is a world waiting to be replaced: its battle is no one's. */
+    if (rr->clock.sim[sim].awaiting_snap) { r->results_refused++; return; }
     /* A verdict cannot fall on a tick nobody has been given yet. */
     uint32_t delivered = rr->clock.head * TAK_NET_TURN_TICKS;
     if (m->match_id != rr->match_id || m->stats_version != TAK_NET_STATS_VERSION ||
@@ -1378,6 +1405,9 @@ void TAK_Relay_Tick(TAK_Relay *r, uint64_t now_ms) {
         TAK_RelayRoom *rr = &r->room[i];
         if (!rr->in_use || rr->room.status != TAK_ROOM_IN_PROGRESS) continue;
         TAK_TurnClock_Advance(&rr->clock, now_ms);
+        /* A split is settled by whoever hosts now. */
+        TAK_TurnClock_SetReference(&rr->clock,
+                                   TAK_TurnClock_SimOf(&rr->clock, rr->room.host_client_id));
         /* A match nobody can come back to is over. */
         int live = 0;
         for (int s = 0; s < TAK_TURN_SIMS_MAX; s++)

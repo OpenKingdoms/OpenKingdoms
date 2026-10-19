@@ -170,6 +170,7 @@ typedef struct Client {
     int        snap_in_whole;
     int        snap_refuse;              /* says it could not take one */
     int        snap_loads;
+    int        snap_told_wait;
     int        has_base;
     ToyWorld   base_world;
     uint32_t   base_done, base_trace_len;
@@ -485,7 +486,8 @@ static void client_handle(Client *c, const uint8_t *frame, uint32_t len) {
     case TAK_MSG_SNAP_REQUEST: {
         TAK_MsgSnapRequest m;
         if (TAK_Msg_SnapRequestDecode(&m, p, n)) { c->stream_errors++; break; }
-        c->snap_asked = m.snap_id;
+        if (m.wait) c->snap_told_wait++;
+        else c->snap_asked = m.snap_id;
         break;
     }
     case TAK_MSG_SNAP_DATA: {
@@ -878,6 +880,7 @@ TEST(an_injected_desync_is_caught_within_60_ticks_and_the_outlier_named) {
             /* From the snapshot, never from turn 0. */
             ASSERT_EQ_INT(0, cl[5].resets);
             ASSERT_EQ_INT(1, cl[5].snap_loads);
+            ASSERT_EQ_INT(1, cl[5].snap_told_wait);
             ASSERT(cl[5].base_done > 0);
             ASSERT_EQ_INT(1, (int)relay.snaps_delivered);
             ASSERT_EQ_INT(0, (int)relay.snaps_failed);

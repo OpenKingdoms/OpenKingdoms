@@ -408,11 +408,21 @@ TEST(a_parted_world_is_rebuilt_from_a_sound_ones_snapshot) {
     memset(&cmd, 0, sizeof cmd);
     cmd.client_seq = 1;
     ASSERT(TAK_TurnClock_Command(&clk, c, &cmd) != 0);
+    /* Nor does it give up its seat for a defeat in a battle no one plays. */
+    ASSERT(TAK_TurnClock_Resign(&clk, c) != 0);
+    ASSERT_EQ_INT(2, clk.sim[c].seat);
     /* The snapshot is of turn 40: the log comes from there. */
     TAK_TurnClock_SnapshotDone(&clk, c, 40, 3010);
     ASSERT_EQ_INT(40, last_go(c));
     ASSERT_EQ_INT(0, clk.sim[c].awaiting_snap);
     ASSERT_EQ_INT(1, g_snap_calls);
+    /* Parting a second time it is the log, which no snapshot can fool. */
+    for (uint64_t t = 3020; t <= 4000; t += 10) TAK_TurnClock_Advance(&clk, t);
+    ASSERT_EQ_INT(0, ack(a, clk.head - 1, 180, 7, 4000));
+    ASSERT_EQ_INT(0, ack(b, clk.head - 1, 180, 7, 4000));
+    ASSERT_EQ_INT(0, ack(c, clk.head - 1, 180, 8, 4000));
+    ASSERT_EQ_INT(1, g_snap_calls);
+    ASSERT_EQ_INT(0, last_go(c));
 
     /* Two worlds: the reference's settles it and the other takes it. */
     setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);

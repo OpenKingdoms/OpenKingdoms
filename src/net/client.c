@@ -233,6 +233,7 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
         c->resigned = 0;
         /* Nothing of a snapshot outlives the match it was for. */
         c->snap_asked = 0;
+        c->snap_waiting = 0;
         TAK_NetClient_Free(c);
         c->next_turn = 0;
         c->last_turn_held = 0;
@@ -255,6 +256,7 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
         if (TAK_Msg_GoDecode(&m, f.payload, f.payload_len) != 0) return -1;
         /* Already playing: a resync. What is held belongs to the world
          * being thrown away, and the log comes again from first_turn. */
+        c->snap_waiting = 0;
         if (c->state == TAK_NC_PLAYING) {
             turns_reset(c);
             c->resync = 1;
@@ -273,9 +275,16 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
     case TAK_MSG_SNAP_REQUEST: {
         TAK_MsgSnapRequest m;
         if (TAK_Msg_SnapRequestDecode(&m, f.payload, f.payload_len) != 0) return -1;
+        if (c->state != TAK_NC_PLAYING || !m.snap_id) return 0;
+        /* This world parted: it stops while another is sent for it. */
+        if (m.wait) {
+            c->snap_waiting = 1;
+            c->snap_in_id = m.snap_id;
+            return 0;
+        }
         /* The world takes it at its next hashed tick. A newer request
          * replaces one not yet answered. */
-        if (c->state == TAK_NC_PLAYING && m.snap_id) c->snap_asked = m.snap_id;
+        c->snap_asked = m.snap_id;
         return 0;
     }
 
@@ -287,9 +296,10 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
         if (m.snap_id != c->snap_in_id || m.offset == 0) {
             TAK_NetClient_SnapshotDrop(c);
             if (m.offset != 0) return 0;
-            c->snap_in = (uint8_t *)tak_malloc(m.total);
-            if (!c->snap_in) return 0;
             c->snap_in_id = m.snap_id;
+            c->snap_in = (uint8_t *)tak_malloc(m.total);
+            /* No room for it: say so, and the relay sends the log. */
+            if (!c->snap_in) { (void)TAK_NetClient_SnapshotResult(c, 0); return 0; }
             c->snap_in_tick = m.tick;
             c->snap_in_len = m.total;
         }
