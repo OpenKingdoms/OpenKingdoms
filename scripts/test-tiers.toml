@@ -264,6 +264,7 @@ ui = [
   ["a_click_on_a_scroll_arrow_reaches_the_arrow", 1],
   ["the_lobbies_offer_the_remastered_battlefield", 1],
   ["select_game_hosting_a_game_names_the_rules_it_plays_by", 1],
+  ["a_match_world_rebuilt_from_a_snapshot_plays_on_alike", 1],
 ]
 
 [[tier1]]
@@ -325,7 +326,9 @@ ui = [
 name = "commands"
 paths = ["src/net/commands.c"]
 ctest = "^(test_build_facing|test_capture|test_client|test_command_pipeline|test_commands|test_line_of_fire|test_movement|test_orders|test_render_cache|test_replay|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
-ui = []
+ui = [
+  ["a_seat_beaten_in_a_match_watches_the_rest_of_it", 1],
+]
 # The cheapest entry in the repo at about four seconds, and that is a
 # statement about how thin the coverage is, not about how safe command
 # handling is.
