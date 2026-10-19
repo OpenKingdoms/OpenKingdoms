@@ -24318,6 +24318,231 @@ TEST(a_seat_beaten_in_a_match_watches_the_rest_of_it) {
     VFS_Shutdown();
 }
 
+/* What a match client queued: the hash it reported for each hash tick,
+ * the snapshot pieces it sent up, and any snapshot answer. */
+#define SR_HASHES 64
+typedef struct SnapRun {
+    uint32_t hash[SR_HASHES];
+    uint8_t *snap;
+    uint32_t snap_len, snap_tick;
+    int      results, refusals;
+} SnapRun;
+
+static void sr_drain(TAK_NetClient *c, SnapRun *sr) {
+    uint8_t out[TAK_NET_FRAME_MAX];
+    size_t got;
+    while ((got = TAK_NetClient_TakeMessage(c, out, sizeof out)) > 0) {
+        TAK_NetFrame f;
+        if (TAK_Net_Split(out, got, &f) != 0) continue;
+        TAK_MsgAck a;
+        TAK_MsgSnapData d;
+        TAK_MsgSnapResult r;
+        if (f.type == TAK_MSG_ACK && TAK_Msg_AckDecode(&a, f.payload, f.payload_len) == 0 &&
+            a.hash_tick != TAK_NET_NO_HASH && a.hash_tick % 60 == 0 && a.hash_tick > 0 &&
+            a.hash_tick / 60 <= SR_HASHES)
+            sr->hash[a.hash_tick / 60 - 1] = (uint32_t)a.state_hash;
+        if (f.type == TAK_MSG_SNAP_DATA &&
+            TAK_Msg_SnapDataDecode(&d, f.payload, f.payload_len) == 0 && d.total) {
+            if (!sr->snap) sr->snap = (uint8_t *)tak_malloc(d.total);
+            if (sr->snap && d.offset == sr->snap_len) {
+                memcpy(sr->snap + d.offset, d.data, d.len);
+                sr->snap_len += d.len;
+                sr->snap_tick = d.tick;
+            }
+        }
+        if (f.type == TAK_MSG_SNAP_RESULT &&
+            TAK_Msg_SnapResultDecode(&r, f.payload, f.payload_len) == 0) {
+            sr->results++;
+            if (!r.ok) sr->refusals++;
+        }
+    }
+}
+
+/* Run a match's ticks to `tick`, taking turns as the queue needs them. */
+static void sr_run_to(TAK_NetClient *c, SnapRun *sr, uint32_t tick) {
+    while (TAK_CmdQueue_Tick() < tick) {
+        if (!TAK_Match_CanAdvance() && TAK_Match_Pump() == 0) break;
+        InGame_DebugRunSimTicks(1);
+        (void)TAK_NetClient_SnapshotPump(c, 1u << 20);
+        if (c->out_len > sizeof c->out / 4) sr_drain(c, sr);
+    }
+    sr_drain(c, sr);
+}
+
+/* Turns from `first` up to `end`, all empty but `order_turn`, where the
+ * first seat's monarch is sent somewhere. */
+static void sr_turns(TAK_NetClient *c, uint32_t first, uint32_t end,
+                     uint32_t order_turn, uint32_t monarch_id, uint64_t now) {
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    TAK_MsgTurn turn;
+    for (uint32_t t = first; t < end;) {
+        memset(&turn, 0, sizeof turn);
+        turn.turn = t;
+        uint8_t body[256];
+        size_t blen = 0;
+        if (t == order_turn) {
+            TAK_GameCommand cmd;
+            memset(&cmd, 0, sizeof cmd);
+            cmd.type = TAK_CMD_MOVE;
+            cmd.unit_count = 1;
+            cmd.unit_ids[0] = monarch_id;
+            cmd.target_x = 40 * 16;
+            cmd.target_y = 40 * 16;
+            /* Queued, so an order given twice is not the same as once. */
+            cmd.arg = TAK_CMD_ARG_QUEUE;
+            (void)TAK_CommandSerialize(&cmd, body, sizeof body, &blen);
+            turn.empty_run = 1;
+            turn.entry_count = 1;
+            turn.entry[0].seat = 0;
+            turn.entry[0].count = 1;
+            turn.entry[0].cmd[0].data = body;
+            turn.entry[0].cmd[0].len = (uint16_t)blen;
+            t++;
+        } else {
+            uint32_t stop = (order_turn > t && order_turn < end) ? order_turn : end;
+            turn.empty_run = (uint16_t)(stop - t);
+            t = stop;
+        }
+        size_t n = TAK_Msg_TurnEncode(&turn, msg, sizeof msg);
+        (void)TAK_NetClient_OnMessage(c, msg, n, now);
+    }
+}
+
+/* A match world saved as a snapshot on a hashed tick, and a world rebuilt
+ * from it through the client's own resync path, report the same hashes
+ * for every tick after it: what the relay sends a parted world is the
+ * world itself, computer opponents and all. */
+TEST(a_match_world_rebuilt_from_a_snapshot_plays_on_alike) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "Angvir's Maze", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.players[1].side = TAK_SIDE_VERUNA;
+    cfg.players[1].team = 2;
+    cfg.players[2].kind = TAK_SLOT_AI;
+    cfg.players[2].side = TAK_SIDE_TAROS;
+    cfg.players[2].team = 3;
+    cfg.players[2].color = 2;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, cfg.map_name, "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    ASSERT_NOT_NULL(c);
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 21);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1000));
+    n = pl_encode_start(msg, sizeof msg, 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, pl_run_loading(&platform, 900));
+    TAK_MsgGo go;
+    go.first_turn = 0;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1200));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 8));
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    int monarch = end_find_monarch(1);
+    ASSERT(monarch >= 0);
+    int unit_n = 0;
+    uint32_t monarch_id = Units_GetActive(&unit_n)[monarch].stable_id;
+    /* Forty seconds of play, and an order in a turn the snapshot's queue
+     * already holds. */
+    sr_turns(c, 0, 1200, 810, monarch_id, 1300);
+
+    /* The relay asks, and the world goes on a hashed tick, with the two
+     * computers' archers and knights in a fight across the middle. */
+    static SnapRun sent, played, rebuilt;
+    memset(&sent, 0, sizeof sent);
+    sr_run_to(c, &sent, 1800);
+    int arch = Units_FindDefByName("ARAARCH"), knight = Units_FindDefByName("TARTROOP");
+    ASSERT(arch >= 0 && knight >= 0);
+    int mid = World_Get()->map_pixels_w / 2, mid_y = World_Get()->map_pixels_h / 2;
+    for (int i = 0; i < 8; i++) {
+        ASSERT(Units_Spawn(arch, 2, 1, mid - 160 + (i % 4) * 24, mid_y + (i / 4) * 24) >= 0);
+        ASSERT(Units_Spawn(knight, 3, 2, mid + 120 + (i % 4) * 24, mid_y + (i / 4) * 24) >= 0);
+    }
+    sr_run_to(c, &sent, 2340);
+    c->snap_asked = 77;
+    sr_run_to(c, &sent, 2400);
+    for (int i = 0; i < 64 && c->snap_out; i++) {
+        (void)TAK_NetClient_SnapshotPump(c, 1u << 20);
+        sr_drain(c, &sent);
+    }
+    int live = 0;
+    const Unit *at_snap = Units_GetActive(&unit_n);
+    for (int i = 0; i < unit_n; i++) live += at_snap[i].alive == UNIT_ALIVE_ACTIVE;
+    int32_t was_x = at_snap[monarch].world_x, was_y = at_snap[monarch].world_y;
+    printf("(snapshot of tick %u, %u bytes, %d units) ", (unsigned)sent.snap_tick,
+           (unsigned)sent.snap_len, live);
+    ASSERT_EQ_INT(2400, (int)sent.snap_tick);
+    ASSERT(sent.snap_len > 1000);
+    memset(&played, 0, sizeof played);
+    sr_run_to(c, &played, 3600);
+    /* The order after the snapshot moved the monarch. */
+    const Unit *after = Units_GetActive(&unit_n);
+    ASSERT(after[monarch].world_x != was_x || after[monarch].world_y != was_y);
+
+    /* It comes back down to this client as to a parted one, then the GO
+     * for its turn. */
+    for (uint32_t off = 0; off < sent.snap_len; off += TAK_NET_SNAP_CHUNK) {
+        TAK_MsgSnapData d;
+        d.snap_id = 5;
+        d.tick = sent.snap_tick;
+        d.total = sent.snap_len;
+        d.offset = off;
+        uint32_t left = sent.snap_len - off;
+        d.len = (uint16_t)(left < TAK_NET_SNAP_CHUNK ? left : TAK_NET_SNAP_CHUNK);
+        d.data = sent.snap + off;
+        n = TAK_Msg_SnapDataEncode(&d, msg, sizeof msg);
+        ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 2000));
+    }
+    memset(&rebuilt, 0, sizeof rebuilt);
+    NetSession_Tick(2000);
+    sr_drain(c, &rebuilt);
+    ASSERT_EQ_INT(1, rebuilt.results);
+    ASSERT_EQ_INT(0, rebuilt.refusals);
+    ASSERT_EQ_INT(1, NetSession_SnapshotPending());
+    go.first_turn = 800;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 2100));
+    ASSERT_EQ_INT(1, c->resync);
+
+    /* As main.c does it: the match goes on, so it is ended, not left. */
+    TAK_Match_End();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    ASSERT_EQ_INT(0, MP_RebuildMatchWorld(&platform));
+    ASSERT_EQ_INT(1, MP_RebuiltFromSnapshot());
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 900));
+    ASSERT_EQ_INT(2400, (int)TAK_CmdQueue_Tick());
+    /* The orders the snapshot's queue held come again with the turns. */
+    ASSERT_EQ_INT(0, TAK_CmdQueue_Pending());
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    sr_turns(c, 800, 1200, 810, monarch_id, 2200);
+    sr_run_to(c, &rebuilt, 3600);
+    ASSERT_EQ_INT(0, rebuilt.refusals);
+    for (int k = 2460 / 60 - 1; k < 3600 / 60; k++) {
+        ASSERT(played.hash[k] != 0);
+        ASSERT_EQ_INT((int)played.hash[k], (int)rebuilt.hash[k]);
+    }
+
+    tak_free(sent.snap);
+    TAK_Match_End();
+    NetSession_Disconnect();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    Settings_SetStr("RejoinMatch", "");
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A beaten seat's match played as frames, the monarch falling at one
  * second. look_around presses Tab, scrolls and clicks as a watcher does.
  * Fills hash[k] with the hash it reported for tick 60 * (k + 1) and
@@ -30297,6 +30522,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_match_reports_the_verdict_to_the_server_once);
     RUN_UI_TEST(a_seat_beaten_in_a_match_watches_the_rest_of_it);
     RUN_UI_TEST(a_beaten_seat_looking_around_keeps_the_battles_hash);
+    RUN_UI_TEST(a_match_world_rebuilt_from_a_snapshot_plays_on_alike);
     RUN_UI_TEST(a_skirmish_still_starts_the_moment_its_world_is_built);
     RUN_UI_TEST(a_frame_the_builder_is_walking_to_is_not_abandoned);
     RUN_UI_TEST(mp_room_follows_the_servers_later_snapshot);

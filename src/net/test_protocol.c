@@ -875,6 +875,8 @@ TEST(every_reject_reason_has_text) {
         const char *s = TAK_Net_RejectText((uint8_t)i);
         ASSERT_NOT_NULL(s);
         ASSERT(s[0] != '\0');
+        /* Whole in a REJECT's text field. */
+        ASSERT(strlen(s) < TAK_NET_TEXT_MAX);
     }
     ASSERT_EQ_STR("The game is full.", TAK_Net_RejectText(TAK_REJECT_GAME_FULL));
     /* Reason 8 is the one the reference pins: a build mismatch asks for a

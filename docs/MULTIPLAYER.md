@@ -307,6 +307,14 @@ can skip it.
   hashes from different clients without holding any simulation of its own.
 - PACE carries the speed level, the paused flag, the reason and the lagging
   seat. Pacing is timing only and never enters the hash.
+- SNAP_REQUEST, SNAP_DATA and SNAP_RESULT rebuild a world that parted
+  (protocol 9). The relay asks a sound client for its world, which that
+  client saves in memory between two ticks on its next hashed tick and
+  sends up in pieces of 16 KB, no faster than its connection empties. The
+  relay passes the pieces on to the parted client, no faster than that
+  connection takes them. The parted client answers whether it can read
+  them, and the relay then sends GO for the snapshot's own turn and the
+  turns after it. "Catching a desync" below has the rest.
 - PLAYER_STATUS carries connected, lagging, lost, catching up or dropped,
   with the countdown when one is running. The client keeps the last
   status of every seat. While the governor slows the turns for players
@@ -450,13 +458,41 @@ disagreeing world is resynced the same way, since the log replays alike on
 every machine: a GO in the middle of a match makes the client build its
 world again and replay the log to the present (protocol 7). A match halts
 with a report only when a client is too old to do that, or after four such
-resyncs. A watcher's world
+resyncs. From protocol 9 the parted world is rebuilt from a snapshot of a
+sound one instead, so it replays seconds of turns rather than the whole
+match. An outlier takes the world of a client that agreed, one keeping up
+before one that lags and a player's before a watcher's. Two worlds that a
+vote cannot tell apart take the world of whoever hosts, once a match: a
+second split is settled by the log as before, and so is one whose snapshot
+fails, by replaying both worlds. Since a host could rewrite a battle that
+way, a game settled by a host's snapshot is kept in the ledger but left
+out of the standings. The snapshot is a save of the whole world held in
+memory, without the camera or the picture, taken at the end of the tick
+whose hash the donor reports and loaded the way a save is loaded. It is
+the donor's world, trusted because the donor agreed, not a state the
+relay checked. The parted client checks that the loaded world hashes as
+the snapshot says, forgets the donor's own verdict on its seat, begins
+the match at the snapshot's turn and drops the orders its queue held,
+which come again with the turns. From the moment the relay asks for the
+snapshot the parted world stops behind "Rejoining the battle", and the
+relay hears no hash, order, resignation or result from it. The donor
+sends its pieces no faster than one every 50 milliseconds and only while
+its socket keeps up, so its acks and orders are not held behind them.
+A world that parts a second time is rebuilt from the log, which nothing a
+save leaves out can fool. The whole log from turn 0 is also the answer
+when the donor goes or sends nothing for 30 seconds, when the snapshot
+cannot be read, will not apply, loads as another world or stops arriving
+for 60 seconds, when the parted client has no room for it or drops before
+it arrives, or when a client is older than protocol 9. A world the log
+can no longer bring back, because the relay's log of the match is full,
+is left to watch as below. A watcher's world
 never counts: its hash is checked against what the players agreed, and a
-watcher that differs is resynced alone. A rebuilt world shows "Rejoining
-the battle" until it has caught up, and the others are never paused for
-it. A world that is rebuilt twice and parts again is never sent round a
-loop. It is no longer checked, the computer plays a seat it held, and the
-player is told so and watches. Each client writes a desync bundle locally holding the replay, its hash
+watcher that differs is resynced alone. A rebuilt world keeps the
+player's camera and selection, and the others are never paused for it.
+A battle rebuilt from a snapshot is not recorded as a replay from there
+on, since a replay starts from the seed. A world that is rebuilt twice
+and parts again is never sent round a loop. It is no longer checked, the
+computer plays a seat it held, and the player is told so and watches. Each client writes a desync bundle locally holding the replay, its hash
 trace and the per subsystem breakdown at the mismatch tick, which is a
 complete reproducer.
 

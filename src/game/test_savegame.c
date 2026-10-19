@@ -1437,6 +1437,28 @@ TEST(the_whole_battle_survives_the_round_trip) {
     ASSERT_EQ_INT(100 + FIX_UNITS, (int)Units_NextStableId());
 }
 
+/* A unit part way through a magic death, its script having said so on
+ * its ports, is still that far through it after a load. The hash reads
+ * all three, so a snapshot that lost them would part at once. */
+TEST(a_magic_death_survives_a_save) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    ASSERT_EQ_INT(0, setup(NULL));
+    g_units[1].magic_death = 1;
+    g_units[1].death_finished = 1;
+    g_units[1].magic_death_fade = 9;
+    uint32_t want = TAK_SimHash();
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+    empty_the_battle();
+    TAK_SaveGame *sg = Save_Read(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(0, Save_Apply(sg, err, sizeof(err)));
+    Save_ReadClose(sg);
+    ASSERT_EQ_INT(1, g_units[1].magic_death);
+    ASSERT_EQ_INT(1, g_units[1].death_finished);
+    ASSERT_EQ_INT(9, g_units[1].magic_death_fade);
+    ASSERT(TAK_SimHash() == want);
+}
+
 /* A file can say anything: a walking unit that the file says stands
  * turned loads unturned, and the building beside it keeps its turn. */
 TEST(a_walking_unit_never_loads_turned) {
@@ -1721,7 +1743,8 @@ static uint32_t rec_u32(const uint8_t *r, int at) {
  * flyer's air traffic at 1000, version 12 a hover attack at 1024,
  * version 13 a fight's post at 1036, version 14 a self destruct's
  * count at 1047, version 15 what hit it last at 1049, version 16 the
- * cloak at 1057 and version 17 a paralyzer's hold at 1060. */
+ * cloak at 1057, version 17 a paralyzer's hold at 1060 and version 18
+ * a magic death at 1062. */
 TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
@@ -1733,8 +1756,8 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
-    ASSERT_EQ_INT(17, (int)version);
-    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24 + 12 + 11 + 2 + 8 + 3 + 2,
+    ASSERT_EQ_INT(18, (int)version);
+    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24 + 12 + 11 + 2 + 8 + 3 + 2 + 3,
                   (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;
     /* The bowman's formation group at 487 and its second leg at 520. */
@@ -1981,6 +2004,7 @@ int main(int argc, char **argv) {
     RUN(a_definition_whose_script_changed_is_refused_by_name);
     RUN(a_definition_whose_art_changed_still_loads);
     RUN(the_whole_battle_survives_the_round_trip);
+    RUN(a_magic_death_survives_a_save);
     RUN(a_walking_unit_never_loads_turned);
     RUN(the_orders_still_waiting_come_back);
     RUN(handles_still_point_at_the_same_units);

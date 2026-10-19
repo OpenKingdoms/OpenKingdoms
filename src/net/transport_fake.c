@@ -83,6 +83,7 @@ static void server_close(void *ctx, TAK_ConnId c) {
 
 TAK_NetTransport TAK_FakeNet_Server(TAK_FakeNet *n) {
     TAK_NetTransport t;
+    memset(&t, 0, sizeof t);
     t.ctx = n;
     t.send = server_send;
     t.close = server_close;

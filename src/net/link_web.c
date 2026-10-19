@@ -168,6 +168,13 @@ int TAK_NetLink_Open(const char *url) {
 
 TAK_LinkState TAK_NetLink_State(void) { return g_link.state; }
 
+EM_JS(int, web_buffered, (void), {
+    var s = Module.okSocket;
+    return s && s.readyState === 1 ? (s.bufferedAmount | 0) : 0;
+});
+
+size_t TAK_NetLink_Backlog(void) { return (size_t)web_buffered(); }
+
 const char *TAK_NetLink_Why(void) {
     return g_link.why ? g_link.why : "";
 }

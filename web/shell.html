@@ -2062,7 +2062,17 @@
     var modelBtn = document.getElementById('btn-models');
     if (modelBtn && modelInput) {
       modelBtn.onclick = function () { modelInput.click(); };
-      modelInput.onchange = function () { accept(FS, picksFromFileList(modelInput.files)); };
+      /* Models picked one by one carry no folder, so a .3do is taken
+         for objects3d, the way a dropped one is. */
+      modelInput.onchange = function () {
+        var picks = [];
+        for (var i = 0; i < modelInput.files.length; i++) {
+          var f = modelInput.files[i];
+          if (isModel(f.name)) picks.push({ file: f, rel: modelRel(f.name), model: true });
+          else if (isObject(f.name)) picks.push({ file: f, rel: objectRel(f.name) });
+        }
+        if (picks.length) accept(FS, picks);
+      };
     }
 
     /* A model dropped on the page rather than on the picker, which

@@ -115,6 +115,12 @@ static int tx_send(void *ctx, TAK_ConnId id, const uint8_t *frame, size_t len) {
     return 0;
 }
 
+static size_t tx_queued(void *ctx, TAK_ConnId id) {
+    (void)ctx;
+    Conn *c = conn_by_id(id);
+    return c ? c->ws.out_len : 0;
+}
+
 static void tx_close(void *ctx, TAK_ConnId id) {
     (void)ctx;
     Conn *c = conn_by_id(id);
@@ -453,9 +459,11 @@ int main(int argc, char **argv) {
     for (int i = 0; i < MAX_CONNS; i++) g_server.conn[i].sock = TAK_INVALID_SOCKET;
 
     TAK_NetTransport tx;
+    memset(&tx, 0, sizeof tx);
     tx.ctx = NULL;
     tx.send = tx_send;
     tx.close = tx_close;
+    tx.queued = tx_queued;
     TAK_Relay_Init(&g_server.relay, &cfg, tx,
                    g_log_arena, sizeof g_log_arena,
                    g_log_entries,

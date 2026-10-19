@@ -145,6 +145,8 @@ int TAK_NetLink_Open(const char *url) {
 
 TAK_LinkState TAK_NetLink_State(void) { return g_link.state; }
 
+size_t TAK_NetLink_Backlog(void) { return g_link.ws.out_len; }
+
 const char *TAK_NetLink_Why(void) {
     return g_link.why ? g_link.why : "";
 }

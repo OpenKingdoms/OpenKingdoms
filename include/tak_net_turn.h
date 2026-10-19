@@ -99,6 +99,11 @@ size_t TAK_TurnLog_Frame(const TAK_TurnLog *log, uint32_t from_turn,
 typedef void (*TAK_TurnSend)(void *user, int sim,
                              const uint8_t *frame, size_t len);
 
+/* Rebuild `sim` from `donor`'s snapshot rather than from turn zero.
+ * Returns 0 when the host will fetch and deliver it and then call
+ * TAK_TurnClock_SnapshotDone, anything else for the log from turn 0. */
+typedef int (*TAK_TurnSnapFn)(void *user, int sim, int donor);
+
 typedef struct TAK_TurnClockCfg {
     uint16_t turn_ms;         /* TAK_NET_TURN_MS */
     uint8_t  speed;           /* TAK_NET_SPEED_* */
@@ -131,6 +136,11 @@ typedef struct TAK_TurnSim {
      * still compared at all: one that keeps parting is left to watch. */
     uint8_t  resynced;
     uint8_t  unchecked;
+    /* Its client gives and takes snapshots (protocol 9), and one is on
+     * its way to it. Waiting, its hash is not heard: it is the world
+     * being replaced. */
+    uint8_t  snaps;
+    uint8_t  awaiting_snap;
     /* A watcher's hash for a tick the players have not agreed yet. It is
      * checked once they have, and never counts towards the agreement. */
     uint8_t  pend_set;
@@ -182,6 +192,16 @@ typedef struct TAK_TurnClock {
     TAK_TurnLog      *log;
     TAK_TurnSend      send;
     void             *user;
+    TAK_TurnSnapFn    snap;
+    /* The world a two way split is settled by, the host's, or -1. */
+    int               ref_sim;
+    uint32_t          snap_exclude;   /* outliers being flagged now */
+    /* A two way split settled by a snapshot: the world that settled it,
+     * the ones taking it, and how many a match had. Such a match cannot
+     * be told from one a host rewrote, which the ledger hears. */
+    int               split_ref;
+    uint32_t          split_targets;
+    uint32_t          splits_by_snapshot;
 
     uint8_t           started;
     uint8_t           paused;         /* by a player, N-004 */
@@ -261,6 +281,20 @@ void TAK_TurnClock_SetPaced(TAK_TurnClock *c, int sim, int paced);
 /* How often one world may be rebuilt before it is no longer checked. */
 #define TAK_TURN_SIM_RESYNCS_MAX 2
 void TAK_TurnClock_SetResyncs(TAK_TurnClock *c, int sim, int on);
+
+/* Snapshots. With a hook, a world that parts is rebuilt from a sound
+ * one's snapshot: an outlier from any agreeing client, a two way split
+ * from the reference. SnapshotDone hands the parted world the log from
+ * `from_turn`, the snapshot's own turn, or 0 when it could not be had. */
+void TAK_TurnClock_SetSnapHook(TAK_TurnClock *c, TAK_TurnSnapFn fn);
+void TAK_TurnClock_SetSnapshots(TAK_TurnClock *c, int sim, int on);
+void TAK_TurnClock_SetReference(TAK_TurnClock *c, int sim);
+int  TAK_TurnClock_SnapDonor(const TAK_TurnClock *c, uint32_t exclude);
+void TAK_TurnClock_SnapshotDone(TAK_TurnClock *c, int sim, uint32_t from_turn,
+                                uint64_t now_ms);
+/* Replay the log to a world from turn 0, as when it is found wrong after
+ * its snapshot loaded. The turns keep their time. */
+void TAK_TurnClock_Restart(TAK_TurnClock *c, int sim, uint64_t now_ms);
 
 /* Whether a catch up to the head could be sent now: the log still holds
  * every turn of the match. */

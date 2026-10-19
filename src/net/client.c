@@ -7,6 +7,7 @@
  */
 
 #include "tak_net_client.h"
+#include "tak_memory.h"
 
 #include <string.h>
 
@@ -57,6 +58,20 @@ void TAK_NetClient_Init(TAK_NetClient *c, const TAK_MsgHello *hello) {
     if (n == 0) { c->state = TAK_NC_GONE; c->out_overflow = 1; return; }
     (void)queue(c, frame, n);
     c->state = TAK_NC_GREETING;
+}
+
+void TAK_NetClient_Free(TAK_NetClient *c) {
+    tak_free(c->snap_out);
+    c->snap_out = NULL;
+    c->snap_out_len = c->snap_out_sent = 0;
+    TAK_NetClient_SnapshotDrop(c);
+}
+
+void TAK_NetClient_SnapshotDrop(TAK_NetClient *c) {
+    tak_free(c->snap_in);
+    c->snap_in = NULL;
+    c->snap_in_len = c->snap_in_got = 0;
+    c->snap_in_whole = 0;
 }
 
 void TAK_NetClient_OnClose(TAK_NetClient *c) {
@@ -216,6 +231,10 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
         memset(c->seat_status, TAK_PSTATUS_CONNECTED, sizeof c->seat_status);
         turns_reset(c);
         c->resigned = 0;
+        /* Nothing of a snapshot outlives the match it was for. */
+        c->snap_asked = 0;
+        c->snap_waiting = 0;
+        TAK_NetClient_Free(c);
         c->next_turn = 0;
         c->last_turn_held = 0;
         c->cmd_seq = 0;
@@ -237,13 +256,61 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
         if (TAK_Msg_GoDecode(&m, f.payload, f.payload_len) != 0) return -1;
         /* Already playing: a resync. What is held belongs to the world
          * being thrown away, and the log comes again from first_turn. */
+        c->snap_waiting = 0;
         if (c->state == TAK_NC_PLAYING) {
             turns_reset(c);
             c->resync = 1;
+            /* A snapshot for any other turn, whole or part way, is of an
+             * attempt the relay gave up on. */
+            uint32_t ticks = c->start.turn_ticks ? c->start.turn_ticks : 3;
+            if (c->snap_in && c->snap_in_tick != m.first_turn * ticks)
+                TAK_NetClient_SnapshotDrop(c);
         }
         c->next_turn = m.first_turn;
         c->state = TAK_NC_PLAYING;
         raise_event(c, TAK_NC_EV_GO);
+        return 0;
+    }
+
+    case TAK_MSG_SNAP_REQUEST: {
+        TAK_MsgSnapRequest m;
+        if (TAK_Msg_SnapRequestDecode(&m, f.payload, f.payload_len) != 0) return -1;
+        if (c->state != TAK_NC_PLAYING || !m.snap_id) return 0;
+        /* This world parted: it stops while another is sent for it. */
+        if (m.wait) {
+            c->snap_waiting = 1;
+            c->snap_in_id = m.snap_id;
+            return 0;
+        }
+        /* The world takes it at its next hashed tick. A newer request
+         * replaces one not yet answered. */
+        c->snap_asked = m.snap_id;
+        return 0;
+    }
+
+    case TAK_MSG_SNAP_DATA: {
+        TAK_MsgSnapData m;
+        if (TAK_Msg_SnapDataDecode(&m, f.payload, f.payload_len) != 0) return -1;
+        if (c->state != TAK_NC_PLAYING || m.total == 0) return 0;
+        /* A new snapshot starts over, and pieces arrive in order. */
+        if (m.snap_id != c->snap_in_id || m.offset == 0) {
+            TAK_NetClient_SnapshotDrop(c);
+            if (m.offset != 0) return 0;
+            c->snap_in_id = m.snap_id;
+            c->snap_in = (uint8_t *)tak_malloc(m.total);
+            /* No room for it: say so, and the relay sends the log. */
+            if (!c->snap_in) { (void)TAK_NetClient_SnapshotResult(c, 0); return 0; }
+            c->snap_in_tick = m.tick;
+            c->snap_in_len = m.total;
+        }
+        if (!c->snap_in || m.offset != c->snap_in_got || m.total != c->snap_in_len ||
+            m.tick != c->snap_in_tick) {
+            TAK_NetClient_SnapshotDrop(c);
+            return 0;
+        }
+        if (m.len) memcpy(c->snap_in + m.offset, m.data, m.len);
+        c->snap_in_got += m.len;
+        if (c->snap_in_got == c->snap_in_len) c->snap_in_whole = 1;
         return 0;
     }
 
@@ -588,6 +655,59 @@ int TAK_NetClient_Ack(TAK_NetClient *c, uint32_t last_turn,
     m.hash_tick = hash_tick;
     m.state_hash = state_hash;
     QUEUE_ENCODED(c, TAK_Msg_AckEncode(&m, _f, sizeof _f));
+}
+
+int TAK_NetClient_SnapshotGive(TAK_NetClient *c, uint8_t *bytes, uint32_t len,
+                               uint32_t tick) {
+    uint32_t id = c->snap_asked;
+    c->snap_asked = 0;
+    if (!id || c->state != TAK_NC_PLAYING) { tak_free(bytes); return -1; }
+    tak_free(c->snap_out);
+    if (len > TAK_NET_SNAP_MAX) { tak_free(bytes); bytes = NULL; }
+    c->snap_out = bytes;
+    c->snap_out_id = id;
+    c->snap_out_tick = tick;
+    c->snap_out_len = bytes ? len : 0;
+    c->snap_out_sent = 0;
+    if (bytes) return 0;
+    /* Cannot: a total of 0 says so, and the relay replays the log. */
+    TAK_MsgSnapData m;
+    memset(&m, 0, sizeof m);
+    m.snap_id = id;
+    QUEUE_ENCODED(c, TAK_Msg_SnapDataEncode(&m, _f, sizeof _f));
+}
+
+size_t TAK_NetClient_SnapshotPump(TAK_NetClient *c, size_t budget) {
+    size_t queued = 0;
+    while (c->snap_out && c->snap_out_sent < c->snap_out_len && queued < budget) {
+        TAK_MsgSnapData m;
+        m.snap_id = c->snap_out_id;
+        m.tick = c->snap_out_tick;
+        m.total = c->snap_out_len;
+        m.offset = c->snap_out_sent;
+        uint32_t left = c->snap_out_len - c->snap_out_sent;
+        m.len = (uint16_t)(left < TAK_NET_SNAP_CHUNK ? left : TAK_NET_SNAP_CHUNK);
+        m.data = c->snap_out + c->snap_out_sent;
+        uint8_t frame[TAK_NET_FRAME_MAX];
+        size_t n = TAK_Msg_SnapDataEncode(&m, frame, sizeof frame);
+        /* Leave room for the acks and orders that share the queue. */
+        if (!n || c->out_len + n > sizeof c->out / 2 || queue(c, frame, n) != 0) break;
+        c->snap_out_sent += m.len;
+        queued += n;
+    }
+    if (c->snap_out && c->snap_out_sent >= c->snap_out_len) {
+        tak_free(c->snap_out);
+        c->snap_out = NULL;
+    }
+    return queued;
+}
+
+int TAK_NetClient_SnapshotResult(TAK_NetClient *c, int ok) {
+    if (c->state != TAK_NC_PLAYING || !c->snap_in_id) return -1;
+    TAK_MsgSnapResult m;
+    m.snap_id = c->snap_in_id;
+    m.ok = (uint8_t)(ok ? 1 : 0);
+    QUEUE_ENCODED(c, TAK_Msg_SnapResultEncode(&m, _f, sizeof _f));
 }
 
 int TAK_NetClient_ReportMatchResult(TAK_NetClient *c,

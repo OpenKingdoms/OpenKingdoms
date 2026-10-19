@@ -2421,6 +2421,7 @@ add_executable(relay_link
     net/ws_conn.c
     net/ws.c
     net/protocol.c
+    core/memory.c
 )
 target_include_directories(relay_link PRIVATE
     ${CMAKE_SOURCE_DIR}/include

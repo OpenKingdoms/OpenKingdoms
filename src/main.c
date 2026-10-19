@@ -99,6 +99,12 @@ static int g_battle_in_match;
  * and the tick the one before had reached. */
 static int g_resync_rebuild;
 static uint32_t g_resync_from_tick;
+/* Where the player was looking and what they had selected, by stable
+ * id, which the rebuilt battle keeps. */
+static int32_t g_resync_cam_x, g_resync_cam_y;
+#define RESYNC_KEPT_SELECTION 64
+static uint32_t g_resync_sel[RESYNC_KEPT_SELECTION];
+static int g_resync_sel_n;
 
 static void battle_began(void) {
     const GameWorld *w = World_Get();
@@ -654,7 +660,19 @@ static void app_frame(AppState *app) {
                 if (g_resync_rebuild) {
                     g_resync_rebuild = 0;
                     InGame_SetRejoining(g_resync_from_tick);
-                    Chat_Push("The battle went out of step and is rebuilt from the server's record.",
+                    GameWorld *rw = World_Get();
+                    if (rw) { rw->cam_x = g_resync_cam_x; rw->cam_y = g_resync_cam_y; }
+                    int kept = 0;
+                    for (int i = 0; i < g_resync_sel_n; i++) {
+                        int h = Units_FindByStableId(g_resync_sel[i]);
+                        if (h < 0) continue;
+                        if (!kept++) Units_SelectSingle(h);
+                        else Units_SelectAdd(h);
+                    }
+                    g_resync_sel_n = 0;
+                    Chat_Push(MP_RebuiltFromSnapshot()
+                              ? "The battle went out of step and was set right from another player's game."
+                              : "The battle went out of step and is rebuilt from the server's record.",
                               CHAT_TYPE_NOTICE, CHAT_OWNER_SYSTEM, SDL_GetTicks());
                 } else {
                     battle_began();
@@ -696,6 +714,19 @@ static void app_frame(AppState *app) {
                 /* A resync: the match goes on, so it is not left. The
                  * world is built again and the log replays into it. */
                 g_resync_from_tick = TAK_CmdQueue_Tick();
+                if (World_Get()) {
+                    g_resync_cam_x = World_Get()->cam_x;
+                    g_resync_cam_y = World_Get()->cam_y;
+                }
+                {
+                    int n = 0, live = 0;
+                    const int *sel = Units_GetSelection(&n);
+                    const Unit *units = Units_GetActive(&live);
+                    g_resync_sel_n = 0;
+                    for (int i = 0; i < n && g_resync_sel_n < RESYNC_KEPT_SELECTION; i++)
+                        if (sel[i] >= 0 && sel[i] < live)
+                            g_resync_sel[g_resync_sel_n++] = units[sel[i]].stable_id;
+                }
                 TAK_Match_End();
                 InGame_Shutdown();
                 World_End(&app->platform);

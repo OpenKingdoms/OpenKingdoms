@@ -262,6 +262,7 @@ static void begin_catch_up(TAK_TurnClock *c, int sim, uint32_t from_turn,
 static void flag_outlier(TAK_TurnClock *c, int sim, uint32_t tick,
                          uint64_t now_ms);
 static void rejudge(TAK_TurnClock *c, uint64_t now_ms);
+static void resync_sim(TAK_TurnClock *c, int sim, int donor, uint64_t now_ms);
 
 /* The players agreed a tick. A watcher that reported it first is checked
  * now, and only the watcher is resynced when it differs. */
@@ -295,9 +296,14 @@ static void flag_outlier(TAK_TurnClock *c, int sim, uint32_t tick,
                          uint64_t now_ms) {
     TAK_TurnSim *s = &c->sim[sim];
     note_desync(c, tick, 1u << sim, 0);
-    if (s->resynced >= TAK_TURN_SIM_RESYNCS_MAX) {
-        /* Rebuilt and parted again: never a loop. It watches its own
-         * world unchecked, and the computer plays a seat it held. */
+    /* Its hashes for later ticks are of the world being replaced, and
+     * would flag it a second time for the one parting. */
+    for (int r = 0; r < TAK_TURN_HASH_ROWS; r++) c->row[r].have &= ~(1u << sim);
+    if (s->resynced >= TAK_TURN_SIM_RESYNCS_MAX || !TAK_TurnClock_CanReplay(c)) {
+        /* Rebuilt and parted again: never a loop. Nor is a world the log
+         * can no longer bring back, its turns past what it holds. It
+         * watches its own world unchecked, and the computer plays a seat
+         * it held. */
         s->unchecked = 1;
         s->pend_set = 0;
         if (s->takeover || s->reclaim) {
@@ -319,7 +325,52 @@ static void flag_outlier(TAK_TurnClock *c, int sim, uint32_t tick,
         return;
     }
     s->resynced++;
-    begin_catch_up(c, sim, 0, now_ms);
+    /* The second time it is the log, which nothing a save leaves out can
+     * fool, before the guard gives up on it. */
+    resync_sim(c, sim, s->resynced >= 2 ? -1
+                       : TAK_TurnClock_SnapDonor(c, (1u << sim) | c->snap_exclude), now_ms);
+}
+
+/* A world that can give a snapshot now: connected, checked, not waiting
+ * on one itself, and not in `exclude`. */
+static int can_donate(const TAK_TurnClock *c, int i, uint32_t exclude) {
+    const TAK_TurnSim *s = &c->sim[i];
+    return s->in_use && s->snaps && !s->unchecked && !s->awaiting_snap &&
+           !(exclude & (1u << i)) &&
+           (s->status == TAK_PSTATUS_CONNECTED || s->status == TAK_PSTATUS_LAGGING);
+}
+
+int TAK_TurnClock_SnapDonor(const TAK_TurnClock *c, uint32_t exclude) {
+    /* One keeping up before one lagging, which may be a tab in the
+     * background that will not reach a hashed tick soon, and a player
+     * before a watcher, whose world is checked late. */
+    for (int pass = 0; pass < 4; pass++) {
+        int lagging_ok = pass >= 2, watcher_ok = pass % 2 == 1;
+        if (c->ref_sim >= 0 && c->ref_sim < TAK_TURN_SIMS_MAX && can_donate(c, c->ref_sim, exclude) &&
+            (lagging_ok || c->sim[c->ref_sim].status == TAK_PSTATUS_CONNECTED) &&
+            (watcher_ok || c->sim[c->ref_sim].seat != TAK_NET_SEAT_NONE))
+            return c->ref_sim;
+        for (int i = 0; i < TAK_TURN_SIMS_MAX; i++)
+            if (can_donate(c, i, exclude) &&
+                (lagging_ok || c->sim[i].status == TAK_PSTATUS_CONNECTED) &&
+                (watcher_ok || c->sim[i].seat != TAK_NET_SEAT_NONE)) return i;
+    }
+    return -1;
+}
+
+/* Which of the worlds in `have` settles a split they cannot settle by
+ * vote: the reference when it is among them, else the first that can
+ * give a snapshot. Every other one has to be able to take one. */
+static int reference_of(const TAK_TurnClock *c, uint32_t have) {
+    int ref = -1;
+    if (c->ref_sim >= 0 && c->ref_sim < TAK_TURN_SIMS_MAX && (have & (1u << c->ref_sim)) &&
+        can_donate(c, c->ref_sim, 0))
+        ref = c->ref_sim;
+    for (int i = 0; i < TAK_TURN_SIMS_MAX && ref < 0; i++)
+        if ((have & (1u << i)) && can_donate(c, i, 0)) ref = i;
+    for (int i = 0; i < TAK_TURN_SIMS_MAX && ref >= 0; i++)
+        if ((have & (1u << i)) && i != ref && !c->sim[i].snaps) ref = -1;
+    return ref;
 }
 
 static void judge(TAK_TurnClock *c, TAK_TurnHashRow *row, uint64_t now_ms) {
@@ -342,24 +393,55 @@ static void judge(TAK_TurnClock *c, TAK_TurnHashRow *row, uint64_t now_ms) {
     if (n >= 3 && best_count * 2 > n) {
         /* Three or more worlds and a clear majority: the majority plays on
          * and each outlier is resynced. */
+        /* No outlier gives another its world, nor a watcher found wrong
+         * on the same tick. Kept across the nested judging this does. */
+        uint32_t kept = c->snap_exclude;
+        for (int i = 0; i < TAK_TURN_SIMS_MAX; i++)
+            if ((have & (1u << i)) && row->hash[i] != best) c->snap_exclude |= 1u << i;
         record_consensus(c, tick, best, now_ms);
         for (int i = 0; i < TAK_TURN_SIMS_MAX; i++)
             if ((have & (1u << i)) && row->hash[i] != best)
                 flag_outlier(c, i, tick, now_ms);
+        c->snap_exclude = kept;
         return;
     }
     /* Two worlds, or no majority. There is no telling which is right,
      * so every disagreeing world is rebuilt from the log, which every
      * machine replays alike. A client that cannot, or a match that has
      * resynced too often, halts with a report instead. */
-    int all_resync = c->resyncs_done < TAK_TURN_RESYNCS_MAX;
+    int all_resync = c->resyncs_done < TAK_TURN_RESYNCS_MAX && TAK_TurnClock_CanReplay(c);
     for (int i = 0; i < TAK_TURN_SIMS_MAX && all_resync; i++)
         if ((have & (1u << i)) && !c->sim[i].resyncs) all_resync = 0;
     if (all_resync) {
-        note_desync(c, tick, have, 0);
         c->resyncs_done++;
         /* Hashes the parted worlds sent for later ticks are void. */
         for (int r = 0; r < TAK_TURN_HASH_ROWS; r++) c->row[r].used = 0;
+        /* With snapshots one world settles it, the host's when it can,
+         * and the others take its state. Without, all replay the log. */
+        /* Only the first split this way: a second is settled by the log,
+         * which no world can rewrite. */
+        int ref = c->snap && !c->splits_by_snapshot ? reference_of(c, have) : -1;
+        if (ref >= 0) {
+            uint32_t parted = 0;
+            for (int i = 0; i < TAK_TURN_SIMS_MAX; i++)
+                if ((have & (1u << i)) && row->hash[i] != row->hash[ref]) parted |= 1u << i;
+            note_desync(c, tick, parted, 0);
+            record_consensus(c, tick, row->hash[ref], now_ms);
+            c->split_ref = ref;
+            c->splits_by_snapshot++;
+            int fell_back = 0;
+            for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
+                /* A world that agrees with the reference keeps its own. */
+                if (!(parted & (1u << i))) continue;
+                resync_sim(c, i, ref, now_ms);
+                if (c->sim[i].awaiting_snap) c->split_targets |= 1u << i;
+                else fell_back = 1;
+            }
+            /* One sent to the log at once means the reference goes too. */
+            if (fell_back) TAK_TurnClock_Restart(c, ref, now_ms);
+            return;
+        }
+        note_desync(c, tick, have, 0);
         for (int i = 0; i < TAK_TURN_SIMS_MAX; i++)
             if (have & (1u << i)) begin_catch_up(c, i, 0, now_ms);
         return;
@@ -379,7 +461,7 @@ static void rejudge(TAK_TurnClock *c, uint64_t now_ms) {
 
 static void report_hash(TAK_TurnClock *c, int sim, uint32_t tick,
                         uint64_t hash, uint64_t now_ms) {
-    if (c->sim[sim].unchecked) return;
+    if (c->sim[sim].unchecked || c->sim[sim].awaiting_snap) return;
     const TAK_TurnConsensus *h =
         &c->history[(tick / TAK_NET_HASH_TICKS) % TAK_TURN_HASH_HISTORY];
     if (h->set && h->tick == tick) {
@@ -438,6 +520,8 @@ void TAK_TurnClock_Init(TAK_TurnClock *c, const TAK_TurnClockCfg *cfg,
     c->governor_q4 = 4;
     c->governor_seat = TAK_NET_SEAT_NONE;
     c->pace_seat = TAK_NET_SEAT_NONE;
+    c->ref_sim = -1;
+    c->split_ref = -1;
 }
 
 int TAK_TurnClock_AddSim(TAK_TurnClock *c, uint32_t client_id, uint8_t seat,
@@ -515,6 +599,7 @@ static void drop_sim(TAK_TurnClock *c, int sim, uint8_t left_as,
     s->streaming = 0;
     s->behind = 0;
     s->reclaim = 0;
+    s->awaiting_snap = 0;
     if (s->seat != TAK_NET_SEAT_NONE) {
         uint8_t blob[8];
         size_t n = TAK_Sys_PlayerLeft(s->seat, left_as, blob, sizeof(blob));
@@ -575,6 +660,8 @@ static void stream(TAK_TurnClock *c, int sim) {
 static void begin_catch_up(TAK_TurnClock *c, int sim, uint32_t from_turn,
                            uint64_t now_ms) {
     TAK_TurnSim *s = &c->sim[sim];
+    /* Whatever it waited for, it replays the log from here now. */
+    s->awaiting_snap = 0;
     s->status = TAK_PSTATUS_CATCHING_UP;
     s->done_turns = from_turn;
     s->last_heard_ms = now_ms;
@@ -598,6 +685,55 @@ static void begin_catch_up(TAK_TurnClock *c, int sim, uint32_t from_turn,
     }
     emit_status(c, sim, 0);
     rejudge(c, now_ms);
+}
+
+/* Rebuild a parted world: from the donor's snapshot when the host can
+ * fetch one, else from the log at turn zero. Until it arrives the world
+ * waits as if catching up and is neither heard nor asked to order. */
+static void resync_sim(TAK_TurnClock *c, int sim, int donor, uint64_t now_ms) {
+    TAK_TurnSim *s = &c->sim[sim];
+    if (donor >= 0 && c->snap && s->snaps && c->snap(c->user, sim, donor) == 0) {
+        s->awaiting_snap = 1;
+        s->status = TAK_PSTATUS_CATCHING_UP;
+        s->streaming = 0;
+        s->behind = 0;
+        s->pend_set = 0;
+        s->last_heard_ms = now_ms;
+        emit_status(c, sim, 0);
+        rejudge(c, now_ms);
+        return;
+    }
+    begin_catch_up(c, sim, 0, now_ms);
+}
+
+void TAK_TurnClock_SetSnapHook(TAK_TurnClock *c, TAK_TurnSnapFn fn) { c->snap = fn; }
+
+void TAK_TurnClock_SetSnapshots(TAK_TurnClock *c, int sim, int on) {
+    if (valid_sim(c, sim)) c->sim[sim].snaps = (uint8_t)(on ? 1 : 0);
+}
+
+void TAK_TurnClock_SetReference(TAK_TurnClock *c, int sim) {
+    c->ref_sim = valid_sim(c, sim) ? sim : -1;
+}
+
+void TAK_TurnClock_SnapshotDone(TAK_TurnClock *c, int sim, uint32_t from_turn,
+                                uint64_t now_ms) {
+    if (!valid_sim(c, sim) || !c->sim[sim].awaiting_snap) return;
+    c->sim[sim].awaiting_snap = 0;
+    if (from_turn > c->head) from_turn = 0;
+    int split = (c->split_targets >> sim) & 1u;
+    c->split_targets &= ~(1u << sim);
+    begin_catch_up(c, sim, from_turn, now_ms);
+    /* A split the reference could not settle is settled as before: both
+     * worlds replay the log. */
+    if (split && from_turn == 0) TAK_TurnClock_Restart(c, c->split_ref, now_ms);
+}
+
+void TAK_TurnClock_Restart(TAK_TurnClock *c, int sim, uint64_t now_ms) {
+    if (!valid_sim(c, sim)) return;
+    TAK_TurnSim *s = &c->sim[sim];
+    if (s->status == TAK_PSTATUS_DROPPED || s->status == TAK_PSTATUS_LOST) return;
+    begin_catch_up(c, sim, 0, now_ms);
 }
 
 void TAK_TurnClock_SetPaced(TAK_TurnClock *c, int sim, int paced) {
@@ -630,6 +766,8 @@ void TAK_TurnClock_Disconnect(TAK_TurnClock *c, int sim, uint64_t now_ms) {
     if (!valid_sim(c, sim)) return;
     TAK_TurnSim *s = &c->sim[sim];
     if (s->status == TAK_PSTATUS_DROPPED) return;
+    /* A snapshot on its way goes nowhere now. A return replays the log. */
+    s->awaiting_snap = 0;
     /* A drop in that never took its seat leaves no trace in the match. */
     if (s->takeover) { TAK_TurnClock_Forget(c, sim, now_ms); return; }
     if (s->seat == TAK_NET_SEAT_NONE) {
@@ -739,8 +877,10 @@ int TAK_TurnClock_Reject(TAK_TurnClock *c, uint8_t seat, uint64_t now_ms) {
 int TAK_TurnClock_Resign(TAK_TurnClock *c, int sim) {
     if (!valid_sim(c, sim)) return TAK_REJECT_NOT_ALLOWED;
     TAK_TurnSim *s = &c->sim[sim];
+    /* A world waiting to be replaced was beaten, if at all, in a battle
+     * the others are not playing. */
     if (s->seat == TAK_NET_SEAT_NONE || s->status == TAK_PSTATUS_DROPPED ||
-        s->takeover)
+        s->takeover || s->awaiting_snap)
         return TAK_REJECT_NOT_ALLOWED;
     uint8_t blob[8];
     size_t n = TAK_Sys_PlayerLeft(s->seat, TAK_LEFT_RESIGNED, blob, sizeof(blob));
@@ -803,7 +943,7 @@ int TAK_TurnClock_Ack(TAK_TurnClock *c, int sim, const TAK_MsgAck *ack,
     /* A resync may have moved it back to turn zero. */
     if (s->streaming) stream(c, sim);
 
-    if (s->status == TAK_PSTATUS_CATCHING_UP &&
+    if (s->status == TAK_PSTATUS_CATCHING_UP && !s->awaiting_snap &&
         c->head - s->done_turns <= TAK_TURN_LAG_START / 2) {
         s->status = TAK_PSTATUS_CONNECTED;
         emit_status(c, sim, 0);
