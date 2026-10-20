@@ -932,9 +932,8 @@ TEST(a_changed_model_moves_the_units_group) {
 
 static void write_text_file(const char *path, const char *text);
 
-/* A match reads its models from the archives alone, so two installs
- * that differ only in the game folder's objects3d match. The folder is
- * still counted and hashed apart, for a replay of a battle that read it. */
+/* Game folder models stay out of the groups a match compares, and are
+ * counted and hashed apart for replays. */
 TEST(a_model_in_the_game_folder_leaves_the_groups_alone) {
     TestHPIEntry m[6];
     memcpy(m, k_fp_base, sizeof k_fp_base);

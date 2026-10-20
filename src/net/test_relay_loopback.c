@@ -1192,10 +1192,8 @@ TEST(the_room_list_shows_the_hosts_ping_and_older_clients_read_it_as_before) {
     ASSERT(older->done_turns > 20 && host->done_turns > 20);
 }
 
-/* Builds before 53 counted the game folder's models in their data: a
- * host whose folder has models the joiner's lacks keeps it out, and both
- * are told which folder and how many before any match. A client of
- * another build is told that first, and the host hears nothing. */
+/* Older builds whose folder models differ are told which folder, and a
+ * client of another build hears about its build first. */
 TEST(a_model_folder_that_differs_is_named_to_both_sides) {
     setup(20, 10, 61);
     g_hello_loose = 20;
