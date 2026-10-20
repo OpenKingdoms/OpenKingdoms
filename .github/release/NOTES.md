@@ -2,35 +2,33 @@ OpenKingdoms VERSION_HERE, an engine for Total Annihilation: Kingdoms.
 
 Play in a browser at [openkingdoms.net](https://openkingdoms.net), or download below and play on the desktop.
 
-This release makes a multiplayer battle that falls out of step catch up in
-seconds instead of replaying the whole match. All players need 0.5.5:
-browser players just reload the page.
+This release lets players whose game folders differ play multiplayer
+together again. All players need 0.5.6: browser players just reload the
+page.
 
-## Rejoining in seconds
+## Loose models no longer keep players apart
 
-When one player's battle falls out of step with the others, it no longer
-starts again from the first second and replays the whole match behind the
-"Rejoining the battle" screen, which late in a long game took a minute or
-more. The game server now asks another player's game for its battle as it
-stands, passes it on, and the player who fell out of step carries on from
-there with only the last few seconds to catch up. Their camera and the
-units they had selected stay as they were, and everyone else plays on
-without a pause. When two players disagree and there is no way to tell
-which is right, the host's battle settles it, once a game. Such a game
-still goes on the record but does not count for the standings, since a
-host could change a battle that way. If a battle cannot be brought back
-this way, for instance because the other player left at that moment, the
-old way of replaying the match is still there as a fallback, and a battle
-that keeps falling out of step is never sent round in a loop. (#446)
+Some copies of the game, the GOG one among them, have an objects3d folder
+of 20 building models beside the archives, and others do not. Those models
+decide where a blast reaches a unit, so two players whose folders differed
+fell out of step minutes into a match, and 0.5.4 and 0.5.5 refused to put
+them in the same game. A multiplayer battle now uses only the models in
+the game's archives, whatever the game folder holds. So do watchers, a
+battle brought back into step from another player's game, and the replay
+of a match. Players with and without the folder can host and join each
+other again, and the lobby no longer asks anyone to remove it. A skirmish
+or a campaign still uses the folder's models as before. In the browser,
+models added with "Add 3D models" or with the game folder are used outside
+multiplayer only.
+
+If you moved your objects3d folder out of the game folder to play 0.5.4
+or 0.5.5, you can put it back. (#449)
 
 ## Smaller changes
 
-- A unit fading out of a magic death is now kept in a saved game, so a
-  battle saved at that moment loads exactly as it was. (#446)
-- A game on another version of OpenKingdoms now says to reload the page
-  or update the game, and a full game says it is full. (#446)
-- In the browser, the "Add 3D models" button now takes .3do models picked
-  one by one, as dropping them on the page already did. (#446)
+- A player on another version of OpenKingdoms who joins by code or link
+  is now told to reload or update before anything is said about their
+  game data. (#449)
 
 ## Multiplayer compatibility
 
