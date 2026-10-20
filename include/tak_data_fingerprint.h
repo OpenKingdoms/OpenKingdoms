@@ -55,6 +55,11 @@ int TAK_DataFingerprint_Compute(TAK_DataFingerprint *out);
  * with no VFS. */
 const TAK_DataFingerprint *TAK_DataFingerprint_Get(void);
 
+/* The game folder's models as they are now, which a page may have added
+ * to since the fingerprint was taken: how many, and their hash in
+ * *hash (0 for none). */
+int TAK_DataFingerprint_LooseModels(uint64_t *hash);
+
 /* "units", "weapons", "features", "scripts" or "ai". */
 const char *TAK_DataFingerprint_GroupName(int group);
 

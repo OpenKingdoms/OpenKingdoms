@@ -953,14 +953,21 @@ TEST(a_model_in_the_game_folder_leaves_the_groups_alone) {
     int w = test_write_hpi("test_vfs_archives_tmp/alpha.hpi", m, 6);
     int rc = w == 0 ? VFS_Init(ARC_DIR, NULL) : -1;
     if (rc == 0) rc = TAK_DataFingerprint_Compute(&loose);
+    /* One the page adds later is counted when asked again. */
+    write_text_file("test_vfs_archives_tmp/ObjectS3D/later.3do", "\x07");
+    uint64_t later_hash = 0;
+    int later = TAK_DataFingerprint_LooseModels(&later_hash);
     VFS_Shutdown();
     remove("test_vfs_archives_tmp/ObjectS3D/Aramon.3do");
     remove("test_vfs_archives_tmp/ObjectS3D/extra.3do");
+    remove("test_vfs_archives_tmp/ObjectS3D/later.3do");
     tak_test_rmdir("test_vfs_archives_tmp/ObjectS3D");
     arc_dir_remove();
     ASSERT_EQ_INT(0, rc);
     ASSERT_EQ_INT(2, loose.loose_models);
     ASSERT(loose.loose_hash != 0);
+    ASSERT_EQ_INT(3, later);
+    ASSERT(later_hash != 0 && later_hash != loose.loose_hash);
     ASSERT_EQ_INT(archive.files[TAK_DATA_GROUP_UNITS], loose.files[TAK_DATA_GROUP_UNITS]);
     for (int g = 0; g < TAK_DATA_GROUP_COUNT; g++) ASSERT(loose.group[g] == archive.group[g]);
     ASSERT(loose.content == archive.content);

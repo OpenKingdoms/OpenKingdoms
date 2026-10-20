@@ -101,6 +101,8 @@ void World_MarkLoaded(void) {
 
 void World_End(TAK_Platform *plat) {
     g_restoring = 0;
+    /* Between battles the models are read as a skirmish reads them. */
+    Obj3D_SetGameFolderModels(1);
     if (!g_world) return;
     /* A match that ended, however it ended, must not leave the next
      * battle gated on turns nobody is sending. */

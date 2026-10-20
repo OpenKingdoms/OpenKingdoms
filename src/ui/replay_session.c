@@ -91,11 +91,13 @@ int Replay_RecordOpen(const char *path, char *err, size_t err_cap) {
     memset(&h, 0, sizeof h);
     h.engine_build_id = TAK_ENGINE_BUILD_ID;
     const TAK_DataFingerprint *fp = TAK_DataFingerprint_Get();
-    int folder = Obj3D_GameFolderModels();
+    uint64_t loose = 0;
+    int folder = Obj3D_GameFolderModels() ? TAK_DataFingerprint_LooseModels(&loose) : 0;
+    /* With none in the folder the battle read the archives' alone too. */
     if (!folder) h.flags |= TAK_REPLAYF_ARCHIVE_MODELS;
     if (fp) {
         h.data_schema = fp->schema;
-        h.data_content = fp->content ^ (folder ? fp->loose_hash : 0);
+        h.data_content = fp->content ^ loose;
         for (int g = 0; g < TAK_DATA_GROUP_COUNT; g++) h.data_group[g] = fp->group[g];
     }
     if (TAK_MapFingerprint_FromName(world->map_name, h.map_fp) == 0)
@@ -300,8 +302,15 @@ int Replay_Open(const char *path, char *err, size_t err_cap) {
     uint32_t end = 0;
     TAK_ReplayReader *r = TAK_Replay_Open(path, &h, &end, err, err_cap);
     if (!r) return -1;
-    if (TAK_Replay_CheckCompatible(&h, TAK_ENGINE_BUILD_ID, TAK_DataFingerprint_Get(),
-                                   err, err_cap) != 0) {
+    /* The folder's models as they are now, which a page may add to. */
+    const TAK_DataFingerprint *fp = TAK_DataFingerprint_Get();
+    TAK_DataFingerprint now;
+    if (fp) {
+        now = *fp;
+        now.loose_models = TAK_DataFingerprint_LooseModels(&now.loose_hash);
+        fp = &now;
+    }
+    if (TAK_Replay_CheckCompatible(&h, TAK_ENGINE_BUILD_ID, fp, err, err_cap) != 0) {
         TAK_Replay_Close(r);
         return -1;
     }

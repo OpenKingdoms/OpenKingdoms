@@ -267,6 +267,14 @@ static int fp_run(TAK_DataFingerprint *out, FILE *report) {
     return 0;
 }
 
+int TAK_DataFingerprint_LooseModels(uint64_t *hash) {
+    TAK_DataFingerprint fp;
+    memset(&fp, 0, sizeof fp);
+    if (VFS_IsInitialized()) fp_loose(&fp, NULL);
+    if (hash) *hash = fp.loose_hash;
+    return fp.loose_models;
+}
+
 int TAK_DataFingerprint_Compute(TAK_DataFingerprint *out) {
     return fp_run(out, NULL);
 }

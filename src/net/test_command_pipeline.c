@@ -1297,8 +1297,10 @@ TEST(a_replay_file_plays_back_to_the_same_hash_every_turn) {
     ASSERT_EQ_INT(CP_FILE_TICKS, (int)hdr->end_tick);
     ASSERT_EQ_INT(4, (int)hdr->command_count);
     ASSERT_EQ_INT(0, (int)Replay_DriftTick());
-    ASSERT(!(hdr->flags & TAK_REPLAYF_ARCHIVE_MODELS));
-    ASSERT_EQ_INT(1, Obj3D_GameFolderModels());
+    /* Outside a match the folder's models count only when it has some. */
+    int archive = (hdr->flags & TAK_REPLAYF_ARCHIVE_MODELS) != 0;
+    ASSERT_EQ_INT(TAK_DataFingerprint_LooseModels(NULL) == 0, archive);
+    ASSERT_EQ_INT(!archive, Obj3D_GameFolderModels());
     int moved = 0;
     for (int i = 1; i < CP_FILE_TURNS; i++) if (live[i] != live[i - 1]) moved = 1;
     ASSERT(moved);

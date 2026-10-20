@@ -60,7 +60,8 @@ enum {
     TAK_REPLAYF_MAP_FP   = 0x02,   /* map_fp holds the map's fingerprint */
     TAK_REPLAYF_FINISHED = 0x04,   /* the recording closed; set on close */
     /* The battle read its models from the archives alone, as a match
-     * does, and never the game folder's objects3d. */
+     * does and as any battle does with none in the game folder's
+     * objects3d. */
     TAK_REPLAYF_ARCHIVE_MODELS = 0x08
 };
 
