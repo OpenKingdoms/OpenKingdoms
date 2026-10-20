@@ -17,6 +17,7 @@
 #include "tak_net_match.h"
 #include "tak_net_protocol.h"
 #include "tak_net_session.h"
+#include "tak_obj3d.h"
 #include "tak_paths.h"
 #include "tak_perf_probe.h"
 #include "tak_savelist.h"
@@ -90,9 +91,11 @@ int Replay_RecordOpen(const char *path, char *err, size_t err_cap) {
     memset(&h, 0, sizeof h);
     h.engine_build_id = TAK_ENGINE_BUILD_ID;
     const TAK_DataFingerprint *fp = TAK_DataFingerprint_Get();
+    int folder = Obj3D_GameFolderModels();
+    if (!folder) h.flags |= TAK_REPLAYF_ARCHIVE_MODELS;
     if (fp) {
         h.data_schema = fp->schema;
-        h.data_content = fp->content;
+        h.data_content = fp->content ^ (folder ? fp->loose_hash : 0);
         for (int g = 0; g < TAK_DATA_GROUP_COUNT; g++) h.data_group[g] = fp->group[g];
     }
     if (TAK_MapFingerprint_FromName(world->map_name, h.map_fp) == 0)
@@ -329,6 +332,8 @@ int Replay_Open(const char *path, char *err, size_t err_cap) {
 
 void Replay_Attach(void) {
     if (!g_play.reader) return;
+    /* Models the way the recorded battle read them, before any loads. */
+    Obj3D_SetGameFolderModels(!(g_play.hdr.flags & TAK_REPLAYF_ARCHIVE_MODELS));
     g_play.playing = 1;
     g_play.has_next = 0;
     g_play.bad = 0;

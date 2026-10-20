@@ -251,6 +251,11 @@ static Obj3DNode *parse_node(const uint8_t *buf, uint32_t buf_size,
 
 /* ── Public API ──────────────────────────────────────────────────── */
 
+static int g_game_folder_models = 1;
+
+void Obj3D_SetGameFolderModels(int on) { g_game_folder_models = on ? 1 : 0; }
+int  Obj3D_GameFolderModels(void)      { return g_game_folder_models; }
+
 int Obj3D_Load(Obj3DFile **out, const char *vfs_path) {
     if (!out || !vfs_path) return -1;
     *out = NULL;
@@ -260,7 +265,8 @@ int Obj3D_Load(Obj3DFile **out, const char *vfs_path) {
     /* A model loose in the player's own game folder stands in for the
      * shipped one. That is how a model mod arrives, and it is the one
      * place a file outside the archives is allowed to win. */
-    if (VFS_ReadGameFile(vfs_path, &raw, &raw_size) != 0 || !raw) {
+    if (!g_game_folder_models ||
+        VFS_ReadGameFile(vfs_path, &raw, &raw_size) != 0 || !raw) {
         if (VFS_ReadFile(vfs_path, &raw, &raw_size) != 0) {
             fprintf(stderr, "Obj3D_Load: VFS_ReadFile failed for %s\n", vfs_path);
             return -1;

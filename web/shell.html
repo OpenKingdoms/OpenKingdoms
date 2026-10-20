@@ -728,7 +728,8 @@
   /* A loose .3do in the game folder's objects3d stands in for the
    * shipped model in both views, which is how a model mod arrives. It
    * lives under the game folder in the engine's file system, where
-   * the engine looks before the archives. */
+   * the engine looks before the archives, except in a multiplayer
+   * battle, which keeps to the archives' models. */
   var OBJECTS = 'objects3d';
   function isObject(name) { return /\.3do$/i.test(name); }
   function objectRel(name) { return OBJECTS + '/' + name.toLowerCase(); }
@@ -2163,7 +2164,9 @@
       var what = written + (written === 1 ? ' model' : ' models');
       console.log('[openkingdoms] ' + what + ' ready: ' +
                   picks.map(function (p) { return p.rel; }).join(', '));
-      tell(what + ' added. They are drawn from the next battle.');
+      var objects = picks.some(function (p) { return !p.model; });
+      tell(what + ' added. They are drawn from the next battle.' +
+           (objects ? ' A multiplayer battle keeps to the game\u2019s own .3do models.' : ''));
     }).catch(function (e) {
       tell('That model could not be read: ' + (e && e.message ? e.message : e), true);
     });

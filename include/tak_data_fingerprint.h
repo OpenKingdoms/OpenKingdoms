@@ -14,10 +14,12 @@
  * weapon tables), features, scripts and the AI's profiles.
  *
  * Files are taken through the VFS, so a loose file that overrides an
- * archive is the one hashed. Paths are case folded, a leading "data/"
- * is dropped so the loose and archive layouts agree, and the files go
- * in sorted by path, so how an archive is packed changes nothing. Line
- * ends are dropped from text files, which the parsers ignore anyway.
+ * archive is the one hashed. A model in the game folder's objects3d is
+ * not, since a match never reads one, and is counted apart. Paths are
+ * case folded, a leading "data/" is dropped so the loose and archive
+ * layouts agree, and the files go in sorted by path, so how an archive
+ * is packed changes nothing. Line ends are dropped from text files,
+ * which the parsers ignore anyway.
  * Art, sound, music and maps are not in it: the map has a fingerprint
  * of its own, and the rest is each player's own business. */
 
@@ -39,8 +41,9 @@ typedef struct TAK_DataFingerprint {
     uint64_t content;
     uint64_t group[TAK_DATA_GROUP_COUNT];
     int      files[TAK_DATA_GROUP_COUNT];
-    /* The models in the game folder's objects3d, which the simulation
-     * loads before the archives': how many, and their hash (0 for none). */
+    /* The models in the game folder's objects3d, which a battle outside
+     * a match loads before the archives': how many, and their hash (0 for
+     * none). In no group. */
     int      loose_models;
     uint64_t loose_hash;
 } TAK_DataFingerprint;

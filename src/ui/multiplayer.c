@@ -45,6 +45,7 @@
 #include "tak_savegame.h"
 #include "tak_loading.h"
 #include "tak_sim_hash.h"
+#include "tak_obj3d.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -911,6 +912,7 @@ int MP_RebuildMatchWorld(TAK_Platform *platform) {
                 (unsigned)tick);
         if (World_BeginLoad(platform, &info->cfg, info->map_name, info->map_kingdom) == 0) {
             mp_local_seat(&c->start);
+            Obj3D_SetGameFolderModels(0);
             /* After BeginLoad: the snapshot carries the armies. */
             World_SetRestoring(1);
             mp_snap_hash = info->sim_state_hash;
@@ -987,6 +989,9 @@ int MP_BeginMatchWorld(TAK_Platform *platform, const TAK_MsgStartGame *sg) {
     /* Without this every client plays the first seat: same world, same
      * fog, same sidebar, and one army nobody is driving. */
     mp_local_seat(sg);
+    /* Models from the archives alone, so a player whose game folder has
+     * loose ones plays the same battle as one whose folder has none. */
+    Obj3D_SetGameFolderModels(0);
     return 0;
 }
 

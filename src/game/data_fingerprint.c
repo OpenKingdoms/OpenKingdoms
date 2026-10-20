@@ -92,8 +92,8 @@ static FpFile *fp_add(FpList *l, const char *path) {
     return f;
 }
 
-/* The game folder's own models, which Obj3D_Load takes before the
- * archives' (#202), so a shot reads them and they are what is hashed. */
+/* The game folder's own models, which a battle outside a match loads
+ * before the archives' (#202). A match never reads them. */
 static void fp_game_models(FpList *l) {
     char **names = NULL;
     int n = 0;
@@ -144,7 +144,6 @@ static void fp_list(int group, FpList *l) {
         snprintf(loose, sizeof loose, "data/%s", *p);
         fp_collect(loose, l);
     }
-    if (group == TAK_DATA_GROUP_UNITS) fp_game_models(l);
     if (l->n > 1) qsort(l->f, (size_t)l->n, sizeof(FpFile), fp_cmp);
 }
 
@@ -190,12 +189,42 @@ static uint64_t fp_first8(const uint8_t d[TAK_SHA256_BYTES]) {
     return v;
 }
 
+/* Counted and hashed apart from the groups, for a replay of a battle
+ * that read them. */
+static void fp_loose(TAK_DataFingerprint *out, FILE *report) {
+    FpList l;
+    memset(&l, 0, sizeof l);
+    fp_game_models(&l);
+    if (l.n > 1) qsort(l.f, (size_t)l.n, sizeof(FpFile), fp_cmp);
+    TAK_Sha256 game, unused;
+    TAK_Sha256_Init(&game);
+    TAK_Sha256_Init(&unused);
+    for (int i = 0; i < l.n; i++) {
+        uint8_t own[TAK_SHA256_BYTES];
+        fp_file(&unused, &l.f[i], own);
+        out->loose_models++;
+        TAK_Sha256_Update(&game, l.f[i].key, strlen(l.f[i].key) + 1);
+        TAK_Sha256_Update(&game, own, sizeof own);
+        if (report) {
+            char hex[65];
+            TAK_Sha256_ToHex(own, hex);
+            fprintf(report, "%-8s %-48s %.16s game folder, not read in a match\n", "models",
+                    l.f[i].key, hex);
+        }
+    }
+    if (out->loose_models) {
+        uint8_t d[TAK_SHA256_BYTES];
+        TAK_Sha256_Final(&game, d);
+        out->loose_hash = fp_first8(d);
+    }
+    if (l.f) tak_free(l.f);
+}
+
 static int fp_run(TAK_DataFingerprint *out, FILE *report) {
     if (!out || !VFS_IsInitialized()) return -1;
     memset(out, 0, sizeof *out);
-    TAK_Sha256 all, game;
+    TAK_Sha256 all;
     TAK_Sha256_Init(&all);
-    TAK_Sha256_Init(&game);
     for (int g = 0; g < TAK_DATA_GROUP_COUNT; g++) {
         FpList l;
         fp_list(g, &l);
@@ -203,17 +232,11 @@ static int fp_run(TAK_DataFingerprint *out, FILE *report) {
         TAK_Sha256_Init(&gh);
         for (int i = 0; i < l.n; i++) {
             uint8_t own[TAK_SHA256_BYTES];
-            fp_file(&gh, &l.f[i], (report || l.f[i].game) ? own : NULL);
-            if (l.f[i].game) {
-                out->loose_models++;
-                TAK_Sha256_Update(&game, l.f[i].key, strlen(l.f[i].key) + 1);
-                TAK_Sha256_Update(&game, own, sizeof own);
-            }
+            fp_file(&gh, &l.f[i], report ? own : NULL);
             if (report) {
                 char hex[65];
                 TAK_Sha256_ToHex(own, hex);
-                fprintf(report, "%-8s %-48s %.16s%s\n", k_group_names[g], l.f[i].key, hex,
-                        l.f[i].game ? " game folder" : "");
+                fprintf(report, "%-8s %-48s %.16s\n", k_group_names[g], l.f[i].key, hex);
             }
         }
         uint8_t d[TAK_SHA256_BYTES];
@@ -226,10 +249,7 @@ static int fp_run(TAK_DataFingerprint *out, FILE *report) {
     uint8_t d[TAK_SHA256_BYTES];
     TAK_Sha256_Final(&all, d);
     out->content = fp_first8(d);
-    if (out->loose_models) {
-        TAK_Sha256_Final(&game, d);
-        out->loose_hash = fp_first8(d);
-    }
+    fp_loose(out, report);
     char schema[64];
     snprintf(schema, sizeof schema, "OpenKingdoms data schema %d", TAK_DATA_SCHEMA_VERSION);
     TAK_Sha256_Hash(schema, strlen(schema), d);
@@ -240,6 +260,9 @@ static int fp_run(TAK_DataFingerprint *out, FILE *report) {
                     out->files[g], (unsigned long long)out->group[g]);
         fprintf(report, "content %016llx schema %016llx\n",
                 (unsigned long long)out->content, (unsigned long long)out->schema);
+        if (out->loose_models)
+            fprintf(report, "game folder models %d %016llx\n", out->loose_models,
+                    (unsigned long long)out->loose_hash);
     }
     return 0;
 }

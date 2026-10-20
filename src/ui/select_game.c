@@ -306,23 +306,9 @@ int SelectGame_RowWatchable(int index) {
            r->watchers < TAK_NET_WATCHERS_MAX;
 }
 
-/* A greyed row whose host plays our mod set with other models in its
- * game folder's objects3d says so, since no mod set fixes that. */
-static int models_advice(const TAK_RoomSummary *r, char *out, size_t cap) {
-    const TAK_DataFingerprint *fp = TAK_DataFingerprint_Get();
-    if (!fp || r->compat != TAK_REJECT_DATA_MISMATCH || fp->loose_hash == r->loose_hash)
-        return 0;
-    if (tak_stricmp(r->mod_name, TAK_ModSet_ActiveModName()) != 0 ||
-        tak_stricmp(r->mod_version, TAK_ModSet_ActiveVersion()) != 0)
-        return 0;
-    TAK_Net_ModelFolderAdvice(out, cap, NULL, fp->loose_models, r->loose_models);
-    return 1;
-}
-
 /* Why a game under way cannot be watched, or NULL when it can. */
 static const char *watch_refusal(const TAK_RoomSummary *r) {
     static char advice[SG_STATUS_MAX];
-    if (models_advice(r, advice, sizeof advice)) return advice;
     if (r->compat == TAK_REJECT_DATA_MISMATCH) {
         TAK_ModSet_JoinAdvice(r->mod_name, r->mod_version, r->content_hash,
                               advice, sizeof advice);
@@ -363,20 +349,16 @@ void SelectGame_WatchRow(int index) {
  * differs, so the player knows whether it is a mod, a unit file or a
  * script (docs/MULTIPLAYER.md). */
 static void say_refusal(const TAK_MsgReject *r) {
-    if (r->reason == TAK_REJECT_DATA_MISMATCH && (r->detail & TAK_REJECT_DETAIL_MODELS)) {
-        const TAK_DataFingerprint *fp = TAK_DataFingerprint_Get();
-        char line[SG_STATUS_MAX];
-        TAK_Net_ModelFolderAdvice(line, sizeof line, NULL, fp ? fp->loose_models : 0,
-                                  r->detail & 0x7f);
-        set_status(line);
-        return;
-    }
-    if (r->reason == TAK_REJECT_DATA_MISMATCH && r->detail < TAK_DATA_GROUP_COUNT) {
+    if (r->reason == TAK_REJECT_DATA_MISMATCH) {
         char line[160];
-        snprintf(line, sizeof line,
-                 "Your game data does not match that game: the %s differ. "
-                 "One of you has a mod or another release.",
-                 TAK_DataFingerprint_GroupName(r->detail));
+        if (r->detail < TAK_DATA_GROUP_COUNT)
+            snprintf(line, sizeof line,
+                     "Your game data does not match that game: the %s differ. "
+                     "One of you has a mod or another release.",
+                     TAK_DataFingerprint_GroupName(r->detail));
+        else
+            snprintf(line, sizeof line, "Your game data does not match that game. "
+                     "One of you has a mod or another release.");
         set_status(line);
         return;
     }
@@ -413,16 +395,6 @@ static void join_selected(void) {
          * without a word, which left players wondering why a friend's
          * game was invisible. The row stays and says why, naming the
          * mod set it needs when the host said which. */
-        char why[SG_STATUS_MAX];
-        if (models_advice(r, why, sizeof why)) {
-            /* Asked anyway, so the host hears who was turned away. */
-            TAK_MsgJoinRoom jr;
-            memset(&jr, 0, sizeof jr);
-            jr.room_id = r->room_id;
-            (void)TAK_NetClient_JoinRoom(c, &jr);
-            set_status(why);
-            return;
-        }
         if (r->compat == TAK_REJECT_DATA_MISMATCH) {
             /* The mod registry may have what it plays: the first Join
              * asks, the second fetches (tak_mod_fetch.h). */
@@ -795,10 +767,7 @@ static void fill_info(void) {
     set_label("Creon",          r ? yes_no(r->flags & TAK_ROOMF_IRON_PLAGUE) : "");
     /* Whose data the game runs on: the same as ours, which is our mod
      * set by name, or not, and then which mod set it needs. */
-    char models[SG_STATUS_MAX];
-    if (r && models_advice(r, models, sizeof models)) {
-        set_status(models);
-    } else if (r && r->compat == TAK_REJECT_DATA_MISMATCH) {
+    if (r && r->compat == TAK_REJECT_DATA_MISMATCH) {
         char line[SG_STATUS_MAX];
         TAK_ModSet_JoinAdvice(r->mod_name, r->mod_version, r->content_hash,
                               line, sizeof line);

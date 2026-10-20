@@ -615,6 +615,7 @@ static uint16_t g_hello_protocol;
 static const char *g_hello_mod, *g_hello_mod_version;
 static uint64_t g_hello_content;
 static uint16_t g_hello_loose;
+static uint32_t g_hello_build;
 /* Set, every new client types this name. */
 static const char *g_hello_name;
 /* A client at this index sends no token, as one from before tokens. */
@@ -639,6 +640,7 @@ static Client *new_client(int watcher) {
         snprintf(c->mod_version, sizeof(c->mod_version), "%s", g_hello_mod_version);
     c->content = g_hello_content;
     c->loose = g_hello_loose;
+    c->build = g_hello_build;
     if (ncl == g_blank_token_at) memset(c->token, 0, sizeof(c->token));
     ncl++;
     c->conn = TAK_FakeNet_Connect(&net);
@@ -685,6 +687,7 @@ static void setup(uint32_t latency, uint32_t jitter, uint32_t seed) {
     g_hello_mod = g_hello_mod_version = NULL;
     g_hello_content = 0;
     g_hello_loose = 0;
+    g_hello_build = 0;
     g_blank_token_at = -1;
     memset(g_team, 0, sizeof g_team);
     for (int i = 0; i < N_MAX; i++) { free(cl[i].inbox.p); free(cl[i].rec.p); }
@@ -1189,8 +1192,10 @@ TEST(the_room_list_shows_the_hosts_ping_and_older_clients_read_it_as_before) {
     ASSERT(older->done_turns > 20 && host->done_turns > 20);
 }
 
-/* A host whose game folder has models the joiner's lacks keeps it out,
- * and both are told which folder and how many before any match. */
+/* Builds before 53 counted the game folder's models in their data: a
+ * host whose folder has models the joiner's lacks keeps it out, and both
+ * are told which folder and how many before any match. A client of
+ * another build is told that first, and the host hears nothing. */
 TEST(a_model_folder_that_differs_is_named_to_both_sides) {
     setup(20, 10, 61);
     g_hello_loose = 20;
@@ -1216,6 +1221,23 @@ TEST(a_model_folder_that_differs_is_named_to_both_sides) {
     printf("(host reads \"%s\") ", host->last_chat);
     ASSERT(strstr(host->last_chat, "P1 could not join.") == host->last_chat);
     ASSERT(strstr(host->last_chat, "Your game folder has 20 models in objects3d") != NULL);
+
+    char said[TAK_NET_CHAT_MAX];
+    memcpy(said, host->last_chat, sizeof said);
+    g_hello_build = BUILD + 1;
+    g_hello_loose = 3;
+    g_hello_content = 0x0dd5ull;
+    Client *other = new_client(0);
+    g_hello_build = 0;
+    g_hello_loose = 0;
+    g_hello_content = 0;
+    run_for(500);
+    join_code(other, host->room.code, 0);
+    run_for(800);
+    ASSERT_EQ_INT(TAK_REJECT_NEEDS_NEWER, other->last_reject);
+    ASSERT_EQ_INT(0, other->last_detail);
+    ASSERT(!other->have_room);
+    ASSERT_EQ_STR(said, host->last_chat);
 }
 
 /* A room says which mod set its host plays, and a result is filed

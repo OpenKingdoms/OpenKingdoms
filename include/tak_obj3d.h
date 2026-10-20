@@ -106,6 +106,12 @@ typedef struct Obj3DFile {
  * malformed bytes, allocation failure). */
 int  Obj3D_Load(Obj3DFile **out, const char *vfs_path);
 
+/* Whether a model loose in the game folder's objects3d stands in for
+ * the archive's. On for every battle, off for a multiplayer one, so two
+ * players whose folders differ load the same models. */
+void Obj3D_SetGameFolderModels(int on);
+int  Obj3D_GameFolderModels(void);
+
 /* Free the tree and all its descendants. NULL-safe. */
 void Obj3D_Close(Obj3DFile *obj);
 
