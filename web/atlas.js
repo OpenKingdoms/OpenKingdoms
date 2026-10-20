@@ -609,7 +609,7 @@
     if (e.k === '3do') {
       var obj = lower(e.name);
       out.engine.push({ path: 'models3d/' + obj + '.glb', note: 'A glTF binary in your game folder, drawn in the 3D view. One unit is one world pixel.' });
-      out.engine.push({ path: 'objects3d/' + obj + '.3do', note: 'A 3DO in your game folder replaces the shipped one in both views.' });
+      out.engine.push({ path: 'objects3d/' + obj + '.3do', note: 'A 3DO in your game folder replaces the shipped one in both views, outside multiplayer.' });
       if (units.length) {
         var u = units[0].unit.toUpperCase();
         out.sod.push({ path: 'unity/Assets/Overrides/Units/' + u + '.glb', note: 'The whole unit. Name its parts after the original’s pieces to follow its animation. One unit is one cell, 16 pixels.' });

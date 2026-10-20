@@ -199,6 +199,19 @@ static uint32_t file_bytes(const char *path) {
     return n > 0 ? (uint32_t)n : 0;
 }
 
+/* What is mounted, with the game folder's models as they are now, which
+ * a page may have added to. NULL with nothing mounted. */
+static const TAK_DataFingerprint *fingerprint_now(TAK_DataFingerprint *now) {
+    const TAK_DataFingerprint *fp = TAK_DataFingerprint_Get();
+    if (!fp) return NULL;
+    *now = *fp;
+    now->loose_models = TAK_DataFingerprint_LooseModels(&now->loose_hash);
+    return now;
+}
+
+/* One listing's, read once for all its rows. */
+static const TAK_DataFingerprint *g_list_fp;
+
 /* The header and nothing more: the stream is walked when a replay is
  * chosen, so the list costs a few hundred bytes a file. */
 static void list_fill(TAK_SaveEntry *e) {
@@ -212,7 +225,7 @@ static void list_fill(TAK_SaveEntry *e) {
         return;
     }
     e->readable = 1;
-    if (TAK_Replay_CheckCompatible(&h, TAK_ENGINE_BUILD_ID, TAK_DataFingerprint_Get(),
+    if (TAK_Replay_CheckCompatible(&h, TAK_ENGINE_BUILD_ID, g_list_fp,
                                    err, sizeof err) != 0) {
         e->readable = 0;
         snprintf(e->refusal, sizeof e->refusal, "%s", err);
@@ -238,7 +251,10 @@ static int list_newest_first(const void *a, const void *b) {
 }
 
 int Replay_List(TAK_SaveEntry **out) {
+    TAK_DataFingerprint now;
+    g_list_fp = fingerprint_now(&now);
     int n = SaveList_ScanExt(TAK_REPLAY_EXT, list_fill, TAK_REPLAY_LIST_MAX, out);
+    g_list_fp = NULL;
     if (n > 1 && out && *out) qsort(*out, (size_t)n, sizeof **out, list_newest_first);
     return n;
 }
@@ -302,15 +318,9 @@ int Replay_Open(const char *path, char *err, size_t err_cap) {
     uint32_t end = 0;
     TAK_ReplayReader *r = TAK_Replay_Open(path, &h, &end, err, err_cap);
     if (!r) return -1;
-    /* The folder's models as they are now, which a page may add to. */
-    const TAK_DataFingerprint *fp = TAK_DataFingerprint_Get();
     TAK_DataFingerprint now;
-    if (fp) {
-        now = *fp;
-        now.loose_models = TAK_DataFingerprint_LooseModels(&now.loose_hash);
-        fp = &now;
-    }
-    if (TAK_Replay_CheckCompatible(&h, TAK_ENGINE_BUILD_ID, fp, err, err_cap) != 0) {
+    if (TAK_Replay_CheckCompatible(&h, TAK_ENGINE_BUILD_ID, fingerprint_now(&now),
+                                   err, err_cap) != 0) {
         TAK_Replay_Close(r);
         return -1;
     }
