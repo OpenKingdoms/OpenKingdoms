@@ -10,6 +10,7 @@
  * If not, each test skips cleanly.
  */
 
+#include "tak_obj3d.h"
 #include "tak_modset.h"
 #include "tak_data_fingerprint.h"
 #include "test_framework.h"
@@ -2099,8 +2100,8 @@ TEST(a_game_this_build_cannot_join_is_listed_rather_than_hidden) {
     ASSERT_EQ_STR("That game plays TAK Enhanced 1.4, which you do not have.", SelectGame_Status());
     ASSERT_EQ_INT(0, save_and_check_canvas("test_ui_select_game_greyed.bmp"));
 
-    /* On our own mod set, a host with other game folder models is told
-     * apart by that folder and its count. */
+    /* A match reads no game folder models, so a host whose folder holds
+     * other ones is not sent to that folder. */
     snprintf(rl.room[1].mod_name, sizeof rl.room[1].mod_name, "%s", TAK_ModSet_ActiveModName());
     snprintf(rl.room[1].mod_version, sizeof rl.room[1].mod_version, "%s",
              TAK_ModSet_ActiveVersion());
@@ -2112,9 +2113,7 @@ TEST(a_game_this_build_cannot_join_is_listed_rather_than_hidden) {
     sg_feed(msg, n);
     (void)SelectGame_Tick(&platform, 1.0f / 60.0f);
     SelectGame_SelectRow(1);
-    char want[TAK_NET_CHAT_MAX];
-    TAK_Net_ModelFolderAdvice(want, sizeof want, NULL, fp->loose_models, 7);
-    ASSERT_EQ_STR(want, SelectGame_Status());
+    ASSERT(strstr(SelectGame_Status(), "objects3d") == NULL);
 
     SelectGame_Shutdown();
     NetSession_Disconnect();
@@ -3173,6 +3172,13 @@ TEST(mp_room_builds_the_world_the_server_described) {
     if (Units_LocalPlayer() != 2)
         printf("(it is playing player %d) ", Units_LocalPlayer());
     ASSERT_EQ_INT(2, Units_LocalPlayer());
+    /* Its models come from the archives alone, and the next skirmish
+     * reads the game folder's again. */
+    ASSERT_EQ_INT(0, Obj3D_GameFolderModels());
+    World_End(&platform);
+    BattleConfig_SetDefaults(&mine);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &mine, "two castles", "aramon"));
+    ASSERT_EQ_INT(1, Obj3D_GameFolderModels());
 
     World_End(&platform);
     Multiplayer_Shutdown();
@@ -24428,6 +24434,7 @@ TEST(a_match_world_rebuilt_from_a_snapshot_plays_on_alike) {
     cfg.players[2].team = 3;
     cfg.players[2].color = 2;
     ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, cfg.map_name, "aramon"));
+    Obj3D_SetGameFolderModels(0);   /* as a match world reads them */
     ASSERT_EQ_INT(0, Loading_Init(&platform));
     NetSession_BeginWithoutLink("Player");
     TAK_NetClient *c = NetSession_Client();
@@ -24517,6 +24524,7 @@ TEST(a_match_world_rebuilt_from_a_snapshot_plays_on_alike) {
     World_End(&platform);
     ASSERT_EQ_INT(0, MP_RebuildMatchWorld(&platform));
     ASSERT_EQ_INT(1, MP_RebuiltFromSnapshot());
+    ASSERT_EQ_INT(0, Obj3D_GameFolderModels());
     ASSERT_EQ_INT(0, Loading_Init(&platform));
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 900));
     ASSERT_EQ_INT(2400, (int)TAK_CmdQueue_Tick());

@@ -43,12 +43,14 @@ patch or the expansion overrides the base game. A `.kmp` only ever
 contributes its map, so adding one cannot change anything else.
 
 Some installs also have an `objects3d` folder of loose models beside the
-archives. The GOG one has 20 building models there, and a model in that
-folder is used in place of the archive's. The models decide where shots
-and blasts reach a unit, so for multiplayer both players need the same
-files: both include the `objects3d` folder, or both leave it out. In the
-browser the folder button carries it along and the archive button does
-not. The lobby says so when that folder is what differs.
+archives. The GOG one has 20 building models there. In a skirmish or a
+campaign a model in that folder is used in place of the archive's. A
+multiplayer battle keeps to the archives' models, and so do its watchers,
+a world rebuilt from another player's snapshot and the battle's replay.
+The models decide where shots and blasts reach a unit, so players whose
+folders differ would otherwise play different battles. In the browser the
+folder button carries the folder along, the archive button does not, and
+Add 3D models takes single `.3do` files the same way.
 
 ---
 

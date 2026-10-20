@@ -58,13 +58,19 @@
 enum {
     TAK_REPLAYF_MATCH    = 0x01,   /* recorded in a multiplayer match */
     TAK_REPLAYF_MAP_FP   = 0x02,   /* map_fp holds the map's fingerprint */
-    TAK_REPLAYF_FINISHED = 0x04    /* the recording closed; set on close */
+    TAK_REPLAYF_FINISHED = 0x04,   /* the recording closed; set on close */
+    /* The battle read its models from the archives alone, as a match
+     * does and as any battle does with none in the game folder's
+     * objects3d. */
+    TAK_REPLAYF_ARCHIVE_MODELS = 0x08
 };
 
 typedef struct TAK_ReplayHeader {
     uint16_t version;
     uint32_t engine_build_id;
     uint64_t data_schema;
+    /* The content hash, with the game folder models' hash folded in by
+     * XOR for a battle that read them. */
     uint64_t data_content;
     uint64_t data_group[TAK_DATA_GROUP_COUNT];
     uint8_t  map_fp[32];

@@ -24,6 +24,7 @@
 #include "tak_sim_rand.h"
 #include "tak_ai.h"
 #include "tak_mission_script.h"
+#include "tak_obj3d.h"
 #include <string.h>
 
 static GameWorld *g_world = NULL;
@@ -68,6 +69,8 @@ int World_BeginLoad(TAK_Platform       *plat,
      * other player's sidebar and fog. */
     Units_SetLocalPlayer(1);
     Fog_SetSeeAll(0);
+    /* The game folder's models, which a match turns off after this call. */
+    Obj3D_SetGameFolderModels(1);
     Economy_Init(&g_world->economy);
     for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
         g_world->console.share_limit[p] = ECONOMY_SHARE_LIMIT;
@@ -98,6 +101,8 @@ void World_MarkLoaded(void) {
 
 void World_End(TAK_Platform *plat) {
     g_restoring = 0;
+    /* Between battles the models are read as a skirmish reads them. */
+    Obj3D_SetGameFolderModels(1);
     if (!g_world) return;
     /* A match that ended, however it ended, must not leave the next
      * battle gated on turns nobody is sending. */

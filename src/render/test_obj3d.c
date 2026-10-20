@@ -188,6 +188,14 @@ TEST(a_loose_model_in_the_game_folder_beats_the_archived_one) {
     int rc = Obj3D_Load(&mine, "objects3d/araking.3do");
     int mine_verts = (rc == 0 && mine && mine->root) ? (int)mine->root->num_vertices : -1;
     if (mine) Obj3D_Close(mine);
+    /* A match never takes the folder's. This install's one archive has
+     * no araking, so nothing loads at all. */
+    Obj3D_SetGameFolderModels(0);
+    Obj3DFile *match = NULL;
+    int match_rc = Obj3D_Load(&match, "objects3d/araking.3do");
+    int match_verts = (match_rc == 0 && match && match->root) ? (int)match->root->num_vertices : -1;
+    if (match) Obj3D_Close(match);
+    Obj3D_SetGameFolderModels(1);
     VFS_Shutdown();
     remove("obj3d_probe/objects3d/araking.3do");
     remove("obj3d_probe/boneyards2.hpi");
@@ -198,6 +206,7 @@ TEST(a_loose_model_in_the_game_folder_beats_the_archived_one) {
     ASSERT_EQ_INT(0, rc);
     ASSERT_EQ_INT(3, mine_verts);
     ASSERT(mine_verts != shipped_verts);
+    ASSERT(match_rc != 0 || match_verts != mine_verts);
 }
 
 TEST(load_returns_negative_on_missing_file) {

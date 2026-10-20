@@ -13,6 +13,7 @@
 #include "tak_view3d.h"
 #include "tak_gl3d.h"
 #include "tak_model_store.h"
+#include "tak_obj3d.h"
 #include "tak_camera3d.h"
 #include "tak_world.h"
 #include "tak_terrain.h"
@@ -81,6 +82,7 @@ static struct {
     /* Terrain, built for one world's grid. */
     const GameWorld *built_for;
     const TerrainGrid *built_grid;
+    int built_models;   /* the game folder's models were on */
     GL3D_Mesh *meshes[V3_MAX_MESHES];
     int mesh_count;
     TerrainSeg *segs;
@@ -376,6 +378,7 @@ static int build_terrain(const GameWorld *world) {
     }
     v.built_for = world;
     v.built_grid = g;
+    v.built_models = Obj3D_GameFolderModels();
     fprintf(stderr, "View3D: terrain %d blocks, %d meshes, %d runs, %d chunk textures\n",
             n, v.mesh_count, v.seg_count, v.chunk_count);
     return 0;
@@ -1505,9 +1508,11 @@ static void v3_shutdown(TAK_Platform *plat) {
 /* The terrain, and with it the map size the camera is clamped to, is
  * built for this battle. Until the first frame builds it the size is
  * nought or another map's, and a clamp would pin the camera to a
- * corner. */
+ * corner. The models are this battle's too, and a match keeps to the
+ * archives' ones. */
 static int v3_built_for(const GameWorld *world) {
-    return v.built_for == world && v.built_grid == world->grid;
+    return v.built_for == world && v.built_grid == world->grid &&
+           v.built_models == Obj3D_GameFolderModels();
 }
 
 static void v3_render(const GameWorld *world, TAK_Platform *plat,

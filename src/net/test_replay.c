@@ -397,6 +397,37 @@ TEST(the_build_and_the_data_must_match) {
     ASSERT_EQ_INT(0, TAK_Replay_CheckCompatible(&bare, 12, NULL, err, sizeof err));
 }
 
+/* A battle outside a match read the game folder's models, so its replay
+ * needs the same ones. A match read none, so its replay plays whatever
+ * the folder holds. */
+TEST(game_folder_models_matter_only_to_a_battle_that_read_them) {
+    TAK_ReplayHeader h = rp_header();
+    h.flags &= (uint8_t)~TAK_REPLAYF_MATCH;
+    TAK_DataFingerprint fp;
+    memset(&fp, 0, sizeof fp);
+    fp.schema = h.data_schema;
+    fp.content = h.data_content;
+    memcpy(fp.group, h.data_group, sizeof fp.group);
+    fp.loose_models = 20;
+    fp.loose_hash = 0x5eedull;
+    char err[TAK_REPLAY_ERR_MAX] = "";
+    ASSERT_EQ_INT(-1, TAK_Replay_CheckCompatible(&h, 12, &fp, err, sizeof err));
+    ASSERT(strstr(err, "objects3d") != NULL);
+
+    TAK_ReplayHeader with = h;
+    with.data_content ^= fp.loose_hash;
+    ASSERT_EQ_INT(0, TAK_Replay_CheckCompatible(&with, 12, &fp, err, sizeof err));
+    TAK_DataFingerprint none = fp;
+    none.loose_models = 0;
+    none.loose_hash = 0;
+    ASSERT_EQ_INT(-1, TAK_Replay_CheckCompatible(&with, 12, &none, err, sizeof err));
+
+    TAK_ReplayHeader match = h;
+    match.flags |= TAK_REPLAYF_MATCH | TAK_REPLAYF_ARCHIVE_MODELS;
+    ASSERT(TAK_Replay_HeaderValid(&match));
+    ASSERT_EQ_INT(0, TAK_Replay_CheckCompatible(&match, 12, &fp, err, sizeof err));
+    ASSERT_EQ_INT(0, TAK_Replay_CheckCompatible(&match, 12, &none, err, sizeof err));
+}
 
 /* ── hostile files ─────────────────────────────────────────────────── */
 
@@ -892,6 +923,7 @@ int main(int argc, char **argv) {
     RUN(every_header_the_writer_takes_the_reader_takes);
     TEST_SUITE("Compatibility");
     RUN(the_build_and_the_data_must_match);
+    RUN(game_folder_models_matter_only_to_a_battle_that_read_them);
     TEST_SUITE("Bounds");
     RUN(memory_stays_the_same_whatever_the_length);
     RUN(a_full_recording_stops_and_still_plays);

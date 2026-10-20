@@ -226,7 +226,8 @@ can skip it.
   and a server access key when one is needed. From protocol 4 it also
   names the mod set the client mounted and its version, "Vanilla" for the
   game itself. From protocol 8 it carries how many models the game folder's
-  objects3d holds and their hash.
+  objects3d holds and their hash. Engine build 53 on sends 0 for both,
+  since a match reads no such model.
 - WELCOME from the server carries the session id, the server name and flags,
   the message of the day, the protocol range it supports and the newest
   client build it knows about, which drives the update notice.
@@ -234,7 +235,9 @@ can skip it.
   add data mismatch, engine version, server password, banned and rate
   limited. A data mismatch names the group that differs, or with its top
   bit set says the game folder models differ and carries the host's count
-  of them.
+  of them. Only builds before 53 are told that. The relay checks the
+  password, then the engine build, then the data, so a player on another
+  build is told to reload or update before anything about the data.
 - PING and PONG go every 2 seconds, the original's heartbeat cadence,
   carrying timestamps. The round trip fills the battle room's Ping column.
   These are application messages because a browser page cannot send a
@@ -255,7 +258,7 @@ can skip it.
   listed as closed to players, and from protocol 5 as a data mismatch
   instead to a client whose data differs, since that client could not
   watch it. From protocol 8 each room carries its host's count and hash of
-  game folder models, after the mod sets.
+  game folder models, after the mod sets. From engine build 53 both are 0.
 - CREATE_ROOM, JOIN_ROOM by id or by a six character code with an optional
   password and a watcher flag, and LEAVE_ROOM.
 - ROOM_EDIT changes one field. The server checks it against the editor's
@@ -525,18 +528,19 @@ greeting, the five the protocol carries:
 | ai | `ai/*.txt` |
 
 Each file is read through the VFS, so a loose file that overrides an archive
-is the one hashed. A model in the game folder's own objects3d is read
-first, the way the model loader reads it (#202), and a model only that
-folder has is hashed too. Some installs ship such a folder (the GOG one
-has 20 building models in it) and others do not, and a unit's model
-decides where a blast reaches it, so two players who differ only there
-would part minutes into a match. The fingerprint also counts those models
-and hashes them apart, the greeting carries both from protocol 8, and the
-lobby says that folder is what differs. A greyed row and a refused join
-say "The host's game folder has 20 models in objects3d that yours does
-not. Both players need the same files: both include the objects3d folder,
-or both leave it out." The host sees the same in the room's chat, naming
-who could not join. Its path is case folded and loses a leading `data/`, so
+is the one hashed. A model in the game folder's own objects3d is not.
+Some installs ship such a folder (the GOG one has 20 building models in
+it) and others do not, and a unit's model decides where a blast reaches
+it. Outside a match the model loader reads that folder first (#202). A
+match reads the archives' models alone, and so do its watchers, a world
+rebuilt from a snapshot and a replay of the match, so two players who
+differ only in that folder play the same battle and are not kept apart.
+Releases 0.5.4 and 0.5.5 hashed those models instead and refused such a
+pair in the lobby. The fingerprint still counts them and hashes them
+apart, and a replay of a battle outside a match records that hash, so it
+plays only with the same models. A replay records whether its battle
+read the folder, and plays back reading the models the same way. Each
+file's path is case folded and loses a leading `data/`, so
 the loose and archive layouts agree, and the files go in sorted by path, so
 how an archive is packed changes nothing. Text files lose their carriage
 returns, which the parsers ignore anyway, and scripts and models are

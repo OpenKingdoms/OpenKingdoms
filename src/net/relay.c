@@ -1038,6 +1038,14 @@ static void on_join(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgJoinRoom *m)
         send_reject(r, cl, TAK_REJECT_WRONG_PASSWORD, 0);
         return;
     }
+    /* Then the build, since another build's data says nothing of this
+     * one's and the advice below would mislead. */
+    int build = TAK_Room_Compatible(&rr->room, cl->hello.engine_build_id,
+                                    cl->hello.determinism_class);
+    if (build) {
+        send_reject(r, cl, (uint8_t)build, 0);
+        return;
+    }
     /* Then the data, naming the group that differs. */
     if (cl->hello.schema_hash != rr->schema_hash ||
         cl->hello.content_hash != rr->content_hash) {

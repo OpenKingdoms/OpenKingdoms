@@ -156,8 +156,10 @@
  * the Defeat banner while two sides still fight, and its statistics
  * wait for the end. 52: a world that parts is rebuilt from another
  * player's snapshot, which every player in the room has to be able to
- * give and take, so an older build is told to reload or update. */
-#define TAK_ENGINE_BUILD_ID           52
+ * give and take, so an older build is told to reload or update. 53: a
+ * match reads its models from the archives alone, never the game
+ * folder's objects3d. */
+#define TAK_ENGINE_BUILD_ID           53
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
@@ -455,7 +457,8 @@ typedef struct TAK_MsgHello {
     char     mod_name[TAK_NET_MOD_NAME_MAX];
     char     mod_version[TAK_NET_MOD_VERSION_MAX];
     /* The models in the game folder's objects3d and their hash, 0 for
-     * none. Protocol 8 on. */
+     * none. Protocol 8 on. Engine build 53 on sends 0, since a match
+     * reads no such model. */
     uint16_t loose_models;
     uint64_t loose_hash;
 } TAK_MsgHello;
@@ -917,7 +920,8 @@ typedef struct TAK_SysCmd {
 int TAK_Sys_Decode(TAK_SysCmd *out, const void *p, size_t len);
 
 /* A data mismatch's detail when the game folder models differ: this
- * bit and the host's count of them, at most 127. */
+ * bit and the host's count of them, at most 127. Only builds before 53
+ * are ever told it. */
 #define TAK_REJECT_DETAIL_MODELS 0x80u
 
 /* Reject text the client shows. Never NULL. */
