@@ -43,6 +43,7 @@ const char *TAK_DataFingerprint_GroupName(int group) {
 typedef struct FpFile {
     char key[256];
     char path[256];
+    uint8_t game;   /* read from the game folder, as the model loader does */
 } FpFile;
 
 typedef struct FpList {
@@ -67,15 +68,15 @@ static void fp_key(const char *path, char *out, size_t cap) {
     out[j] = '\0';
 }
 
-static void fp_add(FpList *l, const char *path) {
+static FpFile *fp_add(FpList *l, const char *path) {
     char key[256];
     fp_key(path, key, sizeof key);
     for (int i = 0; i < l->n; i++)
-        if (strcmp(l->f[i].key, key) == 0) return;   /* the other layout */
+        if (strcmp(l->f[i].key, key) == 0) return &l->f[i];   /* the other layout */
     if (l->n == l->cap) {
         int cap = l->cap ? l->cap * 2 : 256;
         FpFile *nf = (FpFile *)tak_malloc((size_t)cap * sizeof(FpFile));
-        if (!nf) return;
+        if (!nf) return NULL;
         if (l->f) {
             memcpy(nf, l->f, (size_t)l->n * sizeof(FpFile));
             tak_free(l->f);
@@ -87,6 +88,27 @@ static void fp_add(FpList *l, const char *path) {
     memcpy(f->key, key, sizeof f->key);
     strncpy(f->path, path, sizeof f->path - 1);
     f->path[sizeof f->path - 1] = '\0';
+    f->game = 0;
+    return f;
+}
+
+/* The game folder's own models, which a battle outside a match loads
+ * before the archives' (#202). A match never reads them. */
+static void fp_game_models(FpList *l) {
+    char **names = NULL;
+    int n = 0;
+    if (VFS_ListGameFiles("objects3d", ".3do", &names, &n) != 0) return;
+    for (int i = 0; i < n; i++) {
+        char path[256];
+        snprintf(path, sizeof path, "objects3d/%s", names[i]);
+        FpFile *f = fp_add(l, path);
+        if (f) {
+            f->game = 1;
+            memcpy(f->path, f->key, sizeof f->path);
+        }
+        tak_free(names[i]);
+    }
+    tak_free(names);
 }
 
 static void fp_collect(const char *pattern, FpList *l) {
@@ -137,7 +159,8 @@ static int fp_is_text(const char *key) {
 static void fp_file(TAK_Sha256 *group, const FpFile *f, uint8_t own[TAK_SHA256_BYTES]) {
     void *data = NULL;
     uint32_t size = 0;
-    if (VFS_ReadFile(f->path, &data, &size) != 0) { data = NULL; size = 0; }
+    if (f->game && VFS_ReadGameFile(f->path, &data, &size) != 0) data = NULL;
+    if (!data && VFS_ReadFile(f->path, &data, &size) != 0) { data = NULL; size = 0; }
     const uint8_t *b = (const uint8_t *)data;
     uint8_t *clean = NULL;
     uint32_t len = size;
@@ -164,6 +187,37 @@ static uint64_t fp_first8(const uint8_t d[TAK_SHA256_BYTES]) {
     uint64_t v = 0;
     for (int i = 0; i < 8; i++) v = (v << 8) | d[i];
     return v;
+}
+
+/* Counted and hashed apart from the groups, for a replay of a battle
+ * that read them. */
+static void fp_loose(TAK_DataFingerprint *out, FILE *report) {
+    FpList l;
+    memset(&l, 0, sizeof l);
+    fp_game_models(&l);
+    if (l.n > 1) qsort(l.f, (size_t)l.n, sizeof(FpFile), fp_cmp);
+    TAK_Sha256 game, unused;
+    TAK_Sha256_Init(&game);
+    TAK_Sha256_Init(&unused);
+    for (int i = 0; i < l.n; i++) {
+        uint8_t own[TAK_SHA256_BYTES];
+        fp_file(&unused, &l.f[i], own);
+        out->loose_models++;
+        TAK_Sha256_Update(&game, l.f[i].key, strlen(l.f[i].key) + 1);
+        TAK_Sha256_Update(&game, own, sizeof own);
+        if (report) {
+            char hex[65];
+            TAK_Sha256_ToHex(own, hex);
+            fprintf(report, "%-8s %-48s %.16s game folder, not read in a match\n", "models",
+                    l.f[i].key, hex);
+        }
+    }
+    if (out->loose_models) {
+        uint8_t d[TAK_SHA256_BYTES];
+        TAK_Sha256_Final(&game, d);
+        out->loose_hash = fp_first8(d);
+    }
+    if (l.f) tak_free(l.f);
 }
 
 static int fp_run(TAK_DataFingerprint *out, FILE *report) {
@@ -195,6 +249,7 @@ static int fp_run(TAK_DataFingerprint *out, FILE *report) {
     uint8_t d[TAK_SHA256_BYTES];
     TAK_Sha256_Final(&all, d);
     out->content = fp_first8(d);
+    fp_loose(out, report);
     char schema[64];
     snprintf(schema, sizeof schema, "OpenKingdoms data schema %d", TAK_DATA_SCHEMA_VERSION);
     TAK_Sha256_Hash(schema, strlen(schema), d);
@@ -205,8 +260,19 @@ static int fp_run(TAK_DataFingerprint *out, FILE *report) {
                     out->files[g], (unsigned long long)out->group[g]);
         fprintf(report, "content %016llx schema %016llx\n",
                 (unsigned long long)out->content, (unsigned long long)out->schema);
+        if (out->loose_models)
+            fprintf(report, "game folder models %d %016llx\n", out->loose_models,
+                    (unsigned long long)out->loose_hash);
     }
     return 0;
+}
+
+int TAK_DataFingerprint_LooseModels(uint64_t *hash) {
+    TAK_DataFingerprint fp;
+    memset(&fp, 0, sizeof fp);
+    if (VFS_IsInitialized()) fp_loose(&fp, NULL);
+    if (hash) *hash = fp.loose_hash;
+    return fp.loose_models;
 }
 
 int TAK_DataFingerprint_Compute(TAK_DataFingerprint *out) {

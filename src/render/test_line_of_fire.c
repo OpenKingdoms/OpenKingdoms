@@ -40,7 +40,8 @@ enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_HOLDER, LF_ROVER, LF_PICKER, LF_SEEKER, LF_SEEKFAR, LF_ROAMER,
        LF_FLYPICK, LF_BLADEPICK, LF_BROAD, LF_SWIRL, LF_CANNON, LF_TORCH,
        LF_SWEEPER, LF_BOMBER, LF_STURDY, LF_TWISTER, LF_TORNADO,
-       LF_ROVEROAM, LF_HAWK, LF_MASON, LF_DEF_COUNT };
+       LF_ROVEROAM, LF_HAWK, LF_MASON, LF_FREEZER, LF_ICEMAN, LF_BREATHER,
+       LF_TURRET, LF_STUNNER, LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
 #define LF_SX   800
@@ -98,7 +99,7 @@ static void lf_heights(GameWorld *w, int x0, int x1, int y0, int y1, int h) {
 
 /* The feature defs: index 0 is the rock every older case places. */
 enum { FD_ROCK = 0, FD_TREE, FD_TREEDEAD, FD_SMUDGE, FD_TREEBURNT, FD_WALL,
-       FD_WALLA, FD_WALLB, FD_LONGTREE, FD_COUNT };
+       FD_WALLA, FD_WALLB, FD_LONGTREE, FD_ICE, FD_COUNT };
 
 static void lf_feature(FeatureDef *f, const char *name, int fp, int height,
                        int blocking, int damage, const char *dead) {
@@ -239,8 +240,11 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     wp->area_of_effect = 48;
     wp->edge_effectiveness = 1.0f;
 
-    /* A post one cell square with no weapon. */
+    /* A post one cell square with no weapon. As a structure it can be
+     * neither stoned nor frozen. */
     lf_fill(&defs[LF_POST], "TESTPOST", 0.0f, 1000);
+    defs[LF_POST].cant_be_stoned = 1;
+    defs[LF_POST].cant_be_frozen = 1;
 
     /* A thrown bone that is a melee weapon by its type alone, reach 50
      * like the goblin's. */
@@ -356,6 +360,40 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     lf_fill(&defs[LF_MASON], "TESTMASON", 1.2f, 500);
     defs[LF_MASON].cap_flags |= UNIT_CAP_BUILDER;
     defs[LF_MASON].worker_time = 10.0f;
+    /* A freeze beam, and a walker that freezes into TESTICE. */
+    lf_fill(&defs[LF_FREEZER], "TESTFREEZE", 1.2f, 300);
+    wp = lf_weapon(&defs[LF_FREEZER], "TESTFREEZEW", "Line of Sight", 800, 550, 1);
+    strncpy(wp->subtype, "turntofrozen", sizeof(wp->subtype) - 1);
+    wp->mind_control = UNIT_SPELL_FROZEN;
+    wp->los_kind = 3;
+    wp->is_los = 1;
+    wp->reload_ticks = 30;
+    lf_fill(&defs[LF_ICEMAN], "TESTICEMAN", 1.2f, 1000);
+    strncpy(defs[LF_ICEMAN].frozen, "TESTICE", sizeof(defs[LF_ICEMAN].frozen) - 1);
+    {
+        /* The quad a shot of the mind control family must meet. */
+        const int32_t q[4][2] = { { -12 * 65536, 12 * 65536 }, { 12 * 65536, 12 * 65536 },
+                                  { 12 * 65536, -12 * 65536 }, { -12 * 65536, -12 * 65536 } };
+        memcpy(defs[LF_ICEMAN].body_quad, q, sizeof(q));
+        defs[LF_ICEMAN].body_quad_set = 1;
+    }
+    /* A flame breather that turns in place, and a turret on wheels
+     * that does not. */
+    lf_fill(&defs[LF_BREATHER], "TESTBREATH", 1.2f, 300);
+    defs[LF_BREATHER].turn_in_place_rate = 750.0f;
+    wp = lf_weapon(&defs[LF_BREATHER], "TESTBREATHW", "Line of Sight", 300, 255, 50);
+    strncpy(wp->subtype, "fire", sizeof(wp->subtype) - 1);
+    wp->los_kind = 2;
+    wp->is_los = 1;
+    wp->aim_tolerance = 1024;
+    lf_fill(&defs[LF_TURRET], "TESTTORTOISE", 1.2f, 300);
+    lf_weapon(&defs[LF_TURRET], "TESTTORTW", "Line of Sight", 500, 550, 40);
+    /* A stun bolt that holds for 300 frames. */
+    lf_fill(&defs[LF_STUNNER], "TESTSTUN", 1.2f, 300);
+    wp = lf_weapon(&defs[LF_STUNNER], "TESTSTUNW", "Line of Sight", 500, 550, 300);
+    strncpy(wp->damage_type, "paralyzer", sizeof(wp->damage_type) - 1);
+    wp->paralyzer = 1;
+    wp->reload_ticks = 30;
 
     FeatureDef fdefs[FD_COUNT];
     memset(fdefs, 0, sizeof fdefs);
@@ -380,6 +418,7 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     /* A tree whose burn outlasts its spark, as a mod could author. */
     fdefs[FD_LONGTREE] = fdefs[FD_TREE];
     strncpy(fdefs[FD_LONGTREE].name, "TESTLONGTREE", 39);
+    lf_feature(&fdefs[FD_ICE], "TESTICE", 1, 30, 1, 10, "");
     if (Features_DebugSetDefs(fdefs, FD_COUNT) != FD_COUNT) return NULL;
     /* The original's tree: a death of 10 pictures and a burn of 37, two
      * frames each, its flames 30 and 31 (AraTree01, mediflame, megaflame). */
@@ -2069,7 +2108,7 @@ static void lf_fog(GameWorld *w) {
  * see, the shooters let go of targets behind the ridge and go looking,
  * and the fog is state. Pinned, so every platform in CI has to
  * reach the same answer. */
-#define LF_FOG_VOLLEY_HASH 0x985c89b7u
+#define LF_FOG_VOLLEY_HASH 0xd90e5f32u
 
 static uint32_t lf_fog_volley_hash(int *out_hurt) {
     GameWorld *w = lf_world(1, 1);
@@ -2582,6 +2621,322 @@ TEST(the_unit_file_gives_the_standing_order) {
     ASSERT_EQ_INT(0, steady_roams);
 }
 
+/* canattack on a unit with no weapon, a weapon with no canattack, and
+ * unitstandorders = 0. */
+static const char LF_FBI_TAMER[] =
+    "[UNITINFO]\n{\n\tUnitName=FBITAMER;\n\tcanattack=1;\n"
+    "\tunitstandorders=0;\n}\n";
+static const char LF_FBI_WHIP[] =
+    "[UNITINFO]\n{\n\tUnitName=FBIWHIP;\n}\n"
+    "[WEAPON1]\n{\n\tname=Whip;\n\ttype=Melee;\n\trange=100;\n"
+    "\t[DAMAGE]\n\t{\n\t\tdefault=180;\n\t}\n}\n";
+
+TEST(a_weapon_gives_the_attack_order_and_unitstandorders_the_stances) {
+    VFS_Shutdown();
+    lf_mkdir(LF_FBI_DIR);
+    TestHPIEntry e[] = {
+        { "units/fbitamer.fbi", LF_FBI_TAMER, 100, 0 },
+        { "units/fbiwhip.fbi", LF_FBI_WHIP, 100, 0 },
+    };
+    ASSERT_EQ_INT(0, test_write_hpi(LF_FBI_DIR "/a.hpi", e, 2));
+    int loaded = (VFS_Init(LF_FBI_DIR, NULL) == 0) ? Units_LoadDefs() : -1;
+    const UnitDef *tamer = Units_GetDef(Units_FindDefByName("FBITAMER"));
+    const UnitDef *whip = Units_GetDef(Units_FindDefByName("FBIWHIP"));
+    int tamer_attack = Units_DefTakesAttack(tamer);
+    int tamer_stances = Units_DefHasStances(tamer);
+    int whip_attack = Units_DefTakesAttack(whip);
+    int whip_stances = Units_DefHasStances(whip);
+    VFS_Shutdown();
+    Units_FreeDefs();
+    remove(LF_FBI_DIR "/a.hpi");
+    lf_rmdir(LF_FBI_DIR);
+    ASSERT_EQ_INT(2, loaded);
+    ASSERT_EQ_INT(0, tamer_attack);
+    ASSERT_EQ_INT(0, tamer_stances);
+    ASSERT_EQ_INT(1, whip_attack);
+    ASSERT_EQ_INT(1, whip_stances);
+}
+
+/* A walker that names its statues and carries a freeze beam, a
+ * structure, a monarch, and a walker that cannot be frozen. */
+static const char LF_FBI_ICY[] =
+    "[UNITINFO]\n{\n\tUnitName=FBIICY;\n\tbmcode=1;\n\tfrozen=ICYFROZEN;\n"
+    "\tstone=ICYSTONE;\n\tturninplacerate=750;\n}\n"
+    "[WEAPON1]\n{\n\tname=Freeze;\n\ttype=line of sight;\n"
+    "\tsubtype=turntofrozen;\n\taimtolerance=1024;\n}\n";
+static const char LF_FBI_FORT[] =
+    "[UNITINFO]\n{\n\tUnitName=FBIFORT;\n\tbmcode=0;\n\tfrozen=FORTICE;\n}\n";
+static const char LF_FBI_LORD[] =
+    "[UNITINFO]\n{\n\tUnitName=FBILORD;\n\tbmcode=1;\n\tcommander=1;\n}\n";
+static const char LF_FBI_WARM[] =
+    "[UNITINFO]\n{\n\tUnitName=FBIWARM;\n\tbmcode=1;\n\tcantbefrozen=1;\n"
+    "\tfrozen=WARMICE;\n}\n";
+
+TEST(the_unit_file_names_its_statues_and_who_can_be_turned) {
+    VFS_Shutdown();
+    lf_mkdir(LF_FBI_DIR);
+    TestHPIEntry e[] = {
+        { "units/fbiicy.fbi", LF_FBI_ICY, 100, 0 },
+        { "units/fbifort.fbi", LF_FBI_FORT, 100, 0 },
+        { "units/fbilord.fbi", LF_FBI_LORD, 100, 0 },
+        { "units/fbiwarm.fbi", LF_FBI_WARM, 100, 0 },
+    };
+    ASSERT_EQ_INT(0, test_write_hpi(LF_FBI_DIR "/a.hpi", e, 4));
+    int loaded = (VFS_Init(LF_FBI_DIR, NULL) == 0) ? Units_LoadDefs() : -1;
+    UnitDef icy, fort, lord, warm;
+    memset(&icy, 0, sizeof icy);
+    memset(&fort, 0, sizeof fort);
+    memset(&lord, 0, sizeof lord);
+    memset(&warm, 0, sizeof warm);
+    const UnitDef *d;
+    if ((d = Units_GetDef(Units_FindDefByName("FBIICY"))) != NULL) icy = *d;
+    if ((d = Units_GetDef(Units_FindDefByName("FBIFORT"))) != NULL) fort = *d;
+    if ((d = Units_GetDef(Units_FindDefByName("FBILORD"))) != NULL) lord = *d;
+    if ((d = Units_GetDef(Units_FindDefByName("FBIWARM"))) != NULL) warm = *d;
+    VFS_Shutdown();
+    Units_FreeDefs();
+    remove(LF_FBI_DIR "/a.hpi");
+    lf_rmdir(LF_FBI_DIR);
+    ASSERT_EQ_INT(4, loaded);
+    ASSERT_EQ_STR("ICYFROZEN", icy.frozen);
+    ASSERT_EQ_STR("ICYSTONE", icy.stone);
+    ASSERT_EQ_INT(0, icy.cant_be_frozen);
+    ASSERT_EQ_INT(0, icy.cant_be_stoned);
+    ASSERT_EQ_INT(UNIT_SPELL_FROZEN, icy.weapons[0].mind_control);
+    ASSERT(icy.turn_in_place_rate == 750.0f);
+    ASSERT_EQ_INT(1024, icy.weapons[0].aim_tolerance);
+    ASSERT_EQ_INT(1, fort.cant_be_frozen);
+    ASSERT_EQ_INT(1, fort.cant_be_stoned);
+    ASSERT_EQ_INT(1, lord.cant_be_frozen);
+    ASSERT_EQ_INT(1, lord.cant_be_stoned);
+    ASSERT_EQ_INT(1, warm.cant_be_frozen);
+    ASSERT_EQ_STR("", warm.frozen);
+}
+
+/* A freeze beam never wounds. Its roll turns a walker into the ice
+ * statue its file names, the kill counted, and it passes over what
+ * cannot be frozen (legacy:247963-247996, legacy:21149-21156). */
+TEST(a_freeze_beam_turns_a_walker_to_ice_and_passes_over_the_rest) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int a = lf_spawn(LF_FREEZER, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_ICEMAN, 2, LF_SX + 200, LF_ROW);
+    int post = lf_spawn(LF_POST, 2, LF_SX, LF_ROW + 300);
+    ASSERT(a >= 0 && t >= 0 && post >= 0);
+    int takes_post = Units_CanAttackTarget(a, post);
+    ASSERT(Units_OrderAttack(a, t));
+    int hurt = 0;
+    for (int i = 0; i < 900 && lf_unit(t)->alive == UNIT_ALIVE_ACTIVE; i++) {
+        Units_TickEngines();
+        if (lf_unit(t)->health < 1000) hurt = 1;
+    }
+    int statue = -1;
+    for (int k = 0; k < w->feature_count; k++)
+        if (w->features[k].global_idx == FD_ICE) statue = k;
+    int alive = lf_unit(t)->alive;
+    lf_end();
+    ASSERT_EQ_INT(0, takes_post);
+    ASSERT_EQ_INT(0, hurt);
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, alive);
+    ASSERT(statue >= 0);
+}
+
+/* The heading error of unit a off the bearing to unit t, 65536 a turn. */
+static int lf_facing_error(int a, int t) {
+    const Unit *u = lf_unit(a), *v = lf_unit(t);
+    float b = atan2f((float)(v->world_x - u->world_x), -(float)(v->world_y - u->world_y));
+    int e = ((int)(u->heading * 65536.0f / 6.2831853f) -
+             (int)(b * 65536.0f / 6.2831853f)) & 0xffff;
+    return e > 0x8000 ? 0x10000 - e : e;
+}
+
+/* A breather with its back to its target turns in place at its
+ * turninplacerate, 750 a frame, and breathes only once within its
+ * AimTolerance of 1024 (legacy:249301-249306, legacy:249365-249377). */
+TEST(a_breather_turns_onto_its_target_before_it_breathes) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int a = lf_spawn(LF_BREATHER, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_SX, LF_ROW + 150);
+    ASSERT(a >= 0 && t >= 0);
+    ((Unit *)lf_unit(a))->heading = 0.0f;
+    ASSERT(Units_OrderAttack(a, t));
+    int fired = -1, err_at_fire = -1, err_at_20 = -1;
+    for (int i = 0; i < 300 && fired < 0; i++) {
+        Units_TickEngines();
+        if (i == 20) err_at_20 = lf_facing_error(a, t);
+        if (lf_unit(t)->health < 1000) {
+            fired = i;
+            err_at_fire = lf_facing_error(a, t);
+        }
+    }
+    lf_end();
+    printf("(breathed at tick %d, %d off it then, %d off at tick 20) ",
+           fired, err_at_fire, err_at_20);
+    ASSERT(err_at_20 > 0x4000);
+    ASSERT(fired >= 80);
+    ASSERT(err_at_fire >= 0 && err_at_fire <= 1024);
+}
+
+/* A unit with no turninplacerate keeps its heading and lets its
+ * pieces aim, so it shoots what stands behind it without turning
+ * round (legacy:249301-249306). */
+TEST(a_unit_that_cannot_turn_in_place_shoots_without_turning) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int a = lf_spawn(LF_TURRET, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_SX, LF_ROW + 200);
+    ASSERT(a >= 0 && t >= 0);
+    ((Unit *)lf_unit(a))->heading = 0.0f;
+    ASSERT(Units_OrderAttack(a, t));
+    float most = 0.0f;
+    int hurt = 0;
+    for (int i = 0; i < 200; i++) {
+        Units_TickEngines();
+        float h = lf_unit(a)->heading;
+        if (fabsf(h) > most) most = fabsf(h);
+        if (lf_unit(t)->health < 1000) hurt = 1;
+    }
+    lf_end();
+    ASSERT(hurt);
+    ASSERT(most < 0.001f);
+}
+
+/* A paralyzer holds what it hits for its damage in frames and never
+ * wounds it. Held, a unit neither moves nor fires, and it takes up its
+ * order again once free (legacy:233857-233878, legacy:9564-9599). */
+TEST(a_paralyzer_holds_its_target_without_wounding_it) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int s = lf_spawn(LF_STUNNER, 1, LF_SX, LF_ROW);
+    int v = lf_spawn(LF_QUICK, 2, LF_TX, LF_ROW);
+    int d = lf_spawn(LF_TARGET, 1, LF_TX + 200, LF_ROW);
+    ASSERT(s >= 0 && v >= 0 && d >= 0);
+    int v_hp0 = lf_unit(v)->health;
+    ASSERT(Units_OrderAttack(v, d));
+    for (int i = 0; i < 60; i++) Units_TickEngines();
+    int fired_before = lf_unit(d)->health < 1000;
+    ASSERT(Units_DebugFireAt(s, 0, v));
+    int held = 0, i = 0;
+    for (; i < 120 && !held; i++) {
+        Units_TickEngines();
+        held = lf_unit(v)->paralyzed_ticks;
+    }
+    int32_t x_at_hold = lf_unit(v)->world_x;
+    int v_hp = lf_unit(v)->health;
+    /* A shot already in the air still lands. */
+    int ticks = 0, hp_at_hold = 0;
+    while (lf_unit(v)->paralyzed_ticks && ticks < 2000) {
+        Units_TickEngines();
+        if (++ticks == 60) hp_at_hold = lf_unit(d)->health;
+    }
+    int hp_after_hold = lf_unit(d)->health;
+    int32_t x_after_hold = lf_unit(v)->world_x;
+    for (int k = 0; k < 120; k++) Units_TickEngines();
+    int hp_later = lf_unit(d)->health;
+    lf_end();
+    printf("(held %d ticks, then %d) ", held, ticks);
+    ASSERT(fired_before);
+    ASSERT_EQ_INT(v_hp0, v_hp);
+    ASSERT(held >= 590 && held <= 600);
+    ASSERT_EQ_INT(hp_at_hold, hp_after_hold);
+    ASSERT_EQ_INT(x_at_hold, x_after_hold);
+    ASSERT(hp_later < hp_after_hold);
+}
+
+/* Hits add to the hold, never past 1800 frames (legacy:233871-233873,
+ * legacy:9575-9577), and a paralyzer looking for a target passes over a
+ * unit already held (legacy:21156-21160). */
+TEST(a_paralyzer_hold_adds_up_to_a_minute_and_is_passed_over) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int s = lf_spawn(LF_STUNNER, 1, LF_SX, LF_ROW);
+    int v = lf_spawn(LF_TARGET, 2, LF_SX + 150, LF_ROW);
+    int w = lf_spawn(LF_TARGET, 2, LF_SX + 300, LF_ROW);
+    ASSERT(s >= 0 && v >= 0 && w >= 0);
+    for (int k = 0; k < 8; k++) ASSERT(Units_DebugFireAt(s, 0, v));
+    int most = 0;
+    for (int i = 0; i < 60; i++) {
+        Units_TickEngines();
+        if (lf_unit(v)->paralyzed_ticks > most) most = lf_unit(v)->paralyzed_ticks;
+    }
+    Units_DebugSetAggro(s, UNIT_AGGRO_OFFENSIVE);
+    for (int i = 0; i < 10; i++) Units_TickEngines();
+    int picked = lf_unit(s)->target;
+    lf_end();
+    printf("(held at most %d ticks, picked %d) ", most, picked);
+    ASSERT_EQ_INT(3600, most);
+    ASSERT_EQ_INT(w, picked);
+}
+
+/* An AimWeapon that takes a quarter second, says the weapon is aimed
+ * on port 22 and returns 0, as the shipped scripts' does. */
+static const uint32_t LF_AIM_SCRIPT[] = {
+    0x10021001u, 250u, 0x10013000u,             /* sleep 250 */
+    0x10021001u, 22u, 0x10021001u, 0u, 0x10082000u, /* port 22 = 0 */
+    0x10021001u, 0u, 0x10065000u                /* return 0 */
+};
+
+/* The shot waits for port 22, not for what AimWeapon returns, and the
+ * script aims again while the weapon reloads, so a quarter second aim
+ * behind a half second reload costs nothing (legacy:223392-223395,
+ * legacy:249255-249310, legacy:249457). */
+TEST(a_weapon_fires_once_its_script_says_aimed_and_aims_while_it_reloads) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    static const char *const names[] = { "AimWeapon" };
+    static const uint32_t offsets[] = { 0 };
+    ASSERT_EQ_INT(0, Units_DebugSetDefScript(LF_QUICK, LF_AIM_SCRIPT,
+                                             (int)(sizeof LF_AIM_SCRIPT / 4),
+                                             names, offsets, 1));
+    int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_STURDY, 2, LF_SX + 200, LF_ROW);
+    ASSERT(a >= 0 && t >= 0);
+    ASSERT(Units_OrderAttack(a, t));
+    int shots = 0, first = -1, last = -1;
+    for (int i = 0; i < 600; i++) {
+        Units_TickEngines();
+        if (lf_unit(a)->weapon_state[0].cooldown_ticks == 30) {
+            shots++;
+            if (first < 0) first = i;
+            last = i;
+        }
+    }
+    lf_end();
+    printf("(%d shots, the first at %d, the last at %d) ", shots, first, last);
+    ASSERT(first >= 12 && first <= 25);
+    ASSERT(shots >= 19);
+}
+
+/* An AimWeapon held on a gate the script never opens, as a caster's
+ * aim waits on its own can-aim flag. */
+static const uint32_t LF_AIM_HELD_SCRIPT[] = {
+    0x10021001u, 100u, 0x10013000u,             /* sleep 100 */
+    0x10064000u, 0u                             /* and again */
+};
+
+/* A weapon whose aim the script never answers fires once it has aimed
+ * for 120 ticks with its unit stopped in reach (D-042). */
+TEST(a_weapon_its_script_never_says_aimed_fires_after_two_seconds_stopped_in_reach) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    static const char *const names[] = { "AimWeapon" };
+    static const uint32_t offsets[] = { 0 };
+    ASSERT_EQ_INT(0, Units_DebugSetDefScript(LF_QUICK, LF_AIM_HELD_SCRIPT,
+                                             (int)(sizeof LF_AIM_HELD_SCRIPT / 4),
+                                             names, offsets, 1));
+    int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_STURDY, 2, LF_SX + 200, LF_ROW);
+    ASSERT(a >= 0 && t >= 0);
+    ASSERT(Units_OrderAttack(a, t));
+    int shots = 0, first = -1;
+    for (int i = 0; i < 600; i++) {
+        Units_TickEngines();
+        if (lf_unit(a)->weapon_state[0].cooldown_ticks == 30) {
+            shots++;
+            if (first < 0) first = i;
+        }
+    }
+    lf_end();
+    printf("(%d shots, the first at %d) ", shots, first);
+    ASSERT(first >= 120 && first <= 130);
+    ASSERT(shots >= 4);
+}
+
 /* A unit holding position shoots what comes into reach and lets it go
  * when it walks off. One that maneuvers goes after it. */
 static int32_t lf_after_walk_off(int def, int *out_target) {
@@ -2970,7 +3325,6 @@ TEST(a_patrolling_builder_mends_what_it_passes_and_goes_on) {
  * where a bow does (legacy:21164, legacy:246390-246403, legacy:11383). */
 TEST(a_blade_never_strikes_a_flyer_in_the_air) {
     ASSERT_NOT_NULL(lf_world(0, 0));
-    ((UnitDef *)Units_GetDef(LF_HAWK))->script_flies = 1;
     int b = lf_spawn(LF_BLADEPICK, 1, LF_SX, LF_ROW);
     int bow = lf_spawn(LF_ARCHER, 1, LF_SX, LF_ROW + 200);
     int h = lf_spawn(LF_HAWK, 2, LF_SX + 80, LF_ROW);
@@ -2999,6 +3353,65 @@ TEST(a_blade_never_strikes_a_flyer_in_the_air) {
     ASSERT_EQ_INT(1, bow_can);
     ASSERT_EQ_INT(-1, ordered);
     ASSERT_EQ_INT(UNIT_CMD_NONE, kind);
+}
+
+/* A flyer on the ground holds its weapons, and one that takes a target
+ * of its own lifts to attack it, so it fires only from the air
+ * (legacy:24563-24600, legacy:186996-187028, legacy:25786-25797). */
+TEST(a_flyer_on_the_ground_takes_off_before_it_shoots) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    UnitDef *fd = (UnitDef *)Units_GetDef(LF_HAWK);
+    fd->weapons[0] = Units_GetDef(LF_ARCHER)->weapons[0];
+    fd->num_weapons = 1;
+    int h = lf_spawn(LF_HAWK, 1, LF_SX, LF_ROW);
+    int foe = lf_spawn(LF_STURDY, 2, LF_SX + 300, LF_ROW);
+    ASSERT(h >= 0 && foe >= 0);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    Units_DebugSetAggro(h, UNIT_AGGRO_OFFENSIVE);
+    int shots = 0, ground_shots = 0, flew = 0;
+    int prev = lf_unit(h)->weapon_state[0].cooldown_ticks;
+    for (int i = 0; i < 900; i++) {
+        Units_TickEngines();
+        const Unit *u = lf_unit(h);
+        int cd = u->weapon_state[0].cooldown_ticks;
+        if (cd > prev) {
+            shots++;
+            if (!u->flying) ground_shots++;
+        }
+        prev = cd;
+        flew |= u->flying;
+    }
+    lf_end();
+    printf("(%d shots, %d from the ground, flew %d) ", shots, ground_shots, flew);
+    ASSERT(shots > 0);
+    ASSERT_EQ_INT(0, ground_shots);
+    ASSERT_EQ_INT(1, flew);
+}
+
+/* A swordsman boarding a flying transport keeps walking to it once it
+ * lifts: the board order names a friend, which carries no weapon test
+ * (legacy:10505-10580). */
+TEST(a_blade_boards_a_flying_transport) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    UnitDef *td = (UnitDef *)Units_GetDef(LF_HAWK);
+    td->cap_flags |= UNIT_CAP_TRANSPORT;
+    td->transport_capacity = 4;
+    td->transport_distance = 150;
+    int t = lf_spawn(LF_HAWK, 1, LF_SX, LF_ROW);
+    int b = lf_spawn(LF_BLADEPICK, 1, LF_SX + 100, LF_ROW);
+    ASSERT(t >= 0 && b >= 0);
+    int one[1] = { t };
+    ASSERT_EQ_INT(1, Units_OrderLoadGroup(one, 1, b, 0));
+    int flew = 0, aboard = 0;
+    for (int i = 0; i < 600 && !aboard; i++) {
+        Units_TickEngines();
+        flew |= lf_unit(t)->flying;
+        aboard = lf_unit(b)->alive == UNIT_ALIVE_TRANSPORTED;
+    }
+    lf_end();
+    printf("(flew %d, aboard %d) ", flew, aboard);
+    ASSERT_EQ_INT(1, flew);
+    ASSERT_EQ_INT(1, aboard);
 }
 
 /* ── what the blast hook hears ─────────────────────────────────────── */
@@ -3468,6 +3881,15 @@ int main(int argc, char **argv) {
     RUN(a_weapon_is_melee_by_its_type);
     RUN(a_unit_is_born_with_its_standing_order);
     RUN(the_unit_file_gives_the_standing_order);
+    RUN(a_weapon_gives_the_attack_order_and_unitstandorders_the_stances);
+    RUN(the_unit_file_names_its_statues_and_who_can_be_turned);
+    RUN(a_freeze_beam_turns_a_walker_to_ice_and_passes_over_the_rest);
+    RUN(a_breather_turns_onto_its_target_before_it_breathes);
+    RUN(a_unit_that_cannot_turn_in_place_shoots_without_turning);
+    RUN(a_paralyzer_holds_its_target_without_wounding_it);
+    RUN(a_paralyzer_hold_adds_up_to_a_minute_and_is_passed_over);
+    RUN(a_weapon_fires_once_its_script_says_aimed_and_aims_while_it_reloads);
+    RUN(a_weapon_its_script_never_says_aimed_fires_after_two_seconds_stopped_in_reach);
     RUN(a_unit_holding_position_does_not_chase);
     RUN(a_fight_of_its_own_looks_again_once_a_wait);
     RUN(a_unit_holding_position_or_ordered_never_looks_again);
@@ -3481,6 +3903,8 @@ int main(int argc, char **argv) {
     RUN(a_patroller_breaks_off_at_its_leash_and_resumes_its_route);
     RUN(a_patrolling_builder_mends_what_it_passes_and_goes_on);
     RUN(a_blade_never_strikes_a_flyer_in_the_air);
+    RUN(a_flyer_on_the_ground_takes_off_before_it_shoots);
+    RUN(a_blade_boards_a_flying_transport);
     TEST_SUITE("An attack out of reach");
     RUN(an_attack_on_a_target_out_of_reach_is_kept);
     TEST_SUITE("The cell test");

@@ -23,6 +23,9 @@ typedef struct TAK_NetTransport {
     int  (*send)(void *ctx, TAK_ConnId conn, const uint8_t *frame, size_t len);
     /* Close a connection from the server's side. */
     void (*close)(void *ctx, TAK_ConnId conn);
+    /* Bytes queued for a connection and not yet written, or NULL when
+     * the transport cannot say. Large sends pace themselves by it. */
+    size_t (*queued)(void *ctx, TAK_ConnId conn);
 } TAK_NetTransport;
 
 /* ── The fake network ─────────────────────────────────────────────────────

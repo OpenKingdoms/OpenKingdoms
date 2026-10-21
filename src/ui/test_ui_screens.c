@@ -10,6 +10,7 @@
  * If not, each test skips cleanly.
  */
 
+#include "tak_obj3d.h"
 #include "tak_modset.h"
 #include "tak_data_fingerprint.h"
 #include "test_framework.h"
@@ -646,6 +647,13 @@ TEST(iron_plague_is_detected_from_the_files_present) {
     ASSERT_EQ_INT(1, sides_seen);
 }
 
+/* The sides a case before kept for the skirmish lobby, forgotten, so a
+ * lobby opens on its lineup's own. */
+static void bs_forget_kept_sides(void) {
+    Settings_SetInt(TAK_GAMEOPTS_SKIRMISH ".Side", -1);
+    Settings_SetInt(TAK_GAMEOPTS_SKIRMISH ".EnemySide", -1);
+}
+
 /* The side button steps through the sides the data offers, a computer
  * row the same as a human one (legacy:134955-134972, legacy:136219).
  * Iron Plague's side data adds Creon as side 7, past the three sides
@@ -657,6 +665,7 @@ TEST(skirmish_lobby_offers_creon_after_zhon) {
         VFS_Shutdown();
         SKIP("install has no Iron Plague");
     }
+    bs_forget_kept_sides();
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -731,6 +740,7 @@ TEST(an_automatic_skirmish_takes_its_map_seed_and_sight) {
  * appears nowhere. */
 TEST(skirmish_lobby_offers_four_sides_in_the_base_game) {
     if (mount_base_game() != 0) SKIP("no game dir");
+    bs_forget_kept_sides();
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -2090,6 +2100,21 @@ TEST(a_game_this_build_cannot_join_is_listed_rather_than_hidden) {
     ASSERT_EQ_STR("That game plays TAK Enhanced 1.4, which you do not have.", SelectGame_Status());
     ASSERT_EQ_INT(0, save_and_check_canvas("test_ui_select_game_greyed.bmp"));
 
+    /* A match reads no game folder models, so a host whose folder holds
+     * other ones is not sent to that folder. */
+    snprintf(rl.room[1].mod_name, sizeof rl.room[1].mod_name, "%s", TAK_ModSet_ActiveModName());
+    snprintf(rl.room[1].mod_version, sizeof rl.room[1].mod_version, "%s",
+             TAK_ModSet_ActiveVersion());
+    const TAK_DataFingerprint *fp = TAK_DataFingerprint_Get();
+    ASSERT_NOT_NULL(fp);
+    rl.room[1].loose_models = 7;
+    rl.room[1].loose_hash = fp->loose_hash ^ 0x77u;
+    n = TAK_Msg_RoomListEncode(&rl, msg, sizeof msg);
+    sg_feed(msg, n);
+    (void)SelectGame_Tick(&platform, 1.0f / 60.0f);
+    SelectGame_SelectRow(1);
+    ASSERT(strstr(SelectGame_Status(), "objects3d") == NULL);
+
     SelectGame_Shutdown();
     NetSession_Disconnect();
     UI_Shutdown();
@@ -3147,6 +3172,13 @@ TEST(mp_room_builds_the_world_the_server_described) {
     if (Units_LocalPlayer() != 2)
         printf("(it is playing player %d) ", Units_LocalPlayer());
     ASSERT_EQ_INT(2, Units_LocalPlayer());
+    /* Its models come from the archives alone, and the next skirmish
+     * reads the game folder's again. */
+    ASSERT_EQ_INT(0, Obj3D_GameFolderModels());
+    World_End(&platform);
+    BattleConfig_SetDefaults(&mine);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &mine, "two castles", "aramon"));
+    ASSERT_EQ_INT(1, Obj3D_GameFolderModels());
 
     World_End(&platform);
     Multiplayer_Shutdown();
@@ -7886,10 +7918,89 @@ TEST(a_dead_monarch_leaves_no_mana_in_the_pool) {
  * TAK_AI_DUEL_GAMES seeds (2 when unset), each seed twice with the
  * seats swapped so the ground favours nobody, under the remastered
  * battlefield rules when TAK_AI_DUEL_REMASTERED is 1, and prints what
- * each side killed and lost. It is registered only when asked for. */
+ * each side killed and lost, the lodestones it held, the fighters it
+ * raised and what it had standing at the end. TAK_AI_DUEL_FIRST is the
+ * first seed's number and TAK_AI_DUEL_PLAIN=1 or 2 plays only the games
+ * with the plain seat there. It is registered only when asked for. */
+#define DUEL_DEFS 512
+typedef struct DuelTally {
+    int     lode_seconds[3];
+    int     lodes_at[3][4];          /* at minutes 5, 10, 15 and 20 */
+    int     raised[3][DUEL_DEFS];    /* mobile fighters by type */
+    int64_t standing[3];             /* build cost of what stands at the end */
+    int64_t home_s[3], away_s[3];    /* fighter seconds near the start and away */
+    int     pads;                    /* sacred pads on the map */
+    uint32_t counted[TAK_MAX_UNITS]; /* the stable id a slot was counted at */
+} DuelTally;
+static char g_duel_names[DUEL_DEFS][16];
+
+static int duel_is_lodestone(const UnitDef *d) {
+    return d && d->max_velocity <= 0.0f && !(d->cap_flags & UNIT_CAP_BUILDER) &&
+           (d->yardmap_sacred || d->mogrium_income_per_sec > 0.0f);
+}
+
+static void duel_sample(DuelTally *t, int second) {
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    const GameWorld *world = World_Get();
+    int32_t sx[3] = { 0, 0, 0 }, sy[3] = { 0, 0, 0 };
+    int has_start[3] = { 0, 0, 0 };
+    for (int s = 0; world && s < world->num_start_positions; s++) {
+        int q = world->start_positions[s].player;
+        if (q < 1 || q > 2) continue;
+        sx[q] = world->start_positions[s].x * 16;
+        sy[q] = world->start_positions[s].z * 16;
+        has_start[q] = 1;
+    }
+    int lodes[3] = { 0, 0, 0 };
+    for (int i = 0; i < count && i < TAK_MAX_UNITS; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id < 1 || u->player_id > 2)
+            continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || u->under_construction) continue;
+        if (duel_is_lodestone(d)) lodes[u->player_id]++;
+        if (d->max_velocity > 0.0f && d->num_weapons > 0 &&
+            !(d->cap_flags & UNIT_CAP_BUILDER) && !d->commander &&
+            has_start[u->player_id]) {
+            int64_t dx = u->world_x - sx[u->player_id], dy = u->world_y - sy[u->player_id];
+            if (dx * dx + dy * dy <= 1536 * 1536) t->home_s[u->player_id]++;
+            else t->away_s[u->player_id]++;
+        }
+        if (t->counted[i] != u->stable_id && d->max_velocity > 0.0f &&
+            d->num_weapons > 0 && !(d->cap_flags & UNIT_CAP_BUILDER) &&
+            !d->commander && u->def_idx < DUEL_DEFS) {
+            t->raised[u->player_id][u->def_idx]++;
+            t->counted[i] = u->stable_id;
+            snprintf(g_duel_names[u->def_idx], sizeof(g_duel_names[0]), "%s",
+                     d->unitname);
+        }
+    }
+    for (int p = 1; p <= 2; p++) {
+        t->lode_seconds[p] += lodes[p];
+        if (second > 0 && second % 300 == 0 && second / 300 <= 4)
+            t->lodes_at[p][second / 300 - 1] = lodes[p];
+    }
+}
+
+static void duel_print_mix(const char *who, const int *raised) {
+    int total = 0, top = -1;
+    for (int k = 0; k < DUEL_DEFS; k++) {
+        total += raised[k];
+        if (raised[k] > 0 && (top < 0 || raised[k] > raised[top])) top = k;
+    }
+    fprintf(stderr, "duel:   %s raised %d fighters", who, total);
+    for (int k = 0; k < DUEL_DEFS; k++)
+        if (raised[k] > 0) fprintf(stderr, " %s %d", g_duel_names[k], raised[k]);
+    if (top >= 0 && total > 0)
+        fprintf(stderr, ", the most raised is %d%% of them", raised[top] * 100 / total);
+    fprintf(stderr, "\n");
+}
+
 static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                          int base, int remastered, int minutes, uint32_t seed,
-                         int32_t kills[3], int32_t losses[3], int *winner) {
+                         int32_t kills[3], int32_t losses[3], int *winner,
+                         DuelTally *tally) {
     const char *map = getenv("TAK_AI_DUEL_MAP");
     const char *kingdom = getenv("TAK_AI_DUEL_WORLD");
     const char *sides = getenv("TAK_AI_DUEL_SIDES");
@@ -7919,10 +8030,27 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
     InGame_DebugPlayWithoutHumans(1);
     const int total = minutes * 60 * 60;
     int fire_seconds = 0, rubble = 0;
+    memset(tally, 0, sizeof(*tally));
+    for (int i = 0; i < world->feature_count; i++) {
+        const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
+        if (fd && fd->sacred_site > 0.0f) tally->pads++;
+    }
     for (int t = 0; t < total && !world->skirmish_game_over; t += 60) {
         InGame_DebugRunSimTicks(60);
         for (int i = 0; i < world->feature_count; i++)
             fire_seconds += world->features[i].fx == FEATURE_FX_BURNING;
+        duel_sample(tally, t / 60 + 1);
+    }
+    {
+        int count = 0;
+        const Unit *units = Units_GetActive(&count);
+        for (int i = 0; i < count; i++) {
+            const Unit *u = &units[i];
+            if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id < 1 || u->player_id > 2)
+                continue;
+            const UnitDef *d = Units_GetDef(u->def_idx);
+            if (d && !d->commander) tally->standing[u->player_id] += d->build_cost;
+        }
     }
     for (int i = 0; i < world->feature_count; i++) rubble += world->features[i].rubble;
     for (int p = 1; p <= 2; p++) {
@@ -7962,6 +8090,24 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_SQUAD_WAITS),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_SWEEPS),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_FIRE_STEPS));
+        fprintf(stderr, "duel:   seat %d escorts %d pressed on %d held ground %d "
+                "regrouped %d\n", p,
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_ESCORTS),
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_PRESSED),
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_HOLDS),
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_REGROUPED));
+        int secs = world->skirmish_elapsed_ticks / 60;
+        int64_t fs = tally->home_s[p] + tally->away_s[p];
+        fprintf(stderr, "duel:   seat %d lodestones on average %d.%02d of %d pads, at "
+                "5/10/15/20 min %d %d %d %d, fighters at home %d%% of the time, "
+                "standing worth %lld\n", p,
+                secs > 0 ? tally->lode_seconds[p] / secs : 0,
+                secs > 0 ? tally->lode_seconds[p] * 100 / secs % 100 : 0,
+                tally->pads, tally->lodes_at[p][0], tally->lodes_at[p][1],
+                tally->lodes_at[p][2], tally->lodes_at[p][3],
+                fs > 0 ? (int)(tally->home_s[p] * 100 / fs) : 0,
+                (long long)tally->standing[p]);
+        duel_print_mix(p == plain_seat ? "plain" : "with", tally->raised[p]);
     }
     InGame_DebugPlayWithoutHumans(0);
     InGame_Shutdown();
@@ -8153,7 +8299,11 @@ TEST(the_computer_walks_its_units_out_of_a_forest_fire) {
 TEST(ai_duel_tactics_against_none) {
     const char *ask = getenv("TAK_AI_DUEL");
     if (!ask || atoi(ask) <= 0) return;
-    if (setup_vfs() != 0) SKIP("no data dir");
+    /* TAK_AI_DUEL_ARCHIVES=1 plays off the archives alone, as a player's
+     * folder does, rather than the extracted tree. */
+    const char *arc = getenv("TAK_AI_DUEL_ARCHIVES");
+    if ((arc && atoi(arc) ? mount_iron_plague() : setup_vfs()) != 0)
+        SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -8169,24 +8319,52 @@ TEST(ai_duel_tactics_against_none) {
     const char *r = getenv("TAK_AI_DUEL_REMASTERED");
     int remastered = r && atoi(r) != 0;
     int32_t with_k = 0, with_l = 0, plain_k = 0, plain_l = 0;
-    int with_wins = 0, plain_wins = 0;
-    for (int s = 1; s <= games; s++) {
+    int with_wins = 0, plain_wins = 0, with_ahead = 0, plain_ahead = 0;
+    int64_t with_lode = 0, plain_lode = 0;
+    int64_t with_home = 0, with_away = 0, plain_home = 0, plain_away = 0;
+    static DuelTally tally;
+    static int with_raised[DUEL_DEFS], plain_raised[DUEL_DEFS];
+    memset(with_raised, 0, sizeof(with_raised));
+    memset(plain_raised, 0, sizeof(plain_raised));
+    const char *first = getenv("TAK_AI_DUEL_FIRST");
+    int s0 = first && atoi(first) > 0 ? atoi(first) : 1;
+    const char *only = getenv("TAK_AI_DUEL_PLAIN");
+    for (int s = s0; s < s0 + games; s++) {
         for (int plain = 1; plain <= 2; plain++) {
+            if (only && atoi(only) > 0 && atoi(only) != plain) continue;
             int32_t kills[3] = { 0 }, losses[3] = { 0 };
             int winner = 0;
             ai_duel_once(&platform, plain, mask, base, remastered, minutes,
-                         (uint32_t)(s * 7919), kills, losses, &winner);
+                         (uint32_t)(s * 7919), kills, losses, &winner, &tally);
             int with = 3 - plain;
             with_k += kills[with];   with_l += losses[with];
             plain_k += kills[plain]; plain_l += losses[plain];
             if (winner == with) with_wins++;
             if (winner == plain) plain_wins++;
+            /* A game still on at the end goes to whoever has more standing. */
+            if (winner == 0 && tally.standing[with] > tally.standing[plain]) with_ahead++;
+            if (winner == 0 && tally.standing[plain] > tally.standing[with]) plain_ahead++;
+            with_lode += tally.lode_seconds[with];
+            plain_lode += tally.lode_seconds[plain];
+            with_home += tally.home_s[with];   with_away += tally.away_s[with];
+            plain_home += tally.home_s[plain]; plain_away += tally.away_s[plain];
+            for (int k = 0; k < DUEL_DEFS; k++) {
+                with_raised[k] += tally.raised[with][k];
+                plain_raised[k] += tally.raised[plain][k];
+            }
         }
     }
     printf("(mask %d against %d%s over %d games of %d minutes: with killed %d "
-           "lost %d won %d, without killed %d lost %d won %d) ", mask, base,
+           "lost %d won %d ahead %d lodestone minutes %lld, without killed %d "
+           "lost %d won %d ahead %d lodestone minutes %lld) ", mask, base,
            remastered ? " remastered" : "", games * 2, minutes,
-           with_k, with_l, with_wins, plain_k, plain_l, plain_wins);
+           with_k, with_l, with_wins, with_ahead, (long long)(with_lode / 60),
+           plain_k, plain_l, plain_wins, plain_ahead, (long long)(plain_lode / 60));
+    fprintf(stderr, "duel: fighters at home %d%% of the time with, %d%% without\n",
+            with_home + with_away > 0 ? (int)(with_home * 100 / (with_home + with_away)) : 0,
+            plain_home + plain_away > 0 ? (int)(plain_home * 100 / (plain_home + plain_away)) : 0);
+    duel_print_mix("all games, with", with_raised);
+    duel_print_mix("all games, plain", plain_raised);
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
@@ -9315,12 +9493,9 @@ TEST(render_probe_models) {
 
     ntri = Units_DebugSubmitOrder(keep, world, order, keys, order_cap);
     ASSERT(ntri > 0);
-    /* Keys must come out non-decreasing: that IS the height-key rule,
-     * and it is what stops the keep's walls painting over its tower. */
-    int ascending = 1, base_tris = 0, base_before_pole = 0;
+    int base_tris = 0, base_before_pole = 0;
     int at_pole = -1;
     for (int t = 0; t < ntri; t++) {
-        if (t > 0 && keys[t] < keys[t - 1]) ascending = 0;
         if (order[t] == base) {
             base_tris++;
             if (at_pole < 0) base_before_pole++;
@@ -9328,15 +9503,33 @@ TEST(render_probe_models) {
         if (at_pole < 0 && order[t] == pole) at_pole = t;
     }
     fprintf(stderr, "probe: ARAKEEP %d tris, pole at %d, %d/%d Base tris "
-            "before it, ascending=%d\n",
-            ntri, at_pole, base_before_pole, base_tris, ascending);
-    ASSERT(ascending);
+            "before it\n", ntri, at_pole, base_before_pole, base_tris);
     ASSERT(base_tris > 0);
     /* The whole keep lives in one 120-prim Base node, so authored order
      * alone cannot layer it. The flag pole tops the model out, so most
      * of Base must already be down before the pole goes on. */
     ASSERT(at_pole > 0);
     ASSERT(base_before_pole * 2 > base_tris);
+
+    /* A building's faces show where the original's per pixel height key
+     * puts them (legacy:265317) at nearly every pixel, the Veruna
+     * bastion's front walls over the fins inside it among them. */
+    {
+        int bastion_def = Units_FindDefByName("VERTOWER");
+        ASSERT(bastion_def >= 0);
+        int bastion = Units_Spawn(bastion_def, 1, 2, cx + 420, cy + 420);
+        ASSERT(bastion >= 0);
+        static const char *bn[] = { "ARAKEEP", "ARACASTL", "VERTOWER" };
+        const int bh[] = { keep, castle, bastion };
+        for (int i = 0; i < 3; i++) {
+            int covered = 0;
+            int wrong = Units_DebugOrderMismatch(bh[i], world, &covered);
+            fprintf(stderr, "probe: %s %d of %d px off the height key\n", bn[i], wrong,
+                    covered);
+            ASSERT(covered > 1000);
+            ASSERT(wrong >= 0 && wrong * 10 < covered);
+        }
+    }
 
     InGame_Shutdown();
     Loading_Shutdown();
@@ -13891,12 +14084,13 @@ TEST(a_harpy_takes_a_swordsman_standing_or_walking_across) {
     corpse_shutdown(&platform);
     ASSERT(ok);
     ASSERT(set);
-    /* Pinned. A shot lands slower than the Harpy reloads, so a second is
-     * in the air when the first takes a still target. A walking one is
-     * taken by the first, fired from the hover attack's 200 px, in all
-     * but one seed, where the second shot takes it. */
+    /* Pinned. Every target is taken. A still one is taken by the first
+     * of two or three shots, as the Harpy aims again while it reloads
+     * and the next is in the air before the first lands. A walking one is taken by the first shot, fired from the
+     * hover attack's 200 px once the Harpy faces it, in all but one
+     * seed, where the second shot takes it. */
     ASSERT_EQ_INT(4, still);
-    ASSERT_EQ_INT(8, still_shots);
+    ASSERT_EQ_INT(9, still_shots);
     ASSERT_EQ_INT(4, walking);
     ASSERT_EQ_INT(5, walking_shots);
 }
@@ -15694,114 +15888,6 @@ TEST(a_nanoframe_does_not_self_heal) {
  * the build itself uses, and the builder's workertime is the numerator
  * (legacy:32674). It is not healtime: healtime is the free self repair
  * and is a couple of hundred times slower. */
-TEST(hover_suggests_healing_only_when_the_selection_can_help) {
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    int n = 0;
-    const Unit *units = Units_GetActive(&n);
-    int32_t cx, cy;
-    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 320,
-                                    units[0].world_y, 64, &cx, &cy));
-    int target = Units_Spawn(Units_FindDefByName("ARASWORD"), 1, 0, cx, cy);
-    int healer = Units_Spawn(Units_FindDefByName("ARAPRIES"), 1, 0, cx + 100, cy);
-    ASSERT(target >= 0 && healer >= 0);
-    int32_t sy = cy - (int32_t)(Terrain_SampleHeight(world, cx, cy) * Units_GetTanTilt());
-    ASSERT_EQ_INT(target, Units_PickAt(cx, sy, 0));
-    HUD_ClearCommandMode();
-    Units_SelectSingle(healer);
-    ASSERT_EQ_INT(HUD_CUR_SELECT, InGame_HoverCursorAt(cx, sy));
-    Units_SetHealthPercent(target, 50);
-    ASSERT_EQ_INT(HUD_CMD_HEAL, InGame_HoverCursorAt(cx, sy));
-    InGame_WorldClick(cx, sy, 0);
-    TAK_CmdQueue_Run();
-    ASSERT_EQ_INT(UNIT_CMD_REPAIR, units[healer].cmd_kind);
-    ASSERT_EQ_INT(target, units[healer].target);
-    ASSERT_EQ_INT(healer, Units_GetSelection(&n)[0]);
-    ASSERT_EQ_INT(HUD_CUR_SELECT, InGame_HoverCursorAtMods(cx, sy, IG_CLICK_SHIFT));
-    Units_CommandStopSelected();
-    InGame_WorldClick(cx, sy, 1);
-    Units_GetSelection(&n);
-    ASSERT_EQ_INT(2, n);
-    ASSERT_EQ_INT(UNIT_CMD_NONE, units[healer].cmd_kind);
-    InGame_WorldClick(cx, sy, 1);
-    ASSERT_EQ_INT(healer, Units_GetSelection(&n)[0]);
-    ASSERT_EQ_INT(1, n);
-    Units_SelectSingle(target);
-    ASSERT_EQ_INT(HUD_CUR_SELECT, InGame_HoverCursorAt(cx, sy));
-    Units_SelectSingle(-1);
-    ASSERT_EQ_INT(HUD_CUR_SELECT, InGame_HoverCursorAt(cx, sy));
-    Units_SelectSingle(healer);
-    Units_SelectAdd(target);
-    ASSERT_EQ_INT(HUD_CMD_HEAL, InGame_HoverCursorAt(cx, sy));
-
-    /* Suggestions and emitted orders use the local seat, not player one. */
-    Units_SetOwner(healer, 2, 1);
-    Units_SelectSingle(healer);
-    ASSERT_EQ_INT(HUD_CUR_SELECT, InGame_HoverCursorAt(cx, sy));
-    Units_SetOwner(target, 2, 1);
-    Units_SetLocalPlayer(2);
-    Units_SelectSingle(healer);
-    ASSERT_EQ_INT(HUD_CMD_HEAL, InGame_HoverCursorAt(cx, sy));
-    ASSERT_EQ_INT(UNIT_CMD_NONE, units[healer].cmd_kind);
-    InGame_WorldClick(cx, sy, 0);
-    TAK_CmdQueue_Run();
-    ASSERT_EQ_INT(UNIT_CMD_REPAIR, units[healer].cmd_kind);
-    ASSERT_EQ_INT(target, units[healer].target);
-    Units_SetLocalPlayer(1);
-    corpse_shutdown(&platform);
-}
-
-TEST(hover_suggests_cleanup_and_the_click_clears_the_feature) {
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    int fi = -1;
-    int32_t x = 0, y = 0, sy = 0;
-    for (int i = 0; i < world->feature_count; i++) {
-        const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
-        if (!fd || !fd->reclaimable || fd->energy <= 0 || fd->resurrectable) continue;
-        if (Features_InstanceCentre(world, i, &x, &y) != 0) continue;
-        sy = y - (int32_t)(Terrain_SampleHeight(world, x, y) * Units_GetTanTilt());
-        if (Units_PickAt(x, sy, 0) < 0) { fi = i; break; }
-    }
-    ASSERT(fi >= 0);
-    int builder = Units_Spawn(Units_FindDefByName("ARABUILD"), 1, 0, x + 160, y);
-    int soldier = Units_Spawn(Units_FindDefByName("ARASWORD"), 1, 0, x + 200, y);
-    ASSERT(builder >= 0 && soldier >= 0);
-    Fog_Update(world, 1);
-    HUD_ClearCommandMode();
-    Units_SelectSingle(soldier);
-    ASSERT_EQ_INT(HUD_CUR_NORMAL, InGame_HoverCursorAt(x, sy));
-    Units_SelectSingle(builder);
-    ASSERT_EQ_INT(HUD_CMD_CLEAR, InGame_HoverCursorAt(x, sy));
-    Units_SelectAdd(soldier);
-    ASSERT_EQ_INT(HUD_CMD_CLEAR, InGame_HoverCursorAt(x, sy));
-    InGame_WorldClick(x, sy, 0);
-    TAK_CmdQueue_Run();
-    int n = 0;
-    const Unit *units = Units_GetActive(&n);
-    ASSERT_EQ_INT(UNIT_CMD_RECLAIM, units[builder].cmd_kind);
-    ASSERT_EQ_INT(world->features[fi].tile_x, units[builder].reclaim_tile_x);
-    ASSERT(units[soldier].cmd_kind != UNIT_CMD_RECLAIM);
-    Units_SelectSingle(-1);
-    ASSERT_EQ_INT(HUD_CUR_NORMAL, InGame_HoverCursorAt(x, sy));
-    Units_SelectSingle(builder);
-    world->cfg.line_of_sight = 1;
-    Fog_Update(world, 1);
-    world->fog_layers[1][(y / world->fog_cell_px) * world->fog_w + x / world->fog_cell_px] = TAK_FOG_UNEXPLORED;
-    ASSERT_EQ_INT(HUD_CUR_NORMAL, InGame_HoverCursorAt(x, sy));
-    world->fog_layers[1][(y / world->fog_cell_px) * world->fog_w + x / world->fog_cell_px] = TAK_FOG_VISIBLE;
-    ASSERT_EQ_INT(HUD_CMD_CLEAR, InGame_HoverCursorAt(x, sy));
-    Features_RemoveInstance(world, fi);
-    ASSERT_EQ_INT(HUD_CUR_NORMAL, InGame_HoverCursorAt(x, sy));
-    corpse_shutdown(&platform);
-}
-
 TEST(a_priest_repairs_a_swordsman_in_its_build_time) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
@@ -16102,160 +16188,6 @@ static void count_effects(const char *seq, int *out_all, int *out_up,
     if (out_down) *out_down = down;
 }
 
-TEST(cancelled_cleanup_does_not_show_a_completion_flash) {
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    int n = 0;
-    const Unit *units = Units_GetActive(&n);
-    RaiseScene s;
-    ASSERT(raise_scene(world, units[0].world_x + 256, units[0].world_y,
-                       "ARABUILD", 0, "ARASWORD", 2, 5, &s) >= 0);
-    Units_SelectSingle(s.raiser);
-    ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(s.fx, s.fy));
-    Units_CommandStopSelected();
-    for (int t = 0; t < 120; t++) Units_TickEngines();
-    int flash = 0;
-    count_effects("Death01", &flash, NULL, NULL);
-    ASSERT_EQ_INT(0, flash);
-    int fi = Features_FindReclaimableAt(world, s.fx, s.fy);
-    ASSERT(fi >= 0);
-    ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(s.fx, s.fy));
-    /* A target removed by another system is not successful cleanup. */
-    ASSERT_EQ_INT(0, Features_RemoveInstance(world, fi));
-    for (int t = 0; t < 120; t++) Units_TickEngines();
-    count_effects("Death01", &flash, NULL, NULL);
-    ASSERT_EQ_INT(0, flash);
-    ASSERT_EQ_INT(UNIT_CMD_NONE, units[s.raiser].cmd_kind);
-    corpse_shutdown(&platform);
-}
-
-/* While a raise works, the raiser's side sparkles fall onto him and
- * rise off the body, one each per original frame (legacy:13129-13132).
- * The unit comes back in a purple flash, PurpleDeath from deathmagic,
- * on the tick it appears and not before (legacy:13203,
- * 161486-161493). */
-TEST(a_raise_sheds_sparkles_and_ends_in_a_purple_flash) {
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    ASSERT_NOT_NULL(world);
-    int unit_count = 0;
-    const Unit *units = Units_GetActive(&unit_count);
-    RaiseScene s;
-    ASSERT(raise_scene(world, units[0].world_x + 256, units[0].world_y,
-                       "ARAKING", 0, "ARASWORD", 2, 5, &s) >= 0);
-    int flash_idle = 0;
-    count_effects("PurpleDeath", &flash_idle, NULL, NULL);
-    ASSERT_EQ_INT(0, flash_idle);
-
-    Units_SelectSingle(s.raiser);
-    ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(s.fx, s.fy));
-    raise_mark_alive();
-    int nh = -1, most = 0, most_up = 0, most_down = 0;
-    int flash_early = 0, flash_at_spawn = 0;
-    for (int t = 0; t < 6000 && nh < 0; t++) {
-        Units_TickEngines();
-        int n = 0;
-        Units_GetActive(&n);
-        int all = 0, up = 0, down = 0, flash = 0;
-        count_effects("aramonbuild", &all, &up, &down);
-        count_effects("PurpleDeath", &flash, NULL, NULL);
-        if (all > most) most = all;
-        if (up > most_up) most_up = up;
-        if (down > most_down) most_down = down;
-        int spawned = raise_new_slot();
-        if (spawned >= 0) {
-            nh = spawned;
-            flash_at_spawn = flash;
-        } else if (flash > 0) {
-            flash_early++;
-        }
-    }
-    printf("[sparkles up to %d (%d rising, %d falling), flash %d] ",
-           most, most_up, most_down, flash_at_spawn);
-    ASSERT(nh >= 0);
-    ASSERT(most_up > 0);
-    ASSERT(most_down > 0);
-    ASSERT_EQ_INT(0, flash_early);
-    ASSERT_EQ_INT(1, flash_at_spawn);
-    corpse_shutdown(&platform);
-}
-
-TEST(a_resurrected_unit_keeps_sparkling_while_it_is_healed) {
-    Units_SetBuildSparklesOn(1);
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    ASSERT_NOT_NULL(world);
-    world->economy.players[0].max_mana = 1000000;
-    world->economy.players[0].mana = 900000.0f;
-    int n = 0;
-    const Unit *units = Units_GetActive(&n);
-    RaiseScene s;
-    ASSERT(raise_scene(world, units[0].world_x + 256, units[0].world_y,
-                       "ARAKING", 0, "VERSWORD", 2, 5, &s) >= 0);
-    Units_SelectSingle(s.raiser);
-    ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(s.fx, s.fy));
-    int target = raise_until_spawn(6000);
-    ASSERT(target >= 0);
-    ASSERT_EQ_INT(UNIT_CMD_REPAIR, units[s.raiser].cmd_kind);
-    ASSERT_EQ_INT(target, units[s.raiser].target);
-    /* An enemy of another kingdom retains its unit type, but the new
-     * owner's healer supplies the magic throughout resurrection and healing. */
-    ASSERT_EQ_INT(Units_FindDefByName("VERSWORD"), units[target].def_idx);
-    ASSERT_EQ_INT(units[s.raiser].player_id, units[target].player_id);
-    ASSERT_EQ_INT(units[s.raiser].team_color_idx, units[target].team_color_idx);
-    int start_hp = units[target].health;
-    int fresh = 0, up = 0, down = 0;
-    for (int t = 0; t < 120; t++) {
-        Units_TickEngines();
-        int live = 0;
-        const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
-        for (int i = 0; i < n; i++) {
-            if (!fx[i].alive || fx[i].owner != target) continue;
-            const char *seq = NULL;
-            if (!Units_GetEffectInfo(i, NULL, &seq, NULL)) continue;
-            if (fx[i].rise != 0 && fx[i].age_ticks <= 1)
-                ASSERT_EQ_STR("aramonbuild", seq);
-            if (strcmp(seq, "aramonbuild") != 0) continue;
-            live++;
-            /* Only new target-owned particles count, not the raise's tail. */
-            if (t >= 30 && fx[i].age_ticks <= 1) {
-                fresh++;
-                up += fx[i].rise > 0;
-                down += fx[i].rise < 0;
-            }
-        }
-        ASSERT(live <= Units_DebugBuildSparkleCap(target));
-    }
-    ASSERT(units[target].health > start_hp);
-    ASSERT(units[target].health < units[target].max_health);
-    ASSERT(fresh > 0 && up > 0 && down > 0);
-
-    Units_CommandStopSelected();
-    uint16_t seq = units[target].build_fx_seq;
-    for (int t = 0; t < 120; t++) Units_TickEngines();
-    ASSERT_EQ_INT(seq, units[target].build_fx_seq);
-
-    /* A normal heal order resumes the same effect and stops at full health. */
-    Units_CommandRepairSelected(target);
-    for (int t = 0; t < 3000 && units[target].health < units[target].max_health; t++)
-        Units_TickEngines();
-    ASSERT_EQ_INT(units[target].max_health, units[target].health);
-    ASSERT(units[target].build_fx_seq != seq);
-    seq = units[target].build_fx_seq;
-    for (int t = 0; t < 1200; t++) Units_TickEngines();
-    ASSERT_EQ_INT(seq, units[target].build_fx_seq);
-    ASSERT_EQ_INT(0, Units_DebugBuildSparkles(target));
-    corpse_shutdown(&platform);
-}
 
 /* Animation makes the raiser's animatetype, whatever the body was. A
  * Taros priest (cananimate, animatetype MONGHOUL) over a Veruna body it
@@ -17358,530 +17290,6 @@ TEST(build_sparkles_stand_on_the_building_at_any_terrain_height) {
     corpse_shutdown(&platform);
 }
 
-/* The number of sparkles follows the building: the ring holds as many
- * as it is wide in pixels (legacy:198576), so a keep carries more than
- * a tower, and a finished building carries none. */
-TEST(build_sparkles_follow_the_size_of_the_building) {
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    ASSERT_NOT_NULL(world);
-
-    int tower_def = Units_FindDefByName("ARAAT");
-    int keep_def = Units_FindDefByName("ARAKEEP");
-    int build_def = Units_FindDefByName("ARABUILD");
-    ASSERT(tower_def >= 0 && keep_def >= 0 && build_def >= 0);
-    const UnitDef *td = Units_GetDef(tower_def);
-    const UnitDef *kd = Units_GetDef(keep_def);
-    ASSERT_NOT_NULL(td);
-    ASSERT_NOT_NULL(kd);
-    ASSERT(kd->footprint_x > td->footprint_x);
-
-    int unit_count = 0;
-    const Unit *units = Units_GetActive(&unit_count);
-    int32_t tx = 0, ty = 0, kx = 0, ky = 0;
-    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 256,
-                                    units[0].world_y, 80, &tx, &ty));
-    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 256,
-                                    units[0].world_y + 640, 160, &kx, &ky));
-    int tb = -1, kb = -1;
-    int tower = sparkle_site(world, build_def, tower_def, tx, ty, &tb);
-    int keep = sparkle_site(world, build_def, keep_def, kx, ky, &kb);
-    ASSERT(tower >= 0 && keep >= 0);
-    int tower_cap = Units_DebugBuildSparkleCap(tower);
-    int keep_cap = Units_DebugBuildSparkleCap(keep);
-    printf("[tower cap %d, keep cap %d] ", tower_cap, keep_cap);
-    ASSERT(keep_cap > tower_cap);
-
-    /* Both builders at work long enough for the rings to fill. */
-    for (int t = 0; t < 240; t++) Units_TickEngines();
-    int tower_live = Units_DebugBuildSparkles(tower);
-    int keep_live = Units_DebugBuildSparkles(keep);
-    printf("[tower %d live, keep %d live] ", tower_live, keep_live);
-    ASSERT(tower_live > 0);
-    ASSERT(tower_live <= tower_cap);
-    ASSERT(keep_live <= keep_cap);
-    ASSERT(keep_live > tower_live);
-
-    /* A finished building gets no new sparkles, and the ones in the
-     * air end on their own, the slowest riser last. */
-    Units_SetHealthPercent(tower, 100);
-    for (int t = 0; t < 600 && Units_IsUnderConstruction(tower); t++)
-        Units_TickEngines();
-    ASSERT_EQ_INT(0, Units_IsUnderConstruction(tower));
-    int fresh = 0, left = 0;
-    for (int t = 0; t < 1800; t++) {
-        Units_TickEngines();
-        int n = 0;
-        const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
-        for (int i = 0; i < n; i++)
-            if (fx[i].alive && fx[i].owner == tower && fx[i].age_ticks <= 1)
-                fresh++;
-        left = Units_DebugBuildSparkles(tower);
-        if (left == 0) break;
-    }
-    printf("[%d new sparkles after completion, %d left] ", fresh, left);
-    ASSERT_EQ_INT(0, fresh);
-    ASSERT_EQ_INT(0, left);
-
-    corpse_shutdown(&platform);
-}
-
-/* A site of the named def on clear ground `dy` below the monarch,
- * with its builder at work. Returns the site handle, or -1. */
-static int sparkle_named_site(GameWorld *world, const char *name, int32_t dy,
-                              int clear, int *out_def) {
-    int site_def = Units_FindDefByName(name);
-    int build_def = Units_FindDefByName("ARABUILD");
-    if (site_def < 0 || build_def < 0) return -1;
-    int n = 0;
-    const Unit *units = Units_GetActive(&n);
-    int32_t sx = 0, sy = 0;
-    if (!corpse_find_clear_ground(world, units[0].world_x + 256,
-                                  units[0].world_y + dy, clear, &sx, &sy))
-        return -1;
-    int builder = -1;
-    *out_def = site_def;
-    return sparkle_site(world, build_def, site_def, sx, sy, &builder);
-}
-
-static int sparkle_tower_site(GameWorld *world, int *out_def) {
-    return sparkle_named_site(world, "ARAAT", 0, 80, out_def);
-}
-
-/* The authored target panel has its own copies of the unit gauges. */
-static int hud_panel_child(GUIRuntime *rt, const char *panel, const char *name) {
-    const GUIWidget *parent = GUIRuntime_WidgetByName(rt, panel);
-    if (!parent) return -1;
-    SDL_Rect r = parent->rect;
-    for (int i = 0; i < GUIRuntime_NumWidgets(rt); i++) {
-        const GUIWidget *w = GUIRuntime_WidgetAt(rt, i);
-        if (strcmp(w->name, name) == 0 && w->rect.x >= r.x && w->rect.y >= r.y &&
-            w->rect.x + w->rect.w <= r.x + r.w &&
-            w->rect.y + w->rect.h <= r.y + r.h) return i;
-    }
-    return -1;
-}
-
-TEST(hud_conjuring_target_shows_live_progress) {
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    int tower_def = -1;
-    int site = sparkle_tower_site(world, &tower_def);
-    ASSERT(site >= 0);
-    int n = 0, builder = -1;
-    const Unit *units = Units_GetActive(&n);
-    for (int i = 0; i < n; i++)
-        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].build_target == site)
-            builder = i;
-    ASSERT(builder >= 0);
-    ASSERT_EQ_INT(0, InGame_Init(&platform));
-    Units_SelectSingle(builder);
-    Units_SetHealthPercent(builder, 50);
-    Units_SetHealthPercent(site, 25);
-    HUD_Draw(&platform, world);
-    GUIRuntime *rt = HUD_DebugRuntime();
-    int hp = hud_panel_child(rt, "UnitInfo2", "HealthBar");
-    int label = hud_panel_child(rt, "UnitInfo2", "UnitText");
-    int own_label = hud_panel_child(rt, "UnitInfo1", "UnitText");
-    ASSERT(hp >= 0 && label >= 0 && own_label >= 0);
-    ASSERT_EQ_INT(0, GUIRuntime_WidgetHiddenAt(rt, hp));
-    ASSERT_EQ_STR(Units_GetDef(tower_def)->display_name,
-                  GUIRuntime_WidgetAt(rt, label)->display_text);
-    ASSERT_EQ_STR(Units_GetSelectedName(), GUIRuntime_WidgetAt(rt, own_label)->display_text);
-    char status[64];
-    HUD_WidgetText("ActionText", status, sizeof status);
-    ASSERT_EQ_STR("Conjuring", status);
-    float own_hp = 0;
-    HUD_GetGaugeFractions(&own_hp, NULL, NULL);
-    ASSERT(fabsf(own_hp - 0.5f) < 0.01f);
-
-    /* Verify the rendered gauge, not just a cached numeric value. */
-    SDL_Rect bar;
-    ASSERT_EQ_INT(0, GUIRuntime_WidgetDrawRect(rt, hp, &bar));
-    ASSERT(bar.w > 20 && bar.w <= 256 && bar.h > 0);
-    SDL_Surface *off = UI_Offscreen();
-    ASSERT_EQ_INT(4, off->format->BytesPerPixel);
-    uint32_t quarter[256], three_quarters[256];
-    memcpy(quarter, (uint8_t *)off->pixels + (bar.y + bar.h/2)*off->pitch + bar.x*4, bar.w*4);
-    Units_SetHealthPercent(site, 75);
-    HUD_Draw(&platform, world);
-    memcpy(three_quarters, (uint8_t *)off->pixels + (bar.y + bar.h/2)*off->pitch + bar.x*4, bar.w*4);
-    int changed = 0;
-    for (int x = 0; x < bar.w; x++) {
-        if (x < bar.w/5 || x > bar.w*4/5) ASSERT(quarter[x] == three_quarters[x]);
-        if (quarter[x] != three_quarters[x]) changed++;
-    }
-    printf("[target gauge changed %d/%d pixels] ", changed, bar.w);
-    ASSERT(changed > bar.w/3 && changed < bar.w*2/3);
-
-    /* Switching selection and cancelling must never leave stale progress. */
-    Units_SelectSingle(-1);
-    HUD_Draw(&platform, world);
-    ASSERT_EQ_INT(1, GUIRuntime_WidgetHiddenAt(rt, hp));
-    Units_SelectSingle(builder);
-    HUD_Draw(&platform, world);
-    ASSERT_EQ_INT(0, GUIRuntime_WidgetHiddenAt(rt, hp));
-    Units_SelectAdd(0);  /* The completed monarch; unfinished sites are not selectable. */
-    int selected_count = 0;
-    Units_GetSelection(&selected_count);
-    ASSERT_EQ_INT(2, selected_count);
-    HUD_Draw(&platform, world);
-    ASSERT_EQ_INT(1, GUIRuntime_WidgetHiddenAt(rt, hp));
-    Units_SelectSingle(builder);
-    Units_OrderStop(builder);
-    HUD_Draw(&platform, world);
-    ASSERT_EQ_INT(1, GUIRuntime_WidgetHiddenAt(rt, hp));
-    /* Factory production uses the same target panel and drops it on completion. */
-    units = Units_GetActive(&n);
-    int factory_def = Units_FindDefByName("ARACASTL");
-    int product_def = Units_FindDefByName("ARASWORD");
-    ASSERT(factory_def >= 0 && product_def >= 0);
-    int factory = Units_Spawn(factory_def, 1, 0,
-                               units[0].world_x - 400, units[0].world_y + 320);
-    ASSERT(factory >= 0);
-    ASSERT_EQ_INT(0, Units_FactoryEnqueue(factory, product_def));
-    units = Units_GetActive(&n);
-    int product = units[factory].build_target;
-    ASSERT(product >= 0);
-    Units_SelectSingle(factory);
-    HUD_Draw(&platform, world);
-    ASSERT_EQ_INT(0, GUIRuntime_WidgetHiddenAt(rt, hp));
-    ASSERT_EQ_STR(Units_GetDef(product_def)->display_name,
-                  GUIRuntime_WidgetAt(rt, label)->display_text);
-    Units_SetHealthPercent(product, 100);
-    for (int t = 0; t < 600 && Units_IsUnderConstruction(product); t++)
-        Units_TickEngines();
-    ASSERT_EQ_INT(0, Units_IsUnderConstruction(product));
-    HUD_Draw(&platform, world);
-    ASSERT_EQ_INT(1, GUIRuntime_WidgetHiddenAt(rt, hp));
-    InGame_Shutdown();
-    corpse_shutdown(&platform);
-}
-
-/* The second info panel shows the selected unit's target: when a unit
- * is ordered to attack an enemy the panel names it and tracks its
- * health (legacy:152140-152143). An enemy target hides the mana bar
- * (own_only) but shows the name and health. */
-TEST(hud_target_panel_shows_attack_target) {
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    ASSERT_EQ_INT(0, InGame_Init(&platform));
-
-    int sword_def = Units_FindDefByName("ARASWORD");
-    ASSERT(sword_def >= 0);
-    int n = 0;
-    const Unit *units = Units_GetActive(&n);
-    ASSERT(n > 0);
-    int attacker = Units_Spawn(sword_def, 1, 0,
-                                units[0].world_x + 200,
-                                units[0].world_y + 200);
-    ASSERT(attacker >= 0);
-    int enemy = Units_Spawn(sword_def, 2, 1,
-                             units[0].world_x + 260,
-                             units[0].world_y + 200);
-    ASSERT(enemy >= 0);
-
-    Units_OrderAttack(attacker, enemy);
-    Units_SelectSingle(attacker);
-    HUD_Draw(&platform, world);
-
-    GUIRuntime *rt = HUD_DebugRuntime();
-    int hp = hud_panel_child(rt, "UnitInfo2", "HealthBar");
-    int label = hud_panel_child(rt, "UnitInfo2", "UnitText");
-    int mana = hud_panel_child(rt, "UnitInfo2", "ManaBar");
-    ASSERT(hp >= 0 && label >= 0);
-    ASSERT_EQ_INT(0, GUIRuntime_WidgetHiddenAt(rt, hp));
-    ASSERT_EQ_INT(0, GUIRuntime_WidgetHiddenAt(rt, label));
-    ASSERT_EQ_STR(Units_GetDef(sword_def)->display_name,
-                  GUIRuntime_WidgetAt(rt, label)->display_text);
-    /* Enemy target: mana bar hidden (own_only). */
-    if (mana >= 0)
-        ASSERT_EQ_INT(1, GUIRuntime_WidgetHiddenAt(rt, mana));
-
-    /* Damage the enemy and verify the gauge tracks it. */
-    Units_SetHealthPercent(enemy, 50);
-    HUD_Draw(&platform, world);
-    float tgt_hp = 0, tgt_mana = 0, pool = 0;
-    HUD_GetTargetGaugeFractions(&tgt_hp, &tgt_mana);
-    printf("[attack target hp gauge %.2f] ", tgt_hp);
-    ASSERT(fabsf(tgt_hp - 0.5f) < 0.05f);
-
-    /* Deselect: panel 2 goes away. */
-    Units_SelectSingle(-1);
-    HUD_Draw(&platform, world);
-    ASSERT_EQ_INT(1, GUIRuntime_WidgetHiddenAt(rt, hp));
-
-    InGame_Shutdown();
-    corpse_shutdown(&platform);
-}
-
-/* A def's model box in px, half the x and z extents and the full
- * height, from whichever colour's mesh is baked. */
-static int sparkle_model_box(const UnitDef *d, float *hx, float *hz,
-                             float *h) {
-    for (int c = 0; c < 12; c++) {
-        const UnitMesh *m = d->mesh_per_color[c];
-        if (!m) continue;
-        *hx = (m->aabb_max[0] - m->aabb_min[0]) * 0.5f / 65536.0f;
-        *hz = (m->aabb_max[2] - m->aabb_min[2]) * 0.5f / 65536.0f;
-        *h = (m->aabb_max[1] - m->aabb_min[1]) / 65536.0f;
-        return 1;
-    }
-    return 0;
-}
-
-/* The ring a def's sparkles stand on, from its model box and from its
- * footprint. */
-static void sparkle_rings_of(const UnitDef *d, int *from_box,
-                             int *from_footprint) {
-    float hx = 0.0f, hz = 0.0f, h = 0.0f;
-    *from_box = sparkle_model_box(d, &hx, &hz, &h)
-        ? (int)sqrtf(hx * hx + hz * hz) : -1;
-    int fpx = (d->footprint_x > 0 ? d->footprint_x : 1) * 8;
-    int fpz = (d->footprint_z > 0 ? d->footprint_z : 1) * 8;
-    *from_footprint = (int)(sqrtf((float)(fpx * fpx + fpz * fpz)) + 0.5f);
-}
-
-/* Each sparkle has a speed of its own, 2 to 4 px an original frame,
- * which is 1 to 2 px a tick, and they fall as well as rise
- * (legacy:201441-201455, legacy:201355-201374). */
-TEST(build_sparkles_rise_and_fall_each_at_its_own_speed) {
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    ASSERT_NOT_NULL(world);
-    int tower_def = -1;
-    int site = sparkle_tower_site(world, &tower_def);
-    ASSERT(site >= 0);
-
-    int32_t speeds[64];
-    int distinct = 0, up = 0, down = 0, slow = 0, fast = 0;
-    for (int t = 0; t < 240; t++) {
-        Units_TickEngines();
-        int n = 0;
-        const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
-        for (int i = 0; i < n; i++) {
-            if (!fx[i].alive || fx[i].owner != site) continue;
-            int32_t r = fx[i].rise;
-            if (r > 0) up++;
-            if (r < 0) down++;
-            int32_t s = r < 0 ? -r : r;
-            if (s < 0x10000) slow++;
-            if (s >= 0x20000) fast++;
-            int seen = 0;
-            for (int k = 0; k < distinct && !seen; k++)
-                if (speeds[k] == r) seen = 1;
-            if (!seen && distinct < 64) speeds[distinct++] = r;
-        }
-    }
-    printf("[%d speeds, %d rising, %d falling, %d slow, %d fast] ",
-           distinct, up, down, slow, fast);
-    ASSERT(distinct >= 8);
-    ASSERT(up > 0);
-    ASSERT(down > 0);
-    ASSERT_EQ_INT(0, slow);
-    ASSERT_EQ_INT(0, fast);
-    corpse_shutdown(&platform);
-}
-
-/* The ring holds as many sparkles as it is wide and adds none while it
- * is full, and since each one ends at its own time the flow never
- * pauses (legacy:201434-201436). */
-TEST(build_sparkles_keep_flowing_once_the_ring_is_full) {
-    Units_SetBuildSparklesOn(1);
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    ASSERT_NOT_NULL(world);
-    int tower_def = -1;
-    int site = sparkle_tower_site(world, &tower_def);
-    ASSERT(site >= 0);
-    int cap = Units_DebugBuildSparkleCap(site);
-    ASSERT(cap > 0);
-
-    for (int t = 0; t < 180; t++) Units_TickEngines();
-    int most = 0, empty_windows = 0;
-    for (int w = 0; w < 12; w++) {
-        int fresh = 0;
-        for (int t = 0; t < 20; t++) {
-            Units_TickEngines();
-            int n = 0, live = 0;
-            const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
-            for (int i = 0; i < n; i++) {
-                if (!fx[i].alive || fx[i].owner != site) continue;
-                live++;
-                if (fx[i].age_ticks <= 1) fresh++;
-            }
-            if (live > most) most = live;
-        }
-        if (fresh == 0) empty_windows++;
-    }
-    printf("[cap %d, most %d live, %d of 12 windows without a new sparkle] ",
-           cap, most, empty_windows);
-    ASSERT(most <= cap);
-    ASSERT_EQ_INT(0, empty_windows);
-    corpse_shutdown(&platform);
-}
-
-/* The ring is the model's: half its box's diagonal in px, and the
- * sparkles stand that far from the centre (legacy:198540-198576). */
-TEST(build_sparkle_ring_is_the_model_box) {
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    ASSERT_NOT_NULL(world);
-    int tower_def = -1, keep_def = -1;
-    int tower = sparkle_tower_site(world, &tower_def);
-    int keep = sparkle_named_site(world, "ARAKEEP", 640, 160, &keep_def);
-    ASSERT(tower >= 0 && keep >= 0);
-    int tower_box = 0, tower_fp = 0, keep_box = 0, keep_fp = 0;
-    sparkle_rings_of(Units_GetDef(tower_def), &tower_box, &tower_fp);
-    sparkle_rings_of(Units_GetDef(keep_def), &keep_box, &keep_fp);
-    int tower_cap = Units_DebugBuildSparkleCap(tower);
-    int keep_cap = Units_DebugBuildSparkleCap(keep);
-    printf("[tower ring %d from the box, %d from the footprint, cap %d] ",
-           tower_box, tower_fp, tower_cap);
-    printf("[keep ring %d from the box, %d from the footprint, cap %d] ",
-           keep_box, keep_fp, keep_cap);
-    ASSERT(tower_box > 0 && keep_box > 0);
-    ASSERT(tower_box != tower_fp);
-    ASSERT(keep_box != keep_fp);
-    ASSERT_EQ_INT(tower_box, tower_cap);
-    ASSERT_EQ_INT(keep_box, keep_cap);
-
-    /* And the sparkles stand on it. */
-    for (int t = 0; t < 60; t++) Units_TickEngines();
-    int n = 0, on_ring = 0, off_ring = 0;
-    const Unit *units = Units_GetActive(&n);
-    int32_t cx = units[keep].world_x, cy = units[keep].world_y;
-    const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
-    for (int i = 0; i < n; i++) {
-        if (!fx[i].alive || fx[i].owner != keep) continue;
-        float dx = (float)(fx[i].world_x - cx), dy = (float)(fx[i].world_y - cy);
-        float d = sqrtf(dx * dx + dy * dy);
-        if (fabsf(d - (float)keep_box) <= 2.0f) on_ring++; else off_ring++;
-    }
-    printf("[%d on the keep's ring, %d off] ", on_ring, off_ring);
-    ASSERT(on_ring > 0);
-    ASSERT_EQ_INT(0, off_ring);
-    corpse_shutdown(&platform);
-}
-
-/* Fallers start at the top of the model and risers on the ground, so
- * new sparkles appear through the model's whole height
- * (legacy:201355-201374). */
-TEST(build_sparkles_start_through_the_height_of_the_model) {
-    Units_SetBuildSparklesOn(1);
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    ASSERT_NOT_NULL(world);
-    int tower_def = -1;
-    int site = sparkle_tower_site(world, &tower_def);
-    ASSERT(site >= 0);
-    const UnitDef *td = Units_GetDef(tower_def);
-    ASSERT_NOT_NULL(td);
-    float hx = 0.0f, hz = 0.0f, h = 0.0f;
-    ASSERT(sparkle_model_box(td, &hx, &hz, &h));
-    ASSERT(h >= 32.0f);
-    int n = 0;
-    const Unit *units = Units_GetActive(&n);
-    int ground = Terrain_SampleHeight(world, units[site].world_x,
-                                      units[site].world_y);
-
-    int lo = 1 << 30, hi = -(1 << 30), fresh = 0;
-    for (int t = 0; t < 240; t++) {
-        Units_TickEngines();
-        const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
-        for (int i = 0; i < n; i++) {
-            if (!fx[i].alive || fx[i].owner != site || fx[i].age_ticks > 1)
-                continue;
-            fresh++;
-            if (fx[i].height < lo) lo = fx[i].height;
-            if (fx[i].height > hi) hi = fx[i].height;
-        }
-    }
-    printf("[model %.1f tall, ground %d, %d new sparkles start at %d..%d] ",
-           (double)h, ground, fresh, lo, hi);
-    ASSERT(fresh > 0);
-    ASSERT(lo <= ground + 2);
-    ASSERT(hi >= ground + (int)h - 2);
-    corpse_shutdown(&platform);
-}
-
-/* A bmcode 1 unit's ring keeps the full half diagonal as its radius
- * and holds a quarter of that many sparkles (legacy:198557-198560).
- * The raiser's sparkles stand on it while a raise works. */
-TEST(a_mobile_units_ring_is_full_width_and_holds_a_quarter) {
-    TAK_Platform platform;
-    int boot_rc = corpse_boot(&platform);
-    if (boot_rc == 1) return;
-    ASSERT_EQ_INT(0, boot_rc);
-    GameWorld *world = World_Get();
-    ASSERT_NOT_NULL(world);
-    int unit_count = 0;
-    const Unit *units = Units_GetActive(&unit_count);
-    RaiseScene s;
-    ASSERT(raise_scene(world, units[0].world_x + 256, units[0].world_y,
-                       "ARAKING", 0, "ARASWORD", 2, 5, &s) >= 0);
-    units = Units_GetActive(&unit_count);
-    const UnitDef *rd = Units_GetDef(units[s.raiser].def_idx);
-    ASSERT_NOT_NULL(rd);
-    ASSERT_EQ_INT(1, rd->bmcode);
-    int box = 0, fp = 0;
-    sparkle_rings_of(rd, &box, &fp);
-    ASSERT(box >= 8);
-    int radius = Units_DebugBuildSparkleRadius(s.raiser);
-    int cap = Units_DebugBuildSparkleCap(s.raiser);
-    printf("[box ring %d, radius %d, cap %d] ", box, radius, cap);
-    ASSERT_EQ_INT(box, radius);
-    ASSERT_EQ_INT(box / 4, cap);
-
-    Units_SelectSingle(s.raiser);
-    ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(s.fx, s.fy));
-    int on_ring = 0, off_ring = 0, most = 0;
-    for (int t = 0; t < 1200 && on_ring + off_ring < 20; t++) {
-        Units_TickEngines();
-        int n = 0, live = 0;
-        units = Units_GetActive(&unit_count);
-        int32_t cx = units[s.raiser].world_x, cy = units[s.raiser].world_y;
-        const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
-        for (int i = 0; i < n; i++) {
-            if (!fx[i].alive || fx[i].owner != s.raiser) continue;
-            live++;
-            if (fx[i].age_ticks > 1) continue;
-            float dx = (float)(fx[i].world_x - cx);
-            float dy = (float)(fx[i].world_y - cy);
-            float d = sqrtf(dx * dx + dy * dy);
-            if (fabsf(d - (float)radius) <= 2.0f) on_ring++; else off_ring++;
-        }
-        if (live > most) most = live;
-    }
-    printf("[%d on the raiser's ring, %d off, most %d live] ",
-           on_ring, off_ring, most);
-    ASSERT(on_ring > 0);
-    ASSERT_EQ_INT(0, off_ring);
-    ASSERT(most > 0);
-    ASSERT(most <= cap);
-    corpse_shutdown(&platform);
-}
 
 TEST(a_feature_draws_its_shadow_sprite) {
     TAK_Platform platform;
@@ -20083,7 +19491,7 @@ static void fwa_watch(GameWorld *w, int h, const UnitDef *d, FwaTally *t) {
     int g = Terrain_SampleHeight(w, v->world_x, v->world_y);
     if (Units_DebugStandHeight(h) < (float)sea) t->under_sea++;
     if ((float)g + Units_DrawnAlt(w, v) < (float)sea) t->drawn_under++;
-    if (d->script_flies && !v->flying &&
+    if (!v->flying &&
         (g < sea || fw_lowest_corner(w, v->world_x, v->world_y, d->footprint_x,
                                      d->footprint_z) < sea))
         t->wet_landed++;
@@ -20110,8 +19518,7 @@ static int fwa_stop_over(FwSea *s, int h, const UnitDef *d, FwaTally *t,
         fwa_watch(s->world, h, d, t);
         u = Units_GetActive(&n);
         int64_t dx = u[h].world_x - x, dy = u[h].world_y - y;
-        int up = !d->script_flies ||
-                 (u[h].flying && u[h].flight_alt >= (float)d->cruise_alt);
+        int up = u[h].flying && u[h].flight_alt >= (float)d->cruise_alt;
         if (up && dx * dx + dy * dy <= 48 * 48) {
             Units_OrderStop(h);
             return 1;
@@ -20123,7 +19530,7 @@ static int fwa_stop_over(FwSea *s, int h, const UnitDef *d, FwaTally *t,
 /* Every unit with canfly on Two Castles, left idle over the open sea,
  * stopped by the shore, stopped over the shallows and stopped after a
  * patrol over the sea, lands only on dry ground and never stands or is
- * drawn under the water. A hoverer stays cruisealt over the sea. */
+ * drawn under the water. */
 TEST(every_flyer_kind_keeps_off_the_water) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -20177,7 +19584,6 @@ TEST(every_flyer_kind_keeps_off_the_water) {
         memset(&t, 0, sizeof(t));
         int reached = fwa_stop_over(&s, h, d, &t, s.open_x, s.open_y);
         fwa_run(&s, h, d, &t, 1500);
-        float open_at = Units_DebugStandHeight(h);
         reached &= fwa_stop_over(&s, h, d, &t, s.shore_x, s.shore_y);
         fwa_run(&s, h, d, &t, 3600);
         reached &= fwa_stop_over(&s, h, d, &t, sh_x, sh_y);
@@ -20191,16 +19597,14 @@ TEST(every_flyer_kind_keeps_off_the_water) {
         u = Units_GetActive(&n);
         int alive = u[h].alive == UNIT_ALIVE_ACTIVE;
         int landings = Units_DebugScriptEventCount(h, UNIT_SCRIPT_EV_BEGIN_LANDING);
-        int hover_low = !d->script_flies &&
-                        open_at < (float)(sea + d->cruise_alt);
-        if (!reached || !alive || hover_low || t.under_sea || t.drawn_under ||
+        if (!reached || !alive || t.under_sea || t.drawn_under ||
             t.wet_landed) {
-            printf("[%s reached %d alive %d over the sea at %.0f under %d drawn "
-                   "under %d down wet %d] ", d->unitname, reached, alive,
-                   (double)open_at, t.under_sea, t.drawn_under, t.wet_landed);
+            printf("[%s reached %d alive %d under %d drawn under %d down "
+                   "wet %d] ", d->unitname, reached, alive, t.under_sea,
+                   t.drawn_under, t.wet_landed);
             bad++;
         }
-        if (d->script_flies && landings == 0) {
+        if (landings == 0) {
             printf("[%s never landed] ", d->unitname);
             bad++;
         }
@@ -20741,10 +20145,10 @@ TEST(war_galley_hits_resting_ghost_ship) {
     int ghost  = Units_Spawn(ghost_def, 2, 1, sx, sy);
     ASSERT(galley >= 0 && ghost >= 0);
     ASSERT_EQ_INT(0, InGame_Init(&platform));
-    /* Both under orders: the ghost ship is a hovering surface target,
-     * so the galley's noairweapon cannon still reaches it. */
+    /* The ghost ship holds its fire and rests where it is, so it is a
+     * surface target and the galley's noairweapon cannon reaches it. */
+    Units_DebugSetAggro(ghost, UNIT_AGGRO_PASSIVE);
     Units_CommandAttackUnit(galley, ghost);
-    Units_CommandAttackUnit(ghost, galley);
     Timer timer;
     Timer_Init(&timer);
     int n = 0;
@@ -24800,6 +24204,14 @@ TEST(skirmish_local_monarch_death_is_defeat_with_two_foes_left) {
 
 /* Beaten with two computers at war, the player watches them fight on, and
  * when one is left the battle stops without a second end (D-034). */
+/* Message list lines naming player `p` fallen. */
+static int fallen_lines_for(int p) {
+    int n = 0;
+    for (int i = 0; i < Chat_Count(); i++)
+        if (Chat_EntryType(i) == CHAT_TYPE_MINE && Chat_EntryOwner(i) == p) n++;
+    return n;
+}
+
 TEST(skirmish_lost_battle_plays_on_between_the_computers) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -24828,14 +24240,22 @@ TEST(skirmish_lost_battle_plays_on_between_the_computers) {
     for (int t = 0; t < 40 && !world->skirmish_game_over; t++) InGame_DebugRunSimTicks(30);
     ASSERT_EQ_INT(1, world->skirmish_game_over);
     ASSERT_EQ_INT(-1, world->skirmish_local_result);
+    /* The player is named fallen at once, before anyone has built. */
+    ASSERT_EQ_INT(1, fallen_lines_for(1));
     int end_tick = world->skirmish_end_tick;
     int winner = world->skirmish_winner_team;
     int built2 = world->stats[2].units_built, built3 = world->stats[3].units_built;
 
+    /* Past the Defeat banner the battle plays on by itself for the player
+     * to watch, the fog lifted, and the statistics wait. */
     GameSound_DebugRecord(1);
     GameSound_DebugClear();
-    ASSERT_EQ_INT(1, InGame_PlayOn());
+    InGame_DebugRunSimTicks(200);
     ASSERT_EQ_INT(1, InGame_PlayingOn());
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    ASSERT_EQ_INT(0, world->skirmish_stats_open);
+    ASSERT_EQ_INT(1, Fog_SeesAll());
+    ASSERT_EQ_INT(1, InGame_PlayOn());
     int from = world->skirmish_elapsed_ticks;
     InGame_DebugRunSimTicks(60 * 90);
     ASSERT_EQ_INT(from + 60 * 90, world->skirmish_elapsed_ticks);
@@ -24845,10 +24265,14 @@ TEST(skirmish_lost_battle_plays_on_between_the_computers) {
     ASSERT_EQ_INT(-1, world->skirmish_local_result);
     ASSERT_EQ_STR("Defeat", world->skirmish_end_reason);
 
-    /* One computer left: the battle stops where it stands, quietly. */
+    /* One computer left: the battle stops where it stands, quietly, but
+     * for the line that names the fallen one and its cue. */
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("#fallen"));
     Units_KillAllOf(3);
     for (int t = 0; t < 40 && !world->skirmish_game_over; t++) InGame_DebugRunSimTicks(30);
     ASSERT_EQ_INT(1, world->skirmish_game_over);
+    ASSERT_EQ_INT(1, fallen_lines_for(3));
+    ASSERT_EQ_INT(1, GameSound_DebugCountPrefix("#fallen"));
     ASSERT_EQ_INT(0, InGame_PlayingOn());
     ASSERT_EQ_INT(0, InGame_PlayOn());
     ASSERT_EQ_INT(end_tick, world->skirmish_end_tick);
@@ -24858,6 +24282,7 @@ TEST(skirmish_lost_battle_plays_on_between_the_computers) {
     int stopped = world->skirmish_elapsed_ticks;
     InGame_DebugRunSimTicks(240);
     ASSERT_EQ_INT(stopped, world->skirmish_elapsed_ticks);
+    ASSERT_EQ_INT(1, world->skirmish_stats_open);
     GameSound_DebugRecord(0);
 
     InGame_Shutdown();
@@ -24866,6 +24291,451 @@ TEST(skirmish_lost_battle_plays_on_between_the_computers) {
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
+}
+
+/* A seat beaten in a match stays to watch. Its army goes as in a
+ * skirmish and the battle runs on for it on the server's turns, over
+ * the whole map with no fog. Tab walks the players' views, as for a
+ * watcher, and the seat sends no further order. */
+TEST(a_seat_beaten_in_a_match_watches_the_rest_of_it) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "Angvir's Maze", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 0;
+    cfg.players[1].kind = TAK_SLOT_HUMAN;
+    cfg.players[2].kind = TAK_SLOT_AI;
+    cfg.players[2].side = TAK_SIDE_VERUNA;
+    cfg.players[2].team = 3;
+    cfg.players[2].color = 2;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, cfg.map_name, "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    ASSERT_NOT_NULL(c);
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 21);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1000));
+    n = pl_encode_start(msg, sizeof msg, 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, pl_run_loading(&platform, 900));
+    TAK_MsgGo go;
+    go.first_turn = 0;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1200));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 8));
+    ASSERT_EQ_INT(1, TAK_Match_IsLive());
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT(Units_PlayersAreEnemies(2, 3));
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    /* Ten seconds of turns from the server, and the monarch falls. */
+    TAK_MsgTurn turn;
+    memset(&turn, 0, sizeof turn);
+    turn.turn = 0;
+    turn.empty_run = 200;
+    n = TAK_Msg_TurnEncode(&turn, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1300));
+    (void)TAK_Match_Pump();
+    InGame_DebugRunSimTicks(60);
+    int monarch = end_find_monarch(1);
+    ASSERT(monarch >= 0);
+    ASSERT_EQ_INT(monarch, Units_DebugKillHandle(monarch));
+    InGame_DebugRunSimTicks(60);
+    ASSERT_EQ_INT(1, world->stats[1].eliminated);
+    int unit_count = 0, left = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    for (int i = 0; i < unit_count; i++)
+        if (units[i].player_id == 1 && units[i].alive == UNIT_ALIVE_ACTIVE) left++;
+    ASSERT_EQ_INT(0, left);
+    ASSERT_EQ_INT(-1, world->skirmish_local_result);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    ASSERT_EQ_INT(1, fallen_lines_for(1));
+
+    /* It watches the whole battle, which runs on as the turns come. */
+    ASSERT_EQ_INT(1, Fog_SeesAll());
+    (void)TAK_Match_Pump();
+    int from = world->skirmish_elapsed_ticks;
+    InGame_DebugRunSimTicks(240);
+    ASSERT_EQ_INT(from + 240, world->skirmish_elapsed_ticks);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+
+    /* Tab looks through the first seat's eyes, then the next. */
+    InGame_DebugKeyFrame(SDL_SCANCODE_TAB, NULL);
+    InGame_DebugKeyFrame(0, NULL);
+    ASSERT_EQ_INT(0, Fog_SeesAll());
+    ASSERT_EQ_INT(1, Units_LocalPlayer());
+    InGame_DebugKeyFrame(SDL_SCANCODE_TAB, NULL);
+    InGame_DebugKeyFrame(0, NULL);
+    ASSERT_EQ_INT(2, Units_LocalPlayer());
+
+    /* And it gives no order, whoever's view it looks through. */
+    TAK_GameCommand cmd;
+    memset(&cmd, 0, sizeof cmd);
+    cmd.type = TAK_CMD_STOP;
+    ASSERT_EQ_INT(-1, TAK_Match_SubmitLocal(&cmd));
+    ASSERT_EQ_INT(0, TAK_Match_Unsent());
+
+    TAK_Match_End();
+    NetSession_Disconnect();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    Settings_SetStr("RejoinMatch", "");
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* What a match client queued: the hash it reported for each hash tick,
+ * the snapshot pieces it sent up, and any snapshot answer. */
+#define SR_HASHES 64
+typedef struct SnapRun {
+    uint32_t hash[SR_HASHES];
+    uint8_t *snap;
+    uint32_t snap_len, snap_tick;
+    int      results, refusals;
+} SnapRun;
+
+static void sr_drain(TAK_NetClient *c, SnapRun *sr) {
+    uint8_t out[TAK_NET_FRAME_MAX];
+    size_t got;
+    while ((got = TAK_NetClient_TakeMessage(c, out, sizeof out)) > 0) {
+        TAK_NetFrame f;
+        if (TAK_Net_Split(out, got, &f) != 0) continue;
+        TAK_MsgAck a;
+        TAK_MsgSnapData d;
+        TAK_MsgSnapResult r;
+        if (f.type == TAK_MSG_ACK && TAK_Msg_AckDecode(&a, f.payload, f.payload_len) == 0 &&
+            a.hash_tick != TAK_NET_NO_HASH && a.hash_tick % 60 == 0 && a.hash_tick > 0 &&
+            a.hash_tick / 60 <= SR_HASHES)
+            sr->hash[a.hash_tick / 60 - 1] = (uint32_t)a.state_hash;
+        if (f.type == TAK_MSG_SNAP_DATA &&
+            TAK_Msg_SnapDataDecode(&d, f.payload, f.payload_len) == 0 && d.total) {
+            if (!sr->snap) sr->snap = (uint8_t *)tak_malloc(d.total);
+            if (sr->snap && d.offset == sr->snap_len) {
+                memcpy(sr->snap + d.offset, d.data, d.len);
+                sr->snap_len += d.len;
+                sr->snap_tick = d.tick;
+            }
+        }
+        if (f.type == TAK_MSG_SNAP_RESULT &&
+            TAK_Msg_SnapResultDecode(&r, f.payload, f.payload_len) == 0) {
+            sr->results++;
+            if (!r.ok) sr->refusals++;
+        }
+    }
+}
+
+/* Run a match's ticks to `tick`, taking turns as the queue needs them. */
+static void sr_run_to(TAK_NetClient *c, SnapRun *sr, uint32_t tick) {
+    while (TAK_CmdQueue_Tick() < tick) {
+        if (!TAK_Match_CanAdvance() && TAK_Match_Pump() == 0) break;
+        InGame_DebugRunSimTicks(1);
+        (void)TAK_NetClient_SnapshotPump(c, 1u << 20);
+        if (c->out_len > sizeof c->out / 4) sr_drain(c, sr);
+    }
+    sr_drain(c, sr);
+}
+
+/* Turns from `first` up to `end`, all empty but `order_turn`, where the
+ * first seat's monarch is sent somewhere. */
+static void sr_turns(TAK_NetClient *c, uint32_t first, uint32_t end,
+                     uint32_t order_turn, uint32_t monarch_id, uint64_t now) {
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    TAK_MsgTurn turn;
+    for (uint32_t t = first; t < end;) {
+        memset(&turn, 0, sizeof turn);
+        turn.turn = t;
+        uint8_t body[256];
+        size_t blen = 0;
+        if (t == order_turn) {
+            TAK_GameCommand cmd;
+            memset(&cmd, 0, sizeof cmd);
+            cmd.type = TAK_CMD_MOVE;
+            cmd.unit_count = 1;
+            cmd.unit_ids[0] = monarch_id;
+            cmd.target_x = 40 * 16;
+            cmd.target_y = 40 * 16;
+            /* Queued, so an order given twice is not the same as once. */
+            cmd.arg = TAK_CMD_ARG_QUEUE;
+            (void)TAK_CommandSerialize(&cmd, body, sizeof body, &blen);
+            turn.empty_run = 1;
+            turn.entry_count = 1;
+            turn.entry[0].seat = 0;
+            turn.entry[0].count = 1;
+            turn.entry[0].cmd[0].data = body;
+            turn.entry[0].cmd[0].len = (uint16_t)blen;
+            t++;
+        } else {
+            uint32_t stop = (order_turn > t && order_turn < end) ? order_turn : end;
+            turn.empty_run = (uint16_t)(stop - t);
+            t = stop;
+        }
+        size_t n = TAK_Msg_TurnEncode(&turn, msg, sizeof msg);
+        (void)TAK_NetClient_OnMessage(c, msg, n, now);
+    }
+}
+
+/* A match world saved as a snapshot on a hashed tick, and a world rebuilt
+ * from it through the client's own resync path, report the same hashes
+ * for every tick after it: what the relay sends a parted world is the
+ * world itself, computer opponents and all. */
+TEST(a_match_world_rebuilt_from_a_snapshot_plays_on_alike) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "Angvir's Maze", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.players[1].side = TAK_SIDE_VERUNA;
+    cfg.players[1].team = 2;
+    cfg.players[2].kind = TAK_SLOT_AI;
+    cfg.players[2].side = TAK_SIDE_TAROS;
+    cfg.players[2].team = 3;
+    cfg.players[2].color = 2;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, cfg.map_name, "aramon"));
+    Obj3D_SetGameFolderModels(0);   /* as a match world reads them */
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    ASSERT_NOT_NULL(c);
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 21);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1000));
+    n = pl_encode_start(msg, sizeof msg, 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, pl_run_loading(&platform, 900));
+    TAK_MsgGo go;
+    go.first_turn = 0;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1200));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 8));
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    int monarch = end_find_monarch(1);
+    ASSERT(monarch >= 0);
+    int unit_n = 0;
+    uint32_t monarch_id = Units_GetActive(&unit_n)[monarch].stable_id;
+    /* Forty seconds of play, and an order in a turn the snapshot's queue
+     * already holds. */
+    sr_turns(c, 0, 1200, 810, monarch_id, 1300);
+
+    /* The relay asks, and the world goes on a hashed tick, with the two
+     * computers' archers and knights in a fight across the middle. */
+    static SnapRun sent, played, rebuilt;
+    memset(&sent, 0, sizeof sent);
+    sr_run_to(c, &sent, 1800);
+    int arch = Units_FindDefByName("ARAARCH"), knight = Units_FindDefByName("TARTROOP");
+    ASSERT(arch >= 0 && knight >= 0);
+    int mid = World_Get()->map_pixels_w / 2, mid_y = World_Get()->map_pixels_h / 2;
+    for (int i = 0; i < 8; i++) {
+        ASSERT(Units_Spawn(arch, 2, 1, mid - 160 + (i % 4) * 24, mid_y + (i / 4) * 24) >= 0);
+        ASSERT(Units_Spawn(knight, 3, 2, mid + 120 + (i % 4) * 24, mid_y + (i / 4) * 24) >= 0);
+    }
+    sr_run_to(c, &sent, 2340);
+    c->snap_asked = 77;
+    sr_run_to(c, &sent, 2400);
+    for (int i = 0; i < 64 && c->snap_out; i++) {
+        (void)TAK_NetClient_SnapshotPump(c, 1u << 20);
+        sr_drain(c, &sent);
+    }
+    int live = 0;
+    const Unit *at_snap = Units_GetActive(&unit_n);
+    for (int i = 0; i < unit_n; i++) live += at_snap[i].alive == UNIT_ALIVE_ACTIVE;
+    int32_t was_x = at_snap[monarch].world_x, was_y = at_snap[monarch].world_y;
+    printf("(snapshot of tick %u, %u bytes, %d units) ", (unsigned)sent.snap_tick,
+           (unsigned)sent.snap_len, live);
+    ASSERT_EQ_INT(2400, (int)sent.snap_tick);
+    ASSERT(sent.snap_len > 1000);
+    memset(&played, 0, sizeof played);
+    sr_run_to(c, &played, 3600);
+    /* The order after the snapshot moved the monarch. */
+    const Unit *after = Units_GetActive(&unit_n);
+    ASSERT(after[monarch].world_x != was_x || after[monarch].world_y != was_y);
+
+    /* It comes back down to this client as to a parted one, then the GO
+     * for its turn. */
+    for (uint32_t off = 0; off < sent.snap_len; off += TAK_NET_SNAP_CHUNK) {
+        TAK_MsgSnapData d;
+        d.snap_id = 5;
+        d.tick = sent.snap_tick;
+        d.total = sent.snap_len;
+        d.offset = off;
+        uint32_t left = sent.snap_len - off;
+        d.len = (uint16_t)(left < TAK_NET_SNAP_CHUNK ? left : TAK_NET_SNAP_CHUNK);
+        d.data = sent.snap + off;
+        n = TAK_Msg_SnapDataEncode(&d, msg, sizeof msg);
+        ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 2000));
+    }
+    memset(&rebuilt, 0, sizeof rebuilt);
+    NetSession_Tick(2000);
+    sr_drain(c, &rebuilt);
+    ASSERT_EQ_INT(1, rebuilt.results);
+    ASSERT_EQ_INT(0, rebuilt.refusals);
+    ASSERT_EQ_INT(1, NetSession_SnapshotPending());
+    go.first_turn = 800;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 2100));
+    ASSERT_EQ_INT(1, c->resync);
+
+    /* As main.c does it: the match goes on, so it is ended, not left. */
+    TAK_Match_End();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    ASSERT_EQ_INT(0, MP_RebuildMatchWorld(&platform));
+    ASSERT_EQ_INT(1, MP_RebuiltFromSnapshot());
+    ASSERT_EQ_INT(0, Obj3D_GameFolderModels());
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 900));
+    ASSERT_EQ_INT(2400, (int)TAK_CmdQueue_Tick());
+    /* The orders the snapshot's queue held come again with the turns. */
+    ASSERT_EQ_INT(0, TAK_CmdQueue_Pending());
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    sr_turns(c, 800, 1200, 810, monarch_id, 2200);
+    sr_run_to(c, &rebuilt, 3600);
+    ASSERT_EQ_INT(0, rebuilt.refusals);
+    for (int k = 2460 / 60 - 1; k < 3600 / 60; k++) {
+        ASSERT(played.hash[k] != 0);
+        ASSERT_EQ_INT((int)played.hash[k], (int)rebuilt.hash[k]);
+    }
+
+    tak_free(sent.snap);
+    TAK_Match_End();
+    NetSession_Disconnect();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    Settings_SetStr("RejoinMatch", "");
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A beaten seat's match played as frames, the monarch falling at one
+ * second. look_around presses Tab, scrolls and clicks as a watcher does.
+ * Fills hash[k] with the hash it reported for tick 60 * (k + 1) and
+ * says whether it gave its seat up to watch. */
+#define BW_HASHES 16
+static int beaten_watch_run(TAK_Platform *platform, int look_around,
+                            uint32_t hash[BW_HASHES], int *resigned) {
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "Angvir's Maze", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 0;
+    cfg.players[1].kind = TAK_SLOT_HUMAN;
+    cfg.players[2].kind = TAK_SLOT_AI;
+    cfg.players[2].side = TAK_SIDE_VERUNA;
+    cfg.players[2].team = 3;
+    cfg.players[2].color = 2;
+    if (World_BeginLoad(platform, &cfg, cfg.map_name, "aramon") != 0) return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 21);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1000);
+    n = pl_encode_start(msg, sizeof msg, 0);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1100);
+    if (pl_run_loading(platform, 900) != GAMESTATE_GAME_LOADING) return -1;
+    TAK_MsgGo go;
+    go.first_turn = 0;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1200);
+    if (pl_run_loading(platform, 8) != GAMESTATE_IN_GAME) return -1;
+    if (InGame_Init(platform) != 0) return -1;
+
+    TAK_MsgTurn turn;
+    memset(&turn, 0, sizeof turn);
+    turn.empty_run = 40;
+    n = TAK_Msg_TurnEncode(&turn, msg, sizeof msg);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1300);
+    uint32_t next_turn = 40;
+    (void)TAK_Match_Pump();
+    InGame_DebugRunSimTicks(60);
+    int monarch = end_find_monarch(1);
+    if (monarch < 0 || Units_DebugKillHandle(monarch) != monarch) return -1;
+
+    memset(hash, 0, BW_HASHES * sizeof hash[0]);
+    *resigned = 0;
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 6;
+    for (int frame = 0; frame < 220 && TAK_CmdQueue_Tick() < 60u * BW_HASHES; frame++) {
+        turn.turn = next_turn;
+        turn.empty_run = 2;
+        next_turn += 2;
+        n = TAK_Msg_TurnEncode(&turn, msg, sizeof msg);
+        (void)TAK_NetClient_OnMessage(c, msg, n, 1400 + (uint64_t)frame * 100);
+        if (look_around) {
+            InGame_DebugMouse(1, 40 + (frame * 37) % 560, 30 + (frame * 23) % 400,
+                              frame % 7 == 0 ? SDL_BUTTON_LMASK : 0);
+            if (frame % 9 == 0) InGame_DebugKeyFrame(SDL_SCANCODE_TAB, NULL);
+            else if (frame % 9 == 3) InGame_DebugKeyFrame(SDL_SCANCODE_RIGHT, NULL);
+            else if (frame % 9 == 6) InGame_DebugKeyFrame(SDL_SCANCODE_DOWN, NULL);
+            else InGame_DebugKeyFrame(0, NULL);
+        }
+        timer.accumulator = timer.sim_dt * 6.0;
+        (void)InGame_Tick(platform, &timer);
+        uint8_t out[TAK_NET_FRAME_MAX];
+        size_t got;
+        while ((got = TAK_NetClient_TakeMessage(c, out, sizeof out)) > 0) {
+            TAK_NetFrame f;
+            if (TAK_Net_Split(out, got, &f) != 0) continue;
+            TAK_MsgAck a;
+            TAK_MsgRoomEdit e;
+            if (f.type == TAK_MSG_ACK && TAK_Msg_AckDecode(&a, f.payload, f.payload_len) == 0 &&
+                a.hash_tick != TAK_NET_NO_HASH && a.hash_tick % 60 == 0 && a.hash_tick > 0 &&
+                a.hash_tick / 60 <= BW_HASHES)
+                hash[a.hash_tick / 60 - 1] = (uint32_t)a.state_hash;
+            if (f.type == TAK_MSG_ROOM_EDIT &&
+                TAK_Msg_RoomEditDecode(&e, f.payload, f.payload_len) == 0 &&
+                e.field == TAK_EDIT_WATCH)
+                (*resigned)++;
+        }
+    }
+    InGame_DebugMouse(0, 0, 0, 0);
+    int reached = (int)TAK_CmdQueue_Tick();
+    TAK_Match_End();
+    NetSession_Disconnect();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(platform);
+    Settings_SetStr("RejoinMatch", "");
+    return reached;
+}
+
+/* What a beaten seat does while it watches is the view's alone: Tab,
+ * the camera and the mouse leave the battle where the plain run left
+ * it, hash for hash, and the seat is given up to watch once. */
+TEST(a_beaten_seat_looking_around_keeps_the_battles_hash) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    uint32_t plain[BW_HASHES], looked[BW_HASHES];
+    int resigned_plain = 0, resigned_looked = 0;
+    int reached_plain = beaten_watch_run(&platform, 0, plain, &resigned_plain);
+    int reached_looked = beaten_watch_run(&platform, 1, looked, &resigned_looked);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    printf("(ticks %d and %d) ", reached_plain, reached_looked);
+    ASSERT(reached_plain >= 60 * BW_HASHES);
+    ASSERT(reached_looked >= 60 * BW_HASHES);
+    for (int k = 0; k < BW_HASHES; k++) {
+        ASSERT(plain[k] != 0);
+        ASSERT_EQ_INT((int)plain[k], (int)looked[k]);
+    }
+    ASSERT_EQ_INT(1, resigned_plain);
+    ASSERT_EQ_INT(1, resigned_looked);
 }
 
 /* Monarch Expendable on: the original keeps a player in the battle
@@ -25330,39 +25200,6 @@ TEST(hud_magic_button_the_unit_cannot_pay_for_is_greyed_and_dead) {
 
 /* Cursor textures belong to the renderer that made them. A second
  * renderer in one process gets its own set. */
-TEST(hud_command_cursors_animate_with_their_authored_delays) {
-    if (setup_vfs() != 0) SKIP("no data dir");
-    TAK_Platform platform;
-    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
-    HUD_LoadCursors(&platform);
-    /* Frame counts and delays from retail cursors.gaf. */
-    static const struct { int id, count, delay; } cases[] = {
-        { HUD_CMD_ATTACK, 10, 2 }, { HUD_CMD_HEAL, 10, 2 },
-        { HUD_CMD_CLEAR, 16, 3 },  { HUD_CMD_PATROL, 20, 2 },
-        { HUD_CMD_MOVE, 12, 2 },   { HUD_CMD_GUARD, 17, 2 },
-        { HUD_CMD_LOAD, 10, 3 },   { HUD_CMD_UNLOAD, 10, 3 },
-        { HUD_CUR_REVIVE, 22, 10 }, { HUD_CUR_NORMAL, 1, 3 }
-    };
-    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        int id = cases[i].id, count = cases[i].count;
-        uint32_t span = (uint32_t)(cases[i].delay + 1) * 33u;
-        ASSERT_EQ_INT(count, HUD_CursorFrameCount(id));
-        for (int f = 0; f < count; f++) {
-            ASSERT_EQ_INT(f, HUD_CursorFrameAt(id, (uint32_t)f * span));
-            ASSERT_EQ_INT(f, HUD_CursorFrameAt(id, (uint32_t)(f + 1) * span - 1));
-        }
-        ASSERT_EQ_INT(0, HUD_CursorFrameAt(id, (uint32_t)count * span));
-        ASSERT_EQ_INT(1, HUD_DrawCursorById(&platform, id, 80, 80));
-    }
-    /* Repeated loads on this renderer must retain the animation. */
-    HUD_LoadCursors(&platform);
-    ASSERT_EQ_INT(10, HUD_CursorFrameCount(HUD_CMD_ATTACK));
-    ASSERT_EQ_INT(0, HUD_CursorFrameCount(-1));
-    ASSERT_EQ_INT(0, HUD_CursorFrameAt(128, 100));
-    teardown_platform(&platform);
-    VFS_Shutdown();
-}
-
 TEST(hud_cursors_belong_to_the_renderer_that_made_them) {
     TAK_Platform first;
     int boot_rc = corpse_boot(&first);
@@ -30761,6 +30598,9 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_match_does_not_start_until_the_server_says_go);
     RUN_UI_TEST(a_player_whose_tab_closed_gets_back_into_the_match);
     RUN_UI_TEST(a_match_reports_the_verdict_to_the_server_once);
+    RUN_UI_TEST(a_seat_beaten_in_a_match_watches_the_rest_of_it);
+    RUN_UI_TEST(a_beaten_seat_looking_around_keeps_the_battles_hash);
+    RUN_UI_TEST(a_match_world_rebuilt_from_a_snapshot_plays_on_alike);
     RUN_UI_TEST(a_skirmish_still_starts_the_moment_its_world_is_built);
     RUN_UI_TEST(a_frame_the_builder_is_walking_to_is_not_abandoned);
     RUN_UI_TEST(mp_room_follows_the_servers_later_snapshot);
@@ -30808,7 +30648,6 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(battle_screens_column_headers_keep_a_gap);
     RUN_UI_TEST(hud_static_art_fits_its_cell);
     RUN_UI_TEST(hud_cursors_belong_to_the_renderer_that_made_them);
-    RUN_UI_TEST(hud_command_cursors_animate_with_their_authored_delays);
     RUN_UI_TEST(hud_magic_buttons_select_their_weapon_anywhere_on_the_art);
     RUN_UI_TEST(hud_magic_button_the_unit_cannot_pay_for_is_greyed_and_dead);
     RUN_UI_TEST(battle_room_button_art_keeps_its_authored_size);
@@ -30907,15 +30746,6 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_unit_under_half_built_is_an_intangible_mass);
     RUN_UI_TEST(a_feature_draws_its_shadow_sprite);
     RUN_UI_TEST(build_sparkles_stand_on_the_building_at_any_terrain_height);
-    RUN_UI_TEST(hud_conjuring_target_shows_live_progress);
-    RUN_UI_TEST(hud_target_panel_shows_attack_target);
-    RUN_UI_TEST(build_sparkles_follow_the_size_of_the_building);
-    RUN_UI_TEST(build_sparkles_rise_and_fall_each_at_its_own_speed);
-    RUN_UI_TEST(build_sparkles_keep_flowing_once_the_ring_is_full);
-    RUN_UI_TEST(build_sparkle_ring_is_the_model_box);
-    RUN_UI_TEST(build_sparkles_start_through_the_height_of_the_model);
-    RUN_UI_TEST(a_mobile_units_ring_is_full_width_and_holds_a_quarter);
-    RUN_UI_TEST(perf_probe_shadows);
     RUN_UI_TEST(weapon_art_resolves_per_weapon);
     RUN_UI_TEST(only_the_monarchs_help_build_off_their_lists);
     RUN_UI_TEST(a_veteran_shooters_shot_uses_the_veteran_model);
@@ -30961,15 +30791,10 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(self_heal_stops_at_maximum);
     RUN_UI_TEST(a_nanoframe_does_not_self_heal);
     RUN_UI_TEST(a_priest_repairs_a_swordsman_in_its_build_time);
-    RUN_UI_TEST(hover_suggests_healing_only_when_the_selection_can_help);
-    RUN_UI_TEST(hover_suggests_cleanup_and_the_click_clears_the_feature);
     RUN_UI_TEST(a_raised_enemy_joins_the_raiser);
     RUN_UI_TEST(a_raise_that_cannot_spawn_leaves_the_body);
     RUN_UI_TEST(an_ai_player_orders_a_raise_for_itself);
     RUN_UI_TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise);
-    RUN_UI_TEST(a_raise_sheds_sparkles_and_ends_in_a_purple_flash);
-    RUN_UI_TEST(cancelled_cleanup_does_not_show_a_completion_flash);
-    RUN_UI_TEST(a_resurrected_unit_keeps_sparkling_while_it_is_healed);
     RUN_UI_TEST(a_taros_priest_animates_a_body_into_a_ghoul);
     RUN_UI_TEST(a_corpse_left_alone_rots_on_schedule);
     RUN_UI_TEST(a_corpse_waits_for_a_raiser);

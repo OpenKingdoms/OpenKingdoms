@@ -1,6 +1,8 @@
 #ifndef TAK_INGAME_H
 #define TAK_INGAME_H
 
+#include <stdint.h>
+
 #include "tak_platform.h"
 #include "tak_gameloop.h"
 
@@ -32,6 +34,14 @@ void InGame_Shutdown(void);
  * end-state rules). Integration tests use this to fast-forward a
  * skirmish without paying software-render cost per frame. */
 void InGame_DebugRunSimTicks(int ticks);
+
+/* 1 once when InGame_Tick left the battle because the server restarted
+ * this world from its turn log. The caller ends the match world without
+ * leaving the match and builds it again with MP_RebuildMatchWorld. */
+int InGame_TakeResync(void);
+/* The battle just built is a resync: it replays to the present behind a
+ * "Rejoining the battle" plate rather than on screen. */
+void InGame_SetRejoining(uint32_t until_tick);
 
 /* "Zach takes over from the computer." for five seconds of battle after
  * a seat changes hands, else NULL. */
@@ -69,6 +79,7 @@ int  InGame_CommandCursorAt(int mode, int32_t world_x, int32_t world_y);
 /* The same for a unit already picked where it is drawn (-1 for none),
  * as a view or an embedding host picks it. */
 int  InGame_HoverCursorOn(int hit, int32_t world_x, int32_t world_y);
+int  InGame_HoverCursorOnMods(int hit, int32_t world_x, int32_t world_y, int mods);
 int  InGame_CommandCursorOn(int mode, int hit, int32_t world_x, int32_t world_y);
 
 /* One left-button drag box on the game world, corners in world

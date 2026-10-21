@@ -51,6 +51,10 @@
  * legacy:150077-150084, 39237). Taken only for a def Units_DefCanRepeat
  * names. */
 #define TAK_CMD_ARG_ENDLESS      0x2000u
+/* In arg of RECLAIM_FEATURE: a sweep dragged over a box centred on the
+ * target point, build_type_id its half size in cells, across << 8 |
+ * down (legacy:238755-238767). */
+#define TAK_CMD_ARG_AREA         0x1000u
 /* FACTORY_ENQUEUE and FACTORY_DEQUEUE: how many in the low bits, 0
  * meaning one. TAK_FACTORY_ALL makes an enqueue run without end and a
  * dequeue take every one (the original's Ctrl click). */
@@ -143,6 +147,8 @@ typedef enum TAK_CommandType {
     /* Ctrl+D: the units start their self destruct, or stop it when any
      * of them already counts down. */
     TAK_CMD_SELF_DESTRUCT,
+    /* arg: 1 the units cloak, 0 they stop (legacy:9757-9779). */
+    TAK_CMD_CLOAK,
 
     TAK_CMD_COUNT
 } TAK_CommandType;

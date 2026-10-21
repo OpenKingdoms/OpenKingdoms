@@ -51,6 +51,10 @@ typedef struct FeatureDef {
     int      resurrectable;   /* a raiser may target it (legacy:127369) */
     int      animatable;      /* an animator may target it (legacy:127372) */
     int      is_building;     /* isbuilding (legacy:127378) */
+    /* isstone and isfrozen: a statue, its model painted all over with
+     * its side's stone or ice (legacy:127377-127380, 211211-211215). */
+    uint8_t  is_stone;
+    uint8_t  is_frozen;
     /* `featuredead`: what this feature leaves behind when it is
      * destroyed. Kept as a name and resolved on use, because the
      * feature it names may load after this one (legacy:127524). */
@@ -127,15 +131,6 @@ int  Features_FindResurrectableAt(const struct GameWorld *world,
                                   int32_t world_x, int32_t world_y);
 int  Features_FindAnimatableAt(const struct GameWorld *world,
                                int32_t world_x, int32_t world_y);
-
-/* Fill out_x/out_y with the centres of up to cap sweepable features
- * (reclaimable, resurrectable, or animatable) in the world-pixel
- * rectangle. Returns the count found. */
-int  Features_CollectSweepableInRect(const struct GameWorld *world,
-                                     int32_t x0, int32_t y0,
-                                     int32_t x1, int32_t y1,
-                                     int32_t *out_x, int32_t *out_y,
-                                     int cap);
 
 /* Delete instance `idx`. The array is compacted, so indices above idx
  * shift down by one and the cell stops blocking movement and drawing

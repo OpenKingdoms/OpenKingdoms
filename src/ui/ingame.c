@@ -7,6 +7,7 @@
  */
 
 #include "tak_ingame.h"
+#include "tak_savegame.h"
 #include "tak_settings.h"
 #include "tak_gameloop.h"
 #include "tak_game_speed.h"
@@ -18,6 +19,7 @@
 #include "tak_terrain.h"
 #include "tak_unit.h"
 #include "tak_minimap.h"
+#include "tak_message_box.h"
 #include "tak_camera.h"
 #include "tak_ui.h"
 #include "tak_debug_panel.h"
@@ -44,7 +46,6 @@
 #include "tak_view.h"
 #include "tak_view3d.h"
 #include "tak_view_shake.h"
-#include "tak_features.h"
 #include "tak_mission_script.h"
 #include "tak_briefing.h"
 #include "tak_music.h"
@@ -80,7 +81,16 @@ static struct {
     uint8_t mm_look;
     /* A dialog is up and the clock has stopped. */
     uint8_t paused;
+    /* Ctrl+D's question is up, and whether the clock ran before it. */
+    uint8_t sd_ask;
+    uint8_t sd_was_paused;
+    uint8_t sd_prev_enter, sd_prev_esc;
     uint8_t catching_up;   /* this frame ran extra ticks to catch the match up */
+    /* Rebuilt by a resync and replaying behind a plate, at least to the
+     * tick the old world had reached. */
+    uint8_t rejoining;
+    uint32_t rejoin_until;
+    uint32_t seat_gone_ticks;
     /* Who played each seat at the last tick, and the line that says a
      * seat changed hands, with the tick it changed on. */
     uint8_t  seat_kind[TAK_MAX_PLAYERS];
@@ -94,6 +104,12 @@ static struct {
     char  banner_defeat[32];
     /* A skirmish the local seat lost, played on for it to watch. */
     uint8_t play_on;
+    /* The local seat was beaten and watches the battle run on, from
+     * this tick. */
+    uint8_t beaten;
+    int beaten_tick;
+    /* The seat this machine plays, whichever view Tab shows. */
+    int own_seat;
     /* Each player had units on the map at the last look, for the line
      * that says they have fallen. */
     uint8_t had_units[TAK_MAX_PLAYERS + 1];
@@ -110,6 +126,20 @@ static struct {
 
 /* A battle asked to open in the 3D view (the --view3d flag). */
 static int g_request_view3d;
+
+/* InGame_Tick left the battle for a resync, not for good. */
+static int ig_resync;
+
+int InGame_TakeResync(void) {
+    int r = ig_resync;
+    ig_resync = 0;
+    return r;
+}
+
+void InGame_SetRejoining(uint32_t until_tick) {
+    ig.rejoining = 1;
+    ig.rejoin_until = until_tick;
+}
 
 static const TAK_View *ig_view(void) {
     if (!ig.view) ig.view = View_Classic();
@@ -243,6 +273,20 @@ static int InGame_CalledResult(const GameWorld *world, int seat, int losses) {
     return 0;
 }
 
+/* Beaten while the battle runs on: watch the whole of it as a watcher
+ * does (#357), with Tab through the players' views, and give no
+ * further order. Presentation only. */
+static void ig_watch_beaten(int tick) {
+    if (ig.beaten) return;
+    ig.beaten = 1;
+    ig.beaten_tick = tick;
+    TAK_Match_SetBeaten();
+    Fog_SetSeeAll(1);
+    Units_SelectSingle(-1);
+}
+
+static int ig_spectating(void) { return TAK_Match_IsWatching() || ig.beaten; }
+
 /* How the local seat reads the verdict (legacy:206655-206662): defeat
  * once it built something and has nothing left (legacy:240018-240028),
  * victory when the battle ends with it standing (legacy:239992-240013).
@@ -266,6 +310,8 @@ static void InGame_ReadVerdict(GameWorld *world, const int *present) {
     fprintf(stderr, "Skirmish: %s for seat %d at tick %d\n",
             world->skirmish_end_reason, local,
             world->skirmish_elapsed_ticks);
+    if (result < 0 && TAK_Match_IsLive() && !world->skirmish_game_over)
+        ig_watch_beaten(world->skirmish_elapsed_ticks);
 }
 
 /* In a match the verdict goes to the server for the leaderboard: the
@@ -325,6 +371,9 @@ static void InGame_AnnounceFallen(const GameWorld *world, int player_id) {
                      name, at + 2);
     else snprintf(line, sizeof line, "%s", form);
     Chat_Push(line, CHAT_TYPE_MINE, player_id, SDL_GetTicks());
+    /* Every fall is heard, our own cue (D-043), but not the old ones a
+     * catch up replays. */
+    if (TAK_Match_TicksBehind() <= SIM_TICKS_PER_SECOND) GameSound_PlayFallen();
 }
 
 /* The verdict belongs to the simulation and is the same on every
@@ -348,15 +397,21 @@ static int InGame_StandingAtWar(const int *standing, int n_standing) {
     return 0;
 }
 
+/* A match's rules, live or in its replay. */
+static int ig_in_match(void) {
+    const TAK_ReplayHeader *h = Replay_IsPlaying() ? Replay_Header() : NULL;
+    return TAK_Match_IsLive() || (h && h->turn_ticks != 0);
+}
+
 /* A lost skirmish goes on while two seats still standing are at war, for
- * the player to watch (D-034). The first end keeps its verdict and cue. */
-int InGame_PlayOn(void) {
-    GameWorld *world = World_Get();
+ * the player to watch with the fog lifted (D-034). The first end keeps
+ * its verdict and cue. */
+static int ig_play_on(GameWorld *world) {
     if (ig.play_on) return 1;
     if (!world || !world->loaded || !world->skirmish_game_over) return 0;
     if (world->skirmish_local_result >= 0) return 0;
     if (world->mission.objective_count > 0 || world->mission.placement_count > 0) return 0;
-    if (TAK_Match_IsLive() || Replay_IsPlaying()) return 0;
+    if (ig_in_match()) return 0;
     int unit_count = 0;
     const Unit *units = Units_GetActive(&unit_count);
     int standing[TAK_MAX_PLAYERS];
@@ -369,7 +424,13 @@ int InGame_PlayOn(void) {
     world->skirmish_game_over = 0;
     world->skirmish_stats_open = 0;
     ig.play_on = 1;
+    ig_watch_beaten(world->skirmish_end_tick);
     return 1;
+}
+
+int InGame_PlayOn(void) {
+    if (Replay_IsPlaying()) return ig.play_on;
+    return ig_play_on(World_Get());
 }
 
 int InGame_PlayingOn(void) { return ig.play_on; }
@@ -388,27 +449,48 @@ static void InGame_StampStanding(GameWorld *world, int tick) {
 }
 
 static void InGame_EvaluateSkirmishRules(GameWorld *world) {
-    if (!world || world->skirmish_game_over) return;
+    if (!world) return;
     if (world->mission.objective_count > 0 ||
         world->mission.placement_count > 0) {
         return;
     }
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int have[TAK_MAX_PLAYERS + 1] = { 0 };
+    /* A player is named the tick their army goes, whatever the battle's
+     * state. */
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        have[p] = player_units_present(world, p, units, unit_count);
+        if (ig.had_units[p] && have[p] <= 0) InGame_AnnounceFallen(world, p);
+        ig.had_units[p] = (uint8_t)(have[p] > 0);
+    }
+    /* The relay gave this seat to the computer after its world kept
+     * parting from the others. Held five seconds, since a seat coming
+     * back after a drop is the computer's for a turn or two. */
+    int gone = TAK_Match_IsLive() && !ig.beaten && !ig.rejoining &&
+               ig.own_seat >= 1 && ig.own_seat <= TAK_MAX_PLAYERS &&
+               TAK_Match_TicksBehind() <= SIM_TICKS_PER_SECOND &&
+               (world->resigned[ig.own_seat] ||
+                world->cfg.players[ig.own_seat - 1].kind == TAK_SLOT_AI);
+    ig.seat_gone_ticks = gone ? ig.seat_gone_ticks + 1 : 0;
+    if (ig.seat_gone_ticks > 5u * SIM_TICKS_PER_SECOND) {
+        ig_watch_beaten(world->skirmish_elapsed_ticks);
+        Chat_Push("Your battle kept going out of step, so the computer plays your "
+                  "army and you watch.", CHAT_TYPE_NOTICE, CHAT_OWNER_SYSTEM,
+                  SDL_GetTicks());
+    }
+    if (world->skirmish_game_over) return;
     int built = 0;
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
         built += world->stats[p].units_built;
     }
     if (built <= 0) return;
 
-    int unit_count = 0;
-    const Unit *units = Units_GetActive(&unit_count);
     int present[TAK_MAX_PLAYERS + 1] = { 0 };
     int standing[TAK_MAX_PLAYERS];
     int n_standing = 0, human_standing = 0;
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
-        int have = player_units_present(world, p, units, unit_count);
-        if (ig.had_units[p] && have <= 0) InGame_AnnounceFallen(world, p);
-        ig.had_units[p] = (uint8_t)(have > 0);
-        present[p] = world->resigned[p] ? 0 : have;
+        present[p] = world->resigned[p] ? 0 : have[p];
         if (present[p] <= 0) continue;
         /* The stamp the end screen prints as Time (legacy:206617). */
         world->stats[p].last_alive_tick = world->skirmish_elapsed_ticks;
@@ -544,6 +626,9 @@ static double prof_now_ms(void) {
 static void InGame_OpenStatsAfterBanner(GameWorld *world, int elapsed) {
     if (!world->skirmish_game_over || world->skirmish_stats_open) return;
     if (elapsed - world->skirmish_end_tick >= IG_BANNER_TICKS) {
+        /* A skirmish the player lost plays on while two sides still
+         * fight, and the statistics wait for its end (D-034). */
+        if (ig_play_on(world)) return;
         world->skirmish_stats_open = 1;
     }
 }
@@ -585,6 +670,30 @@ const char *InGame_SeatNotice(void) {
     /* Five seconds of battle, on the battle's own clock. */
     if (TAK_CmdQueue_Tick() - ig.seat_notice_tick > 5u * SIM_TICKS_PER_SECOND) return NULL;
     return ig.seat_notice;
+}
+
+/* The battle hidden while it rejoins the others. */
+static void ig_rejoin_plate(TAK_Platform *platform, SDL_Surface *off) {
+    if (off) SDL_FillRect(off, NULL, SDL_MapRGBA(off->format, 0, 0, 0, 255));
+    HUD_DrawMessageLine(platform, "Rejoining the battle...");
+    UI_Present(platform);
+    memcpy(ig.prev_keys, SDL_GetKeyboardState(NULL), sizeof(ig.prev_keys));
+}
+
+/* The relay asked for this world to rebuild one that parted. It goes
+ * between two ticks on a hashed one, the way a save is taken. */
+static void ig_give_snapshot(void) {
+    if (!TAK_Match_SnapshotAsked()) return;
+    uint32_t tick = TAK_CmdQueue_Tick();
+    if (tick % TAK_NET_HASH_TICKS != 0) return;
+    char err[160];
+    size_t len = 0;
+    double t0 = prof_now_ms();
+    uint8_t *bytes = Save_WriteMemory(&len, err, sizeof err);
+    if (!bytes) fprintf(stderr, "Match: no snapshot of this world: %s\n", err);
+    else fprintf(stderr, "Match: snapshot of tick %u, %u bytes in %.1f ms\n",
+                 (unsigned)tick, (unsigned)len, prof_now_ms() - t0);
+    TAK_Match_SnapshotGive(bytes, (uint32_t)len, tick);
 }
 
 static void InGame_SimulationStep(GameWorld *world) {
@@ -691,6 +800,7 @@ static void InGame_SimulationStep(GameWorld *world) {
      * as it ends and changes nothing. */
     BattleRecord_Tick(world);
     PerfProbe_AfterTick(world, prof_now_ms() - t0);
+    ig_give_snapshot();
 }
 
 void InGame_DebugRunSimTicks(int ticks) {
@@ -719,6 +829,15 @@ int InGame_Init(TAK_Platform *platform) {
     memset(&ig, 0, sizeof(ig));
     ig.platform = platform;
     ig.view = View_Classic();
+    ig.own_seat = TAK_Match_IsWatching() ? 0 : Units_LocalPlayer();
+    /* Who stands as the battle opens, so a fall before its first tick is
+     * named too, and one a saved battle already holds is not. */
+    if (World_Get()) {
+        int n = 0;
+        const Unit *u = Units_GetActive(&n);
+        for (int p = 1; p <= TAK_MAX_PLAYERS; p++)
+            ig.had_units[p] = (uint8_t)(player_units_present(World_Get(), p, u, n) > 0);
+    }
     /* A battle starts in the classic view, where buildings never turn and
      * the classic preview draws the ghost. */
     HUD_SetBuildTurning(0);
@@ -869,6 +988,10 @@ static void InGame_DrawMarquee(TAK_Platform *platform,
 static void InGame_DrawSkirmishBanner(const GameWorld *world) {
     if (!world || world->skirmish_stats_open) return;
     if (!world->skirmish_game_over && world->skirmish_local_result >= 0) return;
+    /* A beaten seat sees its defeat for as long as an end would show
+     * it, then the battle it is watching. */
+    if (!world->skirmish_game_over && ig_spectating() &&
+        world->skirmish_elapsed_ticks - ig.beaten_tick >= IG_BANNER_TICKS) return;
     if (!ig.banner_font) return;
     SDL_Surface *off = UI_Offscreen();
     if (!off) return;
@@ -902,7 +1025,7 @@ static void ig_watch_next(const GameWorld *world) {
 
 /* What a watcher is looking at, over the play area. */
 static int ig_watch_line(const GameWorld *world, char *out, size_t cap) {
-    if (!TAK_Match_IsWatching()) return 0;
+    if (!ig_spectating()) return 0;
     if (Fog_SeesAll()) {
         snprintf(out, cap, "Watching the whole map. Tab shows each player's view.");
         return 1;
@@ -927,49 +1050,41 @@ static void InGame_DrawView3DNotice(TAK_Platform *platform) {
 }
 
 /* A released drag box: with Load armed and one transport selected, a
- * pickup of every unit in it (legacy:238654-238692). With Clear armed,
- * sweep every feature in the box: each unit in the selection makes its
- * own choice per feature (raise if it can, reclaim otherwise). Without
- * a command armed, box-select. */
+ * pickup of every unit in it (legacy:238654-238692), else a box select. */
 void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                       int shift_held) {
     GameWorld *world = World_Get();
     if (!world || !world->loaded) return;
-    int cmd = HUD_GetCommandMode();
-    if (cmd == HUD_CMD_LOAD &&
+    if (HUD_GetCommandMode() == HUD_CMD_LOAD &&
         TAK_Cmd_EmitLoadInRect(x0, y0, x1, y1, shift_held) >= 0) {
         if (shift_held) ig.shift_hold = 1;
         else HUD_ClearCommandMode();
         return;
     }
-    if (cmd == HUD_CMD_CLEAR) {
-        int32_t fx[256], fy[256];
-        int nf = Features_CollectSweepableInRect(world,
-                     x0, y0, x1, y1, fx, fy, 256);
-        for (int i = 0; i < nf; i++) {
-            int32_t gx = fx[i], gy = fy[i];
-            Units_GroundUnderPoint(fx[i], fy[i], &gx, &gy);
-            /* First command replaces the queue (or appends when shift
-             * is held); every subsequent one queues behind it so units
-             * work through the whole area. */
-            uint16_t q = (i > 0 || shift_held) ? TAK_CMD_ARG_QUEUE : 0;
-            TAK_Cmd_EmitSelection(TAK_CMD_RECLAIM_FEATURE,
-                                  gx, gy, -1, 0, q);
+    /* A drag with the broom sweeps the box between the ground under its
+     * two ends (legacy:238755-238767, legacy:243837-243841). */
+    if (HUD_GetCommandMode() == HUD_CMD_CLEAR) {
+        int32_t ax = x0, ay = y0, bx = x1, by = y1;
+        Units_GroundUnderPoint(x0, y0, &ax, &ay);
+        Units_GroundUnderPoint(x1, y1, &bx, &by);
+        int hw = (abs(bx - ax) / 2 + 15) / 16, hh = (abs(by - ay) / 2 + 15) / 16;
+        if (hw > 255) hw = 255;
+        if (hh > 255) hh = 255;
+        uint16_t q = shift_held ? (uint16_t)TAK_CMD_ARG_QUEUE : 0;
+        if (TAK_Cmd_EmitSelection(TAK_CMD_RECLAIM_FEATURE, (ax + bx) / 2,
+                                  (ay + by) / 2, -1,
+                                  (uint16_t)(hw << 8 | hh),
+                                  (uint16_t)(TAK_CMD_ARG_AREA | q)) >= 0) {
+            if (shift_held) ig.shift_hold = 1;
+            else HUD_ClearCommandMode();
+            return;
         }
-        if (nf > 0) ig_play_order_ack(world, "default");
-        fprintf(stderr, "Sweep area: %d features\n", nf);
-        if (!shift_held) HUD_ClearCommandMode();
-        return;
     }
     int n = Units_SelectInRect(x0, y0, x1, y1, shift_held);
     /* Shift adds to the selection without a voice (legacy:237803). */
     if (n > 0 && !shift_held) ig_play_box_select_ack();
     fprintf(stderr, "Marquee select: %d units\n", n);
 }
-
-/* The cursor the world shows under a point with no command armed.
- * Heal/resume on an own unit, attack on an enemy, then selection.
- * On features, resurrection takes precedence over cleanup. */
 
 /* An enemy under the pointer, for the selection: the best any one unit
  * answers (legacy:238791-238838). Attack when a weapon in hand can take
@@ -981,13 +1096,24 @@ static int ig_enemy_cursor(int hover) {
     return armed > 0 ? HUD_CUR_TOOFAR : -1;
 }
 
-static int ig_hover_cursor_inner(int hover, int32_t world_x, int32_t world_y, int mods) {
+/* The cursor the world shows under a point with no command armed
+ * (legacy manual §IV.2): the select hand over your own unit with Shift
+ * held, heal over your own frame or damaged unit the selection can mend
+ * (legacy:186541-186545), attack over an enemy one of your selected
+ * units can hit, the select hand over any other unit, then revive over a
+ * body the selection can raise, sweep over a feature it can clear, and
+ * the pointer otherwise. */
+int InGame_HoverCursorOnMods(int hover, int32_t world_x, int32_t world_y, int mods) {
     if (hover >= 0) {
         if ((mods & IG_CLICK_SHIFT) && Units_IsSelectable(hover) &&
             g_units_get_player(hover) == Units_LocalPlayer()) return HUD_CUR_SELECT;
         if (Units_SelectionCanRepair(hover)) return HUD_CMD_HEAL;
+        /* Only an enemy is something to attack. An ally's unit takes
+         * no order from us, and the sword over it said otherwise. */
         int enemy = Units_PlayersAreEnemies(Units_LocalPlayer(),
                                             g_units_get_player(hover));
+        /* A frame is never selected, so one nobody can help is the
+         * ground under it, as its click is (legacy:186553, 186603). */
         if (!enemy && !Units_IsSelectable(hover)) {
             hover = -1;
         } else {
@@ -996,6 +1122,8 @@ static int ig_hover_cursor_inner(int hover, int32_t world_x, int32_t world_y, in
             if (cur >= 0) return cur;
         }
     }
+    /* Bodies are looked up on the ground under the pointer, which the
+     * terrain lift puts further down the map than the flat reading. */
     int32_t gx = world_x, gy = world_y;
     Units_GroundUnderPoint(world_x, world_y, &gx, &gy);
     if (Units_SelectionRaiseModeAt(gx, gy) >= 0)
@@ -1005,8 +1133,8 @@ static int ig_hover_cursor_inner(int hover, int32_t world_x, int32_t world_y, in
 }
 
 int InGame_HoverCursorAtMods(int32_t world_x, int32_t world_y, int mods) {
-    return ig_hover_cursor_inner(Units_PickAt(world_x, world_y, 0),
-                                 world_x, world_y, mods);
+    return InGame_HoverCursorOnMods(Units_PickAt(world_x, world_y, 0),
+                                    world_x, world_y, mods);
 }
 
 int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
@@ -1014,7 +1142,7 @@ int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
 }
 
 int InGame_HoverCursorOn(int hit, int32_t world_x, int32_t world_y) {
-    return ig_hover_cursor_inner(hit, world_x, world_y, 0);
+    return InGame_HoverCursorOnMods(hit, world_x, world_y, 0);
 }
 
 /* The cursor an armed command shows: the sweep cursor turns to revive
@@ -1097,7 +1225,7 @@ static void ig_select_key(const GameWorld *world, InGameSelectKey k) {
 /* Ctrl+D (legacy:122248-122294): the selection starts its self
  * destruct, or stops it when any of it counts down already, and a start
  * says so in the message list. */
-static void ig_self_destruct(void) {
+static void ig_self_destruct_now(void) {
     int n = 0;
     const int *sel = Units_GetSelection(&n);
     int counting = 0;
@@ -1108,6 +1236,66 @@ static void ig_self_destruct(void) {
     if (!counting)
         Chat_Push(HUD_MissionWords("SELF DESTRUCT ENGAGED"), CHAT_TYPE_ORDER,
                   Chat_LocalSlot(), SDL_GetTicks());
+}
+
+/* Our own addition: a start asks first, in the game's yes or no box,
+ * and a stop does not. The clock stops under it where the in game menu
+ * stops it, and a match runs on. */
+static void ig_self_destruct(const uint8_t *keys) {
+    int n = 0;
+    const int *sel = Units_GetSelection(&n);
+    for (int k = 0; k < n; k++)
+        if (g_units_get_player(sel[k]) == Units_LocalPlayer() &&
+            Units_SelfDestructing(sel[k])) {
+            ig_self_destruct_now();
+            return;
+        }
+    if (Units_SelectionOwnedCount() == 0) return;
+    if (MessageBox_OpenYesNo("Self destruct the selected units?") != 0 &&
+        !MessageBox_IsOpen())
+        return;
+    ig.sd_ask = 1;
+    /* A key already down when it opens answers nothing. */
+    ig.sd_prev_enter = (uint8_t)(keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER]);
+    ig.sd_prev_esc = keys[SDL_SCANCODE_ESCAPE];
+    ig.sd_was_paused = ig.paused;
+    if (!TAK_Match_IsLive()) ig.paused = 1;
+}
+
+/* The question takes a frame's keys and canvas mouse. Returns 1 while
+ * it stands. */
+static int ig_self_destruct_ask(const uint8_t *keys, int focus, int mx, int my,
+                                int down) {
+    if (!ig.sd_ask) return 0;
+    int enter = focus && (keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER]);
+    int esc = focus && keys[SDL_SCANCODE_ESCAPE];
+    int enter_edge = enter && !ig.sd_prev_enter;
+    int esc_edge = esc && !ig.sd_prev_esc;
+    ig.sd_prev_enter = (uint8_t)enter;
+    ig.sd_prev_esc = (uint8_t)esc;
+    int answer = MessageBox_Tick(mx, my, down, enter_edge, esc_edge);
+    if (!answer) return 1;
+    ig.sd_ask = 0;
+    if (!TAK_Match_IsLive()) ig.paused = ig.sd_was_paused;
+    if (answer == 1) ig_self_destruct_now();
+    /* The press that answered is not a click on the battle. */
+    ig.prev_left = 1;
+    return 0;
+}
+
+/* The same over the battle, with SDL's mouse. */
+static int ig_self_destruct_ask_frame(TAK_Platform *platform, const Uint8 *keys) {
+    if (!ig.sd_ask) return 0;
+    int mx = -1, my = -1, down = 0;
+    if (platform->has_focus) {
+        int wx = 0, wy = 0;
+        uint32_t buttons = SDL_GetMouseState(&wx, &wy);
+        down = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
+        if (!TAK_Platform_MapMouseToCanvas(platform, wx, wy, &mx, &my)) {
+            mx = -1; my = -1;
+        }
+    }
+    return ig_self_destruct_ask(keys, platform->has_focus, mx, my, down);
 }
 
 /* Cancel: an armed command goes first and the selection survives
@@ -1246,6 +1434,12 @@ void InGame_DebugKeyChord(int mods, int scancode) {
 }
 
 static void ig_debug_keys(const uint8_t *frame_keys, const char *text_in) {
+    /* Ctrl+D's question owns the keys while it stands. */
+    if (ig.sd_ask) {
+        (void)ig_self_destruct_ask(frame_keys, 1, -1, -1, 0);
+        memcpy(ig.prev_keys, frame_keys, sizeof(ig.prev_keys));
+        return;
+    }
     /* The briefing owns the keys while it is up, as it owns the frame. */
     if (Briefing_IsOpen()) {
         if (ig_briefing_keys(1, frame_keys)) {
@@ -1384,12 +1578,11 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
                     /* The click is answered now
                      * (legacy:243684-243688), and a site the
                      * building cannot take answers no. That is the
-                     * same test the ghost is drawn with and the
-                     * same one the executor applies on its tick,
-                     * read here as presentation rather than as a
-                     * second authority: the order is still not
-                     * given until the tick runs it. */
-                    if (!Units_IsBuildSiteClearFacing(bdef, bx, by, facing)) {
+                     * test the ghost is drawn with, what the player
+                     * sees, read as presentation: the tick judges
+                     * the site for real. */
+                    if (!Units_IsBuildSiteClearSeen(bdef, bx, by, facing,
+                                                    Fog_Viewer())) {
                         GameSound_PlayUI("notoktobuild");
                         fprintf(stderr, "Build: site refused at (%d,%d)\n",
                                 bx, by);
@@ -1586,8 +1779,12 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
      * first (legacy:243003-243004). */
     if (has_focus && IG_PRESSED(SDL_SCANCODE_ESCAPE)) ig_cancel();
     int ig_alt = keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT];
-    if (has_focus && TAK_Match_IsWatching() && InGame_WatchKey(keys, ig.prev_keys))
-        ig_watch_next(world);
+    /* Keys.TDF binds Tab to fsr, the full screen radar, which toggles
+     * (legacy:208746-208770). A watcher's Tab walks the views. */
+    if (has_focus && InGame_WatchKey(keys, ig.prev_keys)) {
+        if (ig_spectating()) ig_watch_next(world);
+        else Minimap_SetLarge(!Minimap_IsLarge());
+    }
 
     /* Game speed, one step per press (legacy:131808-131825). The
      * bindings live in ingame_keys.c so a test can press them. */
@@ -1714,7 +1911,14 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
     if (has_focus) {
         InGameSelectKey sk = InGame_SelectKey(keys, ig.prev_keys);
         if (sk.kind != IG_SELECT_NONE) ig_select_key(world, sk);
-        if (InGame_SelfDestructKey(keys, ig.prev_keys)) ig_self_destruct();
+        if (InGame_SelfDestructKey(keys, ig.prev_keys)) ig_self_destruct(keys);
+        /* ToggleCloak presses Cloaked unless that is the lit one
+         * (legacy:151278-151287). */
+        if (InGame_CloakKey(keys, ig.prev_keys)) {
+            int cloak = Units_SelectedCloakState();
+            if (cloak >= 0)
+                HUD_TriggerCommand(cloak == 1 ? HUD_CMD_CLOAK_OFF : HUD_CMD_CLOAK_ON);
+        }
     }
 #undef IG_PRESSED
 }
@@ -1759,6 +1963,21 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * arrived this frame are what the next ticks are allowed to be.
      * Outside a match both calls do nothing. */
     NetSession_Tick(SDL_GetTicks64());
+    /* The server restarts a world that parted from the others from its
+     * turn log: the battle is built again and replays to the present. */
+    {
+        TAK_NetClient *rc = NetSession_Client();
+        if (TAK_Match_IsLive() && rc && rc->resync) {
+            ig_resync = 1;
+            return GAMESTATE_GAME_LOADING;
+        }
+    }
+    /* A snapshot is coming to replace this world, which stops behind the
+     * plate until the GO that brings it. */
+    if (TAK_Match_IsLive() && NetSession_SnapshotPending()) {
+        ig_rejoin_plate(platform, off);
+        return GAMESTATE_IN_GAME;
+    }
     TAK_Match_Pump();
     /* Whoever began or stopped watching, as a system line. */
     {
@@ -1779,9 +1998,10 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * frame spends its budget catching up rather than the four ticks a
      * frame the clock allows. */
     ig.catching_up = 0;
-    if (TAK_Match_IsLive() && TAK_Match_TicksBehind() > SIM_TICKS_PER_SECOND) {
+    if (TAK_Match_IsLive() &&
+        (ig.rejoining || TAK_Match_TicksBehind() > SIM_TICKS_PER_SECOND)) {
         ig.catching_up = 1;
-        uint64_t until = SDL_GetTicks64() + 12;
+        uint64_t until = SDL_GetTicks64() + (ig.rejoining ? 50 : 12);
         while (SDL_GetTicks64() < until) {
             /* The queue takes 128 turns at a time. */
             if (!TAK_Match_CanAdvance() && TAK_Match_Pump() == 0) break;
@@ -1797,10 +2017,26 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     GameSpeed_NoteFrame(sim_ticks, timer->max_ticks_per_frame);
     GameSpeed_AgeMessage(Timer_GetFrameDT(timer));
 
+    /* After a resync the replay runs behind a plate, not on the screen,
+     * until the battle is back at the present. */
+    if (ig.rejoining) {
+        if (TAK_CmdQueue_Tick() >= ig.rejoin_until &&
+            TAK_Match_TicksBehind() <= SIM_TICKS_PER_SECOND) {
+            ig.rejoining = 0;
+        } else {
+            ig_rejoin_plate(platform, off);
+            return GAMESTATE_IN_GAME;
+        }
+    }
+
     /* The statistics screen replaces the battle view and owns the
      * input until one of its buttons leaves (legacy:244079-244086).
      * main.c releases the world on the way out. */
     if (world->skirmish_stats_open) {
+        /* The end is told from the player's own seat, whichever view
+         * Tab left up. */
+        if (!EndScreen_IsOpen() && ig.own_seat && Units_LocalPlayer() != ig.own_seat)
+            Units_SetLocalPlayer(ig.own_seat);
         if (!EndScreen_IsOpen() && EndScreen_Open(platform, world) != 0) {
             return GAMESTATE_MENU;
         }
@@ -1895,10 +2131,11 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * the battle stays drawn behind it and every key and click goes to
      * the dialog (legacy:154694-154752). */
     const Uint8 *keys = SDL_GetKeyboardState(NULL);
-    int console_keys = ig_console_keys(platform->has_focus, keys,
-                                       platform->text_in);
+    /* Ctrl+D's question takes Enter, which would open a chat line. */
+    int console_keys = ig.sd_ask ? 0 : ig_console_keys(platform->has_focus, keys,
+                                                       platform->text_in);
     if (platform->has_focus && !console_keys && keys[SDL_SCANCODE_F1] &&
-        !ig.prev_keys[SDL_SCANCODE_F1] && !InGameMenu_IsOpen()) {
+        !ig.prev_keys[SDL_SCANCODE_F1] && !InGameMenu_IsOpen() && !ig.sd_ask) {
         (void)InGameMenu_Open();
     }
     /* A campaign mission opens under its briefing, and the clock waits
@@ -1924,6 +2161,15 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         memcpy(ig.prev_keys, keys, sizeof(ig.prev_keys));
         return next;
     }
+    /* Ctrl+D's question owns the keys and the mouse while it stands,
+     * and the frame that answers it. */
+    if (ig.sd_ask) {
+        (void)ig_self_destruct_ask_frame(platform, keys);
+        SDL_ShowCursor(SDL_ENABLE);
+        UI_Present(platform);
+        memcpy(ig.prev_keys, keys, sizeof(ig.prev_keys));
+        return GAMESTATE_IN_GAME;
+    }
 
     /* Custom cursor when a command mode is active and the mouse is
      * over the game viewport. Hide the OS cursor so only ours
@@ -1933,7 +2179,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         int mx = 0, my = 0;
         if (platform->has_focus) SDL_GetMouseState(&mx, &my);
         int32_t hover_x = 0, hover_y = 0;
-        int over_world = platform->has_focus &&
+        int over_world = platform->has_focus && !Minimap_IsLarge() &&
                          !HUD_HitTest(mx, my, platform) &&
                          ig_view()->pointer_to_world(world, platform, mx, my,
                                                      &hover_x, &hover_y);
@@ -1954,7 +2200,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         } else if (over_world) {
             int mods = (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT])
                      ? IG_CLICK_SHIFT : 0;
-            int cur_id = InGame_HoverCursorAtMods(hover_x, hover_y, mods);
+            int cur_id = InGame_HoverCursorOnMods(hover_unit, hover_x, hover_y, mods);
             drew_cursor = HUD_DrawCursorById(platform, cur_id, mx, my);
         }
         SDL_ShowCursor(drew_cursor ? SDL_DISABLE : SDL_ENABLE);
@@ -2069,7 +2315,9 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      *     on terrain = move (legacy default-cursor behaviour).
      *   - Right-click: cancel command mode if active, else deselect. */
     int32_t world_click_x = 0, world_click_y = 0;
-    if (platform->has_focus && !dp_active && !HUD_HitTest(wx, wy, platform) &&
+    /* The large radar covers the battle, and takes its clicks above. */
+    if (platform->has_focus && !dp_active && !Minimap_IsLarge() &&
+        !HUD_HitTest(wx, wy, platform) &&
         ig_view()->pointer_to_world(world, platform, wx, wy,
                                     &world_click_x, &world_click_y)) {
 
@@ -2169,6 +2417,7 @@ void InGame_Shutdown(void) {
     DebugPanel_Shutdown();
     EndScreen_Close();
     InGameMenu_Close();
+    if (ig.sd_ask) MessageBox_Close();
     Briefing_Close();
     Chat_Shutdown();
     if (ig.banner_font) {

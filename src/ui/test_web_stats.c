@@ -138,6 +138,8 @@ TEST(the_end_says_how_the_battle_went_and_how_long_it_took) {
         { 1, 1, NULL, "win" }, { 1, -1, NULL, "loss" }, { 1, 0, NULL, "draw" },
         { 0, 0, NULL, "quit" }, { 0, 0, "desync", "desync" }, { 1, 1, "restart", "restart" },
         { 0, 0, "disconnect", "disconnect" },
+        /* Beaten, watched for a while and left before the others finished. */
+        { 0, -1, NULL, "loss" },
     };
     for (size_t i = 0; i < sizeof k_case / sizeof k_case[0]; i++) {
         WebStats_Starting("skirmish", NULL);

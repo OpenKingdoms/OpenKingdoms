@@ -51,4 +51,8 @@ void TAK_NetLink_Pump(TAK_NetClient *c, uint64_t now_ms);
 
 void TAK_NetLink_Close(void);
 
+/* Bytes handed to the link and not yet on the wire, so a long upload
+ * can wait for the connection instead of burying the acks behind it. */
+size_t TAK_NetLink_Backlog(void);
+
 #endif /* TAK_NET_LINK_H */

@@ -9,6 +9,7 @@
 
 #include "test_framework.h"
 
+#include "tak_obj3d.h"
 #include "tak_ai.h"
 #include "tak_battle_config.h"
 #include "tak_command_emit.h"
@@ -1214,10 +1215,14 @@ static void cp_file_tick(void) {
     if (Replay_WantsHash(done)) Replay_NoteHash(done, TAK_SimHash());
 }
 
+/* Set, the recording is made as a match world reads its models. */
+static int g_cp_record_match_models;
+
 /* The same clicks as the session above, from two seats, recorded to a
  * file as the battle screen records one. */
 static int cp_file_record(uint32_t *out) {
     if (!cp_world()) return 0;
+    if (g_cp_record_match_models) Obj3D_SetGameFolderModels(0);
     int h[8];
     cp_replay_spawn(h);
     char err[TAK_REPLAY_ERR_MAX];
@@ -1292,6 +1297,10 @@ TEST(a_replay_file_plays_back_to_the_same_hash_every_turn) {
     ASSERT_EQ_INT(CP_FILE_TICKS, (int)hdr->end_tick);
     ASSERT_EQ_INT(4, (int)hdr->command_count);
     ASSERT_EQ_INT(0, (int)Replay_DriftTick());
+    /* Outside a match the folder's models count only when it has some. */
+    int archive = (hdr->flags & TAK_REPLAYF_ARCHIVE_MODELS) != 0;
+    ASSERT_EQ_INT(TAK_DataFingerprint_LooseModels(NULL) == 0, archive);
+    ASSERT_EQ_INT(!archive, Obj3D_GameFolderModels());
     int moved = 0;
     for (int i = 1; i < CP_FILE_TURNS; i++) if (live[i] != live[i - 1]) moved = 1;
     ASSERT(moved);
@@ -1322,6 +1331,26 @@ TEST(a_replay_that_drifts_says_where) {
     char line[160];
     ASSERT(Replay_DriftLine(line, sizeof line));
     ASSERT(strstr(line, "drifted") != NULL);
+    Replay_Stop();
+    cp_end();
+    remove(CP_FILE_PATH);
+}
+
+/* A match's recording says it read the archives' models alone, and it
+ * plays back reading them so, whatever the game folder holds. */
+TEST(a_replay_reads_models_the_way_its_battle_did) {
+    static uint32_t live[CP_FILE_TURNS], played[CP_FILE_TURNS];
+    g_cp_record_match_models = 1;
+    int recorded = cp_file_record(live);
+    g_cp_record_match_models = 0;
+    ASSERT(recorded);
+    TAK_ReplayHeader h;
+    char err[TAK_REPLAY_ERR_MAX] = "";
+    ASSERT_EQ_INT(0, TAK_Replay_ReadHeader(CP_FILE_PATH, &h, err, sizeof err));
+    ASSERT(h.flags & TAK_REPLAYF_ARCHIVE_MODELS);
+    ASSERT_EQ_INT(CP_FILE_TICKS, cp_file_play(played, 0));
+    ASSERT_EQ_INT(0, Obj3D_GameFolderModels());
+    ASSERT_EQ_INT(0, (int)Replay_DriftTick());
     Replay_Stop();
     cp_end();
     remove(CP_FILE_PATH);
@@ -3492,6 +3521,7 @@ int main(int argc, char **argv) {
     RUN(a_recorded_session_replays_to_the_same_hashes);
     RUN(a_replay_file_plays_back_to_the_same_hash_every_turn);
     RUN(a_replay_that_drifts_says_where);
+    RUN(a_replay_reads_models_the_way_its_battle_did);
     RUN(a_replay_from_another_build_is_refused);
     RUN(the_replay_list_reads_headers_only);
     RUN(the_replay_list_stops_at_its_limit);

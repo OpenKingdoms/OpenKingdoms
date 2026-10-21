@@ -12,6 +12,7 @@
 #include "tak_net_protocol.h"
 #include "tak_bytes.h"
 
+#include <stdio.h>
 #include <string.h>
 
 /* ── Framing ────────────────────────────────────────────────────────── */
@@ -94,6 +95,10 @@ size_t TAK_Msg_HelloEncode(const TAK_MsgHello *m, void *out, size_t cap) {
         TAK_BW_Str(&w, m->mod_name, TAK_NET_MOD_NAME_MAX);
         TAK_BW_Str(&w, m->mod_version, TAK_NET_MOD_VERSION_MAX);
     }
+    if (m->protocol_version >= 8) {
+        TAK_BW_U16(&w, m->loose_models);
+        TAK_BW_U64(&w, m->loose_hash);
+    }
     return finish(&w);
 }
 
@@ -118,6 +123,10 @@ int TAK_Msg_HelloDecode(TAK_MsgHello *m, const void *p, size_t len) {
     if (m->protocol_version >= 4) {
         TAK_BR_Str(&r, m->mod_name, TAK_NET_MOD_NAME_MAX);
         TAK_BR_Str(&r, m->mod_version, TAK_NET_MOD_VERSION_MAX);
+    }
+    if (m->protocol_version >= 8) {
+        m->loose_models = TAK_BR_U16(&r);
+        m->loose_hash = TAK_BR_U64(&r);
     }
     return done(&r);
 }
@@ -242,8 +251,9 @@ static void summary_read(TAK_ByteReader *r, TAK_RoomSummary *s) {
     s->compat = TAK_BR_U8(r);
 }
 
-/* What protocol 4 adds to each room, after the pings. */
+/* What protocol 4 adds to each room, after the pings, and 8 after that. */
 #define ROOM_MOD_BYTES (TAK_NET_MOD_NAME_MAX + TAK_NET_MOD_VERSION_MAX + 8u)
+#define ROOM_MODELS_BYTES 10u
 
 size_t TAK_Msg_RoomListEncode(const TAK_MsgRoomList *m, void *out, size_t cap) {
     return TAK_Msg_RoomListEncodeV(m, TAK_NET_PROTOCOL_VERSION, out, cap);
@@ -265,6 +275,11 @@ size_t TAK_Msg_RoomListEncodeV(const TAK_MsgRoomList *m, uint16_t version,
             TAK_BW_Str(&w, m->room[i].mod_version, TAK_NET_MOD_VERSION_MAX);
             TAK_BW_U64(&w, m->room[i].content_hash);
         }
+    if (version >= 8)
+        for (uint8_t i = 0; i < m->count; i++) {
+            TAK_BW_U16(&w, m->room[i].loose_models);
+            TAK_BW_U64(&w, m->room[i].loose_hash);
+        }
     return finish(&w);
 }
 
@@ -276,15 +291,24 @@ int TAK_Msg_RoomListDecode(TAK_MsgRoomList *m, const void *p, size_t len) {
     m->count = TAK_BR_U8(&r);
     if (m->count > TAK_NET_ROOMS_PER_LIST) return -1;
     for (uint8_t i = 0; i < m->count; i++) summary_read(&r, &m->room[i]);
-    /* Protocol 3 adds one host ping a room, and 4 a mod set after those. */
+    /* Protocol 3 adds one host ping a room, 4 a mod set after those, and
+     * 8 the game folder models after that. */
     size_t left = TAK_BR_Remaining(&r);
-    if (m->count && (left == 2u * m->count || left == (2u + ROOM_MOD_BYTES) * m->count))
+    size_t c = m->count;
+    int v8 = c && left == (2u + ROOM_MOD_BYTES + ROOM_MODELS_BYTES) * c;
+    int v4 = v8 || (c && left == (2u + ROOM_MOD_BYTES) * c);
+    if (v4 || (c && left == 2u * c))
         for (uint8_t i = 0; i < m->count; i++) m->room[i].host_ping_ms = TAK_BR_U16(&r);
-    if (m->count && left == (2u + ROOM_MOD_BYTES) * m->count)
+    if (v4)
         for (uint8_t i = 0; i < m->count; i++) {
             TAK_BR_Str(&r, m->room[i].mod_name, TAK_NET_MOD_NAME_MAX);
             TAK_BR_Str(&r, m->room[i].mod_version, TAK_NET_MOD_VERSION_MAX);
             m->room[i].content_hash = TAK_BR_U64(&r);
+        }
+    if (v8)
+        for (uint8_t i = 0; i < m->count; i++) {
+            m->room[i].loose_models = TAK_BR_U16(&r);
+            m->room[i].loose_hash = TAK_BR_U64(&r);
         }
     return done(&r);
 }
@@ -628,6 +652,75 @@ int TAK_Msg_GoDecode(TAK_MsgGo *m, const void *p, size_t len) {
     return done(&r);
 }
 
+size_t TAK_Msg_SnapRequestEncode(const TAK_MsgSnapRequest *m, void *out, size_t cap) {
+    TAK_ByteWriter w;
+    begin(&w, out, cap, TAK_MSG_SNAP_REQUEST);
+    TAK_BW_U32(&w, m->snap_id);
+    TAK_BW_U8(&w, m->wait ? 1 : 0);
+    return finish(&w);
+}
+
+int TAK_Msg_SnapRequestDecode(TAK_MsgSnapRequest *m, const void *p, size_t len) {
+    TAK_ByteReader r;
+    memset(m, 0, sizeof(*m));
+    TAK_BR_Init(&r, p, len);
+    m->snap_id = TAK_BR_U32(&r);
+    m->wait = TAK_BR_U8(&r);
+    if (m->wait > 1) return -1;
+    return done(&r);
+}
+
+size_t TAK_Msg_SnapDataEncode(const TAK_MsgSnapData *m, void *out, size_t cap) {
+    if (m->len > TAK_NET_SNAP_CHUNK || m->total > TAK_NET_SNAP_MAX) return 0;
+    if ((uint64_t)m->offset + m->len > m->total) return 0;
+    if (m->len && !m->data) return 0;
+    TAK_ByteWriter w;
+    begin(&w, out, cap, TAK_MSG_SNAP_DATA);
+    TAK_BW_U32(&w, m->snap_id);
+    TAK_BW_U32(&w, m->tick);
+    TAK_BW_U32(&w, m->total);
+    TAK_BW_U32(&w, m->offset);
+    TAK_BW_U16(&w, m->len);
+    if (m->len) TAK_BW_Bytes(&w, m->data, m->len);
+    return finish(&w);
+}
+
+int TAK_Msg_SnapDataDecode(TAK_MsgSnapData *m, const void *p, size_t len) {
+    TAK_ByteReader r;
+    memset(m, 0, sizeof(*m));
+    TAK_BR_Init(&r, p, len);
+    m->snap_id = TAK_BR_U32(&r);
+    m->tick = TAK_BR_U32(&r);
+    m->total = TAK_BR_U32(&r);
+    m->offset = TAK_BR_U32(&r);
+    m->len = TAK_BR_U16(&r);
+    if (!TAK_BR_Ok(&r) || m->len > TAK_NET_SNAP_CHUNK || m->total > TAK_NET_SNAP_MAX ||
+        (uint64_t)m->offset + m->len > m->total) return -1;
+    if (m->len) {
+        m->data = TAK_BR_Take(&r, m->len);
+        if (!m->data) return -1;
+    }
+    return done(&r);
+}
+
+size_t TAK_Msg_SnapResultEncode(const TAK_MsgSnapResult *m, void *out, size_t cap) {
+    TAK_ByteWriter w;
+    begin(&w, out, cap, TAK_MSG_SNAP_RESULT);
+    TAK_BW_U32(&w, m->snap_id);
+    TAK_BW_U8(&w, m->ok ? 1 : 0);
+    return finish(&w);
+}
+
+int TAK_Msg_SnapResultDecode(TAK_MsgSnapResult *m, const void *p, size_t len) {
+    TAK_ByteReader r;
+    memset(m, 0, sizeof(*m));
+    TAK_BR_Init(&r, p, len);
+    m->snap_id = TAK_BR_U32(&r);
+    m->ok = TAK_BR_U8(&r);
+    if (m->ok > 1) return -1;
+    return done(&r);
+}
+
 /* ── In game ────────────────────────────────────────────────────────── */
 
 size_t TAK_Msg_CmdEncode(const TAK_MsgCmd *m, void *out, size_t cap) {
@@ -927,18 +1020,18 @@ const char *TAK_Net_RejectText(uint8_t reason) {
     case TAK_REJECT_GAME_FULL:         return "The game is full.";
     case TAK_REJECT_LOST_CONNECTION:   return "The connection was lost.";
     case TAK_REJECT_MISSING_UNIT:      return "A unit is missing from your data.";
-    case TAK_REJECT_NEEDS_NEWER:       return "A newer version is needed.";
+    case TAK_REJECT_NEEDS_NEWER:       return "That game is on another version. Reload or update to join.";
     case TAK_REJECT_NO_WATCHING:       return "Watching is not allowed here.";
     case TAK_REJECT_CREATOR_LEFT:      return "The player who made the game has left.";
     case TAK_REJECT_DATA_MISMATCH:     return "Your game data does not match.";
-    case TAK_REJECT_ENGINE_VERSION:    return "Your engine version does not match.";
+    case TAK_REJECT_ENGINE_VERSION:    return "That game is on another version. Reload or update to join.";
     case TAK_REJECT_SERVER_PASSWORD:   return "The server key is not correct.";
     case TAK_REJECT_BANNED:            return "You are banned from this server.";
     case TAK_REJECT_RATE_LIMITED:      return "Too many requests. Try again shortly.";
-    case TAK_REJECT_PROTOCOL_VERSION:  return "This server does not speak your version.";
+    case TAK_REJECT_PROTOCOL_VERSION:  return "The server is on another version. Reload or update to play.";
     case TAK_REJECT_NO_SUCH_ROOM:      return "There is no game with that code.";
     case TAK_REJECT_NAME_REQUIRED:     return "You must enter your name.";
-    case TAK_REJECT_DETERMINISM_CLASS: return "That game is for a different client build.";
+    case TAK_REJECT_DETERMINISM_CLASS: return "That game is on another version. Reload or update to join.";
     case TAK_REJECT_NOT_ALLOWED:       return "You are not allowed to do that.";
     case TAK_REJECT_NOT_READY:         return "Every player must be ready.";
     case TAK_REJECT_NEEDS_HUMAN:       return "Another player must join first.";
@@ -947,6 +1040,36 @@ const char *TAK_Net_RejectText(uint8_t reason) {
     case TAK_REJECT_REMOVED_BY_HOST:   return "The host removed you from the game.";
     default:                           return "Unknown reason.";
     }
+}
+
+void TAK_Net_ModelFolderAdvice(char *out, size_t cap, const char *joiner,
+                               int mine, int theirs) {
+    if (!out || !cap) return;
+    const char *mine_s = mine == 1 ? "" : "s", *theirs_s = theirs == 1 ? "" : "s";
+    char why[160];
+    if (!joiner) {
+        if (mine > 0 && theirs == 0)
+            snprintf(why, sizeof why, "Your game folder has %d model%s in objects3d "
+                     "that the host's does not.", mine, mine_s);
+        else if (mine == 0 && theirs > 0)
+            snprintf(why, sizeof why, "The host's game folder has %d model%s in "
+                     "objects3d that yours does not.", theirs, theirs_s);
+        else
+            snprintf(why, sizeof why, "Your game folder and the host's have "
+                     "different models in objects3d.");
+    } else {
+        if (theirs > 0 && mine == 0)
+            snprintf(why, sizeof why, "%s could not join. Their game folder has %d "
+                     "model%s in objects3d that yours does not.", joiner, theirs, theirs_s);
+        else if (theirs == 0 && mine > 0)
+            snprintf(why, sizeof why, "%s could not join. Your game folder has %d "
+                     "model%s in objects3d that theirs does not.", joiner, mine, mine_s);
+        else
+            snprintf(why, sizeof why, "%s could not join. Your game folder and "
+                     "theirs have different models in objects3d.", joiner);
+    }
+    snprintf(out, cap, "%s Both players need the same files: both include the "
+             "objects3d folder, or both leave it out.", why);
 }
 
 int TAK_Net_SecretEqual(const char *a, const char *b, size_t field) {
@@ -982,6 +1105,9 @@ int TAK_Net_Validate(const void *data, size_t len) {
         TAK_MsgLoadState loadstate;
         TAK_MsgLoaded loaded;
         TAK_MsgGo go;
+        TAK_MsgSnapRequest snapreq;
+        TAK_MsgSnapData snapdata;
+        TAK_MsgSnapResult snapres;
         TAK_MsgCmd cmd;
         TAK_MsgTurn turn;
         TAK_MsgAck ack;
@@ -1011,6 +1137,9 @@ int TAK_Net_Validate(const void *data, size_t len) {
     case TAK_MSG_LOAD_STATE:    return TAK_Msg_LoadStateDecode(&m.loadstate, p, n);
     case TAK_MSG_LOADED:        return TAK_Msg_LoadedDecode(&m.loaded, p, n);
     case TAK_MSG_GO:            return TAK_Msg_GoDecode(&m.go, p, n);
+    case TAK_MSG_SNAP_REQUEST:  return TAK_Msg_SnapRequestDecode(&m.snapreq, p, n);
+    case TAK_MSG_SNAP_DATA:     return TAK_Msg_SnapDataDecode(&m.snapdata, p, n);
+    case TAK_MSG_SNAP_RESULT:   return TAK_Msg_SnapResultDecode(&m.snapres, p, n);
     case TAK_MSG_CMD:           return TAK_Msg_CmdDecode(&m.cmd, p, n);
     case TAK_MSG_TURN:          return TAK_Msg_TurnDecode(&m.turn, p, n);
     case TAK_MSG_ACK:           return TAK_Msg_AckDecode(&m.ack, p, n);

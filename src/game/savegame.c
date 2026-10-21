@@ -287,6 +287,9 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 #define U_WPN_AIM_TICKS 12u
 #define U_WPN_AIM_TGT   14u
 #define U_WPN_AIM_SLOT  16u
+/* Port 22 heard for the aim, in what was a spare byte. An older record
+ * reads back not yet aimed. */
+#define U_WPN_AIM_READY 17u
 #define U_WPN_END       (U_WPN + U_WPN_BYTES * 3u)
 
 #define U_LOAD_QUEUE    U_WPN_END
@@ -399,7 +402,19 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
  * An older record reads back never hit. */
 #define U_HIT_BY        (U_SELFD_TICKS + 2u)
 #define U_HIT_TICK      (U_HIT_BY + 4u)
-#define U_END           (U_HIT_TICK + 4u)
+/* Version 16 on: the cloak, 1 wanted and 2 hidden now, and the ticks
+ * before it may hide again. An older record reads back no cloak. */
+#define U_CLOAK         (U_HIT_TICK + 4u)
+#define U_CLOAK_WAIT    (U_CLOAK + 1u)
+/* Version 17 on: the ticks a paralyzer still holds the unit. An older
+ * record reads back free. */
+#define U_PARALYZED     (U_CLOAK_WAIT + 2u)
+/* Version 18 on: a magic death's ports and the whiteout left, which the
+ * hash reads. An older record reads back an ordinary death. */
+#define U_MAGIC_DEATH   (U_PARALYZED + 2u)
+#define U_DEATH_DONE    (U_MAGIC_DEATH + 1u)
+#define U_MAGIC_FADE    (U_DEATH_DONE + 1u)
+#define U_END           (U_MAGIC_FADE + 1u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -616,7 +631,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 15
+#define VER_UNIT 18
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 4
@@ -1226,8 +1241,20 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_u16(r + U_SELFD_TICKS, u->selfd_ticks);
     tak_put_u32(r + U_HIT_BY, u->hit_by);
     tak_put_u32(r + U_HIT_TICK, u->hit_tick);
+    tak_put_u8(r + U_CLOAK, (uint8_t)((u->cloak_want ? 1u : 0u) |
+                                      (u->cloaked ? 2u : 0u)));
+    tak_put_u16(r + U_CLOAK_WAIT, u->cloak_wait);
+    tak_put_u16(r + U_PARALYZED, u->paralyzed_ticks);
+    tak_put_u8(r + U_MAGIC_DEATH, u->magic_death);
+    tak_put_u8(r + U_DEATH_DONE, u->death_finished);
+    tak_put_u8(r + U_MAGIC_FADE, u->magic_death_fade);
+    /* Bit 2 marks a held order on a site out of sight, bits 3-4 its
+     * facing. */
     tak_put_u8(r + U_BUILD_ENDLESS, (uint8_t)((u->build_endless ? 1u : 0u) |
-                                              (u->build_held ? 2u : 0u)));
+                                              (u->build_held ? 2u : 0u) |
+                                              (u->build_held && u->build_unseen
+                                                   ? 4u | ((u->build_facing & 3u) << 3)
+                                                   : 0u)));
     tak_put_u8(r + U_BUILD_TRIES, u->build_tries);
     tak_put_u8(r + U_BUILD_WAIT, u->build_wait);
     tak_put_i16(r + U_BUILD_DEF, (int16_t)(u->build_endless || u->build_held
@@ -1302,6 +1329,7 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
         tak_put_i16(ws + U_WPN_AIM_TICKS, s->aim_ticks);
         tak_put_i16(ws + U_WPN_AIM_TGT, s->aim_target);
         tak_put_u8(ws + U_WPN_AIM_SLOT, (uint8_t)s->aim_thread_slot);
+        tak_put_u8(ws + U_WPN_AIM_READY, s->aim_ready);
     }
 
     /* The live prefix only: past the length both queues hold whatever
@@ -1490,9 +1518,19 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->selfd_ticks = tak_get_u16(r + U_SELFD_TICKS);
     u->hit_by = tak_get_u32(r + U_HIT_BY);
     u->hit_tick = tak_get_u32(r + U_HIT_TICK);
+    uint8_t cloak = tak_get_u8(r + U_CLOAK);
+    u->cloak_want = (cloak & 1u) ? 1 : 0;
+    u->cloaked = (cloak & 2u) ? 1 : 0;
+    u->cloak_wait = tak_get_u16(r + U_CLOAK_WAIT);
+    u->paralyzed_ticks = tak_get_u16(r + U_PARALYZED);
+    u->magic_death = tak_get_u8(r + U_MAGIC_DEATH);
+    u->death_finished = tak_get_u8(r + U_DEATH_DONE);
+    u->magic_death_fade = tak_get_u8(r + U_MAGIC_FADE);
     uint8_t summons = tak_get_u8(r + U_BUILD_ENDLESS);
     u->build_endless = (summons & 1u) ? 1 : 0;
     u->build_held = (summons & 2u) ? 1 : 0;
+    u->build_unseen = (u->build_held && (summons & 4u)) ? 1 : 0;
+    u->build_facing = u->build_unseen ? (uint8_t)((summons >> 3) & 3u) : 0;
     u->build_tries = tak_get_u8(r + U_BUILD_TRIES);
     u->build_wait = tak_get_u8(r + U_BUILD_WAIT);
     u->build_def = 0;
@@ -1582,6 +1620,7 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
         s->aim_ticks = tak_get_i16(ws + U_WPN_AIM_TICKS);
         s->aim_target = tak_get_i16(ws + U_WPN_AIM_TGT);
         s->aim_thread_slot = (int8_t)tak_get_u8(ws + U_WPN_AIM_SLOT);
+        s->aim_ready = tak_get_u8(ws + U_WPN_AIM_READY);
     }
 
     if (u->load_queue_len > UNIT_LOAD_QUEUE_MAX) {
@@ -2872,16 +2911,13 @@ void Save_SetThumbnail(const uint8_t *rgb, int w, int h) {
     s_thumb_h = h;
 }
 
-int Save_Write(const char *path, char *err, size_t err_cap) {
-    if (err && err_cap) err[0] = '\0';
-    if (!path) {
-        set_err(err, err_cap, "No file name was given for the save.");
-        return -1;
-    }
+/* The battle as a container ready to finish. A save the player keeps
+ * carries the camera and the picture, a snapshot for a match neither. */
+static TAK_SaveWriter *save_compose(int keep, char *err, size_t err_cap) {
     GameWorld *w = World_Get();
     if (!w) {
         set_err(err, err_cap, "There is no battle in progress to save.");
-        return -1;
+        return NULL;
     }
     /* A world part way through the loading screen has a map name and
      * little else: no fog, no occupancy layer, no features and no
@@ -2889,7 +2925,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
     if (!w->loaded) {
         set_err(err, err_cap, "The battle is still loading and cannot be "
                               "saved yet.");
-        return -1;
+        return NULL;
     }
 
     int slots = 0;
@@ -2930,7 +2966,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
     if (defset_collect(&set, w) != 0 || defords_init(&ords) != 0) {
         tak_free(set.refs);
         set_err(err, err_cap, "Ran out of memory building the save.");
-        return -1;
+        return NULL;
     }
 
     TAK_StringTable *strings = StringTable_New();
@@ -2966,7 +3002,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
         tak_free(set.refs);
         defords_free(&ords);
         set_err(err, err_cap, "Ran out of memory building the save.");
-        return -1;
+        return NULL;
     }
 
     int written = 0;
@@ -3033,7 +3069,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
         buf_free(&occ);
         buf_free(&cmdq);
         set_err(err, err_cap, "Ran out of memory building the save.");
-        return -1;
+        return NULL;
     }
 
     uint8_t cfgb[CFGB_WRITE_BYTES];
@@ -3100,14 +3136,14 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
         buf_free(&brec);
     }
     /* The camera is local view state, so an older reader may skip it. */
-    if (rc == 0) rc = Save_AddSection(writer, TAK_SECT_CAMR, VER_CAMR, 0,
-                                      camr, sizeof(camr));
+    if (rc == 0 && keep) rc = Save_AddSection(writer, TAK_SECT_CAMR, VER_CAMR, 0,
+                                              camr, sizeof(camr));
 
     /* And the picture of the battle, when the caller gave one. It is
      * the last thing added and the only one that may be missing: a
      * save without a picture is a save, and a battle the player cannot
      * write because no panel could be painted is not. */
-    if (rc == 0 && s_thumb && s_thumb_w > 0 && s_thumb_h > 0) {
+    if (rc == 0 && keep && s_thumb && s_thumb_w > 0 && s_thumb_h > 0) {
         size_t thmb_px = (size_t)s_thumb_w * (size_t)s_thumb_h * 3u;
         uint8_t *thmb = (uint8_t *)tak_malloc(TAK_THMB_HEADER_BYTES + thmb_px);
         if (thmb) {
@@ -3122,7 +3158,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
         }
     }
     /* Used or not, it belongs to that save and not to the next one. */
-    Save_SetThumbnail(NULL, 0, 0);
+    if (keep) Save_SetThumbnail(NULL, 0, 0);
     tak_free(strt);
     tak_free(defs);
     tak_free(unit_recs);
@@ -3138,13 +3174,42 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
     if (rc != 0) {
         Save_EndWrite(writer);
         set_err(err, err_cap, "Ran out of memory building the save.");
+        return NULL;
+    }
+    return writer;
+}
+
+int Save_Write(const char *path, char *err, size_t err_cap) {
+    if (err && err_cap) err[0] = '\0';
+    if (!path) {
+        set_err(err, err_cap, "No file name was given for the save.");
         return -1;
     }
-
-    rc = Save_FinishToFile(writer, path, err, err_cap);
+    TAK_SaveWriter *writer = save_compose(1, err, err_cap);
+    if (!writer) return -1;
+    int rc = Save_FinishToFile(writer, path, err, err_cap);
     Save_EndWrite(writer);
     return rc;
 }
+
+uint8_t *Save_WriteMemory(size_t *out_len, char *err, size_t err_cap) {
+    if (err && err_cap) err[0] = '\0';
+    if (out_len) *out_len = 0;
+    TAK_SaveWriter *writer = save_compose(0, err, err_cap);
+    if (!writer) return NULL;
+    size_t len = 0;
+    const uint8_t *bytes = Save_FinishToMemory(writer, &len);
+    uint8_t *copy = bytes && len ? (uint8_t *)tak_malloc(len) : NULL;
+    if (copy) memcpy(copy, bytes, len);
+    Save_EndWrite(writer);
+    if (!copy) {
+        set_err(err, err_cap, "Ran out of memory building the save.");
+        return NULL;
+    }
+    if (out_len) *out_len = len;
+    return copy;
+}
+
 
 /* ── reading ──────────────────────────────────────────────────────── */
 
@@ -3179,16 +3244,27 @@ static void declare_known(TAK_SaveReader *r) {
     Save_DeclareKnown(r, TAK_SECT_BREC, VER_BREC);
 }
 
+static TAK_SaveGame *save_open(TAK_SaveReader *r, char *err, size_t err_cap);
+
 TAK_SaveGame *Save_Read(const char *path, char *err, size_t err_cap) {
     if (err && err_cap) err[0] = '\0';
     if (!path) {
         set_err(err, err_cap, "No file name was given for the save.");
         return NULL;
     }
-
     TAK_SaveReader *r = Save_OpenFile(path, err, err_cap);
-    if (!r) return NULL;
+    return r ? save_open(r, err, err_cap) : NULL;
+}
 
+TAK_SaveGame *Save_ReadMemory(const void *bytes, size_t len, char *err, size_t err_cap) {
+    if (err && err_cap) err[0] = '\0';
+    TAK_SaveReader *r = bytes && len ? Save_OpenMemory(bytes, len, err, err_cap) : NULL;
+    if (!r && err && err_cap && !err[0]) set_err(err, err_cap, "The save is empty.");
+    return r ? save_open(r, err, err_cap) : NULL;
+}
+
+/* Validate an opened container and decode its light state. */
+static TAK_SaveGame *save_open(TAK_SaveReader *r, char *err, size_t err_cap) {
     declare_known(r);
     if (Save_Validate(r, err, err_cap) != 0) {
         Save_Close(r);

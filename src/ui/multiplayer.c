@@ -27,6 +27,7 @@
 #include "tak_dataset.h"
 #include "tak_map_fingerprint.h"
 #include "tak_net_session.h"
+#include "tak_net_match.h"
 #include "tak_net_room.h"
 #include "tak_blit.h"
 #include "tak_gaf.h"
@@ -41,6 +42,10 @@
 #include "tak_world.h"
 #include "tak_map_browser.h"
 #include "tak_web_stats.h"
+#include "tak_savegame.h"
+#include "tak_loading.h"
+#include "tak_sim_hash.h"
+#include "tak_obj3d.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -870,27 +875,123 @@ static void mp_config_from_start(const TAK_MsgStartGame *sg,
     }
 }
 
+/* The hash a world loaded from a snapshot has to come up with, armed
+ * until the load says whether it did. */
+static uint32_t mp_snap_hash;
+static int      mp_snap_armed;
+static int      mp_snap_used;
+/* The relay was told this world cannot be the snapshot's, so its next GO
+ * restarts it from the log and nothing may run before that. */
+static int      mp_snap_rejected;
+
+/* Seats count from zero on the wire and players from one. A watcher sees
+ * the whole map through the first player's sidebar. */
+static void mp_local_seat(const TAK_MsgStartGame *sg) {
+    if (sg->your_seat < TAK_NET_SEATS) {
+        Units_SetLocalPlayer((int)sg->your_seat + 1);
+        return;
+    }
+    Units_SetLocalPlayer(MP_WatchFirstSeat(sg) + 1);
+    Fog_SetSeeAll(1);
+}
+
+int MP_RebuildMatchWorld(TAK_Platform *platform) {
+    TAK_NetClient *c = NetSession_Client();
+    if (!c) return -1;
+    c->resync = 0;
+    TAK_Match_End();
+    mp_snap_armed = 0;
+    mp_snap_used = 0;
+    mp_snap_rejected = 0;
+    uint32_t tick = 0;
+    TAK_SaveGame *sg = NetSession_TakeSnapshot(&tick);
+    uint8_t ticks = c->start.turn_ticks ? c->start.turn_ticks : 3;
+    if (sg && c->next_turn > 0 && tick == c->next_turn * (uint32_t)ticks) {
+        const TAK_SaveInfo *info = Save_Info(sg);
+        fprintf(stderr, "Match: rebuilding the world from a snapshot of tick %u\n",
+                (unsigned)tick);
+        if (World_BeginLoad(platform, &info->cfg, info->map_name, info->map_kingdom) == 0) {
+            mp_local_seat(&c->start);
+            Obj3D_SetGameFolderModels(0);
+            /* After BeginLoad: the snapshot carries the armies. */
+            World_SetRestoring(1);
+            mp_snap_hash = info->sim_state_hash;
+            mp_snap_armed = 1;
+            mp_snap_used = 1;
+            Loading_SetPendingSave(sg);
+            return 0;
+        }
+    }
+    if (sg) Save_ReadClose(sg);
+    /* A GO for a snapshot this world cannot take: the whole log instead. */
+    if (c->next_turn > 0) {
+        /* Held until the relay's GO for turn 0, when it heard us. */
+        mp_snap_rejected = TAK_NetClient_SnapshotResult(c, 0) == 0;
+        c->next_turn = 0;
+    }
+    fprintf(stderr, "Match: rebuilding the world from the server's turn log\n");
+    return MP_BeginMatchWorld(platform, &c->start);
+}
+
+void MP_SnapshotApplied(void) {
+    if (!mp_snap_armed) return;
+    mp_snap_armed = 0;
+    /* The donor's own verdict came with its world. This machine reads
+     * its seat's afresh; the hash leaves both out for that reason. */
+    GameWorld *w = World_Get();
+    if (w) {
+        w->skirmish_local_result = 0;
+        w->skirmish_end_reason[0] = '\0';
+    }
+    uint32_t now = TAK_SimHash();
+    if (now == mp_snap_hash) return;
+    /* Not the world that was sent. The relay replays the log instead. */
+    fprintf(stderr, "Match: the snapshot loaded as %08x, not %08x\n",
+            (unsigned)now, (unsigned)mp_snap_hash);
+    TAK_NetClient *c = NetSession_Client();
+    if (c) mp_snap_rejected = TAK_NetClient_SnapshotResult(c, 0) == 0;
+}
+
+int MP_SnapshotApplyFailed(TAK_Platform *platform) {
+    if (!mp_snap_armed) return 0;
+    mp_snap_armed = 0;
+    TAK_NetClient *c = NetSession_Client();
+    if (!c) return 0;
+    /* Not a reason to leave the match: the relay replays the log, into a
+     * world built as the match began. */
+    fprintf(stderr, "Match: the snapshot would not apply, asking for the log\n");
+    mp_snap_rejected = TAK_NetClient_SnapshotResult(c, 0) == 0;
+    c->next_turn = 0;
+    World_End(platform);
+    return MP_BeginMatchWorld(platform, &c->start) == 0;
+}
+
+int MP_SnapshotRejected(void) {
+    TAK_NetClient *c = NetSession_Client();
+    if (mp_snap_rejected && c && c->resync) mp_snap_rejected = 0;
+    return mp_snap_rejected;
+}
+
+int MP_RebuiltFromSnapshot(void) { return mp_snap_used; }
+
 /* Build it. Returns 0, or -1 when this install cannot, which is worth
  * a message and a way back rather than a screen that never finishes. */
 int MP_BeginMatchWorld(TAK_Platform *platform, const TAK_MsgStartGame *sg) {
     if (!sg->map_name[0]) return -1;
+    /* A snapshot left over belongs to no world built from the start. */
+    TAK_SaveGame *stale = NetSession_TakeSnapshot(NULL);
+    if (stale) Save_ReadClose(stale);
     BattleConfig cfg;
     mp_config_from_start(sg, &cfg);
     char kingdom[32];
     mp_map_kingdom(sg->map_name, kingdom, sizeof kingdom);
     if (World_BeginLoad(platform, &cfg, sg->map_name, kingdom) != 0) return -1;
-    /* Seats count from zero on the wire and players from one in the
-     * simulation. Without this every client plays the first seat: same
-     * world, same fog, same sidebar, and one army nobody is driving. */
-    if (sg->your_seat < TAK_NET_SEATS) {
-        Units_SetLocalPlayer((int)sg->your_seat + 1);
-        return 0;
-    }
-    /* A watcher plays no seat. It sees the whole map, and the sidebar is
-     * the first player's until it looks through a seat of its own
-     * choosing. */
-    Units_SetLocalPlayer(MP_WatchFirstSeat(sg) + 1);
-    Fog_SetSeeAll(1);
+    /* Without this every client plays the first seat: same world, same
+     * fog, same sidebar, and one army nobody is driving. */
+    mp_local_seat(sg);
+    /* Models from the archives alone, so a player whose game folder has
+     * loose ones plays the same battle as one whose folder has none. */
+    Obj3D_SetGameFolderModels(0);
     return 0;
 }
 
@@ -1003,10 +1104,35 @@ static void mp_draw_chat(SimpleScreen *s) {
     snprintf(typed, sizeof typed, "%s_", mp_chat.typing);
     Font_DrawString(mp_font, off, x, y, typed);
     y -= lh;
+    /* A long line, such as the server's word on who could not join,
+     * wraps at the box's edge, its last row lowest. */
+    int width = r.w - 32;   /* clear of the scroll bar */
     for (int i = mp_chat.count - 1; i >= 0 && y >= r.y; i--) {
         const char *line = mp_chat.lines[(mp_chat.head + i) % MP_CHAT_LINES];
-        Font_DrawString(mp_font, off, x, y, line);
-        y -= lh;
+        char rows[8][sizeof mp_chat.lines[0]];
+        int nrows = 0;
+        const char *p = line;
+        while (*p && nrows < 8) {
+            size_t len = strlen(p), cut = len, fit = 0;
+            char *row = rows[nrows];
+            for (size_t k = 1; k <= len; k++) {
+                if (p[k] != ' ' && p[k] != '\0') continue;
+                memcpy(row, p, k);
+                row[k] = '\0';
+                if (fit && Font_MeasureString(mp_font, row) > width) break;
+                fit = k;
+            }
+            if (fit && fit < len) cut = fit;
+            memcpy(row, p, cut);
+            row[cut] = '\0';
+            nrows++;
+            p += cut;
+            while (*p == ' ') p++;
+        }
+        for (int k = nrows - 1; k >= 0 && y >= r.y; k--) {
+            Font_DrawString(mp_font, off, x, y, rows[k]);
+            y -= lh;
+        }
     }
 }
 

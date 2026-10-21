@@ -87,6 +87,13 @@ InGameSelectKey InGame_SelectKey(const uint8_t *keys, const uint8_t *prev) {
     return none;
 }
 
+int InGame_CloakKey(const uint8_t *keys, const uint8_t *prev) {
+    if (!keys || !prev) return 0;
+    if (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT]) return 0;
+    if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL]) return 0;
+    return IG_KEY_PRESSED(SDL_SCANCODE_K) ? 1 : 0;
+}
+
 int InGame_SelfDestructKey(const uint8_t *keys, const uint8_t *prev) {
     if (!keys || !prev) return 0;
     if (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT]) return 0;

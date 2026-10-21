@@ -85,6 +85,7 @@ static struct {
     /* Asked for a room list and waiting, so the screen can say so
      * rather than showing an empty list that looks like no games. */
     int  listing;
+    int  keep_status;   /* a refusal's words outlast the next list */
     /* How many rooms the last list held. */
     int  rooms_shown;
 
@@ -247,7 +248,7 @@ static void ask_for_rooms(void) {
     if (!c) return;
     if (TAK_NetClient_ListRooms(c) == 0) {
         sg.listing = 1;
-        set_status("Looking for games.");
+        if (!sg.keep_status) set_status("Looking for games.");
     }
 }
 
@@ -314,7 +315,8 @@ static const char *watch_refusal(const TAK_RoomSummary *r) {
         return advice;
     }
     if (r->compat != TAK_REJECT_GAME_CLOSED && r->compat != 0)
-        return "That game is not one this build can watch.";
+        return "That game is on another version of OpenKingdoms. Reload the page or "
+               "update the game, and have the host do the same, to watch it.";
     if (!(r->flags & TAK_ROOMF_ALLOW_WATCHING))
         return "That game is under way and its host does not allow watching.";
     if (r->watchers >= TAK_NET_WATCHERS_MAX)
@@ -347,12 +349,16 @@ void SelectGame_WatchRow(int index) {
  * differs, so the player knows whether it is a mod, a unit file or a
  * script (docs/MULTIPLAYER.md). */
 static void say_refusal(const TAK_MsgReject *r) {
-    if (r->reason == TAK_REJECT_DATA_MISMATCH && r->detail < TAK_DATA_GROUP_COUNT) {
+    if (r->reason == TAK_REJECT_DATA_MISMATCH) {
         char line[160];
-        snprintf(line, sizeof line,
-                 "Your game data does not match that game: the %s differ. "
-                 "One of you has a mod or another release.",
-                 TAK_DataFingerprint_GroupName(r->detail));
+        if (r->detail < TAK_DATA_GROUP_COUNT)
+            snprintf(line, sizeof line,
+                     "Your game data does not match that game: the %s differ. "
+                     "One of you has a mod or another release.",
+                     TAK_DataFingerprint_GroupName(r->detail));
+        else
+            snprintf(line, sizeof line, "Your game data does not match that game. "
+                     "One of you has a mod or another release.");
         set_status(line);
         return;
     }
@@ -401,8 +407,16 @@ static void join_selected(void) {
             TAK_ModSet_JoinAdvice(r->mod_name, r->mod_version, r->content_hash,
                                   line, sizeof line);
             set_status(line);
+        } else if (r->compat == TAK_REJECT_GAME_FULL) {
+            set_status("That game is full.");
+        } else if (r->compat == TAK_REJECT_NEEDS_NEWER ||
+                   r->compat == TAK_REJECT_DETERMINISM_CLASS ||
+                   r->compat == TAK_REJECT_PROTOCOL_VERSION) {
+            set_status("That game is on another version of OpenKingdoms. Everyone needs "
+                       "the same one: reload the page or update the game, and have the "
+                       "host do the same.");
         } else {
-            set_status("That game is not one this build can join.");
+            set_status(TAK_Net_RejectText(r->compat));
         }
         return;
     }
@@ -629,7 +643,27 @@ static void draw_status(void) {
     if (!off || !help) return;
     int tw = Font_MeasureString(sg.font_help, line);
     SDL_Rect r = help->rect;
-    Font_DrawString(sg.font_help, off, r.x + (r.w - tw) / 2, r.y + 2, line);
+    if (tw <= r.w - 8) {
+        Font_DrawString(sg.font_help, off, r.x + (r.w - tw) / 2, r.y + 2, line);
+        return;
+    }
+    /* Longer than the strip: it runs through it, again and again, drawn
+     * on a copy of the strip so nothing spills past its ends. */
+    SDL_Surface *tmp = SDL_CreateRGBSurfaceWithFormat(0, r.w, r.h, 32, off->format->format);
+    if (!tmp) return;
+    SDL_BlendMode mode;
+    SDL_GetSurfaceBlendMode(off, &mode);
+    SDL_SetSurfaceBlendMode(off, SDL_BLENDMODE_NONE);
+    SDL_SetSurfaceBlendMode(tmp, SDL_BLENDMODE_NONE);
+    SDL_BlitSurface(off, &r, tmp, NULL);
+    int period = tw + r.w / 2;
+    int shift = (int)((SDL_GetTicks() / 16u) % (uint32_t)period) - r.w / 3;
+    if (shift < 0) shift = 0;
+    Font_DrawString(sg.font_help, tmp, 4 - shift, 2, line);
+    Font_DrawString(sg.font_help, tmp, 4 - shift + period, 2, line);
+    SDL_BlitSurface(tmp, NULL, off, &r);
+    SDL_SetSurfaceBlendMode(off, mode);
+    SDL_FreeSurface(tmp);
 }
 
 /* ── the screen ────────────────────────────────────────────────────── */
@@ -877,12 +911,14 @@ static void take_events(TAK_Platform *platform) {
             /* The relay also sends the list again with each heartbeat,
              * for the host pings, and that must not wipe a line the
              * player has not read yet. */
+            /* A refusal's words stay over the list that follows it. */
             if (room_count() == 0) {
-                set_status("No games yet. Host one.");
+                if (!sg.keep_status) set_status("No games yet. Host one.");
             } else {
-                if (sg.listing || sg.rooms_shown == 0) set_status("");
+                if ((sg.listing || sg.rooms_shown == 0) && !sg.keep_status) set_status("");
                 if (sg.selected >= room_count()) sg.selected = -1;
             }
+            sg.keep_status = 0;
             sg.listing = 0;
             sg.rooms_shown = room_count();
             clamp_scroll();
@@ -901,6 +937,7 @@ static void take_events(TAK_Platform *platform) {
             break;
         case TAK_NC_EV_REFUSED:
             say_refusal(&c->reject);
+            sg.keep_status = 1;
             /* A link to a game that is gone or cannot be joined leaves
              * the player on the list of the games there are. Wanting a
              * name keeps the code for when one is typed. */

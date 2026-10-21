@@ -24,6 +24,7 @@
 #include "tak_memory.h"
 #include "tak_world.h"
 #include "tak_battle_config.h"
+#include "tak_fog.h"
 #include "tak_unit.h"
 #include "tak_command_emit.h"
 #include "tak_game_sound.h"
@@ -204,8 +205,9 @@ static const HUDButtonBinding g_button_bindings[] = {
     /* Three radio buttons, one per slot, and a click on any of them
      * is the whole order (legacy:151481-151530, legacy:153147-153180). */
     { "SpecialWeapon",   HUD_CMD_W_SET_SPEC,  -1 },
-    { "CloakOn",         HUD_CMD_CLOAK_ON,    -1 },
-    { "CloakOff",        HUD_CMD_CLOAK_OFF,   -1 },
+    /* The cloak's radio pair (legacy:151473-151590). */
+    { "Cloaked",         HUD_CMD_CLOAK_ON,    -1 },
+    { "Uncloaked",       HUD_CMD_CLOAK_OFF,   -1 },
     { "Active",          HUD_CMD_ACTIVATE,    -1 },
     { "Inactive",        HUD_CMD_DEACTIVATE,  -1 },
 };
@@ -914,10 +916,10 @@ static void fill_rect_canvas(SDL_Rect rc, SDL_Color c) {
     SDL_FillRect(off, &rc, SDL_MapRGBA(off->format, c.r, c.g, c.b, c.a));
 }
 
-/* The second info panel describes the selection's target
- * (legacy:152140-152143): the unit the selected unit is interacting
- * with. A conjurer's product, an attack target, a guard charge, a
- * repair patient, or a reclaim victim. Only for a single selection. */
+/* The second info panel describes what one selected unit of ours is
+ * working on (legacy:152124-152143): a conjurer's product, an attack
+ * target, a guard charge or a repair patient. The original fills it for
+ * the local player's own unit only, so another player's never shows. */
 static const Unit *hud_selection_target(const int *sel, int count, int *handle) {
     *handle = -1;
     if (!sel || count != 1) return NULL;
@@ -925,10 +927,10 @@ static const Unit *hud_selection_target(const int *sel, int count, int *handle) 
     const Unit *units = Units_GetActive(&n);
     if (sel[0] < 0 || sel[0] >= n) return NULL;
     const Unit *u = &units[sel[0]];
-    if (u->alive != UNIT_ALIVE_ACTIVE) return NULL;
+    if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != Units_LocalPlayer()) return NULL;
     /* A conjurer's product uses build_target. */
     if (u->cmd_kind == UNIT_CMD_BUILD && u->build_target >= 0 &&
-        u->build_target < n && u->player_id == Units_LocalPlayer()) {
+        u->build_target < n) {
         const Unit *t = &units[u->build_target];
         if (t->alive == UNIT_ALIVE_ACTIVE && t->under_construction &&
             t->player_id == Units_LocalPlayer()) {
@@ -1002,7 +1004,7 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
                             Units_SelectedGateState() >= 0);
         struct { const char *name; int show; } vis[] = {
             { "MOVE",            (caps & UNIT_CAP_MOVE)      != 0 },
-            { "ATTACK",          (caps & UNIT_CAP_ATTACK)    != 0 },
+            { "ATTACK",          own && Units_DefTakesAttack(seldef_cap) },
             { "GUARD",           (caps & UNIT_CAP_GUARD)     != 0 },
             { "PATROL",          (caps & UNIT_CAP_PATROL)    != 0 },
             { "STOP",            (caps & UNIT_CAP_STOP)      != 0 },
@@ -1015,9 +1017,9 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             { "Uncloaked",       (caps & UNIT_CAP_CLOAK)     != 0 },
             { "Active",          onoff },
             { "Inactive",        onoff },
-            { "Offensive",       (caps & UNIT_CAP_ATTACK)    != 0 },
-            { "Defensive",       (caps & UNIT_CAP_ATTACK)    != 0 },
-            { "Passive",         (caps & UNIT_CAP_ATTACK)    != 0 },
+            { "Offensive",       own && Units_DefHasStances(seldef_cap) },
+            { "Defensive",       own && Units_DefHasStances(seldef_cap) },
+            { "Passive",         own && Units_DefHasStances(seldef_cap) },
             { "PrimaryWeapon",   (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 1 },
             { "SecondaryWeapon", (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 2 },
             { "SpecialWeapon",   (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 3 },
@@ -1104,6 +1106,7 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
          * Frame 0 is the disabled slot. Leaving the others with no
          * override showed that dark slot until the mouse arrived. */
         int gate_state = Units_SelectedGateState();
+        int cloak_state = Units_SelectedCloakState();
         struct { const char *name; int active; } toggles[] = {
             { "Offensive",       aggro == UNIT_AGGRO_OFFENSIVE },
             { "Defensive",       aggro == UNIT_AGGRO_DEFENSIVE },
@@ -1111,6 +1114,9 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             /* The current gate state is the lit one (legacy:150430). */
             { "Active",          gate_state == 1 },
             { "Inactive",        gate_state == 0 },
+            /* And the cloak order the selection holds (legacy:150974-151000). */
+            { "Cloaked",         cloak_state == 1 },
+            { "Uncloaked",       cloak_state == 0 },
         };
         for (size_t i = 0; i < sizeof(toggles)/sizeof(toggles[0]); i++) {
             const GUIWidget *w = GUIRuntime_WidgetByName(g_rt, toggles[i].name);
@@ -1830,8 +1836,12 @@ int HUD_TriggerCommand(int mode) {
         case HUD_CMD_DEACTIVATE:
             hud_set_selected_gates(0);
             return 1;
+        case HUD_CMD_CLOAK_ON:
+        case HUD_CMD_CLOAK_OFF:
+            TAK_Cmd_EmitSelection(TAK_CMD_CLOAK, 0, 0, -1, 0,
+                                  mode == HUD_CMD_CLOAK_ON ? 1u : 0u);
+            return 1;
         default:
-            /* Cloak on/off: no per-unit state implemented yet. */
             return 0;
     }
 }
@@ -1867,8 +1877,10 @@ void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y,
              * the placing click will land. */
             Units_GroundUnderPoint(world_x, world_y, &world_x, &world_y);
             int facing = HUD_GetBuildFacing();
-            int valid = Units_IsBuildSiteClearFacing(g_build_def_idx, world_x,
-                                                     world_y, facing);
+            /* Judged by what the player sees, as the original's cursor
+             * is (legacy:39263-39305). */
+            int valid = Units_IsBuildSiteClearSeen(g_build_def_idx, world_x,
+                                                   world_y, facing, Fog_Viewer());
             g_ghost_x = world_x;
             g_ghost_y = world_y;
             g_ghost_valid = valid;

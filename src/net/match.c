@@ -7,6 +7,7 @@
 #include "tak_net_match.h"
 
 #include "tak_command_queue.h"
+#include "tak_memory.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -40,6 +41,8 @@ static struct {
     uint32_t       last_turn;
     /* The verdict went to the server. Once a match, whoever asks. */
     uint8_t        reported;
+    /* The local seat was beaten and only looks on. */
+    uint8_t        beaten;
     /* The local seat's commands not yet sent, oldest first, and what
      * went out since the turn count last moved. */
     uint8_t        out[MATCH_BACKLOG];
@@ -65,6 +68,30 @@ void TAK_Match_Begin(TAK_NetClient *client, uint8_t seat, uint8_t turn_ticks) {
     /* Every command now arrives already stamped with the tick its turn
      * owns, so the queue adds no delay of its own. */
     TAK_CmdQueue_Reset(0);
+}
+
+void TAK_Match_BeginAt(TAK_NetClient *client, uint8_t seat, uint8_t turn_ticks,
+                       uint32_t first_turn) {
+    if (first_turn == 0) { TAK_Match_Begin(client, seat, turn_ticks); return; }
+    memset(&g_match, 0, sizeof g_match);
+    g_match.client = client;
+    g_match.seat = seat;
+    g_match.turn_ticks = turn_ticks ? turn_ticks : 3;
+    g_match.live = 1;
+    g_match.turns_taken = first_turn;
+    g_match.last_turn = first_turn - 1;
+    /* The world came from a snapshot at this turn's tick. What its queue
+     * held came from turns the log hands over again, so it goes. */
+    TAK_CmdQueue_Restore(first_turn * (uint32_t)g_match.turn_ticks, 0, TAK_CmdQueue_Arrival());
+}
+
+int TAK_Match_SnapshotAsked(void) {
+    return g_match.live && g_match.client && g_match.client->snap_asked != 0;
+}
+
+void TAK_Match_SnapshotGive(uint8_t *bytes, uint32_t len, uint32_t tick) {
+    if (!g_match.live || !g_match.client) { tak_free(bytes); return; }
+    (void)TAK_NetClient_SnapshotGive(g_match.client, bytes, len, tick);
 }
 
 void TAK_Match_End(void) {
@@ -99,8 +126,8 @@ static uint8_t match_seat_to_player(uint8_t seat) {
 int TAK_Match_SubmitLocal(const TAK_GameCommand *cmd) {
     if (!g_match.live || !g_match.client || !cmd) return -1;
     /* A watcher holds no seat and gives no order. The relay would refuse
-     * one, and this keeps it off the wire. */
-    if (g_match.seat == TAK_NET_SEAT_NONE) return -1;
+     * one, and this keeps it off the wire. Nor does a beaten seat. */
+    if (g_match.seat == TAK_NET_SEAT_NONE || g_match.beaten) return -1;
     uint8_t buf[TAK_COMMAND_MAX_BYTES];
     size_t len = 0;
     if (TAK_CommandSerialize(cmd, buf, sizeof buf, &len) != 0) return -1;
@@ -248,6 +275,15 @@ int TAK_Match_Waiting(char *out, size_t cap) {
     out[0] = '\0';
     if (!g_match.live || !g_match.client) return TAK_MATCH_FLOWING;
     const TAK_NetClient *c = g_match.client;
+    /* No more turns will come, so the battle says why it stands still. */
+    if (c->state == TAK_NC_GONE) {
+        snprintf(out, cap, "The connection to the game server was lost.");
+        return TAK_MATCH_STOPPED;
+    }
+    if (c->pace.reason == TAK_PACE_DESYNC_HALT) {
+        snprintf(out, cap, "The game stopped: the players' battles no longer agree.");
+        return TAK_MATCH_STOPPED;
+    }
     uint8_t seat = TAK_NET_SEAT_NONE;
     int secs = -1;
     if (c->status.status == TAK_PSTATUS_LOST && c->status.seat < TAK_NET_SEATS) {
@@ -317,6 +353,15 @@ int TAK_Match_Reported(void) { return g_match.live && g_match.reported; }
 
 int TAK_Match_IsWatching(void) {
     return g_match.live && g_match.seat == TAK_NET_SEAT_NONE;
+}
+
+void TAK_Match_SetBeaten(void) {
+    if (!g_match.live || g_match.beaten) return;
+    g_match.beaten = 1;
+    /* A beaten seat watches: its world no longer votes when the players'
+     * worlds are compared, and one that parts is rebuilt alone. */
+    if (g_match.client && g_match.seat != TAK_NET_SEAT_NONE)
+        (void)TAK_NetClient_Resign(g_match.client);
 }
 
 /* How many of `list` are called `name`. */

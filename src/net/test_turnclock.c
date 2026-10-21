@@ -355,6 +355,219 @@ TEST(an_outlier_is_named_at_its_tick_and_sent_back_to_turn_zero) {
     ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, clk.sim[c].status);
 }
 
+static int g_snap_calls, g_snap_sim, g_snap_donor;
+static int snap_hook(void *user, int sim, int donor) {
+    (void)user;
+    g_snap_calls++;
+    g_snap_sim = sim;
+    g_snap_donor = donor;
+    return 0;
+}
+
+/* The GO most recently sent to `sim`, or -1. */
+static int last_go(int sim) {
+    for (int i = nsent - 1; i >= 0; i--) {
+        TAK_NetFrame f;
+        TAK_MsgGo go;
+        if (sent[i].sim != sim || sent[i].type != TAK_MSG_GO || split_at(i, &f)) continue;
+        if (TAK_Msg_GoDecode(&go, f.payload, f.payload_len) == 0) return (int)go.first_turn;
+    }
+    return -1;
+}
+
+/* With snapshots a parted world is not sent back to turn 0. It waits,
+ * unheard and unable to order, for a sound world's snapshot, then
+ * replays only the turns after it. A two way split takes the
+ * reference's world. */
+TEST(a_parted_world_is_rebuilt_from_a_sound_ones_snapshot) {
+    setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
+    int a = TAK_TurnClock_AddSim(&clk, 101, 0, 0);
+    int b = TAK_TurnClock_AddSim(&clk, 102, 1, 0);
+    int c = TAK_TurnClock_AddSim(&clk, 103, 2, 0);
+    TAK_TurnClock_SetSnapHook(&clk, snap_hook);
+    for (int i = 0; i < 3; i++) TAK_TurnClock_SetSnapshots(&clk, i, 1);
+    g_snap_calls = 0;
+    TAK_TurnClock_Start(&clk, 0);
+    for (uint64_t t = 0; t <= 1000; t += 10) TAK_TurnClock_Advance(&clk, t);
+    ASSERT_EQ_INT(0, ack(a, 19, 60, 111, 1000));
+    ASSERT_EQ_INT(0, ack(b, 19, 60, 111, 1000));
+    ASSERT_EQ_INT(0, ack(c, 19, 60, 999, 1000));
+    ASSERT_EQ_INT(1, g_snap_calls);
+    ASSERT_EQ_INT(c, g_snap_sim);
+    ASSERT(g_snap_donor == a || g_snap_donor == b);
+    ASSERT_EQ_INT(-1, last_go(c));
+    ASSERT_EQ_INT(1, clk.sim[c].awaiting_snap);
+    ASSERT_EQ_INT(TAK_PSTATUS_CATCHING_UP, clk.sim[c].status);
+    /* Waiting, its old world is not heard and orders nothing. */
+    uint32_t count = clk.desync.count;
+    for (uint64_t t = 1010; t <= 3000; t += 10) TAK_TurnClock_Advance(&clk, t);
+    ASSERT_EQ_INT(0, ack(c, clk.head - 1, 120, 998, 3000));
+    ASSERT_EQ_INT((int)count, (int)clk.desync.count);
+    ASSERT_EQ_INT(TAK_PSTATUS_CATCHING_UP, clk.sim[c].status);
+    TAK_MsgCmd cmd;
+    memset(&cmd, 0, sizeof cmd);
+    cmd.client_seq = 1;
+    ASSERT(TAK_TurnClock_Command(&clk, c, &cmd) != 0);
+    /* Nor does it give up its seat for a defeat in a battle no one plays. */
+    ASSERT(TAK_TurnClock_Resign(&clk, c) != 0);
+    ASSERT_EQ_INT(2, clk.sim[c].seat);
+    /* The snapshot is of turn 40: the log comes from there. */
+    TAK_TurnClock_SnapshotDone(&clk, c, 40, 3010);
+    ASSERT_EQ_INT(40, last_go(c));
+    ASSERT_EQ_INT(0, clk.sim[c].awaiting_snap);
+    ASSERT_EQ_INT(1, g_snap_calls);
+    /* Parting a second time it is the log, which no snapshot can fool. */
+    for (uint64_t t = 3020; t <= 4000; t += 10) TAK_TurnClock_Advance(&clk, t);
+    ASSERT_EQ_INT(0, ack(a, clk.head - 1, 180, 7, 4000));
+    ASSERT_EQ_INT(0, ack(b, clk.head - 1, 180, 7, 4000));
+    ASSERT_EQ_INT(0, ack(c, clk.head - 1, 180, 8, 4000));
+    ASSERT_EQ_INT(1, g_snap_calls);
+    ASSERT_EQ_INT(0, last_go(c));
+
+    /* Two worlds: the reference's settles it and the other takes it. */
+    setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
+    a = TAK_TurnClock_AddSim(&clk, 101, 0, 0);
+    b = TAK_TurnClock_AddSim(&clk, 102, 1, 0);
+    TAK_TurnClock_SetSnapHook(&clk, snap_hook);
+    TAK_TurnClock_SetSnapshots(&clk, a, 1);
+    TAK_TurnClock_SetSnapshots(&clk, b, 1);
+    TAK_TurnClock_SetResyncs(&clk, a, 1);
+    TAK_TurnClock_SetResyncs(&clk, b, 1);
+    TAK_TurnClock_SetReference(&clk, b);
+    g_snap_calls = 0;
+    TAK_TurnClock_Start(&clk, 0);
+    for (uint64_t t = 0; t <= 1000; t += 10) TAK_TurnClock_Advance(&clk, t);
+    ASSERT_EQ_INT(0, ack(a, 19, 60, 1, 1000));
+    ASSERT_EQ_INT(0, ack(b, 19, 60, 2, 1000));
+    ASSERT_EQ_INT(0, clk.halted);
+    ASSERT_EQ_INT(1, g_snap_calls);
+    ASSERT_EQ_INT(a, g_snap_sim);
+    ASSERT_EQ_INT(b, g_snap_donor);
+    ASSERT_EQ_INT(1 << a, (int)clk.desync.outliers);
+    ASSERT_EQ_INT(-1, last_go(a));
+    ASSERT_EQ_INT(-1, last_go(b));
+    ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, clk.sim[b].status);
+}
+
+/* No world found wrong on a tick gives another its snapshot, the host's
+ * included, and one parting flags a world once however far ahead its
+ * hashes had run. A two way split its reference cannot settle replays
+ * both worlds from the log, as it did before snapshots. */
+TEST(snapshots_come_only_from_sound_worlds) {
+    setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
+    int s[5];
+    for (int i = 0; i < 5; i++) s[i] = TAK_TurnClock_AddSim(&clk, 101 + (uint32_t)i, (uint8_t)i, 0);
+    TAK_TurnClock_SetSnapHook(&clk, snap_hook);
+    for (int i = 0; i < 5; i++) TAK_TurnClock_SetSnapshots(&clk, s[i], 1);
+    TAK_TurnClock_SetReference(&clk, s[4]);
+    g_snap_calls = 0;
+    TAK_TurnClock_Start(&clk, 0);
+    for (uint64_t t = 0; t <= 2100; t += 10) TAK_TurnClock_Advance(&clk, t);
+    /* The two outliers ran a hash ahead of the others. */
+    ASSERT_EQ_INT(0, ack(s[3], 39, 120, 998, 1500));
+    ASSERT_EQ_INT(0, ack(s[4], 39, 120, 998, 1500));
+    ASSERT_EQ_INT(0, ack(s[3], 39, 60, 999, 1500));
+    ASSERT_EQ_INT(0, ack(s[4], 39, 60, 999, 1500));
+    for (int i = 0; i < 3; i++) ASSERT_EQ_INT(0, ack(s[i], 39, 60, 111, 1500));
+    ASSERT_EQ_INT(2, g_snap_calls);
+    ASSERT(g_snap_donor >= s[0] && g_snap_donor <= s[2]);
+    ASSERT_EQ_INT(1, clk.sim[s[3]].resynced);
+    for (int i = 0; i < 3; i++) ASSERT_EQ_INT(0, ack(s[i], 39, 120, 222, 1500));
+    ASSERT_EQ_INT(1, clk.sim[s[3]].resynced);
+    ASSERT_EQ_INT(1, clk.sim[s[4]].resynced);
+    ASSERT_EQ_INT(2, g_snap_calls);
+
+    setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
+    int a = TAK_TurnClock_AddSim(&clk, 101, 0, 0);
+    int b = TAK_TurnClock_AddSim(&clk, 102, 1, 0);
+    TAK_TurnClock_SetSnapHook(&clk, snap_hook);
+    TAK_TurnClock_SetSnapshots(&clk, a, 1);
+    TAK_TurnClock_SetSnapshots(&clk, b, 1);
+    TAK_TurnClock_SetResyncs(&clk, a, 1);
+    TAK_TurnClock_SetResyncs(&clk, b, 1);
+    TAK_TurnClock_SetReference(&clk, b);
+    TAK_TurnClock_Start(&clk, 0);
+    for (uint64_t t = 0; t <= 1000; t += 10) TAK_TurnClock_Advance(&clk, t);
+    ASSERT_EQ_INT(0, ack(a, 19, 60, 1, 1000));
+    ASSERT_EQ_INT(0, ack(b, 19, 60, 2, 1000));
+    ASSERT_EQ_INT(1, (int)clk.splits_by_snapshot);
+    ASSERT_EQ_INT(-1, last_go(b));
+    TAK_TurnClock_SnapshotDone(&clk, a, 0, 1010);
+    ASSERT_EQ_INT(0, last_go(a));
+    ASSERT_EQ_INT(0, last_go(b));
+}
+
+/* A world rebuilt that parts again at the same place is never sent
+ * round a loop: past its limit it is no longer checked, the computer
+ * plays its seat, and the others play on. */
+TEST(a_world_that_keeps_parting_is_left_to_watch) {
+    setup(60, TAK_LEFT_ARMY_REMOVED, 0);
+    int a = TAK_TurnClock_AddSim(&clk, 101, 0, 0);
+    int b = TAK_TurnClock_AddSim(&clk, 102, 1, 0);
+    int c = TAK_TurnClock_AddSim(&clk, 103, 2, 0);
+    TAK_TurnClock_Start(&clk, 0);
+    for (uint64_t t = 0; t <= 1000; t += 10) TAK_TurnClock_Advance(&clk, t);
+    ASSERT_EQ_INT(0, ack(a, 19, 60, 111, 1000));
+    ASSERT_EQ_INT(0, ack(b, 19, 60, 111, 1000));
+    for (int round = 0; round <= TAK_TURN_SIM_RESYNCS_MAX; round++)
+        ASSERT_EQ_INT(0, ack(c, 19, 60, 999, 1000 + (uint64_t)round));
+    ASSERT_EQ_INT(TAK_TURN_SIM_RESYNCS_MAX, count_sent(TAK_MSG_GO, c));
+    ASSERT_EQ_INT(1, clk.sim[c].unchecked);
+    ASSERT_EQ_INT(TAK_NET_SEAT_NONE, clk.sim[c].seat);
+    ASSERT_EQ_INT(TAK_LEFT_COMPUTER_TAKES_OVER, clk.seat_left_as[2]);
+    ASSERT_EQ_INT(0, clk.halted);
+    /* Its hash is not heard again, and the players play on. */
+    uint32_t count = clk.desync.count;
+    ASSERT_EQ_INT(0, ack(c, 19, 60, 999, 1100));
+    ASSERT_EQ_INT((int)count, (int)clk.desync.count);
+    uint32_t head = clk.head;
+    run(1010, 2000, (1u << a) | (1u << b) | (1u << c));
+    ASSERT(clk.head > head);
+    ASSERT_EQ_INT(TAK_TURN_SIM_RESYNCS_MAX, count_sent(TAK_MSG_GO, c));
+}
+
+/* When both clients can rebuild their worlds, two worlds that part are
+ * both sent back to turn zero and the match plays on. Past the limit it
+ * halts as before. */
+TEST(two_worlds_that_disagree_are_both_rebuilt_when_they_can_be) {
+    setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
+    int a = TAK_TurnClock_AddSim(&clk, 101, 0, 0);
+    int b = TAK_TurnClock_AddSim(&clk, 102, 1, 0);
+    TAK_TurnClock_SetResyncs(&clk, a, 1);
+    TAK_TurnClock_SetResyncs(&clk, b, 1);
+    TAK_TurnClock_Start(&clk, 0);
+    for (uint64_t t = 0; t <= 1000; t += 10) TAK_TurnClock_Advance(&clk, t);
+    int before = nsent;
+    ASSERT_EQ_INT(0, ack(a, 19, 60, 1, 1000));
+    ASSERT_EQ_INT(0, ack(b, 19, 60, 2, 1000));
+    ASSERT_EQ_INT(0, clk.halted);
+    ASSERT_EQ_INT(0, clk.desync.halted);
+    ASSERT_EQ_INT((1 << a) | (1 << b), (int)clk.desync.outliers);
+    ASSERT_EQ_INT(TAK_PSTATUS_CATCHING_UP, clk.sim[a].status);
+    ASSERT_EQ_INT(TAK_PSTATUS_CATCHING_UP, clk.sim[b].status);
+    int gos = 0;
+    for (int i = before; i < nsent; i++)
+        if (sent[i].type == TAK_MSG_GO && (sent[i].sim == a || sent[i].sim == b)) gos++;
+    ASSERT_EQ_INT(2, gos);
+    /* Turns keep coming while the worlds are rebuilt. */
+    uint32_t head = clk.head;
+    for (uint64_t t = 1010; t <= 1500; t += 10) TAK_TurnClock_Advance(&clk, t);
+    ASSERT(clk.head > head);
+
+    /* A match that keeps parting halts once it has used its resyncs. */
+    setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
+    a = TAK_TurnClock_AddSim(&clk, 101, 0, 0);
+    b = TAK_TurnClock_AddSim(&clk, 102, 1, 0);
+    TAK_TurnClock_SetResyncs(&clk, a, 1);
+    TAK_TurnClock_SetResyncs(&clk, b, 1);
+    TAK_TurnClock_Start(&clk, 0);
+    clk.resyncs_done = TAK_TURN_RESYNCS_MAX;
+    for (uint64_t t = 0; t <= 1000; t += 10) TAK_TurnClock_Advance(&clk, t);
+    ASSERT_EQ_INT(0, ack(a, 19, 60, 1, 1000));
+    ASSERT_EQ_INT(0, ack(b, 19, 60, 2, 1000));
+    ASSERT_EQ_INT(1, clk.halted);
+}
+
 TEST(two_worlds_that_disagree_halt_the_match) {
     TAK_MsgPace p;
     setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
@@ -989,6 +1202,10 @@ int main(void) {
     RUN(a_seat_over_its_budget_and_a_watcher_are_refused);
     RUN(an_ack_for_a_turn_not_yet_closed_is_refused);
     RUN(an_outlier_is_named_at_its_tick_and_sent_back_to_turn_zero);
+    RUN(a_world_that_keeps_parting_is_left_to_watch);
+    RUN(a_parted_world_is_rebuilt_from_a_sound_ones_snapshot);
+    RUN(snapshots_come_only_from_sound_worlds);
+    RUN(two_worlds_that_disagree_are_both_rebuilt_when_they_can_be);
     RUN(two_worlds_that_disagree_halt_the_match);
     RUN(a_catching_up_player_is_checked_against_the_agreed_hash);
     RUN(the_governor_slows_turns_for_a_player_who_falls_behind);

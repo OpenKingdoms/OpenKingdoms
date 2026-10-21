@@ -48,7 +48,8 @@ enum {
     MS_STEP_ORDERS,         /* a level */
     MS_STEP_SELF_DESTRUCT,
     MS_STEP_UNLOAD,         /* a, b squares */
-    MS_STEP_SKIP            /* cloak, selectable, speed, unknown */
+    MS_STEP_SKIP,           /* selectable, speed, unknown */
+    MS_STEP_CLOAK
 };
 
 typedef struct MsStep {
@@ -235,6 +236,7 @@ static void ms_step_from(const MissionCommand *c, MsStep *s) {
         break;
     case MISSION_CMD_ORDERS:        s->type = MS_STEP_ORDERS; break;
     case MISSION_CMD_SELF_DESTRUCT: s->type = MS_STEP_SELF_DESTRUCT; break;
+    case MISSION_CMD_CLOAK:         s->type = MS_STEP_CLOAK; break;
     default:                        s->type = MS_STEP_SKIP; break;
     }
 }
@@ -455,6 +457,12 @@ static int ms_step_run(MsProgram *p, int handle, const Unit *u) {
         Units_DebugKillHandle(handle);
         ms_program_free(p);
         return 0;
+
+    case MS_STEP_CLOAK:
+        /* 'c' sets the cloak order of a unit that can cloak
+         * (legacy:228515-228519). */
+        (void)Units_OrderCloak(handle, 1);
+        return 1;
 
     default:
         return 1;

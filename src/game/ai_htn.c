@@ -154,6 +154,9 @@ const char *AI_Htn_TaskName(AiTask task) {
     case AI_TASK_FALL_BACK: return "fall back";
     case AI_TASK_RAID:      return "raid";
     case AI_TASK_EVADE:     return "evade";
+    case AI_TASK_ESCORT:    return "escort";
+    case AI_TASK_HOLD_GROUND: return "hold the ground";
+    case AI_TASK_DEFEND:    return "defend";
     default:                return "none";
     }
 }
@@ -228,6 +231,74 @@ AiTask AI_Htn_MemberTask(const AiWaveState *s, int is_scout, int at_stage) {
     AI_Htn_Plan(s, &plan);
     return AI_Htn_MemberTaskIn(&plan, is_scout ? AI_ROLE_SCOUT : AI_ROLE_MEMBER,
                                at_stage);
+}
+
+/* A group in the field (A-012): answer a threat, cover the builder, keep
+ * at a live target, then press on from where it stands (legacy:18343) at a
+ * target it sees and outweighs by a fifth, or after the long wait, or hold. */
+enum {
+    G_ESCORTING = 0, G_ERRAND_DONE, G_NEXT_KNOWN, G_NEXT_SEEN, G_VALUE,
+    G_ENEMY_AT_NEXT, G_SIEGE_DUE, G_THREAT, G_COUNT
+};
+enum { T_GROUP = 0, P_ESCORT, P_PRESS_ON, P_HOLD_GROUND, P_DEFEND, GT_COUNT };
+
+static const HtnTask k_group_tasks[GT_COUNT] = {
+    [T_GROUP] = {
+        .name = "group", .compound = 1, .method_count = 6,
+        .methods = {
+            { .name = "answer the threat",
+              .pre = { AI_COND(G_THREAT, AI_OP_NE, 0) },
+              .subtasks = { P_DEFEND }, .subtask_count = 1 },
+            { .name = "cover the builder",
+              .pre = { AI_COND(G_ESCORTING, AI_OP_NE, 0),
+                       AI_COND(G_ERRAND_DONE, AI_OP_EQ, 0) },
+              .subtasks = { P_ESCORT }, .subtask_count = 1 },
+            { .name = "keep at it",
+              .pre = { AI_COND(G_ERRAND_DONE, AI_OP_EQ, 0) },
+              .subtasks = { P_PRESS_ON }, .subtask_count = 1 },
+            { .name = "press on",
+              .pre = { AI_COND(G_NEXT_SEEN, AI_OP_NE, 0),
+                       AI_COND_SCALED(G_VALUE, 5, AI_OP_GE, G_ENEMY_AT_NEXT, 6) },
+              .subtasks = { P_PRESS_ON }, .subtask_count = 1 },
+            { .name = "the long wait is up",
+              .pre = { AI_COND(G_NEXT_KNOWN, AI_OP_NE, 0),
+                       AI_COND(G_SIEGE_DUE, AI_OP_NE, 0) },
+              .subtasks = { P_PRESS_ON }, .subtask_count = 1 },
+            { .name = "hold the ground",
+              .subtasks = { P_HOLD_GROUND }, .subtask_count = 1 },
+        },
+    },
+    [P_ESCORT]      = { .name = "escort" },
+    [P_PRESS_ON]    = { .name = "press on" },
+    [P_HOLD_GROUND] = { .name = "hold the ground" },
+    [P_DEFEND]      = { .name = "defend" },
+};
+
+static const HtnDomain k_group = { k_group_tasks, GT_COUNT, G_COUNT };
+
+AiTask AI_Htn_GroupTask(const AiGroupState *s, const char **reason) {
+    if (reason) *reason = "no state";
+    if (!s) return AI_TASK_HOLD_GROUND;
+    int32_t w[G_COUNT];
+    w[G_ESCORTING]     = s->escorting ? 1 : 0;
+    w[G_ERRAND_DONE]   = s->errand_done ? 1 : 0;
+    w[G_NEXT_KNOWN]    = s->next_known ? 1 : 0;
+    w[G_NEXT_SEEN]     = s->next_known && s->next_seen ? 1 : 0;
+    w[G_VALUE]         = s->value;
+    w[G_ENEMY_AT_NEXT] = s->enemy_at_next;
+    w[G_SIEGE_DUE]     = s->siege_due ? 1 : 0;
+    w[G_THREAT]        = s->threat ? 1 : 0;
+    HtnPlan plan;
+    if (!Htn_Plan(&k_group, T_GROUP, w, &plan) || plan.step_count <= 0)
+        return AI_TASK_HOLD_GROUND;
+    if (reason && plan.via_count > 0)
+        *reason = k_group_tasks[T_GROUP].methods[plan.via_method[0]].name;
+    switch (plan.steps[0]) {
+    case P_ESCORT:   return AI_TASK_ESCORT;
+    case P_PRESS_ON: return AI_TASK_STRIKE;
+    case P_DEFEND:   return AI_TASK_DEFEND;
+    default:         return AI_TASK_HOLD_GROUND;
+    }
 }
 
 /* A unit's footing: a domain of its own in the same planner. A unit

@@ -22,6 +22,8 @@
 typedef struct GpuModel {
     char        name[TAK_UNITDEF_OBJ_MAX];
     int         color_idx;
+    /* The texture a statue's every face takes, "" for none. */
+    char        paint[32];
     /* The baked pieces, owned here: node names, parents, offsets and
      * the vertex to node map the piece transforms are composed over. */
     UnitMesh   *mesh;
@@ -60,6 +62,11 @@ int  ModelStore_FlatNodes(const UnitMesh *mesh, uint8_t *flat);
 /* The model for an object name in a team colour, baked on first use
  * and cached. NULL when there is no such model or GL is not up. */
 const GpuModel *ModelStore_Get(const char *object_name, int color_idx);
+
+/* The shipped model painted all over with one texture, a stone or ice
+ * statue (legacy:197875-197886). An artist's model is not painted. */
+const GpuModel *ModelStore_GetPainted(const char *object_name, int color_idx,
+                                      const char *paint);
 
 /* Drop every cached model. Run with the GL context alive. */
 void ModelStore_Clear(void);

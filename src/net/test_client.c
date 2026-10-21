@@ -23,6 +23,8 @@
 #include "tak_command_queue.h"
 #include "tak_net_turn.h"
 
+#include "tak_memory.h"
+
 #include <string.h>
 
 static TAK_NetClient g_c;
@@ -369,6 +371,7 @@ static void relay_up(void) {
     memcpy(cfg.server_name, "loopback", 9);
     cfg.seed = 5;
     TAK_NetTransport tx;
+    memset(&tx, 0, sizeof tx);
     tx.ctx = NULL;
     tx.send = relay_send;
     tx.close = relay_close;
@@ -606,6 +609,7 @@ static void relay_up2(void) {
     memcpy(cfg.server_name, "loopback", 9);
     cfg.seed = 5;
     TAK_NetTransport tx;
+    memset(&tx, 0, sizeof tx);
     tx.ctx = NULL;
     tx.send = relay_send2;
     tx.close = relay_close;
@@ -1208,6 +1212,16 @@ TEST(a_battle_says_whom_it_is_waiting_for) {
     g_c.pace.paused = 0;
     g_c.pace.seat = TAK_NET_SEAT_NONE;
     ASSERT_EQ_INT(TAK_MATCH_FLOWING, TAK_Match_Waiting(line, sizeof line));
+
+    /* No more turns will come, and the battle says why rather than
+     * stand still with nothing on the screen. */
+    g_c.pace.reason = TAK_PACE_DESYNC_HALT;
+    g_c.pace.paused = 1;
+    ASSERT_EQ_INT(TAK_MATCH_STOPPED, TAK_Match_Waiting(line, sizeof line));
+    ASSERT_EQ_STR("The game stopped: the players' battles no longer agree.", line);
+    g_c.state = TAK_NC_GONE;
+    ASSERT_EQ_INT(TAK_MATCH_STOPPED, TAK_Match_Waiting(line, sizeof line));
+    ASSERT_EQ_STR("The connection to the game server was lost.", line);
     TAK_Match_End();
 }
 
@@ -1261,6 +1275,126 @@ TEST(a_battle_says_whom_it_is_slowing_down_for) {
     ASSERT_EQ_INT(TAK_MATCH_SLOWED, TAK_Match_Waiting(small, sizeof small));
     ASSERT_EQ_INT(11, (int)strlen(small));
     TAK_Match_End();
+}
+
+/* A GO while the match is already playing is a resync: what is held
+ * belongs to the world being thrown away, and the battle is rebuilt. */
+TEST(a_go_in_the_middle_of_a_match_asks_for_a_rebuild) {
+    ASSERT_EQ_INT(0, both_playing());
+    TAK_Relay_Tick(&g_relay, 1650);
+    settle2(1650);
+    ASSERT(TAK_NetClient_TurnsHeld(&g_c) > 0);
+    ASSERT_EQ_INT(0, g_c.resync);
+    uint8_t msg[64];
+    TAK_MsgGo go;
+    go.first_turn = 0;
+    size_t n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1700));
+    ASSERT_EQ_INT(1, g_c.resync);
+    ASSERT_EQ_INT(0, (int)TAK_NetClient_TurnsHeld(&g_c));
+    ASSERT_EQ_INT(0, (int)g_c.next_turn);
+    ASSERT_EQ_INT(TAK_NC_PLAYING, g_c.state);
+}
+
+/* A snapshot asked of this world goes up in pieces no bigger than the
+ * protocol allows, leaving room in the queue for the acks, and one that
+ * comes down is put together in order and answered. */
+TEST(a_snapshot_goes_up_in_pieces_and_comes_down_whole) {
+    ASSERT_EQ_INT(0, both_playing());
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    while (TAK_NetClient_TakeMessage(&g_c, msg, sizeof msg) > 0) { }
+    TAK_MsgSnapRequest rq;
+    rq.snap_id = 9;
+    rq.wait = 0;
+    size_t n = TAK_Msg_SnapRequestEncode(&rq, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1700));
+    ASSERT_EQ_INT(9, (int)g_c.snap_asked);
+    /* Told to wait instead, its world stops for the GO. */
+    rq.snap_id = 10;
+    rq.wait = 1;
+    n = TAK_Msg_SnapRequestEncode(&rq, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1700));
+    ASSERT_EQ_INT(1, g_c.snap_waiting);
+    ASSERT_EQ_INT(9, (int)g_c.snap_asked);
+
+    uint32_t total = 3 * TAK_NET_SNAP_CHUNK + 100;
+    uint8_t *bytes = (uint8_t *)tak_malloc(total);
+    ASSERT_NOT_NULL(bytes);
+    for (uint32_t i = 0; i < total; i++) bytes[i] = (uint8_t)(i * 7);
+    ASSERT_EQ_INT(0, TAK_NetClient_SnapshotGive(&g_c, bytes, total, 1260));
+    ASSERT_EQ_INT(0, (int)g_c.snap_asked);
+    uint32_t got = 0;
+    for (int round = 0; round < 8 && got < total; round++) {
+        (void)TAK_NetClient_SnapshotPump(&g_c, 2 * TAK_NET_SNAP_CHUNK);
+        ASSERT(g_c.out_len <= sizeof g_c.out / 2);
+        size_t m;
+        while ((m = TAK_NetClient_TakeMessage(&g_c, msg, sizeof msg)) > 0) {
+            TAK_NetFrame f;
+            TAK_MsgSnapData d;
+            ASSERT_EQ_INT(0, TAK_Net_Split(msg, m, &f));
+            if (f.type != TAK_MSG_SNAP_DATA) continue;
+            ASSERT_EQ_INT(0, TAK_Msg_SnapDataDecode(&d, f.payload, f.payload_len));
+            ASSERT_EQ_INT(9, (int)d.snap_id);
+            ASSERT_EQ_INT(1260, (int)d.tick);
+            ASSERT_EQ_INT((int)total, (int)d.total);
+            ASSERT_EQ_INT((int)got, (int)d.offset);
+            ASSERT(d.len <= TAK_NET_SNAP_CHUNK);
+            ASSERT_EQ_INT((uint8_t)(got * 7), d.data[0]);
+            got += d.len;
+        }
+    }
+    ASSERT_EQ_INT((int)total, (int)got);
+    ASSERT(g_c.snap_out == NULL);
+
+    /* Down: pieces out of order drop it, in order it is whole. */
+    static uint8_t body[2 * TAK_NET_SNAP_CHUNK];
+    for (uint32_t i = 0; i < sizeof body; i++) body[i] = (uint8_t)(i ^ 0x5a);
+    TAK_MsgSnapData d;
+    d.snap_id = 4;
+    d.tick = 600;
+    d.total = sizeof body;
+    d.offset = TAK_NET_SNAP_CHUNK;
+    d.len = TAK_NET_SNAP_CHUNK;
+    d.data = body + d.offset;
+    n = TAK_Msg_SnapDataEncode(&d, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1800));
+    ASSERT_EQ_INT(0, g_c.snap_in_whole);
+    ASSERT(g_c.snap_in == NULL);
+    for (uint32_t off = 0; off < sizeof body; off += TAK_NET_SNAP_CHUNK) {
+        d.offset = off;
+        d.data = body + off;
+        n = TAK_Msg_SnapDataEncode(&d, msg, sizeof msg);
+        ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1800));
+    }
+    ASSERT_EQ_INT(1, g_c.snap_in_whole);
+    ASSERT_EQ_INT(600, (int)g_c.snap_in_tick);
+    ASSERT(memcmp(g_c.snap_in, body, sizeof body) == 0);
+    while (TAK_NetClient_TakeMessage(&g_c, msg, sizeof msg) > 0) { }
+    ASSERT_EQ_INT(0, TAK_NetClient_SnapshotResult(&g_c, 1));
+    n = TAK_NetClient_TakeMessage(&g_c, msg, sizeof msg);
+    TAK_NetFrame f;
+    TAK_MsgSnapResult r;
+    ASSERT_EQ_INT(0, TAK_Net_Split(msg, n, &f));
+    ASSERT_EQ_INT(TAK_MSG_SNAP_RESULT, f.type);
+    ASSERT_EQ_INT(0, TAK_Msg_SnapResultDecode(&r, f.payload, f.payload_len));
+    ASSERT_EQ_INT(4, (int)r.snap_id);
+    ASSERT_EQ_INT(1, r.ok);
+    /* A GO for another turn ends a snapshot part way down. */
+    d.snap_id = 6;
+    d.offset = 0;
+    d.data = body;
+    n = TAK_Msg_SnapDataEncode(&d, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1900));
+    ASSERT(g_c.snap_in != NULL);
+    TAK_MsgGo go;
+    go.first_turn = 0;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1950));
+    ASSERT(g_c.snap_in == NULL);
+    ASSERT_EQ_INT(0, (int)g_c.snap_in_len);
+    TAK_NetClient_Free(&g_c);
+    ASSERT(g_c.snap_in == NULL);
 }
 
 TEST(a_finished_tick_is_acknowledged_and_hashed_on_the_sixtieth) {
@@ -1934,6 +2068,7 @@ static int play_w(int secs, uint64_t *now) {
     memcpy(cfg.server_name, "loopback", 9);
     cfg.seed = 5;
     TAK_NetTransport tx;
+    memset(&tx, 0, sizeof tx);
     tx.ctx = NULL;
     tx.send = relay_send_w;
     tx.close = relay_close;
@@ -2306,6 +2441,8 @@ int main(void) {
 
     TEST_SUITE("The verdict, for the leaderboard");
     RUN(a_battle_says_whom_it_is_waiting_for);
+    RUN(a_go_in_the_middle_of_a_match_asks_for_a_rebuild);
+    RUN(a_snapshot_goes_up_in_pieces_and_comes_down_whole);
     RUN(a_battle_says_whom_it_is_slowing_down_for);
     RUN(a_player_who_falls_behind_is_named_until_they_catch_up);
     RUN(a_verdict_is_reported_once_and_only_while_playing);

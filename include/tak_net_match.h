@@ -29,6 +29,17 @@
 /* A match has started. `turn_ticks` is how many simulation ticks one
  * turn covers, which the server names in START_GAME. */
 void TAK_Match_Begin(TAK_NetClient *client, uint8_t seat, uint8_t turn_ticks);
+/* The same from `first_turn`, for a world loaded from a snapshot taken
+ * at that turn's tick: the queue keeps the tick and drops its orders,
+ * which the turns from here carry again. */
+/* The relay asked for this world. The game answers with a save of it
+ * taken between two ticks on a hashed one, or NULL when it cannot, and
+ * the bytes become the session's. */
+int  TAK_Match_SnapshotAsked(void);
+void TAK_Match_SnapshotGive(uint8_t *bytes, uint32_t len, uint32_t tick);
+
+void TAK_Match_BeginAt(TAK_NetClient *client, uint8_t seat, uint8_t turn_ticks,
+                       uint32_t first_turn);
 
 void TAK_Match_End(void);
 
@@ -72,13 +83,21 @@ int  TAK_Match_WantsHash(uint32_t tick);
  * "Waiting for Zach", with the seconds the server still gives a player
  * it has lost. Slowed, while the server's governor holds the turns back
  * for players who lag: "Slowing down to wait for Zach", the original's
- * words (docs/MULTIPLAYER.md). Flowing, 0, and nothing written. */
-enum { TAK_MATCH_FLOWING = 0, TAK_MATCH_STALLED = 1, TAK_MATCH_SLOWED = 2 };
+ * words (docs/MULTIPLAYER.md). Stopped, when no more turns will come:
+ * the server halted the match on a desync, or the connection is gone.
+ * Flowing, 0, and nothing written. */
+enum { TAK_MATCH_FLOWING = 0, TAK_MATCH_STALLED = 1, TAK_MATCH_SLOWED = 2,
+       TAK_MATCH_STOPPED = 3 };
 int  TAK_Match_Waiting(char *out, size_t cap);
 
 /* 1 while this machine watches a match: it holds no seat, gives no
  * order and only looks. */
 int  TAK_Match_IsWatching(void);
+
+/* The local seat lost its army and the battle runs on. It keeps its
+ * seat, so its world is still checked against the others and its
+ * verdict still counts, but it gives no further order. */
+void TAK_Match_SetBeaten(void);
 
 /* A line for whoever began or stopped watching since the last call,
  * "Zach is watching." or "Zach stopped watching.", one per call, from

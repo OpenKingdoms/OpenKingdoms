@@ -24,6 +24,9 @@ typedef enum {
     AI_TASK_FALL_BACK,  /* members in the field come home */
     AI_TASK_RAID,       /* a few fast members go at the enemy's economy */
     AI_TASK_EVADE,      /* a unit steps off ground that hurts it */
+    AI_TASK_ESCORT,     /* a group covers a builder on its way to a pad */
+    AI_TASK_HOLD_GROUND,/* a group stands on the ground it went out to */
+    AI_TASK_DEFEND,     /* a group goes at what attacks the seat's own */
     AI_TASK_COUNT
 } AiTask;
 
@@ -76,6 +79,24 @@ AiTask AI_Htn_MemberTaskIn(const AiWavePlan *plan, AiRole role, int at_stage);
 AiTask AI_Htn_MemberTask(const AiWaveState *s, int is_scout, int at_stage);
 
 const char *AI_Htn_TaskName(AiTask task);
+
+/* A group out in the field, asked each think: what it does once its
+ * errand is done, and while it covers a builder. Strength is in the
+ * influence maps' combat value, a zero a thing not known. */
+typedef struct AiGroupState {
+    int     escorting;      /* it covers a builder on its way to a pad */
+    int     errand_done;    /* its target fell, or its builder's work ended */
+    int     next_known;     /* a next target is known from where it stands */
+    int     next_seen;      /* and the seat can see it now */
+    int32_t value;          /* the group's strength */
+    int32_t enemy_at_next;  /* seen enemy strength around that target */
+    int     siege_due;      /* the long wait is up, go whatever waits */
+    int     threat;         /* something of the seat's is under attack */
+} AiGroupState;
+
+/* AI_TASK_DEFEND, AI_TASK_ESCORT, AI_TASK_STRIKE or AI_TASK_HOLD_GROUND,
+ * and the method it was planned by when reason is not NULL. */
+AiTask AI_Htn_GroupTask(const AiGroupState *s, const char **reason);
 
 /* A unit's footing, asked before anything else it would do: whether the
  * ground it stands on hurts it, under the remastered rules a burning

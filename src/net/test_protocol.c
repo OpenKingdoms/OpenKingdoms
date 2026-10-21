@@ -128,6 +128,35 @@ TEST(hello_round_trips) {
 /* Protocol 4 names the mod set after the access key. A greeting of 3
  * or less is the 129 bytes it always was, and each version is held to
  * its own length, so neither form passes for the other. */
+/* Protocol 8 adds the host's game folder models after the mod sets, and
+ * every shorter form still reads. */
+TEST(room_list_carries_game_folder_models_from_protocol_eight) {
+    TAK_MsgRoomList a, b;
+    memset(&a, 0, sizeof(a));
+    a.count = 2;
+    for (int i = 0; i < 2; i++) {
+        a.room[i].room_id = (uint32_t)(i + 1);
+        a.room[i].host_ping_ms = (uint16_t)(50 + i);
+        a.room[i].content_hash = 0xc0de000000000000ull + (uint64_t)i;
+    }
+    a.room[1].loose_models = 20;
+    a.room[1].loose_hash = 0x0b1ec75ull;
+    TAK_NetFrame f;
+    size_t n8 = TAK_Msg_RoomListEncodeV(&a, 8, buf, sizeof(buf));
+    ASSERT_EQ_INT((int)(TAK_NET_FRAME_HEADER + 2 + 2 * 175 + 2 * 2 + 2 * 56 + 2 * 10), (int)n8);
+    ASSERT_EQ_INT((int)n8, (int)TAK_Msg_RoomListEncode(&a, buf2, sizeof(buf2)));
+    ASSERT_EQ_INT(0, TAK_Net_Split(buf, n8, &f));
+    ASSERT_EQ_INT(0, TAK_Msg_RoomListDecode(&b, f.payload, f.payload_len));
+    ASSERT(memcmp(&a, &b, sizeof(a)) == 0);
+    ASSERT_EQ_INT(3, accepted_truncations(buf, n8));
+
+    char line[TAK_NET_CHAT_MAX];
+    TAK_Net_ModelFolderAdvice(line, sizeof line, NULL, 0, 20);
+    ASSERT_EQ_STR("The host's game folder has 20 models in objects3d that yours does "
+                  "not. Both players need the same files: both include the objects3d "
+                  "folder, or both leave it out.", line);
+}
+
 TEST(hello_names_the_mod_set_from_protocol_four_and_not_before) {
     TAK_MsgHello a, b;
     memset(&a, 0, sizeof(a));
@@ -474,8 +503,6 @@ TEST(room_list_carries_mod_sets_from_protocol_four_and_not_before) {
     TAK_NetFrame f;
     size_t n4 = TAK_Msg_RoomListEncodeV(&a, 4, buf, sizeof(buf));
     ASSERT_EQ_INT((int)(TAK_NET_FRAME_HEADER + 2 + 3 * 175 + 3 * 2 + 3 * 56), (int)n4);
-    ASSERT_EQ_INT((int)n4, (int)TAK_Msg_RoomListEncode(&a, buf2, sizeof(buf2)));
-    ASSERT(memcmp(buf, buf2, n4) == 0);
     ASSERT_EQ_INT(0, TAK_Net_Split(buf, n4, &f));
     ASSERT_EQ_INT(0, TAK_Msg_RoomListDecode(&b, f.payload, f.payload_len));
     ASSERT(memcmp(&a, &b, sizeof(a)) == 0);
@@ -848,6 +875,8 @@ TEST(every_reject_reason_has_text) {
         const char *s = TAK_Net_RejectText((uint8_t)i);
         ASSERT_NOT_NULL(s);
         ASSERT(s[0] != '\0');
+        /* Whole in a REJECT's text field. */
+        ASSERT(strlen(s) < TAK_NET_TEXT_MAX);
     }
     ASSERT_EQ_STR("The game is full.", TAK_Net_RejectText(TAK_REJECT_GAME_FULL));
     /* Reason 8 is the one the reference pins: a build mismatch asks for a
@@ -921,6 +950,7 @@ int main(void) {
     RUN(room_list_refuses_more_rooms_than_the_cap);
     RUN(room_list_carries_host_pings_from_protocol_three_and_not_before);
     RUN(room_list_carries_mod_sets_from_protocol_four_and_not_before);
+    RUN(room_list_carries_game_folder_models_from_protocol_eight);
     RUN(hello_names_the_mod_set_from_protocol_four_and_not_before);
     RUN(start_game_and_load_messages_round_trip);
     RUN(cmd_round_trips_and_points_into_the_frame);

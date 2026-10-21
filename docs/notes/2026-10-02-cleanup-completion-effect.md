@@ -1,45 +1,30 @@
 # Cleanup completion effect
 
-The feature-reclaim work step removed the target without creating a visual
-effect. Successful cleanup now creates one detached, one-shot effect at
-the feature's centre and terrain height. Its position is captured before
-removal because removing a feature compacts the instance array.
+A sweep that finished took the feature away with nothing to show for it.
+A finished sweep now plays one effect at the feature's centre, on the
+ground there. The place is read before the feature goes, since removing
+one moves the others down the list.
 
-This is specific to successful cleanup. Generic feature removal, decay,
-cancelled orders and missing targets do not create this effect. Existing
-mana refunds and cleanup timing are unchanged. Missing art or a full
-effect pool can drop the visual without preventing cleanup.
+Only a finished sweep plays it. A feature that rots away, is removed by
+something else, or whose sweep is called off plays nothing. The mana a
+sweep pays back and how long it takes are unchanged. Missing art or a
+full effect list drops the effect and never the sweep.
 
-## Art choice is provisional
+## The art is provisional
 
-The installed retail archive contains `anims/deathmagic.gaf` with two
-sequences: `Death01` has 20 frames and `PurpleDeath` has 15. The existing
-palette lookup associates this sheet with `fx.pcx`. PurpleDeath already
-serves resurrection. A decoded Death01 preview shows a dark reddish
-dispersal effect.
+The retail archive's `anims/deathmagic.gaf` holds two sequences:
+`Death01`, 20 frames, and `PurpleDeath`, 15 frames, which a raise
+already plays. `Death01` is a dark red dispersal, and the sweep uses it
+for now. Nothing in the game's data ties it to a sweep, and how the
+original shows a finished sweep is not settled, so this is our choice
+until someone confirms it.
 
-Death01 is used provisionally for cleanup. No config entry or original
-runtime observation was found that establishes this mapping. Asset names
-and appearance alone do not prove original-game parity. The user was asked
-for the remembered appearance. Local previews are `build/Death01-preview.png`
-and `build/PurpleDeath-preview.png`, produced by `build/inspect-cleanup-art.py`.
-These game-derived images are not committed.
+It plays at the engine's effect rate, four ticks a frame, and is gone
+after 80 ticks, in both views.
 
-The animation uses the existing engine-effect cadence of four simulation
-ticks per frame and expires after 80 ticks. Both render views consume the
-shared effect pool. Exact original cleanup timing remains unverified.
+## Tests
 
-## Verification
-
-The resource cleanup regression failed before the fix with expected one
-completion effect, actual zero. It now checks no early flash, exactly one
-at completion, position, terrain height, advancing frames and expiry.
-The corpse cleanup test checks the same completion boundary. A separate
-test checks cancellation and removal by another system.
-
-Six targeted native Release tests pass, including existing mana payout,
-resurrection and cleanup command tests. Native and public WebAssembly
-builds succeed. Browser runtime appearance was not separately checked.
-Local evidence is in `build/cleanup-red.log`, `build/cleanup-green.log`,
-`build/cleanup-checks.log`, `build/cleanup-build.log` and
-`build/cleanup-wasm-build.log`. Review is in `build/cleanup-review.txt`.
+`reclaim_clears_feature_and_pays_mana` and
+`the_sweep_clears_a_corpse_and_keeps_it_from_rotting` check that no
+effect plays early, exactly one plays when the feature goes, and for the
+first where it stands, that its frames advance and that it ends.

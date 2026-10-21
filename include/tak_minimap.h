@@ -53,6 +53,11 @@ int Minimap_DebugDotRect(TAK_Platform *plat, int32_t world_x, int32_t world_y,
 int      Minimap_DebugMapRect(TAK_Platform *plat, SDL_Rect *out);
 uint32_t Minimap_DebugFogDraws(void);
 
+/* Tab's full screen radar: the same map over the whole play area, its
+ * blips by the kind of unit, and every point of it the map under it. */
+void Minimap_SetLarge(int on);
+int  Minimap_IsLarge(void);
+
 /* Free the GPU texture. Called from World_End — the minimap's lifetime
  * matches the world's, not any single in-game session. Safe to call
  * multiple times or without a preceding Init (no-op). */

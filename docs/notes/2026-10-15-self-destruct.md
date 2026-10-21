@@ -41,6 +41,10 @@ version 14. The few random frames come from the simulation's generator
 when the count starts, where the original draws them when the seconds
 run out. Engine build 43.
 
+A start asks first in the engine, in the shipped yes or no box, which
+the original never does. Calling a countdown off asks nothing. That is
+our own addition, recorded as D-041 in docs/MANUAL_DEVIATIONS.md.
+
 ## A fallen player
 
 When the last unit of a player is gone, in a skirmish or a match, the
@@ -56,4 +60,7 @@ dying ones counted, drop to none. The original picks the line with the
 C library's rand, which no other machine shares. The engine picks it
 from the battle tick and the seat, so every machine shows the same
 line. The original also plays MessageArrived for a line about another
-player. The engine plays no sound for any message line yet.
+player. The shipped archives carry no MessageArrived.wav, so with the
+original's files that cue plays nothing. The engine plays a cue of its
+own instead (D-043), every time a player falls, the computer included,
+on every machine. A battle being caught up to the present skips it.

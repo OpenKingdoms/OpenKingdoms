@@ -57,6 +57,9 @@
 #include "tak_story.h"
 #include "tak_multiplayer.h"
 #include "tak_net_session.h"
+#include "tak_net_match.h"
+#include "tak_command_queue.h"
+#include "tak_chat.h"
 #include "tak_select_game.h"
 #include "tak_world.h"
 #include "tak_camera.h"
@@ -91,6 +94,17 @@ EM_JS(void, web_screen, (const char *id, int x, int y, int w, int h), {
  * one. Only a battle that began in a match can end in a desync or a
  * lost connection. */
 static int g_battle_in_match;
+
+/* The battle being built is a resync of the one before, not a new one,
+ * and the tick the one before had reached. */
+static int g_resync_rebuild;
+static uint32_t g_resync_from_tick;
+/* Where the player was looking and what they had selected, by stable
+ * id, which the rebuilt battle keeps. */
+static int32_t g_resync_cam_x, g_resync_cam_y;
+#define RESYNC_KEPT_SELECTION 64
+static uint32_t g_resync_sel[RESYNC_KEPT_SELECTION];
+static int g_resync_sel_n;
 
 static void battle_began(void) {
     const GameWorld *w = World_Get();
@@ -643,7 +657,26 @@ static void app_frame(AppState *app) {
                 /* Every skirmish and match is recorded from its first
                  * tick, beside the saved games. */
                 Replay_RecordBattle();
-                battle_began();
+                if (g_resync_rebuild) {
+                    g_resync_rebuild = 0;
+                    InGame_SetRejoining(g_resync_from_tick);
+                    GameWorld *rw = World_Get();
+                    if (rw) { rw->cam_x = g_resync_cam_x; rw->cam_y = g_resync_cam_y; }
+                    int kept = 0;
+                    for (int i = 0; i < g_resync_sel_n; i++) {
+                        int h = Units_FindByStableId(g_resync_sel[i]);
+                        if (h < 0) continue;
+                        if (!kept++) Units_SelectSingle(h);
+                        else Units_SelectAdd(h);
+                    }
+                    g_resync_sel_n = 0;
+                    Chat_Push(MP_RebuiltFromSnapshot()
+                              ? "The battle went out of step and was set right from another player's game."
+                              : "The battle went out of step and is rebuilt from the server's record.",
+                              CHAT_TYPE_NOTICE, CHAT_OWNER_SYSTEM, SDL_GetTicks());
+                } else {
+                    battle_began();
+                }
             }
             int next_state = InGame_Tick(&app->platform, &app->timer);
             g_ingame_frames++;
@@ -677,7 +710,31 @@ static void app_frame(AppState *app) {
                 }
                 app->quit_requested = 1;
             }
-            if (next_state != GAMESTATE_IN_GAME) {
+            if (next_state != GAMESTATE_IN_GAME && InGame_TakeResync()) {
+                /* A resync: the match goes on, so it is not left. The
+                 * world is built again and the log replays into it. */
+                g_resync_from_tick = TAK_CmdQueue_Tick();
+                if (World_Get()) {
+                    g_resync_cam_x = World_Get()->cam_x;
+                    g_resync_cam_y = World_Get()->cam_y;
+                }
+                {
+                    int n = 0, live = 0;
+                    const int *sel = Units_GetSelection(&n);
+                    const Unit *units = Units_GetActive(&live);
+                    g_resync_sel_n = 0;
+                    for (int i = 0; i < n && g_resync_sel_n < RESYNC_KEPT_SELECTION; i++)
+                        if (sel[i] >= 0 && sel[i] < live)
+                            g_resync_sel[g_resync_sel_n++] = units[sel[i]].stable_id;
+                }
+                TAK_Match_End();
+                InGame_Shutdown();
+                World_End(&app->platform);
+                app->ingame_initialized = 0;
+                g_resync_rebuild = 1;
+                app->state = MP_RebuildMatchWorld(&app->platform) == 0
+                           ? GAMESTATE_GAME_LOADING : GAMESTATE_MENU;
+            } else if (next_state != GAMESTATE_IN_GAME) {
                 BattleConfig again;
                 char again_map[96], again_kingdom[32];
                 int restart = InGameMenu_TakeRestart(&again,

@@ -91,7 +91,6 @@ ui = [
   ["campaign_map_water_comes_from_the_map", 1],
   ["the_revive_cursor_shows_over_a_body_the_selection_can_raise", 1],
   ["a_wrecked_keep_shows_its_timbers_over_its_walls", 1],
-  ["hover_suggests_cleanup_and_the_click_clears_the_feature", 1],
 ]
 
 [[tier1]]
@@ -189,7 +188,7 @@ ui = [
   ["the_sweep_button_sends_a_builder_to_clear_a_map_feature", 1],
   ["the_sweep_button_sends_a_builder_to_clear_a_building", 1],
   ["the_sweep_takes_only_a_building_we_own", 1],
-  ["hud_", 10],
+  ["hud_", 7],
   ["render_probe_lodestone_covers_pad", 1],
   ["patrol_from_the_sidebar_loops_until_a_new_order", 1],
   ["caster_reserve_recharges_and_gates_shots", 1],
@@ -206,8 +205,6 @@ ui = [
   ["drag_load_leaves_riders_that_do_not_fit", 1],
   ["click_load_with_shift_queues_behind_the_current_pickup", 1],
   ["the_revive_cursor_shows_over_a_body_the_selection_can_raise", 1],
-  ["hover_suggests_healing_only_when_the_selection_can_help", 1],
-  ["hover_suggests_cleanup_and_the_click_clears_the_feature", 1],
   ["a_towers_crew_draws_the_same_beside_a_second_tower", 1],
   ["a_wrecked_keep_shows_its_timbers_over_its_walls", 1],
   ["veteran_swap_keeps_the_crew_drawn", 1],
@@ -267,6 +264,7 @@ ui = [
   ["a_click_on_a_scroll_arrow_reaches_the_arrow", 1],
   ["the_lobbies_offer_the_remastered_battlefield", 1],
   ["select_game_hosting_a_game_names_the_rules_it_plays_by", 1],
+  ["a_match_world_rebuilt_from_a_snapshot_plays_on_alike", 1],
 ]
 
 [[tier1]]
@@ -290,9 +288,6 @@ ui = [
   ["the_empty_replays_message_fits_on_one_line", 1],
   ["the_lobbies_offer_the_remastered_battlefield", 1],
   ["the_game_options_are_kept_for_the_next_battle", 1],
-  ["hud_conjuring_target_shows_live_progress", 1],
-  ["hud_target_panel_shows_attack_target", 1],
-  ["build_sparkles_follow_the_size_of_the_building", 1],
 ]
 
 [[tier1]]
@@ -309,7 +304,7 @@ paths = [
 ctest = "^(fuzz_gltf|test_blit|test_build_facing|test_capture|test_command_pipeline|test_gaf|test_gltf|test_jpg|test_jpg_no_data|test_line_of_fire|test_movement|test_obj3d|test_orders|test_render_cache|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
 ui = [
   ["render_probe", 6],
-  ["shadow", 5],
+  ["shadow", 4],
   ["battle_setup_swatches_match_authored_frames", 1],
   ["loading_progress_clamps_and_transitions", 1],
 ]
@@ -331,7 +326,9 @@ ui = [
 name = "commands"
 paths = ["src/net/commands.c"]
 ctest = "^(test_build_facing|test_capture|test_client|test_command_pipeline|test_commands|test_line_of_fire|test_movement|test_orders|test_render_cache|test_replay|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
-ui = []
+ui = [
+  ["a_seat_beaten_in_a_match_watches_the_rest_of_it", 1],
+]
 # The cheapest entry in the repo at about four seconds, and that is a
 # statement about how thin the coverage is, not about how safe command
 # handling is.

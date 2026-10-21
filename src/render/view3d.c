@@ -13,6 +13,7 @@
 #include "tak_view3d.h"
 #include "tak_gl3d.h"
 #include "tak_model_store.h"
+#include "tak_obj3d.h"
 #include "tak_camera3d.h"
 #include "tak_world.h"
 #include "tak_terrain.h"
@@ -81,6 +82,7 @@ static struct {
     /* Terrain, built for one world's grid. */
     const GameWorld *built_for;
     const TerrainGrid *built_grid;
+    int built_models;   /* the game folder's models were on */
     GL3D_Mesh *meshes[V3_MAX_MESHES];
     int mesh_count;
     TerrainSeg *segs;
@@ -376,6 +378,7 @@ static int build_terrain(const GameWorld *world) {
     }
     v.built_for = world;
     v.built_grid = g;
+    v.built_models = Obj3D_GameFolderModels();
     fprintf(stderr, "View3D: terrain %d blocks, %d meshes, %d runs, %d chunk textures\n",
             n, v.mesh_count, v.seg_count, v.chunk_count);
     return 0;
@@ -779,6 +782,7 @@ static void draw_ground_pieces(const GameWorld *world, const float planes[6][4])
         float alpha = 1.0f;
         if (u->magic_death)
             alpha = (float)u->magic_death_fade / (float)UNIT_MAGIC_DEATH_TICKS;
+        alpha *= (float)Units_DrawnAlpha(u) / 255.0f;
         if (body)
             draw_model_part(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0, 0,
                             (float)u->world_x, h, (float)u->world_y, u->heading, u->pitch, u->roll,
@@ -789,12 +793,16 @@ static void draw_ground_pieces(const GameWorld *world, const float planes[6][4])
     GL3D_SetDepthWrite(1);
 }
 
-static void draw_units(const GameWorld *world, const float planes[6][4]) {
+/* `see_through` picks the pass: the solid units, or the ghosts, which go
+ * last so whatever stands behind them shows through. */
+static void draw_units(const GameWorld *world, const float planes[6][4], int see_through) {
     int count = 0;
     const Unit *units = Units_GetActive(&count);
     for (int i = 0; i < count; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) continue;
+        const int drawn_alpha = Units_DrawnAlpha(u);
+        if ((drawn_alpha < 255) != see_through) continue;
         /* A frame's body shows past half built, its mass while it is
          * being built (legacy:197474-197489). */
         const int body = Units_NanoframeBodyShown(u);
@@ -808,9 +816,9 @@ static void draw_units(const GameWorld *world, const float planes[6][4]) {
         float h = (float)Terrain_SampleHeight(world, u->world_x, u->world_y) + Units_DrawnAlt(world, u);
         float c[3] = { (float)u->world_x, h + m->height_px * 0.5f, (float)u->world_y };
         if (!Camera3D_SphereInFrustum(planes, c, m->radius_px)) continue;
-        float alpha = 1.0f;
+        float alpha = (float)drawn_alpha / 255.0f;
         if (u->magic_death) {
-            alpha = (float)u->magic_death_fade / (float)UNIT_MAGIC_DEATH_TICKS;
+            alpha *= (float)u->magic_death_fade / (float)UNIT_MAGIC_DEATH_TICKS;
         }
         const int part = View3D_GroundPiecesOf(def, m) ? V3_PART_STANDING : V3_PART_ALL;
         /* With no body the mass still blends over its front surface only. */
@@ -1057,7 +1065,8 @@ static void draw_features(const GameWorld *world, const float planes[6][4]) {
         if (fd->object[0]) {
             if (Fog_StateAt(world, mf->world_x, mf->world_y) == TAK_FOG_UNEXPLORED) continue;
             int c = (mf->color_idx >= 0 && mf->color_idx <= 11) ? mf->color_idx : 0;
-            const GpuModel *m = ModelStore_Get(fd->object, c);
+            const GpuModel *m = ModelStore_GetPainted(fd->object, c,
+                                                      Units_FeaturePaint(fd));
             if (!m) continue;
             float h = (float)Terrain_SampleHeight(world, mf->world_x, mf->world_y);
             float centre[3] = { (float)mf->world_x, h + m->height_px * 0.5f, (float)mf->world_y };
@@ -1131,8 +1140,50 @@ static float surface_height(const GameWorld *world, float x, float z) {
     return world->water_height > 0 && sea > g ? sea : g;
 }
 
-/* Legacy:210919-211085. Dashed ring rotating with base angle
- * (unit id + sim tick) * 0x4000/60, oriented by the unit heading. */
+/* Your own selected cloaked units show how near an enemy may come, a
+ * white ring at mincloakdistance (legacy:180534-180536). */
+static void draw_cloak_rings(const GameWorld *world) {
+    int n = 0;
+    const int *sel = Units_GetSelection(&n);
+    if (n <= 0) return;
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    const int segs = 48;
+    if (ensure_stream(n * segs * 2, n * segs * 6) != 0) return;
+    int nv = 0, ni = 0;
+    for (int k = 0; k < n; k++) {
+        int h = sel[k];
+        if (h < 0 || h >= count) continue;
+        const Unit *u = &units[h];
+        const UnitDef *def = Units_GetDef(u->def_idx);
+        if (u->alive != UNIT_ALIVE_ACTIVE || !u->cloaked || !def ||
+            u->player_id != Units_LocalPlayer() || def->min_cloak_distance <= 0)
+            continue;
+        float r = (float)def->min_cloak_distance;
+        for (int s = 0; s < segs; s++) {
+            float a = (float)s / (float)segs * 2.0f * V3_PI;
+            float ca = cosf(a), sa = sinf(a);
+            float x0 = (float)u->world_x + ca * r, z0 = (float)u->world_y + sa * r;
+            float x1 = (float)u->world_x + ca * (r + 1.5f), z1 = (float)u->world_y + sa * (r + 1.5f);
+            put_vert(v.stream_v + (size_t)(nv + 2 * s) * 9, x0,
+                     surface_height(world, x0, z0) + 1.5f, z0, 0, 0, 1, 1, 1, 1);
+            put_vert(v.stream_v + (size_t)(nv + 2 * s + 1) * 9, x1,
+                     surface_height(world, x1, z1) + 1.5f, z1, 0, 0, 1, 1, 1, 1);
+        }
+        for (int s = 0; s < segs; s++) {
+            int a = nv + 2 * s, b = nv + 2 * ((s + 1) % segs);
+            uint16_t *q = v.stream_i + ni;
+            q[0] = (uint16_t)a; q[1] = (uint16_t)(a + 1); q[2] = (uint16_t)b;
+            q[3] = (uint16_t)(a + 1); q[4] = (uint16_t)(b + 1); q[5] = (uint16_t)b;
+            ni += 6;
+        }
+        nv += segs * 2;
+    }
+    if (nv > 0) GL3D_DrawSprites(v.stream_v, nv, v.stream_i, ni, NULL, 0, 0);
+}
+
+/* A ring of twelve chords on the ground or the water around each
+ * selected unit, turning as the classic view's does (legacy:211001-211030). */
 static void draw_selection_rings(const GameWorld *world) {
     int n = 0;
     const int *sel = Units_GetSelection(&n);
@@ -1146,7 +1197,7 @@ static void draw_selection_rings(const GameWorld *world) {
     int nv = 0, ni = 0;
     uint32_t sim_tick = Units_SimTick();
     #define RING_STEP (2.0f * V3_PI / 6.0f)
-    #define RING_HALF (1638.0f * 2.0f * V3_PI / 65536.0f)
+    #define RING_CHORD (3276.0f * 2.0f * V3_PI / 65536.0f)
     for (int k = 0; k < n; k++) {
         int h = sel[k];
         if (h < 0 || h >= count) continue;
@@ -1159,24 +1210,23 @@ static void draw_selection_rings(const GameWorld *world) {
         if (u->player_id != Units_LocalPlayer()) { cr = 1.0f; cg = 0.3f; }
         float phase = (float)(u->stable_id + sim_tick)
                     * (2.0f * V3_PI / 480.0f);
-        float hdg   = (float)u->heading * (2.0f * V3_PI / 65536.0f);
         float cx = (float)u->world_x, cz = (float)u->world_y;
         float own = surface_height(world, cx, cz);
         float lo = own - rad * 0.5f, hi = own + rad * 0.5f;
         for (int seg = 0; seg < 12; seg++) {
             float a0, a1;
             if (seg < 6) {
-                a0 = hdg + phase + (float)seg * RING_STEP;
-                a1 = a0 - RING_HALF;
+                a0 = phase + (float)seg * RING_STEP;
+                a1 = a0 - RING_CHORD;
             } else {
-                a0 = hdg - phase + (float)(seg - 6) * RING_STEP + RING_STEP * 0.5f;
-                a1 = a0 + RING_HALF;
+                a0 = -phase - (float)(seg - 6) * RING_STEP;
+                a1 = a0 + RING_CHORD;
             }
             float angles[2] = { a0, a1 };
             for (int e = 0; e < 2; e++) {
                 float ca = cosf(angles[e]), sa = sinf(angles[e]);
                 float ix = cx + ca * rad,         iz = cz + sa * rad;
-                float ox = cx + ca * (rad + 0.5f), oz = cz + sa * (rad + 0.5f);
+                float ox = cx + ca * (rad + 1.5f), oz = cz + sa * (rad + 1.5f);
                 float iy = fmaxf(lo, fminf(hi, surface_height(world, ix, iz))) + 1.5f;
                 float oy = fmaxf(lo, fminf(hi, surface_height(world, ox, oz))) + 1.5f;
                 int vi = nv + (seg * 2 + e) * 2;
@@ -1194,7 +1244,7 @@ static void draw_selection_rings(const GameWorld *world) {
     if (nv > 0) GL3D_DrawSprites(v.stream_v, nv, v.stream_i, ni, NULL, 0, 0);
     #undef RING_SEGS
     #undef RING_STEP
-    #undef RING_HALF
+    #undef RING_CHORD
 }
 
 /* Past the map's edges the view is black, as the classic view and
@@ -1477,9 +1527,11 @@ static void v3_shutdown(TAK_Platform *plat) {
 /* The terrain, and with it the map size the camera is clamped to, is
  * built for this battle. Until the first frame builds it the size is
  * nought or another map's, and a clamp would pin the camera to a
- * corner. */
+ * corner. The models are this battle's too, and a match keeps to the
+ * archives' ones. */
 static int v3_built_for(const GameWorld *world) {
-    return v.built_for == world && v.built_grid == world->grid;
+    return v.built_for == world && v.built_grid == world->grid &&
+           v.built_models == Obj3D_GameFolderModels();
 }
 
 static void v3_render(const GameWorld *world, TAK_Platform *plat,
@@ -1527,11 +1579,13 @@ static void v3_render(const GameWorld *world, TAK_Platform *plat,
     draw_ground_pieces(world, planes);
     draw_features(world, planes);
     draw_selection_rings(world);
-    draw_units(world, planes);
+    draw_cloak_rings(world);
+    draw_units(world, planes, 0);
     draw_build_ghost(world);
     draw_effects(world, planes);
     draw_beams(world);
     draw_water(world);
+    draw_units(world, planes, 1);
     GL3D_EndFrame();
 
     double freq = (double)SDL_GetPerformanceFrequency();

@@ -37,9 +37,15 @@
  * way lists a data mismatch as one. 6: a seated JOIN_ROOM may take a
  * computer seat in a match under way when the room has
  * TAK_ROOMF_DROP_IN, and the turn stream carries TAK_SYS_SEAT_TAKEOVER.
- * 2 to 6 share a room. The relay speaks every version and writes each
- * client the one it said hello with. */
-#define TAK_NET_PROTOCOL_VERSION      6
+ * 7: a GO in the middle of a match restarts the client from the log,
+ * and it rebuilds its world, so two worlds that part are resynced
+ * rather than halted. 8: HELLO and the room list carry the models in
+ * the game folder's objects3d, so a lobby can say that folder is what
+ * differs. 9: a world that parts is rebuilt from another client's
+ * snapshot (SNAP_REQUEST, SNAP_DATA, SNAP_RESULT) and the turns after it,
+ * not from turn 0. 2 to 9 share a room. The relay speaks every version
+ * and writes each client the one it said hello with. */
+#define TAK_NET_PROTOCOL_VERSION      9
 #define TAK_NET_PROTOCOL_MIN          1
 
 /* The simulation a client plays, sent as engine_build_id. A room holds
@@ -132,8 +138,28 @@
  * builder on patrol mends and helps build, and a blade takes no flyer
  * in the air. 43: a guard attacks what hits the unit it guards, mends
  * it, joins its build or repair, and keeps five cells off it, and
- * Ctrl+D self destructs. */
-#define TAK_ENGINE_BUILD_ID           43
+ * Ctrl+D self destructs. 44: units with a cloak cost cloak, and a
+ * builder sent to a site its side cannot see checks it on arrival.
+ * 45: a unit turns onto its target only by turninplacerate or as a
+ * hover attacker and fires within its aim tolerance, and freeze and
+ * stone shots turn a unit to a statue on a roll. 46: a unit's script
+ * reads IN_WATER as 1 while it moves below the sea. 47: a paralyzer
+ * holds what it hits instead of wounding it, a weapon fires once its
+ * script says it is aimed, and statues take their side's paint.
+ * 48: every canfly unit flies and lands, a flyer takes off before it
+ * fires, a factory's product walks to a spot of its own, a broom drag
+ * clears its box, and a rider boards a flying transport. 49: the
+ * computer settles every free pad under cover, holds or presses on
+ * after a win, and weighs a troop its profile leaves out like its peers.
+ * 50: an aim its script never answers fires after 120 ticks with the
+ * unit stopped in reach. 51: a skirmish the player lost plays on after
+ * the Defeat banner while two sides still fight, and its statistics
+ * wait for the end. 52: a world that parts is rebuilt from another
+ * player's snapshot, which every player in the room has to be able to
+ * give and take, so an older build is told to reload or update. 53: a
+ * match reads its models from the archives alone, never the game
+ * folder's objects3d. */
+#define TAK_ENGINE_BUILD_ID           53
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
@@ -214,6 +240,12 @@ typedef enum TAK_NetMsg {
     TAK_MSG_ACK             = 50,
     TAK_MSG_PACE            = 51,
     TAK_MSG_PLAYER_STATUS   = 52,
+    /* Protocol 9: the relay asks a sound client for its world, the
+     * client sends it a piece at a time, the relay passes it on to the
+     * one that parted, and that one says whether it could take it. */
+    TAK_MSG_SNAP_REQUEST    = 53,
+    TAK_MSG_SNAP_DATA       = 54,
+    TAK_MSG_SNAP_RESULT     = 55,
 
     /* The leaderboard. A client reports the end screen's tallies when
      * the verdict fires. */
@@ -240,7 +272,7 @@ typedef enum TAK_NetReject {
     TAK_REJECT_NO_WATCHING       = 9,
     TAK_REJECT_CREATOR_LEFT      = 10,
 
-    TAK_REJECT_DATA_MISMATCH     = 16,
+    TAK_REJECT_DATA_MISMATCH     = 16,   /* detail: the group, or below */
     TAK_REJECT_ENGINE_VERSION    = 17,
     TAK_REJECT_SERVER_PASSWORD   = 18,
     TAK_REJECT_BANNED            = 19,
@@ -424,6 +456,11 @@ typedef struct TAK_MsgHello {
      * decide who plays whom. Sent when protocol_version is 4 or more. */
     char     mod_name[TAK_NET_MOD_NAME_MAX];
     char     mod_version[TAK_NET_MOD_VERSION_MAX];
+    /* The models in the game folder's objects3d and their hash, 0 for
+     * none. Protocol 8 on. Engine build 53 on sends 0, since a match
+     * reads no such model. */
+    uint16_t loose_models;
+    uint64_t loose_hash;
 } TAK_MsgHello;
 
 typedef struct TAK_MsgWelcome {
@@ -483,6 +520,9 @@ typedef struct TAK_RoomSummary {
     char     mod_name[TAK_NET_MOD_NAME_MAX];
     char     mod_version[TAK_NET_MOD_VERSION_MAX];
     uint64_t content_hash;
+    /* The host's game folder models, as its hello said. Protocol 8 on. */
+    uint16_t loose_models;
+    uint64_t loose_hash;
 } TAK_RoomSummary;
 
 typedef struct TAK_MsgRoomList {
@@ -619,6 +659,35 @@ typedef struct TAK_MsgLoaded {
 typedef struct TAK_MsgGo {
     uint32_t first_turn;
 } TAK_MsgGo;
+
+/* A snapshot is a save of the whole world in memory, taken between two
+ * ticks at a tick the hash is reported on, and the turns after it. */
+#define TAK_NET_SNAP_CHUNK  16384u
+#define TAK_NET_SNAP_MAX    (32u << 20)
+
+/* To a donor, wait 0: give your world. To the world that parted, wait
+ * 1: stop, your world is being replaced. */
+typedef struct TAK_MsgSnapRequest {
+    uint32_t snap_id;
+    uint8_t  wait;
+} TAK_MsgSnapRequest;
+
+/* One piece. `tick` is the queue tick the world was saved at, a whole
+ * number of turns. A total of 0 is a donor saying it cannot. Decode
+ * points `data` into the caller's frame and copies nothing. */
+typedef struct TAK_MsgSnapData {
+    uint32_t       snap_id;
+    uint32_t       tick;
+    uint32_t       total;
+    uint32_t       offset;
+    uint16_t       len;
+    const uint8_t *data;
+} TAK_MsgSnapData;
+
+typedef struct TAK_MsgSnapResult {
+    uint32_t snap_id;
+    uint8_t  ok;
+} TAK_MsgSnapResult;
 
 /* A command as it crosses this layer: bytes we do not interpret. Decode
  * points into the caller's frame buffer and copies nothing, so the blobs
@@ -799,6 +868,12 @@ int    TAK_Msg_LoadedDecode(TAK_MsgLoaded *m, const void *p, size_t len);
 
 size_t TAK_Msg_GoEncode(const TAK_MsgGo *m, void *out, size_t cap);
 int    TAK_Msg_GoDecode(TAK_MsgGo *m, const void *p, size_t len);
+size_t TAK_Msg_SnapRequestEncode(const TAK_MsgSnapRequest *m, void *out, size_t cap);
+int    TAK_Msg_SnapRequestDecode(TAK_MsgSnapRequest *m, const void *p, size_t len);
+size_t TAK_Msg_SnapDataEncode(const TAK_MsgSnapData *m, void *out, size_t cap);
+int    TAK_Msg_SnapDataDecode(TAK_MsgSnapData *m, const void *p, size_t len);
+size_t TAK_Msg_SnapResultEncode(const TAK_MsgSnapResult *m, void *out, size_t cap);
+int    TAK_Msg_SnapResultDecode(TAK_MsgSnapResult *m, const void *p, size_t len);
 
 size_t TAK_Msg_CmdEncode(const TAK_MsgCmd *m, void *out, size_t cap);
 int    TAK_Msg_CmdDecode(TAK_MsgCmd *m, const void *p, size_t len);
@@ -844,8 +919,20 @@ typedef struct TAK_SysCmd {
 } TAK_SysCmd;
 int TAK_Sys_Decode(TAK_SysCmd *out, const void *p, size_t len);
 
+/* A data mismatch's detail when the game folder models differ: this
+ * bit and the host's count of them, at most 127. Only builds before 53
+ * are ever told it. */
+#define TAK_REJECT_DETAIL_MODELS 0x80u
+
 /* Reject text the client shows. Never NULL. */
 const char *TAK_Net_RejectText(uint8_t reason);
+
+/* Why two players whose game folder models differ cannot play, naming
+ * the folder and the count. For the joiner, joiner is NULL and mine and
+ * theirs are its count and the host's. For the host, joiner names who
+ * was turned away, mine is the host's count and theirs the joiner's. */
+void TAK_Net_ModelFolderAdvice(char *out, size_t cap, const char *joiner,
+                               int mine, int theirs);
 
 /* Compare two secrets held in fixed width fields, a room password or a
  * server key, taking the same time however much of them matches. */

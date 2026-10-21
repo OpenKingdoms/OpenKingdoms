@@ -76,7 +76,7 @@
  * TAK_WRLD_BYTES never sees. */
 #define TAK_WRLD_WRITE_BYTES  (TAK_WRLD_BYTES + 4u + 2u + 11u * (TAK_MAX_PLAYERS + 1) + 39u)
 #define TAK_CAMR_BYTES          8u
-#define TAK_UNIT_RECORD_BYTES 1057u
+#define TAK_UNIT_RECORD_BYTES 1065u
 #define TAK_PROJ_RECORD_BYTES 279u
 #define TAK_FEAT_RECORD_BYTES  56u
 #define TAK_ECON_BYTES        324u
@@ -121,7 +121,15 @@ typedef struct TAK_SaveInfo {
  * back. Returns 0, or -1 with a reason in `err`. */
 int Save_Write(const char *path, char *err, size_t err_cap);
 
+/* The same battle as bytes, for a match snapshot: no camera and no
+ * picture, since both belong to whoever looks. The caller frees with
+ * tak_free. NULL with a reason in `err`. */
+uint8_t *Save_WriteMemory(size_t *out_len, char *err, size_t err_cap);
+
 typedef struct TAK_SaveGame TAK_SaveGame;
+
+/* Save_Read over bytes in memory, which are copied. */
+TAK_SaveGame *Save_ReadMemory(const void *bytes, size_t len, char *err, size_t err_cap);
 
 /* Open a save and decode the light state. The world does not have to
  * exist yet. A save whose map is missing, or whose terrain has changed

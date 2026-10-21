@@ -36,12 +36,13 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 
 #define OQ_TILES  128
 #define OQ_GROUND 64
 
 enum { OQ_BUILDER = 0, OQ_SOLDIER, OQ_ARCHER, OQ_BARRACKS, OQ_HELPER, OQ_GATE,
-       OQ_HALL, OQ_BOW, OQ_CANNON, OQ_FLYER, OQ_LIMITED, OQ_DEF_COUNT };
+       OQ_HALL, OQ_BOW, OQ_CANNON, OQ_FLYER, OQ_LIMITED, OQ_SPY, OQ_DEF_COUNT };
 
 static void oq_fill(UnitDef *d, const char *name, float velocity, int fx, int fz) {
     memset(d, 0, sizeof(*d));
@@ -136,6 +137,19 @@ static GameWorld *oq_world(void) {
     defs[OQ_LIMITED].worker_time = 60.0f;
     defs[OQ_LIMITED].build_distance = 32;
     defs[OQ_LIMITED].builder_limited = 1;
+    /* The Aramon assassin's cloak: 10 mana a second in, 14 out still
+     * and 21 moving, found at 80. */
+    oq_fill(&defs[OQ_SPY], "TESTSPY", 1.4f, 1, 1);
+    defs[OQ_SPY].max_health = 30000;
+    defs[OQ_SPY].num_weapons = 1;
+    defs[OQ_SPY].weapons[0].range = 400;
+    defs[OQ_SPY].weapons[0].damage = 10;
+    defs[OQ_SPY].max_mana = 1000;
+    defs[OQ_SPY].mana_recharge_per_sec = 10.0f;
+    defs[OQ_SPY].cloak_cost_per_sec = 14.0f;
+    defs[OQ_SPY].cloak_cost_moving_per_sec = 21.0f;
+    defs[OQ_SPY].min_cloak_distance = 80;
+    defs[OQ_SPY].cap_flags |= UNIT_CAP_CLOAK;
     /* FBI category lines, for the select keys. */
     strcpy(defs[OQ_BUILDER].category, "TEST BUILDER");
     strcpy(defs[OQ_HELPER].category, "TEST BUILDER");
@@ -637,7 +651,8 @@ TEST(a_barracks_refuses_a_building_on_its_queue) {
 
 /* A soldier lost on the pad is not trained again: the original counts
  * a run down when its unit is done or its frame is lost
- * (legacy:9293-9303, 9524-9527). */
+ * (legacy:9293-9303, 9524-9527). The lost frame holds the pad until it
+ * decays, and the next waits for that. */
 TEST(a_soldier_lost_on_the_pad_is_not_trained_again) {
     ASSERT_NOT_NULL(oq_world());
     int b = oq_barracks();
@@ -646,10 +661,85 @@ TEST(a_soldier_lost_on_the_pad_is_not_trained_again) {
     int frame = oq_unit(b)->build_target;
     ASSERT(frame >= 0);
     Units_SetOwner(frame, 2, 1);
-    oq_ticks(600);
+    oq_ticks(1600);
     ASSERT_EQ_INT(2, oq_count(OQ_SOLDIER));
     ASSERT_EQ_INT(0, Units_FactoryQueueCount(b));
     oq_end();
+}
+
+/* Soldiers trained with no orders step off to spots of their own round
+ * the barracks rather than piling on one, and the next goes up only once
+ * the pad is clear
+ * (legacy:9694-9711, legacy:13813-13879, legacy:9363-9382). */
+TEST(soldiers_with_no_orders_step_off_to_spots_of_their_own) {
+    ASSERT_NOT_NULL(oq_world());
+    int b = oq_barracks();
+    ASSERT_EQ_INT(0, Units_FactoryAdd(b, OQ_SOLDIER, 6, 0));
+    oq_ticks(3000);
+    int h[8], n = 0, count = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count && n < 8; i++)
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].def_idx == OQ_SOLDIER)
+            h[n++] = i;
+    int close = 0, on_pad = 0;
+    for (int i = 0; i < n; i++) {
+        const Unit *a = oq_unit(h[i]);
+        if (abs(a->world_x - OQ_CX) < 40 && abs(a->world_y - OQ_CY) < 40) on_pad++;
+        for (int j = i + 1; j < n; j++) {
+            const Unit *c = oq_unit(h[j]);
+            if (abs(a->world_x - c->world_x) < 12 && abs(a->world_y - c->world_y) < 12)
+                close++;
+        }
+    }
+    oq_end();
+    printf("(%d trained, %d pairs within 12 px, %d on the pad) ", n, close, on_pad);
+    ASSERT_EQ_INT(6, n);
+    ASSERT_EQ_INT(0, close);
+    ASSERT_EQ_INT(0, on_pad);
+}
+
+static int32_t oq_drawn_y(GameWorld *w, int32_t x, int32_t y, float up);
+
+/* A drag with the broom clears every tree in the box, one after the
+ * other, and leaves the one outside it (legacy:238755-238767,
+ * legacy:12880-12927). */
+TEST(a_drag_with_the_broom_clears_the_box) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    FeatureDef fd;
+    memset(&fd, 0, sizeof fd);
+    strncpy(fd.name, "TESTTREE", sizeof(fd.name) - 1);
+    strncpy(fd.category, "trees", sizeof(fd.category) - 1);
+    fd.footprint_x = 1;
+    fd.footprint_z = 1;
+    fd.height = 60;
+    fd.blocking = 1;
+    fd.reclaimable = 1;
+    fd.damage = 100;
+    ASSERT_EQ_INT(1, Features_DebugSetDefs(&fd, 1));
+    static const int cells[5][2] = { {70, 60}, {72, 60}, {70, 62}, {72, 62}, {90, 60} };
+    for (int k = 0; k < 5; k++)
+        ASSERT(Features_AddInstance(w, 0, cells[k][0], cells[k][1],
+                                    cells[k][0] * 16 + 8, cells[k][1] * 16 + 8,
+                                    0, -1) >= 0);
+    ((UnitDef *)Units_GetDef(OQ_BUILDER))->cap_flags |= UNIT_CAP_RECLAIM;
+    int b = Units_Spawn(OQ_BUILDER, 1, 0, 66 * 16, 61 * 16);
+    ASSERT(b >= 0);
+    Units_SelectSingle(b);
+    HUD_SetCommandMode(HUD_CMD_CLEAR);
+    InGame_WorldDrag(68 * 16, oq_drawn_y(w, 68 * 16, 58 * 16, 0.0f),
+                     75 * 16, oq_drawn_y(w, 75 * 16, 64 * 16, 0.0f), 0);
+    int left = 5, at = -1;
+    for (int t = 0; t < 12000 && left > 1; t++) {
+        oq_ticks(1);
+        left = w->feature_count;
+        at = t;
+    }
+    int outside = w->feature_count == 1 && w->features[0].tile_x == 90;
+    oq_end();
+    printf("(%d left after %d ticks) ", left, at);
+    ASSERT_EQ_INT(1, left);
+    ASSERT_EQ_INT(1, outside);
 }
 
 /* A queued order carries a def only when it is a building, so what a
@@ -978,7 +1068,8 @@ static void oq_chord(int mods, int key);
 
 /* Ctrl+D ends any unit of yours, a building too, two seconds and up to
  * fourteen frames on, counted as your loss, and Ctrl+D again before
- * then calls it off (legacy:122248-122294, legacy:9056-9088). */
+ * then calls it off (legacy:122248-122294, legacy:9056-9088). A start
+ * asks first, Escape says no and Enter yes, which is our own addition. */
 TEST(ctrl_d_self_destructs_a_building_and_again_calls_it_off) {
     GameWorld *w = oq_world();
     ASSERT_NOT_NULL(w);
@@ -987,6 +1078,13 @@ TEST(ctrl_d_self_destructs_a_building_and_again_calls_it_off) {
     ASSERT(hall >= 0 && kept >= 0);
     Units_SelectSingle(hall);
     oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_D);
+    oq_ticks(10);
+    ASSERT_EQ_INT(0, Units_SelfDestructing(hall));
+    oq_chord(0, SDL_SCANCODE_ESCAPE);
+    oq_ticks(10);
+    ASSERT_EQ_INT(0, Units_SelfDestructing(hall));
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_D);
+    oq_chord(0, SDL_SCANCODE_RETURN);
     oq_ticks(119);
     ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(hall)->alive);
     oq_ticks(30);
@@ -994,10 +1092,98 @@ TEST(ctrl_d_self_destructs_a_building_and_again_calls_it_off) {
     ASSERT_EQ_INT(1, (int)w->stats[1].losses);
     Units_SelectSingle(kept);
     oq_chord(IG_CLICK_CTRL | IG_CLICK_SHIFT, SDL_SCANCODE_D);
+    oq_chord(0, SDL_SCANCODE_RETURN);
     oq_ticks(60);
+    ASSERT_EQ_INT(1, Units_SelfDestructing(kept));
     oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_D);
     oq_ticks(200);
     ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(kept)->alive);
+    oq_end();
+}
+
+static float oq_mana(int h) {
+    float cur = 0.0f, max = 0.0f;
+    Units_GetMana(h, &cur, &max);
+    return cur;
+}
+
+/* The cloak (legacy:8700-8736, legacy:9757-9779, legacy:206815). Ordered
+ * on from the sidebar, a unit with mana hides from the other side and
+ * pays cloakcost less its recharge. An enemy it sees inside
+ * mincloakdistance brings it out for three seconds (legacy:208655-208673),
+ * a shot of its own for twenty (legacy:245900-245905), and an enemy
+ * shooting at it lets go once it hides (legacy:11010-11013). */
+TEST(a_cloaked_unit_hides_until_an_enemy_comes_near_or_it_fires) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    int spy = Units_Spawn(OQ_SPY, 1, 0, OQ_CX, OQ_CY);
+    int foe = Units_Spawn(OQ_BOW, 2, 1, OQ_CX + 200, OQ_CY);
+    ASSERT(spy >= 0 && foe >= 0);
+    Units_DebugSetAggro(spy, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetMana(spy, 500.0f);
+    Units_SelectSingle(spy);
+    ASSERT_EQ_INT(0, Units_SelectedCloakState());
+    for (int t = 0; t < 120 && oq_unit(foe)->target != spy; t++) oq_ticks(1);
+    ASSERT_EQ_INT(1, Units_SideSees(2, spy));
+    ASSERT_EQ_INT(spy, (int)oq_unit(foe)->target);
+
+    ASSERT_EQ_INT(1, HUD_TriggerCommand(HUD_CMD_CLOAK_ON));
+    oq_ticks(2);
+    ASSERT_EQ_INT(1, Units_SelectedCloakState());
+    ASSERT_EQ_INT(1, (int)oq_unit(spy)->cloaked);
+    ASSERT_EQ_INT(0, Units_SideSees(2, spy));
+    ASSERT_EQ_INT(1, Units_SideSees(1, spy));
+    oq_ticks(2);
+    ASSERT_EQ_INT(-1, (int)oq_unit(foe)->target);
+    /* Four a second, 14 out and 10 in. */
+    float m0 = oq_mana(spy);
+    oq_ticks(60);
+    float spent = m0 - oq_mana(spy);
+    ASSERT(spent > 3.9f && spent < 4.1f);
+
+    /* Found inside 80, out for 180 ticks after it goes. */
+    int near = Units_Spawn(OQ_SOLDIER, 2, 1, OQ_CX + 60, OQ_CY);
+    ASSERT(near >= 0);
+    Units_DebugSetAggro(near, UNIT_AGGRO_PASSIVE);
+    oq_ticks(1);
+    ASSERT_EQ_INT(0, (int)oq_unit(spy)->cloaked);
+    ASSERT_EQ_INT(1, Units_SideSees(2, spy));
+    /* It changes sides, so nothing hostile is near any more. */
+    Units_SetOwner(near, 1, 0);
+    oq_ticks(170);
+    ASSERT_EQ_INT(0, (int)oq_unit(spy)->cloaked);
+    oq_ticks(20);
+    ASSERT_EQ_INT(1, (int)oq_unit(spy)->cloaked);
+
+    /* A shot of its own brings it out for 1200 ticks. */
+    int prey = Units_Spawn(OQ_SOLDIER, 2, 1, OQ_CX + 150, OQ_CY);
+    ASSERT(prey >= 0);
+    ASSERT_EQ_INT(1, Units_OrderAttack(spy, prey));
+    for (int t = 0; t < 200 && oq_unit(spy)->cloaked; t++) oq_ticks(1);
+    ASSERT_EQ_INT(0, (int)oq_unit(spy)->cloaked);
+    ASSERT(oq_unit(spy)->cloak_wait > 1100);
+
+    /* Off again from the sidebar, and it stays off. */
+    ASSERT_EQ_INT(1, HUD_TriggerCommand(HUD_CMD_CLOAK_OFF));
+    oq_ticks(2);
+    ASSERT_EQ_INT(0, Units_SelectedCloakState());
+    oq_end();
+}
+
+/* Short of the cost it comes out and waits three seconds before it
+ * tries again (legacy:8724-8731). */
+TEST(a_cloak_short_of_mana_comes_out_and_waits) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    int spy = Units_Spawn(OQ_SPY, 1, 0, OQ_CX, OQ_CY);
+    ASSERT(spy >= 0);
+    Units_DebugSetMana(spy, 0.0f);
+    ASSERT_EQ_INT(1, Units_OrderCloak(spy, 1));
+    oq_ticks(1);
+    ASSERT_EQ_INT(0, (int)oq_unit(spy)->cloaked);
+    ASSERT_EQ_INT(180, (int)oq_unit(spy)->cloak_wait);
+    oq_ticks(181);
+    ASSERT_EQ_INT(1, (int)oq_unit(spy)->cloaked);
     oq_end();
 }
 
@@ -1564,8 +1750,7 @@ TEST(the_shift_overlay_draws_only_while_shift_is_held) {
     oq_end();
 }
 
-/* A flyer in the air, as its takeoff leaves it (test-only mutation).
- * The model has no script, so the next tick sets it down as a hoverer. */
+/* A flyer in the air, as its takeoff leaves it (test-only mutation). */
 static void oq_lift(int h, int flying) {
     Unit *u = (Unit *)oq_unit(h);
     u->flight_alt = 120.0f;
@@ -2331,9 +2516,6 @@ TEST(the_computers_summons_site_is_one_no_unit_stands_on) {
 TEST(a_flyer_in_the_air_stands_on_no_site) {
     ASSERT_NOT_NULL(oq_world());
     int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
-    UnitDef *fd = (UnitDef *)Units_GetDef(OQ_FLYER);
-    ASSERT_NOT_NULL(fd);
-    fd->script_flies = 1;
     int f = Units_Spawn(OQ_FLYER, 1, 0, sx, sy);
     ASSERT(f >= 0);
     oq_lift(f, 1);
@@ -2350,9 +2532,6 @@ TEST(a_flyer_in_the_air_stands_on_no_site) {
 TEST(a_summons_under_a_flyer_in_the_air_goes_up_at_once) {
     ASSERT_NOT_NULL(oq_world());
     int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
-    UnitDef *fd = (UnitDef *)Units_GetDef(OQ_FLYER);
-    ASSERT_NOT_NULL(fd);
-    fd->script_flies = 1;
     int f = Units_Spawn(OQ_FLYER, 1, 0, sx, sy);
     int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx - 64, sy);
     ASSERT(f >= 0 && bd >= 0);
@@ -2388,6 +2567,8 @@ int main(int argc, char **argv) {
     RUN(a_click_beside_a_soldier_moves_the_rally);
     RUN(a_barracks_refuses_a_building_on_its_queue);
     RUN(a_soldier_lost_on_the_pad_is_not_trained_again);
+    RUN(soldiers_with_no_orders_step_off_to_spots_of_their_own);
+    RUN(a_drag_with_the_broom_clears_the_box);
     RUN(a_queued_move_carries_no_def);
     RUN(ctrl_changes_the_order_in_hand_and_keeps_the_queue);
     RUN(a_cancelled_frame_frees_its_site);
@@ -2405,6 +2586,8 @@ int main(int argc, char **argv) {
     RUN(a_guard_mends_its_charge_and_joins_its_repairs);
     RUN(a_guard_keeps_its_distance_from_a_building);
     RUN(ctrl_d_self_destructs_a_building_and_again_calls_it_off);
+    RUN(a_cloaked_unit_hides_until_an_enemy_comes_near_or_it_fires);
+    RUN(a_cloak_short_of_mana_comes_out_and_waits);
     RUN(a_builder_goes_round_a_ridge_as_a_move_does);
     RUN(a_repairer_goes_round_a_ridge_as_a_move_does);
     RUN(a_builder_walking_out_of_a_pocket_keeps_its_frame);

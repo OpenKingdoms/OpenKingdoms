@@ -120,6 +120,22 @@ typedef struct TAK_NetClient {
      * lockstep in one sentence. */
     uint32_t next_turn;
     uint32_t last_turn_held;
+    /* A GO came in the middle of a match: the server restarts this world
+     * from its turn log, and the battle has to be built again. */
+    uint8_t  resync;
+    /* The seat was given up to watch, once a match. */
+    uint8_t  resigned;
+    /* Snapshots, protocol 9. The relay asked this world for one (its id,
+     * 0 for none), and the one going up a piece at a time. */
+    uint32_t snap_asked;
+    uint32_t snap_out_id, snap_out_tick, snap_out_len, snap_out_sent;
+    uint8_t *snap_out;
+    /* One coming down to replace this world, and whether it is whole. */
+    uint32_t snap_in_id, snap_in_tick, snap_in_len, snap_in_got;
+    uint8_t *snap_in;
+    uint8_t  snap_in_whole;
+    /* Told its world is being replaced: it stops until the GO. */
+    uint8_t  snap_waiting;
     /* Ours and rising. It is not what orders the commands, the turn
      * is, but it lets the server see a gap. */
     uint32_t cmd_seq;
@@ -168,6 +184,23 @@ int  TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
 /* The transport went. Marks the session gone and raises the event. */
 void TAK_NetClient_OnClose(TAK_NetClient *c);
 
+/* Frees what a session holds beyond the struct, the snapshots. Safe on
+ * a session that never had any. */
+void TAK_NetClient_Free(TAK_NetClient *c);
+
+/* The snapshot the relay asked for: `bytes` is a save of this world at
+ * queue tick `tick`, taken over (NULL to say it cannot be had). It goes
+ * up as SnapshotPump allows. */
+int  TAK_NetClient_SnapshotGive(TAK_NetClient *c, uint8_t *bytes, uint32_t len,
+                                uint32_t tick);
+/* Queue snapshot pieces up to `budget` bytes. Returns the bytes queued. */
+size_t TAK_NetClient_SnapshotPump(TAK_NetClient *c, size_t budget);
+/* Whether the snapshot coming down could be taken, which lets the relay
+ * send the turns after it or the whole log instead. */
+int  TAK_NetClient_SnapshotResult(TAK_NetClient *c, int ok);
+/* Drop the snapshot that came down. */
+void TAK_NetClient_SnapshotDrop(TAK_NetClient *c);
+
 /* Bytes the host should send, and how many of them it managed. Every
  * message is whole, so a host that frames them can take one at a time
  * with TAK_Net_Split. */
@@ -198,6 +231,10 @@ int TAK_NetClient_LeaveRoom(TAK_NetClient *c);
  * and a screen should not have to know that. A host only field, a kick
  * or a block, keeps the seat the caller put in it. */
 int TAK_NetClient_EditRoom(TAK_NetClient *c, const TAK_MsgRoomEdit *m);
+/* In a match: give up the seat and watch. The world stays and keeps
+ * reporting its hash, which is checked against the players' and never
+ * counted with them. */
+int TAK_NetClient_Resign(TAK_NetClient *c);
 int TAK_NetClient_Chat(TAK_NetClient *c, const TAK_MsgChat *m);
 int TAK_NetClient_Start(TAK_NetClient *c);
 

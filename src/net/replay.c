@@ -38,7 +38,8 @@ static void set_err(char *err, size_t cap, const char *msg) {
 #define TAK_REPLAY_TEAMS          4
 #define TAK_REPLAY_AI_HARDEST     3
 #define TAK_REPLAY_TURN_TICKS_MAX 60
-#define TAK_REPLAYF_KNOWN (TAK_REPLAYF_MATCH | TAK_REPLAYF_MAP_FP | TAK_REPLAYF_FINISHED)
+#define TAK_REPLAYF_KNOWN (TAK_REPLAYF_MATCH | TAK_REPLAYF_MAP_FP | TAK_REPLAYF_FINISHED | \
+                           TAK_REPLAYF_ARCHIVE_MODELS)
 
 /* Printable text, and for a map name one that stays a name: it becomes
  * a path the map is looked up by. */
@@ -713,9 +714,14 @@ int TAK_Replay_CheckCompatible(const TAK_ReplayHeader *hdr,
                      TAK_DataFingerprint_GroupName(g));
         return -1;
     }
-    if (hdr->data_content != fp->content) {
-        set_err(err, err_cap,
-                "Your game files differ from the ones this replay was recorded with.");
+    /* A battle outside a match read the game folder's models too. With
+     * the groups agreeing, those are what differ. */
+    int read_folder = !(hdr->flags & TAK_REPLAYF_ARCHIVE_MODELS);
+    if (hdr->data_content != (fp->content ^ (read_folder ? fp->loose_hash : 0))) {
+        set_err(err, err_cap, read_folder
+                ? "The models in your game folder's objects3d differ from the ones this "
+                  "replay was recorded with, so it would not play the same battle."
+                : "Your game files differ from the ones this replay was recorded with.");
         return -1;
     }
     return 0;
