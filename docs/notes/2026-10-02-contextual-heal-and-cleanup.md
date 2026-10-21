@@ -5,21 +5,24 @@ unfinished building. A damaged unit showed the select hand, and a map
 feature that could be swept showed the plain pointer unless it was a
 body the selection could raise.
 
-The hover and the click now share one set of checks:
+The original's default cursor offers more, and the hover and the click
+now follow it:
 
-- A damaged unit of yours offers Heal when another selected unit of
-  yours can repair it, and a click sends the menders. A unit at full
-  health offers the select hand. This one is our own addition, D-044.
+- A damaged unit at peace with you, your own or an ally's, offers Heal
+  when a selected unit of yours could mend it by the original's repair
+  test: a finished unit standing still on the ground, and a mender that
+  walks and repairs (legacy:186541-186545, legacy:233526-233553). A
+  click sends the menders. A unit at full health offers the select hand.
 - Your own frame offers Heal when a selected unit can help build it, as
   before.
-- A feature on explored ground that the selection can sweep offers the
-  sweep cursor, and a click sweeps it, when the selection holds a mobile
-  unit of yours that can reclaim. The original's default cursor does the
-  same (legacy:186587-186599).
+- A feature on explored ground offers the sweep cursor when the
+  selection holds a unit of yours that can reclaim
+  (legacy:186587-186599). A click sends the sweepers to sweep it and the
+  other walkers to the spot, as a click on a frame splits them.
 - Raising a body comes before sweeping it, the original's order
   (docs/notes/2026-09-10-corpses-and-raising.md).
-- Shift over your own unit shows the select hand, and a Shift click
-  still adds it to the selection or takes it out.
+- Shift changes none of this, as in the original, so a Shift click on a
+  unit the selection could mend queues the mend.
 - Attacking an enemy and looking at an ally are unchanged. The sweep
   cursor is never offered over a live building.
 
@@ -29,12 +32,12 @@ match the wrong cursor. The checks only choose a cursor and an order.
 The order still goes through the command queue, and the simulation
 decides whether it runs, so a match plays the same on every machine.
 
-The repair check is the one the repair order makes: a frame the unit
-can help build, or a unit at peace with it when it can repair.
-
 ## Tests
 
-`the_revive_cursor_shows_over_a_body_the_selection_can_raise` now also
-checks that a builder over a body it cannot raise shows the sweep cursor
-and its click sweeps, that a raiser in the selection still shows revive,
-and that the second seat sees revive on its own explored ground.
+`the_heal_cursor_shows_over_a_damaged_unit_a_walker_could_mend` in
+test_orders covers the mender, an ally, an enemy and a building that
+builds. `the_revive_cursor_shows_over_a_body_the_selection_can_raise`
+checks that a builder over a body it cannot raise shows the sweep
+cursor, that its click sweeps while a swordsman beside it walks there,
+that a raiser in the selection still shows revive, and that the second
+seat sees revive on its own explored ground.

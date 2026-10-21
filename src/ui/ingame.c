@@ -1097,16 +1097,14 @@ static int ig_enemy_cursor(int hover) {
 }
 
 /* The cursor the world shows under a point with no command armed
- * (legacy manual §IV.2): the select hand over your own unit with Shift
- * held, heal over your own frame or damaged unit the selection can mend
- * (legacy:186541-186545), attack over an enemy one of your selected
- * units can hit, the select hand over any other unit, then revive over a
- * body the selection can raise, sweep over a feature it can clear, and
+ * (legacy manual §IV.2): heal over your own frame or a damaged unit at
+ * peace with you that the selection can mend (legacy:186541-186545),
+ * attack over an enemy one of your selected units can hit, the select
+ * hand over any other unit, then revive over a body the selection can
+ * raise, sweep over a feature it can clear (legacy:186587-186599), and
  * the pointer otherwise. */
-int InGame_HoverCursorOnMods(int hover, int32_t world_x, int32_t world_y, int mods) {
+int InGame_HoverCursorOn(int hover, int32_t world_x, int32_t world_y) {
     if (hover >= 0) {
-        if ((mods & IG_CLICK_SHIFT) && Units_IsSelectable(hover) &&
-            g_units_get_player(hover) == Units_LocalPlayer()) return HUD_CUR_SELECT;
         if (Units_SelectionCanRepair(hover)) return HUD_CMD_HEAL;
         /* Only an enemy is something to attack. An ally's unit takes
          * no order from us, and the sword over it said otherwise. */
@@ -1132,17 +1130,9 @@ int InGame_HoverCursorOnMods(int hover, int32_t world_x, int32_t world_y, int mo
     return HUD_CUR_NORMAL;
 }
 
-int InGame_HoverCursorAtMods(int32_t world_x, int32_t world_y, int mods) {
-    return InGame_HoverCursorOnMods(Units_PickAt(world_x, world_y, 0),
-                                    world_x, world_y, mods);
-}
-
 int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
-    return InGame_HoverCursorAtMods(world_x, world_y, 0);
-}
-
-int InGame_HoverCursorOn(int hit, int32_t world_x, int32_t world_y) {
-    return InGame_HoverCursorOnMods(hit, world_x, world_y, 0);
+    return InGame_HoverCursorOn(Units_PickAt(world_x, world_y, 0),
+                                world_x, world_y);
 }
 
 /* The cursor an armed command shows: the sweep cursor turns to revive
@@ -1616,8 +1606,7 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
          * summons without end is placed once (legacy:242531-242540). */
         if (shift_held && !repeat) ig.shift_hold = 1;
         else HUD_ClearCommandMode();
-    } else if (Units_SelectionCanRepair(hit) &&
-               !(shift_held && Units_IsSelectable(hit))) {
+    } else if (Units_SelectionCanRepair(hit)) {
         /* Each unit answers for itself (legacy:238458-238660): one that
          * can help joins the work (HelpBuild) and a walker that cannot
          * goes to the ground there. Shift queues both. */
@@ -2213,9 +2202,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
                 drew_cursor = 1;
             }
         } else if (over_world) {
-            int mods = (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT])
-                     ? IG_CLICK_SHIFT : 0;
-            int cur_id = InGame_HoverCursorOnMods(hover_unit, hover_x, hover_y, mods);
+            int cur_id = InGame_HoverCursorOn(hover_unit, hover_x, hover_y);
             drew_cursor = HUD_DrawCursorById(platform, cur_id, mx, my);
         }
         SDL_ShowCursor(drew_cursor ? SDL_DISABLE : SDL_ENABLE);

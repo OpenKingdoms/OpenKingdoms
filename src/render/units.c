@@ -4942,16 +4942,21 @@ void Units_CommandRepairSelected(int target_handle) {
     }
 }
 
-/* A mender walks to its patient, so a building that builds is none
- * (legacy:233526-233553). */
+/* The repair cursor's test (legacy:186541-186545): a frame a selected
+ * unit could help build, or a damaged unit at peace with us that one
+ * could mend by the original's rule (legacy:233526-233553). */
 int Units_SelectionCanRepair(int target_handle) {
-    if (!selection_owns(target_handle)) return 0;
+    if (target_handle < 0 || target_handle >= g_unit_count) return 0;
     const Unit *t = &g_units[target_handle];
-    if (!t->under_construction && t->health >= t->max_health) return 0;
     for (int s = 0; s < g_selection_count; s++) {
         int h = g_selection[s];
-        if (selection_owns(h) && Units_CanWalk(h) &&
-            unit_can_repair_target(h, target_handle)) return 1;
+        if (!selection_owns(h)) continue;
+        if (t->under_construction) {
+            if (Units_CanHelpBuild(h, target_handle)) return 1;
+        } else if (unit_may_mend(&g_units[h], Units_GetDef(g_units[h].def_idx),
+                                 h, target_handle)) {
+            return 1;
+        }
     }
     return 0;
 }
@@ -5375,7 +5380,7 @@ static void raise_flash(const GameWorld *w, int32_t x, int32_t y) {
         spawn_unit_fx(sprite, x, y, unit_fx_height(w, x, y, 0.0f));
 }
 
-/* Provisional cleanup art: Death01 from the retail deathmagic sheet. */
+/* A finished sweep flashes Death01 from the deathmagic sheet (D-044). */
 static void cleanup_flash(const GameWorld *w, int32_t x, int32_t y) {
     static int sprite = -2;
     if (sprite == -2) {
@@ -15541,7 +15546,7 @@ static void Units_TickCombat(void) {
                             }
                         }
                         rt->build_hp_accum += hp_per_tick_f;
-                        /* Healing continues the target's magic ring after a raise. */
+                        /* A mend sparkles in the healer's art (legacy:32675-32676). */
                         if (rtd && rt->health < hp_max)
                             build_sparkles(rt, u->target, rtd, def);
                         cloak_hold(u, def, CLOAK_WORK_TICKS);
@@ -18391,10 +18396,10 @@ static void render_selection_rings(const struct GameWorld *world, TAK_Platform *
                     + Units_DrawnAlt(world, u)) * tilt;
 
         /* Twelve chords in two sets of six that turn opposite ways, each
-         * 0xccc long, from an angle of the unit's id and the clock
-         * (legacy:211001-211030). About 8 s a turn at 60 Hz. */
-        float phase = (float)(u->stable_id + g_sim_tick)
-                    * (6.2831853f / 480.0f);
+         * 0xccc long, from the unit's id and the clock, a turn in 4 s
+         * (legacy:211001-211030). Ours is the battle's clock. */
+        float phase = (float)((2u * u->stable_id + g_sim_tick) % 240u)
+                    * (6.2831853f / 240.0f);
         #define SEL_STEP  (6.2831853f / 6.0f)
         #define SEL_CHORD (3276.0f * 6.2831853f / 65536.0f)
         for (int i = 0; i < 6; i++) {

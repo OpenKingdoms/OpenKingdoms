@@ -1208,8 +1208,8 @@ static void draw_selection_rings(const GameWorld *world) {
         float rad = m ? m->foot_radius_px + 4.0f : 24.0f;
         float cr = 0.2f, cg = 1.0f;
         if (u->player_id != Units_LocalPlayer()) { cr = 1.0f; cg = 0.3f; }
-        float phase = (float)(u->stable_id + sim_tick)
-                    * (2.0f * V3_PI / 480.0f);
+        float phase = (float)((2u * u->stable_id + sim_tick) % 240u)
+                    * (2.0f * V3_PI / 240.0f);
         float cx = (float)u->world_x, cz = (float)u->world_y;
         float own = surface_height(world, cx, cz);
         float lo = own - rad * 0.5f, hi = own + rad * 0.5f;

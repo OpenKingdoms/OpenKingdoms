@@ -13144,8 +13144,7 @@ TEST(nanoframe_decay_refunds_mana) {
  * (legacy:32288-32320, 32366-32396). Two halves here: a tree is cleared
  * off the map and pays its authored `energy` back, and reclaiming a
  * structure pays its build cost back. */
-static void count_effects(const char *seq, int *out_all, int *out_up,
-                          int *out_down);
+static int count_effects(const char *seq);
 
 TEST(reclaim_clears_feature_and_pays_mana) {
     if (setup_vfs() != 0) SKIP("no data dir");
@@ -13230,14 +13229,13 @@ TEST(reclaim_clears_feature_and_pays_mana) {
         ASSERT(units[bh].reclaim_tile_x >= 0);
 
         int gone_at = 0;
-        int flash = 0;
-        count_effects("Death01", &flash, NULL, NULL);
+        int flash = count_effects("Death01");
         ASSERT_EQ_INT(0, flash);
         int budget = expect_ticks * 3 + 3600;
         for (int t = 0; t < budget && !gone_at; t++) {
             Units_TickEngines();
             if (Features_FindReclaimableAt(world, fx, fy) < 0) gone_at = t + 1;
-            count_effects("Death01", &flash, NULL, NULL);
+            flash = count_effects("Death01");
             ASSERT_EQ_INT(gone_at ? 1 : 0, flash);
         }
         printf("[%s dmg=%d energy=%.0f gone=%d expect>=%d] ",
@@ -13279,7 +13277,7 @@ TEST(reclaim_clears_feature_and_pays_mana) {
         ASSERT(Units_GetEffectInfo(effect, NULL, NULL, &next_frame));
         ASSERT(next_frame > first_frame);
         for (int t = 0; t < 120; t++) Units_TickEngines();
-        count_effects("Death01", &flash, NULL, NULL);
+        flash = count_effects("Death01");
         ASSERT_EQ_INT(0, flash);
 
         /* A wreck (a finished structure) pays its build cost back. */
@@ -15451,9 +15449,7 @@ TEST(the_sweep_clears_a_corpse_and_keeps_it_from_rotting) {
         int now_ci = corpse_instance_at_cell(world, cdef, cell_x, cell_z);
         if (now_ci < 0) gone_at = t + 1;
         else last_left = Features_InstanceDecomposeTicks(world, now_ci);
-        int flash = 0;
-        count_effects("Death01", &flash, NULL, NULL);
-        ASSERT_EQ_INT(gone_at ? 1 : 0, flash);
+        ASSERT_EQ_INT(gone_at ? 1 : 0, count_effects("Death01"));
     }
     ASSERT(last_left >= cd->decompose_time * 2 - 2);
     printf("[swept %s dmg=%d in %d ticks, work %d] ",
@@ -16174,23 +16170,15 @@ TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise) {
     corpse_shutdown(&platform);
 }
 
-/* Live effects playing a sequence, split by the way they drift. */
-static void count_effects(const char *seq, int *out_all, int *out_up,
-                          int *out_down) {
-    int n = 0, all = 0, up = 0, down = 0;
-    const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
+/* Live effects playing a sequence. */
+static int count_effects(const char *seq) {
+    int n = 0, all = 0;
+    (void)Units_GetProjectileEffects(&n);
     for (int i = 0; i < n; i++) {
-        const char *file = NULL, *sq = NULL;
-        int frame = 0;
-        if (!Units_GetEffectInfo(i, &file, &sq, &frame) || !sq) continue;
-        if (strcmp(sq, seq) != 0) continue;
-        all++;
-        if (fx[i].rise > 0) up++;
-        if (fx[i].rise < 0) down++;
+        const char *sq = NULL;
+        if (Units_GetEffectInfo(i, NULL, &sq, NULL) && sq && strcmp(sq, seq) == 0) all++;
     }
-    if (out_all) *out_all = all;
-    if (out_up) *out_up = up;
-    if (out_down) *out_down = down;
+    return all;
 }
 
 

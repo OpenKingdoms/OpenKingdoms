@@ -231,8 +231,6 @@ static int      g_idx_unit_text  = -1;   /* the selection panel's name */
 static float    g_gauge_health   = 1.0f;
 static float    g_gauge_mana     = 1.0f;
 static float    g_gauge_pool     = 1.0f;
-static float    g_gauge_tgt_hp   = 0.0f;
-static float    g_gauge_tgt_mana = 0.0f;
 static SDL_Rect g_rect_mana_bar;
 static SDL_Rect g_rect_unit_text;
 static SDL_Rect g_rect_mana_text;     /* heuristic: mana box area */
@@ -943,7 +941,8 @@ static const Unit *hud_selection_target(const int *sel, int count, int *handle) 
     int h = u->target;
     if (h < 0 || h >= n) return NULL;
     const Unit *t = &units[h];
-    if (t->alive != UNIT_ALIVE_ACTIVE) return NULL;
+    /* A target found by return fire may be one the player cannot see. */
+    if (t->alive != UNIT_ALIVE_ACTIVE || !Units_IsVisibleToLocalPlayer(t)) return NULL;
     *handle = h;
     return t;
 }
@@ -1256,8 +1255,6 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             if (Units_GetMana(tgt_handle, &cur, &max) && max > 0.0f)
                 mana = cur / max;
         }
-        g_gauge_tgt_hp   = hp;
-        g_gauge_tgt_mana = mana;
         if (g_rt) {
             GUIRuntime_SetFillFractionAt(g_rt, g_target_health_bar, hp);
             GUIRuntime_SetFillFractionAt(g_rt, g_target_mana_bar, mana);
@@ -1604,11 +1601,6 @@ void HUD_GetGaugeFractions(float *out_health, float *out_mana, float *out_pool) 
     if (out_health) *out_health = g_gauge_health;
     if (out_mana)   *out_mana   = g_gauge_mana;
     if (out_pool)   *out_pool   = g_gauge_pool;
-}
-
-void HUD_GetTargetGaugeFractions(float *out_health, float *out_mana) {
-    if (out_health) *out_health = g_gauge_tgt_hp;
-    if (out_mana)   *out_mana   = g_gauge_tgt_mana;
 }
 
 int HUD_GetUnitInfoRects(SDL_Rect *out_text, SDL_Rect *out_image) {

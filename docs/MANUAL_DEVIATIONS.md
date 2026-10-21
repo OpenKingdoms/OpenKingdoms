@@ -2256,20 +2256,19 @@ Format per entry:
   legacy:227378-227387), docs/notes/2026-10-15-self-destruct.md. The
   manual is silent.
 
-## D-044: A selection that can mend shows Heal over a damaged unit of yours
+## D-044: A finished sweep plays a flash
 
-- Change: with no command armed and a selected unit that can repair it,
-  the pointer over a damaged unit of your own shows the Heal cursor, and
-  a click there sends the menders to it. Shift over your own unit still
-  shows the select hand, and a Shift click still adds it to the
-  selection or takes it out. Over your own frame the cursor and the
-  click are the original's, as before.
-- Why: a player asked for it, and the owner wants it merged. Healing
-  from the default click saves arming Heal for every patient.
-- Citation: the original's default cursor shows the select hand over a
-  unit of yours and the hammer only over a frame (legacy:186541-186553).
-  The manual shows healing through the armed Heal command (printed
-  pages 70 and 71). docs/notes/2026-10-02-contextual-heal-and-cleanup.md.
+- Change: when a sweep takes a feature off the map, the Death01
+  sequence from the game's own deathmagic sheet plays once where it
+  stood. A sweep called off, a feature that rots away or one removed by
+  anything else plays nothing.
+- Why: a contributor added it so a finished sweep shows, and the owner
+  took it in. Our sweep removes the feature at once, where the
+  original's lingers a moment.
+- Citation: the original keeps a swept feature a moment as an animating
+  record and then clears its cell, with no effect sprite
+  (legacy:127856-127884, legacy:128007).
+  docs/notes/2026-10-02-cleanup-completion-effect.md.
 
 ## R-008: A reel's soundtrack goes through the game's mixer
 

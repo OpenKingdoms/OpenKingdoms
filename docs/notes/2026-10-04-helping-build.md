@@ -110,5 +110,6 @@ from that tick or the one before.
   (legacy:12040-12052). The engine gives the site to the first.
 - When a guard cannot attack what hit the unit it guards, the original
   turns its weapons on it from where it stands (legacy:14053-14098).
-- The hammer and a repair for a finished, damaged unit with a builder
-  selected (legacy:233526-233553), and allies for the armed heal.
+- Allies for the armed heal. The default cursor and click over a
+  finished, damaged unit came later
+  (docs/notes/2026-10-02-contextual-heal-and-cleanup.md).
