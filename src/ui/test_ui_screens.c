@@ -13144,6 +13144,8 @@ TEST(nanoframe_decay_refunds_mana) {
  * (legacy:32288-32320, 32366-32396). Two halves here: a tree is cleared
  * off the map and pays its authored `energy` back, and reclaiming a
  * structure pays its build cost back. */
+static int count_effects(const char *seq);
+
 TEST(reclaim_clears_feature_and_pays_mana) {
     if (setup_vfs() != 0) SKIP("no data dir");
 
@@ -13227,10 +13229,14 @@ TEST(reclaim_clears_feature_and_pays_mana) {
         ASSERT(units[bh].reclaim_tile_x >= 0);
 
         int gone_at = 0;
+        int flash = count_effects("Death01");
+        ASSERT_EQ_INT(0, flash);
         int budget = expect_ticks * 3 + 3600;
         for (int t = 0; t < budget && !gone_at; t++) {
             Units_TickEngines();
             if (Features_FindReclaimableAt(world, fx, fy) < 0) gone_at = t + 1;
+            flash = count_effects("Death01");
+            ASSERT_EQ_INT(gone_at ? 1 : 0, flash);
         }
         printf("[%s dmg=%d energy=%.0f gone=%d expect>=%d] ",
                fd->name, fd->damage, (double)expect_mana,
@@ -13250,6 +13256,29 @@ TEST(reclaim_clears_feature_and_pays_mana) {
         int32_t mana = Economy_GetMana(&world->economy, 1);
         ASSERT(mana >= (int32_t)(expect_mana * 0.9f));
         ASSERT(mana <= (int32_t)(expect_mana * 1.1f) + 1);
+
+        int effect = -1, first_frame = -1, effect_count = 0;
+        const ProjectileEffect *effects = Units_GetProjectileEffects(&effect_count);
+        for (int i = 0; i < effect_count; i++) {
+            const char *seq = NULL;
+            int frame = -1;
+            if (!Units_GetEffectInfo(i, NULL, &seq, &frame) ||
+                strcmp(seq, "Death01") != 0) continue;
+            effect = i;
+            first_frame = frame;
+            ASSERT_EQ_INT(fx, effects[i].world_x);
+            ASSERT_EQ_INT(fy, effects[i].world_y);
+            ASSERT_EQ_INT(Terrain_SampleHeight(world, fx, fy), effects[i].height);
+            ASSERT_EQ_INT(0, effects[i].loops);
+        }
+        ASSERT(effect >= 0);
+        for (int t = 0; t < 8; t++) Units_TickEngines();
+        int next_frame = -1;
+        ASSERT(Units_GetEffectInfo(effect, NULL, NULL, &next_frame));
+        ASSERT(next_frame > first_frame);
+        for (int t = 0; t < 120; t++) Units_TickEngines();
+        flash = count_effects("Death01");
+        ASSERT_EQ_INT(0, flash);
 
         /* A wreck (a finished structure) pays its build cost back. */
         int menu[64];
@@ -15420,6 +15449,7 @@ TEST(the_sweep_clears_a_corpse_and_keeps_it_from_rotting) {
         int now_ci = corpse_instance_at_cell(world, cdef, cell_x, cell_z);
         if (now_ci < 0) gone_at = t + 1;
         else last_left = Features_InstanceDecomposeTicks(world, now_ci);
+        ASSERT_EQ_INT(gone_at ? 1 : 0, count_effects("Death01"));
     }
     ASSERT(last_left >= cd->decompose_time * 2 - 2);
     printf("[swept %s dmg=%d in %d ticks, work %d] ",
@@ -16085,14 +16115,32 @@ TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise) {
     ASSERT_EQ_INT(HUD_CMD_MOVE,
                   InGame_CommandCursorAt(HUD_CMD_MOVE, s.fx, sy));
 
-    /* A builder sweeps bodies but cannot raise them. */
+    /* A builder sweeps bodies but cannot raise them, and a swordsman
+     * clicked there with it walks there. */
+    int sword = Units_Spawn(Units_FindDefByName("ARASWORD"), 1, 0, s.cx + 140, s.cy + 60);
+    ASSERT(sword >= 0);
     Units_SelectSingle(builder);
-    ASSERT(InGame_HoverCursorAt(s.fx, sy) != HUD_CUR_REVIVE);
+    ASSERT_EQ_INT(HUD_CMD_CLEAR, InGame_HoverCursorAt(s.fx, sy));
     ASSERT_EQ_INT(HUD_CMD_CLEAR,
                   InGame_CommandCursorAt(HUD_CMD_CLEAR, s.fx, sy));
+    Units_SelectAdd(sword);
     InGame_WorldClick(s.fx, sy, 0);
+    TAK_CmdQueue_Run();
     units = Units_GetActive(&unit_count);
-    ASSERT(units[builder].cmd_kind != UNIT_CMD_RESURRECT);
+    ASSERT_EQ_INT(UNIT_CMD_RECLAIM, units[builder].cmd_kind);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, units[sword].cmd_kind);
+    /* Leave the body for the separate resurrection check below. */
+    Units_CommandStopSelected();
+    Units_SelectAdd(s.raiser);
+    ASSERT_EQ_INT(HUD_CUR_REVIVE, InGame_HoverCursorAt(s.fx, sy));
+
+    Units_SetOwner(s.raiser, 2, 1);
+    Units_SetLocalPlayer(2);
+    Units_SelectSingle(s.raiser);
+    Fog_Update(world, 2);
+    ASSERT_EQ_INT(HUD_CUR_REVIVE, InGame_HoverCursorAt(s.fx, sy));
+    Units_SetOwner(s.raiser, 1, 0);
+    Units_SetLocalPlayer(1);
 
     /* Ground player 1 has not explored hides what lies there. */
     Units_SelectSingle(s.raiser);
@@ -16121,6 +16169,18 @@ TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise) {
     ASSERT_EQ_INT(s.victim_def, units[nh].def_idx);
     corpse_shutdown(&platform);
 }
+
+/* Live effects playing a sequence. */
+static int count_effects(const char *seq) {
+    int n = 0, all = 0;
+    (void)Units_GetProjectileEffects(&n);
+    for (int i = 0; i < n; i++) {
+        const char *sq = NULL;
+        if (Units_GetEffectInfo(i, NULL, &sq, NULL) && sq && strcmp(sq, seq) == 0) all++;
+    }
+    return all;
+}
+
 
 /* Animation makes the raiser's animatetype, whatever the body was. A
  * Taros priest (cananimate, animatetype MONGHOUL) over a Veruna body it
@@ -17222,6 +17282,7 @@ TEST(build_sparkles_stand_on_the_building_at_any_terrain_height) {
     InGame_Shutdown();
     corpse_shutdown(&platform);
 }
+
 
 TEST(a_feature_draws_its_shadow_sprite) {
     TAK_Platform platform;
@@ -25152,6 +25213,8 @@ TEST(hud_cursors_belong_to_the_renderer_that_made_them) {
     ASSERT((int)platform.renderer_gen != (int)first_gen);
     ASSERT_EQ_INT((int)platform.renderer_gen, (int)HUD_DebugCursorGen());
     ASSERT_EQ_INT(1, HUD_DrawCursorById(&platform, HUD_CUR_NORMAL, 20, 20));
+    ASSERT_EQ_INT(20, HUD_CursorFrameCount(HUD_CMD_PATROL));
+    ASSERT_EQ_INT(1, HUD_DrawCursorById(&platform, HUD_CMD_PATROL, 80, 80));
     InGame_Shutdown();
     corpse_shutdown(&platform);
 }

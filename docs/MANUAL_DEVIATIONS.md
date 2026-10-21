@@ -2256,6 +2256,20 @@ Format per entry:
   legacy:227378-227387), docs/notes/2026-10-15-self-destruct.md. The
   manual is silent.
 
+## D-044: A finished sweep plays a flash
+
+- Change: when a sweep takes a feature off the map, the Death01
+  sequence from the game's own deathmagic sheet plays once where it
+  stood. A sweep called off, a feature that rots away or one removed by
+  anything else plays nothing.
+- Why: a contributor added it so a finished sweep shows, and the owner
+  took it in. Our sweep removes the feature at once, where the
+  original's lingers a moment.
+- Citation: the original keeps a swept feature a moment as an animating
+  record and then clears its cell, with no effect sprite
+  (legacy:127856-127884, legacy:128007).
+  docs/notes/2026-10-02-cleanup-completion-effect.md.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

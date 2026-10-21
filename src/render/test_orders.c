@@ -956,6 +956,32 @@ TEST(the_hammer_shows_only_for_a_helper_that_could_build_it) {
     oq_end();
 }
 
+/* The heal cursor shows over a damaged unit at peace with us that a
+ * selected walker could mend, an ally's too, and never for a building
+ * that builds (legacy:186541-186545, legacy:233526-233553). */
+TEST(the_heal_cursor_shows_over_a_damaged_unit_a_walker_could_mend) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    w->allied[1][2] = w->allied[2][1] = 1;
+    int b = Units_Spawn(OQ_BARRACKS, 1, 0, OQ_CX - 300, OQ_CY);
+    int king = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX + 300, OQ_CY);
+    int mine = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX, OQ_CY);
+    int ally = Units_Spawn(OQ_SOLDIER, 2, 1, OQ_CX + 60, OQ_CY);
+    int foe = Units_Spawn(OQ_SOLDIER, 3, 2, OQ_CX + 120, OQ_CY);
+    ASSERT(b >= 0 && king >= 0 && mine >= 0 && ally >= 0 && foe >= 0);
+    Units_SelectSingle(king);
+    ASSERT(InGame_HoverCursorOn(mine, OQ_CX, OQ_CY) != HUD_CMD_HEAL);
+    Units_SetHealthPercent(mine, 50);
+    Units_SetHealthPercent(ally, 50);
+    Units_SetHealthPercent(foe, 50);
+    ASSERT_EQ_INT(HUD_CMD_HEAL, InGame_HoverCursorOn(mine, OQ_CX, OQ_CY));
+    ASSERT_EQ_INT(HUD_CMD_HEAL, InGame_HoverCursorOn(ally, OQ_CX + 60, OQ_CY));
+    ASSERT(InGame_HoverCursorOn(foe, OQ_CX + 120, OQ_CY) != HUD_CMD_HEAL);
+    Units_SelectSingle(b);
+    ASSERT(InGame_HoverCursorOn(mine, OQ_CX, OQ_CY) != HUD_CMD_HEAL);
+    oq_end();
+}
+
 /* A frame is never selected, so with nobody to help it the pointer is
  * the ground's and not the select hand (legacy:186553, 186603). */
 TEST(a_frame_nobody_selected_can_help_shows_no_select_hand) {
@@ -2580,6 +2606,7 @@ int main(int argc, char **argv) {
     RUN(a_limited_builder_helps_a_frame_on_its_list);
     RUN(a_builder_does_not_help_an_allys_frame);
     RUN(the_hammer_shows_only_for_a_helper_that_could_build_it);
+    RUN(the_heal_cursor_shows_over_a_damaged_unit_a_walker_could_mend);
     RUN(a_frame_nobody_selected_can_help_shows_no_select_hand);
     RUN(a_click_on_a_frame_sends_the_helpers_and_walks_the_rest);
     RUN(a_guard_helps_its_builder_build_and_guards_again);

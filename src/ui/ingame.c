@@ -1086,16 +1086,6 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     fprintf(stderr, "Marquee select: %d units\n", n);
 }
 
-/* The cursor the world shows under a point with no command armed
- * (legacy manual §IV.2): resume-build over your own frame with a
- * builder selected, attack over an enemy one of your selected units can
- * hit, the select hand over any other unit, revive over a body the
- * selection can raise, and the pointer otherwise. */
-int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
-    return InGame_HoverCursorOn(Units_PickAt(world_x, world_y, 0),
-                                world_x, world_y);
-}
-
 /* An enemy under the pointer, for the selection: the best any one unit
  * answers (legacy:238791-238838). Attack when a weapon in hand can take
  * it, too far when the armed ones all cannot, and with nobody armed the
@@ -1106,14 +1096,16 @@ static int ig_enemy_cursor(int hover) {
     return armed > 0 ? HUD_CUR_TOOFAR : -1;
 }
 
+/* The cursor the world shows under a point with no command armed
+ * (legacy manual §IV.2): heal over your own frame or a damaged unit at
+ * peace with you that the selection can mend (legacy:186541-186545),
+ * attack over an enemy one of your selected units can hit, the select
+ * hand over any other unit, then revive over a body the selection can
+ * raise, sweep over a feature it can clear (legacy:186587-186599), and
+ * the pointer otherwise. */
 int InGame_HoverCursorOn(int hover, int32_t world_x, int32_t world_y) {
     if (hover >= 0) {
-        /* The hammer over your own frame when a selected unit could
-         * help build it (legacy:186541-186545). */
-        if (g_units_get_player(hover) == Units_LocalPlayer() &&
-            Units_IsUnderConstruction(hover) &&
-            Units_SelectionCanHelpBuild(hover))
-            return HUD_CMD_HEAL;
+        if (Units_SelectionCanRepair(hover)) return HUD_CMD_HEAL;
         /* Only an enemy is something to attack. An ally's unit takes
          * no order from us, and the sword over it said otherwise. */
         int enemy = Units_PlayersAreEnemies(Units_LocalPlayer(),
@@ -1134,7 +1126,13 @@ int InGame_HoverCursorOn(int hover, int32_t world_x, int32_t world_y) {
     Units_GroundUnderPoint(world_x, world_y, &gx, &gy);
     if (Units_SelectionRaiseModeAt(gx, gy) >= 0)
         return HUD_CUR_REVIVE;
+    if (Units_SelectionCanReclaimAt(gx, gy)) return HUD_CMD_CLEAR;
     return HUD_CUR_NORMAL;
+}
+
+int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
+    return InGame_HoverCursorOn(Units_PickAt(world_x, world_y, 0),
+                                world_x, world_y);
 }
 
 /* The cursor an armed command shows: the sweep cursor turns to revive
@@ -1608,18 +1606,20 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
          * summons without end is placed once (legacy:242531-242540). */
         if (shift_held && !repeat) ig.shift_hold = 1;
         else HUD_ClearCommandMode();
-    } else if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer() &&
-               Units_IsUnderConstruction(hit) &&
-               Units_SelectionCanHelpBuild(hit)) {
+    } else if (Units_SelectionCanRepair(hit)) {
         /* Each unit answers for itself (legacy:238458-238660): one that
          * can help joins the work (HelpBuild) and a walker that cannot
          * goes to the ground there. Shift queues both. */
-        TAK_Cmd_EmitSelectionWhere(TAK_CMD_REPAIR, world_x, world_y, hit, 0, q,
-                                   Units_CanHelpBuild);
-        ig_click_frame = hit;
-        TAK_Cmd_EmitSelectionWhere(TAK_CMD_MOVE, gx, gy, -1, 0, q,
-                                   ig_walker_not_helper);
-        ig_click_frame = -1;
+        if (hit >= 0 && Units_IsUnderConstruction(hit)) {
+            TAK_Cmd_EmitSelectionWhere(TAK_CMD_REPAIR, world_x, world_y, hit, 0, q,
+                                       Units_CanHelpBuild);
+            ig_click_frame = hit;
+            TAK_Cmd_EmitSelectionWhere(TAK_CMD_MOVE, gx, gy, -1, 0, q,
+                                       ig_walker_not_helper);
+            ig_click_frame = -1;
+        } else {
+            TAK_Cmd_EmitSelection(TAK_CMD_REPAIR, world_x, world_y, hit, 0, q);
+        }
         ig_play_order_ack(world, "default");
     } else {
         ig_world_click_rest(world, world_x, world_y, gx, gy, hit, shift_held, q);
@@ -1688,6 +1688,16 @@ static int ig_unarmed_walker(int handle, int target) {
     return !Units_IsArmed(handle) && Units_CanWalk(handle);
 }
 
+static int ig_sweeper(int handle, int target) {
+    (void)target;
+    return Units_CanSweep(handle);
+}
+
+static int ig_walker_not_sweeper(int handle, int target) {
+    (void)target;
+    return Units_CanWalk(handle) && !Units_CanSweep(handle);
+}
+
 /* A click with nothing armed that resumes no frame. A frame not an
  * enemy's is no unit to select, so a click on it is a click on the
  * ground there (legacy:237815-237922 picks, and the original never
@@ -1745,6 +1755,14 @@ static void ig_world_click_rest(GameWorld *world, int32_t world_x, int32_t world
                                   gx, gy, -1, 0, q);
             ig_play_order_ack(world, "default");
             fprintf(stderr, "Raise -> (%d,%d)\n", gx, gy);
+        } else if (Units_SelectionCanReclaimAt(gx, gy)) {
+            /* The sweepers sweep and the rest walk there, as a click
+             * on a frame splits them. */
+            TAK_Cmd_EmitSelectionWhere(TAK_CMD_RECLAIM_FEATURE, gx, gy, -1, 0, q,
+                                       ig_sweeper);
+            TAK_Cmd_EmitSelectionWhere(TAK_CMD_MOVE, gx, gy, -1, 0, q,
+                                       ig_walker_not_sweeper);
+            ig_play_order_ack(world, "default");
         } else {
             TAK_Cmd_EmitSelection(TAK_CMD_MOVE, gx, gy, -1, 0, q);
             ig_play_order_ack(world, "Move");

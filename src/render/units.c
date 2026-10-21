@@ -4498,15 +4498,27 @@ static void unit_set_build_goal(Unit *u, const Unit *site) {
     unit_set_build_goal_at(u, site->def_idx, site->world_x, site->world_y);
 }
 
-int Units_OrderRepair(int handle, int target_handle) {
-    Unit *u = order_unit(handle);
-    Unit *t = order_target(target_handle);
+/* What a repair order takes (legacy:12392-12412 for a frame): a frame
+ * this unit can help build, or a unit at peace with it when it repairs.
+ * The cursor asks the same, read only. */
+static int unit_can_repair_target(int handle, int target_handle) {
+    const Unit *u = order_unit(handle);
+    const Unit *t = order_target(target_handle);
     if (!u || !t || handle == target_handle) return 0;
+    if (t->under_construction) return Units_CanHelpBuild(handle, target_handle);
+    /* A command arrives from any client, so a heal names its target
+     * by id and nothing stops that id being an enemy's but this. */
+    if (unit_players_are_enemies(u->player_id, t->player_id)) return 0;
+    return unit_def_can_repair(Units_GetDef(u->def_idx));
+}
+
+int Units_OrderRepair(int handle, int target_handle) {
+    if (!unit_can_repair_target(handle, target_handle)) return 0;
+    Unit *u = &g_units[handle];
+    Unit *t = &g_units[target_handle];
+    order_fresh(u);
     if (t->under_construction) {
-        /* Nanoframe: join the work (legacy HelpBuild), when the
-         * original's test lets this unit help (legacy:12392-12412). */
-        if (!Units_CanHelpBuild(handle, target_handle)) return 0;
-        order_fresh(u);
+        /* Nanoframe: join the work (legacy HelpBuild). */
         u->cmd_kind = UNIT_CMD_BUILD;
         u->build_target = (int16_t)target_handle;
         u->build_near_best = 0;
@@ -4517,11 +4529,6 @@ int Units_OrderRepair(int handle, int target_handle) {
         unit_clear_path(u);
         return 1;
     }
-    /* A command arrives from any client, so a heal names its target
-     * by id and nothing stops that id being an enemy's but this. */
-    if (unit_players_are_enemies(u->player_id, t->player_id)) return 0;
-    if (!unit_def_can_repair(Units_GetDef(u->def_idx))) return 0;
-    order_fresh(u);
     u->cmd_kind = UNIT_CMD_REPAIR;
     u->target = (int16_t)target_handle;
     u->cmd_x = t->world_x;
@@ -4935,6 +4942,43 @@ void Units_CommandRepairSelected(int target_handle) {
     }
 }
 
+/* The repair cursor's test (legacy:186541-186545): a frame a selected
+ * unit could help build, or a damaged unit at peace with us that one
+ * could mend by the original's rule (legacy:233526-233553). */
+int Units_SelectionCanRepair(int target_handle) {
+    if (target_handle < 0 || target_handle >= g_unit_count) return 0;
+    const Unit *t = &g_units[target_handle];
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (!selection_owns(h)) continue;
+        if (t->under_construction) {
+            if (Units_CanHelpBuild(h, target_handle)) return 1;
+        } else if (unit_may_mend(&g_units[h], Units_GetDef(g_units[h].def_idx),
+                                 h, target_handle)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int Units_CanSweep(int handle) {
+    const Unit *u = order_unit(handle);
+    const UnitDef *d = u ? Units_GetDef(u->def_idx) : NULL;
+    return d && (d->cap_flags & UNIT_CAP_RECLAIM) && d->max_velocity > 0.0f;
+}
+
+int Units_SelectionCanReclaimAt(int32_t world_x, int32_t world_y) {
+    const GameWorld *w = World_Get();
+    if (!w || Fog_StateAtForPlayer(w, g_local_player, world_x, world_y) ==
+                  TAK_FOG_UNEXPLORED) return 0;
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (selection_owns(h) && Units_CanSweep(h))
+            return Features_FindReclaimableAt(w, world_x, world_y) >= 0;
+    }
+    return 0;
+}
+
 /* Legacy's CLEAR order (type 0xc) only ever resolves onto a map cell:
  * a live feature becomes RECLAIM, a corpse cell RESURRECT, empty ground
  * RECLAIMAREA, and a live unit under the cursor gets no order at all
@@ -5089,18 +5133,18 @@ int Units_CommandReclaimFeatureFor(int player_id, const int *handles, int n,
 
 /* The raise the selection would make of the body under a point, the
  * choice a sweep or default click makes for each unit
- * (legacy:186695-186735), on ground player 1 has explored: 0 to
+ * (legacy:186695-186735), on ground the local player has explored: 0 to
  * resurrect, 1 to animate, -1 for none. */
 int Units_SelectionRaiseModeAt(int32_t world_x, int32_t world_y) {
     GameWorld *w = World_Get();
     if (!w) return -1;
-    if (Fog_StateAtForPlayer(w, 1, world_x, world_y) == TAK_FOG_UNEXPLORED)
+    if (Fog_StateAtForPlayer(w, g_local_player, world_x, world_y) == TAK_FOG_UNEXPLORED)
         return -1;
     for (int s = 0; s < g_selection_count; s++) {
         int h = g_selection[s];
         if (h < 0 || h >= g_unit_count) continue;
         const Unit *u = &g_units[h];
-        if (u->alive != 1 || u->player_id != 1) continue;
+        if (u->alive != 1 || u->under_construction || u->player_id != g_local_player) continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (!d || d->max_velocity <= 0.0f) continue;
         int mode = 0;
@@ -5303,10 +5347,12 @@ static int build_sparkle_sprite(const UnitDef *d) {
 
 /* Two a 30 Hz work frame, a faller then a riser, none while the ring
  * is full (legacy:12253-12257, 198995-198999, 201434-201436). One a
- * tick here, the two kinds in turn. */
-static void build_sparkles(Unit *bt, int bt_idx, const UnitDef *btd) {
+ * tick here, the two kinds in turn. The ring is the target's size and
+ * the art magic_def's, the healer's when it mends another side's unit. */
+static void build_sparkles(Unit *bt, int bt_idx, const UnitDef *btd,
+                           const UnitDef *magic_def) {
     if (!g_build_sparkles_on) return;
-    int sprite = build_sparkle_sprite(btd);
+    int sprite = build_sparkle_sprite(magic_def);
     if (sprite < 0) return;
     int radius, count, height;
     sparkle_ring(btd, &radius, &count, &height);
@@ -5328,6 +5374,17 @@ static void raise_flash(const GameWorld *w, int32_t x, int32_t y) {
     static int sprite = -2;
     if (sprite == -2) {
         sprite = proj_sprite_index("deathmagic", "PurpleDeath");
+        if (sprite >= 0) g_proj_sprites[sprite].fx_palette = 1;
+    }
+    if (sprite >= 0)
+        spawn_unit_fx(sprite, x, y, unit_fx_height(w, x, y, 0.0f));
+}
+
+/* A finished sweep flashes Death01 from the deathmagic sheet (D-044). */
+static void cleanup_flash(const GameWorld *w, int32_t x, int32_t y) {
+    static int sprite = -2;
+    if (sprite == -2) {
+        sprite = proj_sprite_index("deathmagic", "Death01");
         if (sprite >= 0) g_proj_sprites[sprite].fx_palette = 1;
     }
     if (sprite >= 0)
@@ -15428,7 +15485,10 @@ static void Units_TickCombat(void) {
                             Economy_EarnF(&rw->economy, u->player_id, paid);
                     }
                     if (u->reclaim_accum >= hp_max) {
-                        Features_SweepInstance(rw, fi);
+                        int32_t fx = 0, fy = 0;
+                        int at = Features_InstanceCentre(rw, fi, &fx, &fy) == 0;
+                        if (Features_SweepInstance(rw, fi) == 0 && at)
+                            cleanup_flash(rw, fx, fy);
                         u->cmd_kind = UNIT_CMD_NONE;
                         u->reclaim_tile_x = -1;
                         u->reclaim_tile_y = -1;
@@ -15486,6 +15546,9 @@ static void Units_TickCombat(void) {
                             }
                         }
                         rt->build_hp_accum += hp_per_tick_f;
+                        /* A mend sparkles in the healer's art (legacy:32675-32676). */
+                        if (rtd && rt->health < hp_max)
+                            build_sparkles(rt, u->target, rtd, def);
                         cloak_hold(u, def, CLOAK_WORK_TICKS);
                         int hp_per_tick = (int)floorf(rt->build_hp_accum);
                         if (hp_per_tick > 0) {
@@ -15581,7 +15644,7 @@ static void Units_TickCombat(void) {
                 bt->build_hp_accum += hp_per_tick_f;
                 cloak_hold(u, def, CLOAK_WORK_TICKS);
                 if (btd && bt->under_construction)
-                    build_sparkles(bt, (int)(bt - g_units), btd);
+                    build_sparkles(bt, (int)(bt - g_units), btd, btd);
                 int hp_per_tick = (int)floorf(bt->build_hp_accum);
                 if (hp_per_tick > 0) {
                     bt->build_hp_accum -= (float)hp_per_tick;
@@ -18285,12 +18348,7 @@ static void render_health_bars(const struct GameWorld *world, TAK_Platform *plat
     }
 }
 
-/* Draw a dashed selection ring at each selected unit's foot.
- * Decomp pattern (the legacy reference ~227938): 8 line segments
- * forming the visible portion of an oval — the gaps between them
- * give the characteristic dashed look. Colour = unit's team_color_idx
- * so a yellow Aramon unit gets a yellow ring, blue Zhon gets blue,
- * matching the legacy screenshots. */
+/* A selection ring at each selected unit's foot, in its team colour. */
 static void render_selection_rings(const struct GameWorld *world, TAK_Platform *plat) {
     if (g_selection_count == 0) return;
     SDL_Renderer *r = plat->renderer;
@@ -18337,32 +18395,29 @@ static void render_selection_rings(const struct GameWorld *world, TAK_Platform *
                  - ((float)Terrain_SampleHeight(world, u->world_x, u->world_y)
                     + Units_DrawnAlt(world, u)) * tilt;
 
-        /* Eight dashes = 8 short polyline arcs, each spanning 1/16
-         * of the circle, with 1/16 gaps between. Gives the dashed-oval
-         * silhouette TAK's renderer produces. */
-        /* Draw each dash three times with tiny offsets to fake a
-         * thicker (~3 px) line — SDL2's renderer doesn't expose
-         * line width otherwise. */
-        #define DASHES   8
-        #define DASH_SEG 4
-        static const float thick_dx[3] = { 0.0f, 0.0f,  1.0f };
-        static const float thick_dy[3] = { 0.0f, 1.0f,  0.0f };
-        for (int d = 0; d < DASHES; d++) {
-            float a0 = ((float)d / (float)DASHES) * 6.2831853f;
-            float a1 = a0 + (6.2831853f / (float)(DASHES * 2));
-            for (int pass = 0; pass < 3; pass++) {
-                SDL_FPoint pts[DASH_SEG + 1];
-                for (int i = 0; i <= DASH_SEG; i++) {
-                    float t = (float)i / (float)DASH_SEG;
-                    float a = a0 + (a1 - a0) * t;
-                    pts[i].x = fx + tak_cosf(a) * radius_x + thick_dx[pass];
-                    pts[i].y = fy + tak_sinf(a) * radius_y + thick_dy[pass];
-                }
-                SDL_RenderDrawLinesF(r, pts, DASH_SEG + 1);
-            }
+        /* Twelve chords in two sets of six that turn opposite ways, each
+         * 0xccc long, from the unit's id and the clock, a turn in 4 s
+         * (legacy:211001-211030). Ours is the battle's clock. */
+        float phase = (float)((2u * u->stable_id + g_sim_tick) % 240u)
+                    * (6.2831853f / 240.0f);
+        #define SEL_STEP  (6.2831853f / 6.0f)
+        #define SEL_CHORD (3276.0f * 6.2831853f / 65536.0f)
+        for (int i = 0; i < 6; i++) {
+            float a = phase + (float)i * SEL_STEP;
+            SDL_RenderDrawLineF(r,
+                fx + tak_cosf(a) * radius_x,
+                fy + tak_sinf(a) * radius_y,
+                fx + tak_cosf(a - SEL_CHORD) * radius_x,
+                fy + tak_sinf(a - SEL_CHORD) * radius_y);
+            float b = -phase - (float)i * SEL_STEP;
+            SDL_RenderDrawLineF(r,
+                fx + tak_cosf(b) * radius_x,
+                fy + tak_sinf(b) * radius_y,
+                fx + tak_cosf(b + SEL_CHORD) * radius_x,
+                fy + tak_sinf(b + SEL_CHORD) * radius_y);
         }
-        #undef DASHES
-        #undef DASH_SEG
+        #undef SEL_STEP
+        #undef SEL_CHORD
         /* Your own cloaked unit shows how near an enemy may come
          * (legacy:180534-180536). */
         if (def && u->cloaked && u->player_id == g_local_player &&
