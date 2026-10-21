@@ -1039,6 +1039,7 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         int sel_own = hud_selection_is_own();
         /* The kill tally shows at one kill and up (legacy:152496-152506). */
         int sel_kills = have_sel ? Units_GetSelectedKills() : 0;
+        int tgt_rank = (tgt && tgt_handle >= 0) ? Units_GetVeteranLevel(tgt_handle) : 0;
         if (g_panel1_n > 0) {
             for (int i = 0; i < g_panel1_n; i++) {
                 int show = g_panel1[i].is_xp ? show_xp : have_sel;
@@ -1051,8 +1052,6 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
              * rank and kills the same way panel 1 does for the
              * selected unit. */
             int tgt_own = tgt && tgt->player_id == Units_LocalPlayer();
-            int tgt_rank = (tgt && tgt_handle >= 0)
-                         ? Units_GetVeteranLevel(tgt_handle) : 0;
             int tgt_kills = tgt ? tgt->kills : 0;
             for (int i = 0; i < g_panel2_n; i++) {
                 int show = tgt != NULL;
@@ -1060,14 +1059,6 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
                 if (show && g_panel2[i].is_kills)  show = tgt_kills > 0;
                 if (show && g_panel2[i].own_only && !tgt_own) show = 0;
                 GUIRuntime_SetWidgetVisibleAt(g_rt, g_panel2[i].index, show);
-            }
-            if (tgt_rank > 0) {
-                int frame = (tgt_rank < 3 ? tgt_rank : 3) - 1;
-                int xp_idx = -1;
-                for (int i = 0; i < g_panel2_n; i++)
-                    if (g_panel2[i].is_xp) { xp_idx = g_panel2[i].index; break; }
-                if (xp_idx >= 0)
-                    GUIRuntime_SetFrameOverrideAt(g_rt, xp_idx, frame);
             }
         } else {
             /* No panel groups in this dialog, drive the set by name. */
@@ -1083,6 +1074,11 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         if (show_xp)
             GUIRuntime_SetFrameOverride(g_rt, "Experience",
                                         (sel_rank < 3 ? sel_rank : 3) - 1);
+        /* The target's shield after, since the override above names both. */
+        for (int i = 0; tgt_rank > 0 && i < g_panel2_n; i++)
+            if (g_panel2[i].is_xp)
+                GUIRuntime_SetFrameOverrideAt(g_rt, g_panel2[i].index,
+                                              (tgt_rank < 3 ? tgt_rank : 3) - 1);
     }
 
     /* Per-frame: keep the aggression + active-weapon buttons visually

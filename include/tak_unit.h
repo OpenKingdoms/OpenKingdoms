@@ -2328,6 +2328,8 @@ void              Units_CommandRepairSelected(int target_handle);
 /* Default-action suggestions. Read-only checks of the local selection. */
 int               Units_SelectionCanRepair(int target_handle);
 int               Units_SelectionCanReclaimAt(int32_t world_x, int32_t world_y);
+/* A unit that takes a sweep order: it can reclaim and it walks. */
+int               Units_CanSweep(int handle);
 void              Units_CommandReclaimSelected(int target_handle);
 /* CLEAR / sweep cursor on the terrain: send every selected reclaimer to
  * the map feature under (world_x, world_y). Returns the number of units

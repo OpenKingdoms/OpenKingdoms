@@ -4942,15 +4942,24 @@ void Units_CommandRepairSelected(int target_handle) {
     }
 }
 
+/* A mender walks to its patient, so a building that builds is none
+ * (legacy:233526-233553). */
 int Units_SelectionCanRepair(int target_handle) {
     if (!selection_owns(target_handle)) return 0;
     const Unit *t = &g_units[target_handle];
     if (!t->under_construction && t->health >= t->max_health) return 0;
     for (int s = 0; s < g_selection_count; s++) {
         int h = g_selection[s];
-        if (selection_owns(h) && unit_can_repair_target(h, target_handle)) return 1;
+        if (selection_owns(h) && Units_CanWalk(h) &&
+            unit_can_repair_target(h, target_handle)) return 1;
     }
     return 0;
+}
+
+int Units_CanSweep(int handle) {
+    const Unit *u = order_unit(handle);
+    const UnitDef *d = u ? Units_GetDef(u->def_idx) : NULL;
+    return d && (d->cap_flags & UNIT_CAP_RECLAIM) && d->max_velocity > 0.0f;
 }
 
 int Units_SelectionCanReclaimAt(int32_t world_x, int32_t world_y) {
@@ -4959,10 +4968,7 @@ int Units_SelectionCanReclaimAt(int32_t world_x, int32_t world_y) {
                   TAK_FOG_UNEXPLORED) return 0;
     for (int s = 0; s < g_selection_count; s++) {
         int h = g_selection[s];
-        if (!selection_owns(h)) continue;
-        const Unit *u = order_unit(h);
-        const UnitDef *d = u ? Units_GetDef(u->def_idx) : NULL;
-        if (d && (d->cap_flags & UNIT_CAP_RECLAIM) && d->max_velocity > 0.0f)
+        if (selection_owns(h) && Units_CanSweep(h))
             return Features_FindReclaimableAt(w, world_x, world_y) >= 0;
     }
     return 0;

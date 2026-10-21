@@ -1699,6 +1699,16 @@ static int ig_unarmed_walker(int handle, int target) {
     return !Units_IsArmed(handle) && Units_CanWalk(handle);
 }
 
+static int ig_sweeper(int handle, int target) {
+    (void)target;
+    return Units_CanSweep(handle);
+}
+
+static int ig_walker_not_sweeper(int handle, int target) {
+    (void)target;
+    return Units_CanWalk(handle) && !Units_CanSweep(handle);
+}
+
 /* A click with nothing armed that resumes no frame. A frame not an
  * enemy's is no unit to select, so a click on it is a click on the
  * ground there (legacy:237815-237922 picks, and the original never
@@ -1757,7 +1767,12 @@ static void ig_world_click_rest(GameWorld *world, int32_t world_x, int32_t world
             ig_play_order_ack(world, "default");
             fprintf(stderr, "Raise -> (%d,%d)\n", gx, gy);
         } else if (Units_SelectionCanReclaimAt(gx, gy)) {
-            TAK_Cmd_EmitSelection(TAK_CMD_RECLAIM_FEATURE, gx, gy, -1, 0, q);
+            /* The sweepers sweep and the rest walk there, as a click
+             * on a frame splits them. */
+            TAK_Cmd_EmitSelectionWhere(TAK_CMD_RECLAIM_FEATURE, gx, gy, -1, 0, q,
+                                       ig_sweeper);
+            TAK_Cmd_EmitSelectionWhere(TAK_CMD_MOVE, gx, gy, -1, 0, q,
+                                       ig_walker_not_sweeper);
             ig_play_order_ack(world, "default");
         } else {
             TAK_Cmd_EmitSelection(TAK_CMD_MOVE, gx, gy, -1, 0, q);

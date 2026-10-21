@@ -16119,15 +16119,20 @@ TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise) {
     ASSERT_EQ_INT(HUD_CMD_MOVE,
                   InGame_CommandCursorAt(HUD_CMD_MOVE, s.fx, sy));
 
-    /* A builder sweeps bodies but cannot raise them. */
+    /* A builder sweeps bodies but cannot raise them, and a swordsman
+     * clicked there with it walks there. */
+    int sword = Units_Spawn(Units_FindDefByName("ARASWORD"), 1, 0, s.cx + 140, s.cy + 60);
+    ASSERT(sword >= 0);
     Units_SelectSingle(builder);
     ASSERT_EQ_INT(HUD_CMD_CLEAR, InGame_HoverCursorAt(s.fx, sy));
     ASSERT_EQ_INT(HUD_CMD_CLEAR,
                   InGame_CommandCursorAt(HUD_CMD_CLEAR, s.fx, sy));
+    Units_SelectAdd(sword);
     InGame_WorldClick(s.fx, sy, 0);
     TAK_CmdQueue_Run();
     units = Units_GetActive(&unit_count);
     ASSERT_EQ_INT(UNIT_CMD_RECLAIM, units[builder].cmd_kind);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, units[sword].cmd_kind);
     /* Leave the body for the separate resurrection check below. */
     Units_CommandStopSelected();
     Units_SelectAdd(s.raiser);
