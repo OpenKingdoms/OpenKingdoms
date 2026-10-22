@@ -43,9 +43,12 @@
  * the game folder's objects3d, so a lobby can say that folder is what
  * differs. 9: a world that parts is rebuilt from another client's
  * snapshot (SNAP_REQUEST, SNAP_DATA, SNAP_RESULT) and the turns after it,
- * not from turn 0. 2 to 9 share a room. The relay speaks every version
- * and writes each client the one it said hello with. */
-#define TAK_NET_PROTOCOL_VERSION      9
+ * not from turn 0. 10: a client joining a match under way, to rejoin,
+ * drop in or watch, takes a snapshot and the turns after it when
+ * START_GAME carries TAK_STARTF_SNAPSHOT, so the relay keeps only a
+ * window of the log. 2 to 10 share a room. The relay speaks every
+ * version and writes each client the one it said hello with. */
+#define TAK_NET_PROTOCOL_VERSION      10
 #define TAK_NET_PROTOCOL_MIN          1
 
 /* The simulation a client plays, sent as engine_build_id. A room holds
@@ -299,6 +302,10 @@ typedef enum TAK_NetReject {
     TAK_REJECT_MAP_MISSING       = 29,  /* no map, or a human lacks it */
     TAK_REJECT_REMOVED_BY_HOST   = 30
 } TAK_NetReject;
+
+/* The detail of a GAME_CLOSED sent to a client in a match: the relay let
+ * it go, its world beyond what the log or a snapshot could bring back. */
+#define TAK_REJECT_DETAIL_LET_GO 1u
 
 /* Which hash group differed, carried in a reject's detail byte. */
 typedef enum TAK_NetHashGroup {
@@ -627,6 +634,10 @@ typedef struct TAK_MsgChat {
     char     name[TAK_NET_NAME_MAX];
     char     text[TAK_NET_CHAT_MAX];
 } TAK_MsgChat;
+
+/* START_GAME flags. A match under way whose world comes as a snapshot
+ * before GO, so the client builds nothing until GO says from where. */
+#define TAK_STARTF_SNAPSHOT 0x01u
 
 typedef struct TAK_MsgStartGame {
     uint32_t match_id;

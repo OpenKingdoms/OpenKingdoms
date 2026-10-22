@@ -50,6 +50,17 @@
 #define TAK_TURN_PACE_TURNS    128u
 #define TAK_TURN_PACE_BYTES    (96u << 10)
 
+/* The log keeps a window rather than the whole match. When the next turn
+ * will not fit, turns older than this many behind the head go, but never
+ * one a catch up still has to send. A world that needs older turns takes
+ * a snapshot instead, five minutes at the normal pace. */
+#define TAK_TURN_LOG_KEEP_TURNS 6000u
+/* A log too small even for that keeps at least this many. */
+#define TAK_TURN_LOG_MIN_TURNS  64u
+/* Snapshots a world asks for in a row before it is given up on, when the
+ * log no longer holds turn 0 to fall back on. */
+#define TAK_TURN_SNAP_TRIES 3
+
 /* Hash rows waiting for every reporter, and the agreed hashes kept for
  * checking a player who is catching up. 2048 hash ticks is 34 minutes. */
 #define TAK_TURN_HASH_ROWS     8
@@ -71,6 +82,7 @@ typedef struct TAK_TurnLog {
     TAK_TurnLogEntry *entry;
     uint32_t          entry_cap;
     uint32_t          entry_count;
+    uint32_t          base_turn;   /* the oldest turn still held */
     uint32_t          next_turn;   /* turns before this one are logged */
     int               full;        /* sticky: storage ran out */
 } TAK_TurnLog;
@@ -83,6 +95,13 @@ void TAK_TurnLog_Init(TAK_TurnLog *log, void *arena, size_t arena_cap,
  * turns before it. Returns 0, or -1 when out of order or out of room. */
 int TAK_TurnLog_Append(TAK_TurnLog *log, uint32_t turn,
                        const uint8_t *frame, size_t len);
+
+/* Whether the next turn, `len` bytes of it, fits in what is left. */
+int TAK_TurnLog_Fits(const TAK_TurnLog *log, uint32_t turn, size_t len);
+
+/* Forget every turn before `turn`, keeping the rest in order. The turns
+ * kept are replayed as before, and an older one is no longer held. */
+void TAK_TurnLog_DropBefore(TAK_TurnLog *log, uint32_t turn);
 
 /* The frame that replays `from_turn`. An empty turn comes back as one
  * TURN covering the rest of its run, which is where consecutive empty
@@ -141,6 +160,8 @@ typedef struct TAK_TurnSim {
      * being replaced. */
     uint8_t  snaps;
     uint8_t  awaiting_snap;
+    /* Snapshots asked for since its world last agreed with the others. */
+    uint8_t  snap_tries;
     /* A watcher's hash for a tick the players have not agreed yet. It is
      * checked once they have, and never counts towards the agreement. */
     uint8_t  pend_set;
@@ -193,6 +214,11 @@ typedef struct TAK_TurnClock {
     TAK_TurnSend      send;
     void             *user;
     TAK_TurnSnapFn    snap;
+    uint32_t          log_keep;       /* TAK_TURN_LOG_KEEP_TURNS, or a test's */
+    /* Clients given up on because neither the log nor a snapshot could
+     * bring their world in, for the host to tell and let go. */
+    uint32_t          refused[TAK_TURN_SIMS_MAX];
+    uint8_t           refused_count;
     /* The world a two way split is settled by, the host's, or -1. */
     int               ref_sim;
     uint32_t          snap_exclude;   /* outliers being flagged now */
@@ -299,6 +325,10 @@ void TAK_TurnClock_Restart(TAK_TurnClock *c, int sim, uint64_t now_ms);
 /* Whether a catch up to the head could be sent now: the log still holds
  * every turn of the match. */
 int TAK_TurnClock_CanReplay(const TAK_TurnClock *c);
+/* The same from `from_turn`, which the window may have dropped. */
+int TAK_TurnClock_CanReplayFrom(const TAK_TurnClock *c, uint32_t from_turn);
+/* How many turns behind the head the window keeps. 0 restores the default. */
+void TAK_TurnClock_SetLogKeep(TAK_TurnClock *c, uint32_t turns);
 
 /* The transport closed. The player counts as lost from now. */
 void TAK_TurnClock_Disconnect(TAK_TurnClock *c, int sim, uint64_t now_ms);
@@ -311,6 +341,17 @@ void TAK_TurnClock_Disconnect(TAK_TurnClock *c, int sim, uint64_t now_ms);
  * would need. */
 int TAK_TurnClock_Reconnect(TAK_TurnClock *c, int sim, uint32_t from_turn,
                             uint64_t now_ms);
+
+/* A client the clock gave up on: its world could be brought in neither
+ * from the log nor from a snapshot. A seat it held stays with the
+ * computer. Returns 1 with *client_id filled, 0 when there is none. */
+int TAK_TurnClock_TakeRefused(TAK_TurnClock *c, uint32_t *client_id);
+
+/* The same, but the world comes as a snapshot from a sound client and
+ * then the turns after it, for a client that can take one. Without a
+ * donor it is the log from turn 0 when the log still holds it. Returns
+ * -1 when neither can bring it in. */
+int TAK_TurnClock_JoinBySnapshot(TAK_TurnClock *c, int sim, uint64_t now_ms);
 
 /* Who holds a seat in the match: nobody, a player still in it, or only
  * players who have gone and left it to the computer. */

@@ -280,6 +280,12 @@ int TAK_Match_Waiting(char *out, size_t cap) {
         snprintf(out, cap, "The connection to the game server was lost.");
         return TAK_MATCH_STOPPED;
     }
+    /* Let go by the server, a world it could no longer bring back. */
+    if (c->state == TAK_NC_REFUSED) {
+        snprintf(out, cap, "%s", c->reject.text[0] ? c->reject.text
+                                                     : "The game server let this game go.");
+        return TAK_MATCH_STOPPED;
+    }
     if (c->pace.reason == TAK_PACE_DESYNC_HALT) {
         snprintf(out, cap, "The game stopped: the players' battles no longer agree.");
         return TAK_MATCH_STOPPED;

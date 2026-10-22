@@ -196,6 +196,24 @@ TEST(the_log_coalesces_empty_turns_and_replays_them_as_a_range) {
     ASSERT(m > 0);
     ASSERT_EQ_INT(31, (int)covered);
     ASSERT_EQ_INT(0, (int)TAK_TurnLog_Frame(&tlog, 151, out, sizeof(out), &covered));
+
+    /* The window moves on: a cut inside a run keeps its later turns, and
+     * the turn with orders keeps its bytes. */
+    TAK_TurnLog_DropBefore(&tlog, 60);
+    ASSERT_EQ_INT(60, (int)tlog.base_turn);
+    ASSERT_EQ_INT(0, (int)TAK_TurnLog_Frame(&tlog, 59, out, sizeof(out), &covered));
+    m = TAK_TurnLog_Frame(&tlog, 60, out, sizeof(out), &covered);
+    ASSERT(m > 0);
+    ASSERT_EQ_INT(40, (int)covered);
+    TAK_TurnLog_DropBefore(&tlog, 101);
+    ASSERT_EQ_INT(0, (int)tlog.arena_used);
+    ASSERT_EQ_INT(0, (int)TAK_TurnLog_Frame(&tlog, 100, out, sizeof(out), &covered));
+    ASSERT(TAK_TurnLog_Frame(&tlog, 101, out, sizeof(out), &covered) > 0);
+    ASSERT_EQ_INT(50, (int)covered);
+    ASSERT_EQ_INT(0, TAK_TurnLog_Append(&tlog, 151, buf, n));
+    m = TAK_TurnLog_Frame(&tlog, 151, out, sizeof(out), &covered);
+    ASSERT_EQ_INT((int)n, (int)m);
+    ASSERT(memcmp(out, buf, n) == 0);
 }
 
 TEST(the_log_refuses_out_of_order_turns_and_stays_full) {

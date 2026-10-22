@@ -23,6 +23,13 @@ static void raise_event(TAK_NetClient *c, TAK_NetClientEventKind k) {
     c->event_count++;
 }
 
+/* A match in play takes snapshots, and so does one being joined under
+ * way, whose world comes as a snapshot before its GO. */
+static int takes_snapshots(const TAK_NetClient *c) {
+    return c->state == TAK_NC_PLAYING ||
+           (c->state == TAK_NC_LOADING && (c->start.flags & TAK_STARTF_SNAPSHOT));
+}
+
 /* Queue one whole frame. 0 on success. */
 static int queue(TAK_NetClient *c, const uint8_t *frame, size_t len) {
     if (len == 0) { c->out_overflow = 1; return -1; }
@@ -158,6 +165,12 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
          * is an answer to something we asked, a room that filled up or
          * a password that did not match, and the lobby stays up. */
         if (c->state == TAK_NC_GREETING) c->state = TAK_NC_REFUSED;
+        /* Let go from a match, which no more turns will reach. One still
+         * waiting for its snapshot has built nothing and is in the lobby. */
+        if ((c->state == TAK_NC_PLAYING || c->state == TAK_NC_LOADING) &&
+            r.reason == TAK_REJECT_GAME_CLOSED && r.detail == TAK_REJECT_DETAIL_LET_GO)
+            c->state = c->state == TAK_NC_LOADING && (c->start.flags & TAK_STARTF_SNAPSHOT)
+                     ? TAK_NC_LOBBY : TAK_NC_REFUSED;
         raise_event(c, TAK_NC_EV_REFUSED);
         return 0;
     }
@@ -258,6 +271,10 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
         /* Already playing: a resync. What is held belongs to the world
          * being thrown away, and the log comes again from first_turn. */
         c->snap_waiting = 0;
+        /* A match joined from a snapshot holds nothing from before its GO:
+         * the log comes from the snapshot's turn, in order. */
+        if (c->state == TAK_NC_LOADING && (c->start.flags & TAK_STARTF_SNAPSHOT))
+            turns_reset(c);
         if (c->state == TAK_NC_PLAYING) {
             turns_reset(c);
             c->resync = 1;
@@ -276,7 +293,7 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
     case TAK_MSG_SNAP_REQUEST: {
         TAK_MsgSnapRequest m;
         if (TAK_Msg_SnapRequestDecode(&m, f.payload, f.payload_len) != 0) return -1;
-        if (c->state != TAK_NC_PLAYING || !m.snap_id) return 0;
+        if (!takes_snapshots(c) || !m.snap_id) return 0;
         /* This world parted: it stops while another is sent for it. */
         if (m.wait) {
             c->snap_waiting = 1;
@@ -292,7 +309,7 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
     case TAK_MSG_SNAP_DATA: {
         TAK_MsgSnapData m;
         if (TAK_Msg_SnapDataDecode(&m, f.payload, f.payload_len) != 0) return -1;
-        if (c->state != TAK_NC_PLAYING || m.total == 0) return 0;
+        if (!takes_snapshots(c) || m.total == 0) return 0;
         /* A new snapshot starts over, and pieces arrive in order. */
         if (m.snap_id != c->snap_in_id || m.offset == 0) {
             TAK_NetClient_SnapshotDrop(c);
@@ -709,7 +726,7 @@ size_t TAK_NetClient_SnapshotPump(TAK_NetClient *c, size_t budget) {
 }
 
 int TAK_NetClient_SnapshotResult(TAK_NetClient *c, int ok) {
-    if (c->state != TAK_NC_PLAYING || !c->snap_in_id) return -1;
+    if (!takes_snapshots(c) || !c->snap_in_id) return -1;
     TAK_MsgSnapResult m;
     m.snap_id = c->snap_in_id;
     m.ok = (uint8_t)(ok ? 1 : 0);

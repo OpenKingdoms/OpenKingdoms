@@ -42,6 +42,8 @@ typedef struct TAK_RelayCfg {
     /* What to add to the host's clock to get unix milliseconds, for
      * the ledger's timestamps. Zero in a test, where time is virtual. */
     uint64_t wall_offset_ms;
+    /* Turns each room's log keeps behind the head, 0 for the default. */
+    uint32_t log_keep_turns;
 } TAK_RelayCfg;
 
 typedef struct TAK_RelayClient {
@@ -135,6 +137,9 @@ typedef struct TAK_Relay {
     uint32_t         next_snap_id;
     uint32_t         snaps_delivered;
     uint32_t         snaps_failed;
+    /* Joins that came in by a snapshot, and worlds given up on. */
+    uint32_t         snap_joins;
+    uint32_t         joins_refused;
     uint32_t         rng;
     TAK_RelayClient  client[TAK_RELAY_CLIENTS_MAX];
     TAK_RelayRoom    room[TAK_RELAY_ROOMS_MAX];
