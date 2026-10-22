@@ -719,10 +719,13 @@ static void ig_rejoin_plate(TAK_Platform *platform, SDL_Surface *off) {
 
 /* The relay asked for this world to rebuild one that parted. It goes
  * between two ticks on a hashed one, the way a save is taken. */
-static void ig_give_snapshot(void) {
+static void ig_give_snapshot(int stalled) {
     if (!TAK_Match_SnapshotAsked()) return;
     uint32_t tick = TAK_CmdQueue_Tick();
-    if (tick % TAK_NET_HASH_TICKS != 0) return;
+    /* A battle waiting for its next turn, as a paused match's does, gives
+     * it where it stands, which is always a turn's end. */
+    if (tick % TAK_NET_HASH_TICKS != 0 && !(stalled && tick == TAK_Match_TickLimit()))
+        return;
     char err[160];
     size_t len = 0;
     double t0 = prof_now_ms();
@@ -837,7 +840,7 @@ static void InGame_SimulationStep(GameWorld *world) {
      * as it ends and changes nothing. */
     BattleRecord_Tick(world);
     PerfProbe_AfterTick(world, prof_now_ms() - t0);
-    ig_give_snapshot();
+    ig_give_snapshot(0);
 }
 
 void InGame_DebugRunSimTicks(int ticks) {
@@ -2064,6 +2067,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             sim_ticks++;
         }
     }
+    if (TAK_Match_IsLive() && !TAK_Match_CanAdvance()) ig_give_snapshot(1);
     PerfProbe_FrameTicks(sim_ticks, timer->max_ticks_per_frame);
     /* A frame that spent its whole budget threw simulation time away.
      * A run of them means the machine cannot hold the speed the player

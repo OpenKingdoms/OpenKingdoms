@@ -314,8 +314,10 @@ can skip it.
   seat. Pacing is timing only and never enters the hash.
 - SNAP_REQUEST, SNAP_DATA and SNAP_RESULT rebuild a world that parted
   (protocol 9). The relay asks a sound client for its world, which that
-  client saves in memory between two ticks on its next hashed tick and
-  sends up in pieces of 16 KB, no faster than its connection empties. The
+  client saves in memory between two ticks on its next hashed tick, or
+  where it stands when it is waiting for its next turn, as in a paused
+  match, and sends up in pieces of 16 KB, no faster than its connection
+  empties. The
   relay passes the pieces on to the parted client, no faster than that
   connection takes them. The parted client answers whether it can read
   them, and the relay then sends GO for the snapshot's own turn and the
@@ -494,7 +496,9 @@ it arrives, or when a client is older than protocol 9. Once the relay's
 window of the log no longer holds turn 0, described below, a world that
 needs the log takes another snapshot instead, three in a row at most,
 and one that still cannot be brought in is let go with "the game is
-closed" while the computer plays a seat it held. A client older than
+closed" while the computer plays a seat it held. Its battle stops there
+and says so. A two world split that no snapshot can settle, once turn 0
+is gone, halts the match as a desync did before resyncs. A client older than
 protocol 9 that parts then is left to watch as below. A watcher's world
 never counts: its hash is checked against what the players agreed, and a
 watcher that differs is resynced alone. A rebuilt world keeps the

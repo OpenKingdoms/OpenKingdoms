@@ -165,6 +165,10 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
          * is an answer to something we asked, a room that filled up or
          * a password that did not match, and the lobby stays up. */
         if (c->state == TAK_NC_GREETING) c->state = TAK_NC_REFUSED;
+        /* Let go from a match, which no more turns will reach. */
+        if ((c->state == TAK_NC_PLAYING || c->state == TAK_NC_LOADING) &&
+            r.reason == TAK_REJECT_GAME_CLOSED && r.detail == TAK_REJECT_DETAIL_LET_GO)
+            c->state = TAK_NC_REFUSED;
         raise_event(c, TAK_NC_EV_REFUSED);
         return 0;
     }
@@ -265,6 +269,10 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
         /* Already playing: a resync. What is held belongs to the world
          * being thrown away, and the log comes again from first_turn. */
         c->snap_waiting = 0;
+        /* A match joined from a snapshot holds nothing from before its GO:
+         * the log comes from the snapshot's turn, in order. */
+        if (c->state == TAK_NC_LOADING && (c->start.flags & TAK_STARTF_SNAPSHOT))
+            turns_reset(c);
         if (c->state == TAK_NC_PLAYING) {
             turns_reset(c);
             c->resync = 1;

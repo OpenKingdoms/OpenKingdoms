@@ -375,6 +375,7 @@ static void connect_to(const char *address) {
         set_status("Type the address of a server to join.");
         return;
     }
+    sg.join_waits = 0;   /* a new connection waits for its own GO */
     if (NetSession_Connect(address, SelectGame_PlayerName()) != 0) {
         set_status(NetSession_Why());
         return;
@@ -873,6 +874,21 @@ void SelectGame_HandleClick(const char *name) {
 
 /* Everything the session did since the last frame, turned into the one
  * line the screen shows and the state it moves to. */
+/* GO for a match joined under way: the world is built from the
+ * snapshot's turn, or from turn 0 when none came. */
+static void join_go(TAK_Platform *platform, TAK_NetClient *c) {
+    if (!sg.join_waits) return;
+    sg.join_waits = 0;
+    if (MP_RebuildMatchWorld(platform) == 0) {
+        sg.next_state = GAMESTATE_GAME_LOADING;
+    } else {
+        set_status("That game could not be built here.");
+        Settings_SetStr("RejoinMatch", "");
+        Settings_Save();
+        (void)TAK_NetClient_LeaveRoom(c);
+    }
+}
+
 static void take_events(TAK_Platform *platform) {
     TAK_NetClient *c = client();
     if (!c) return;
@@ -894,6 +910,7 @@ static void take_events(TAK_Platform *platform) {
                                              : "dropin");
             /* Its world comes as a snapshot: nothing is built until GO
              * says from which turn. */
+            sg.join_waits = 0;
             if (c->start.flags & TAK_STARTF_SNAPSHOT) {
                 sg.join_waits = 1;
                 set_status(c->start.your_seat >= TAK_NET_SEATS
@@ -919,17 +936,7 @@ static void take_events(TAK_Platform *platform) {
             }
             break;
         case TAK_NC_EV_GO:
-            if (!sg.join_waits) break;
-            sg.join_waits = 0;
-            /* From the snapshot's turn, or from turn 0 when none came. */
-            if (MP_RebuildMatchWorld(platform) == 0) {
-                sg.next_state = GAMESTATE_GAME_LOADING;
-            } else {
-                set_status("That game could not be built here.");
-                Settings_SetStr("RejoinMatch", "");
-                Settings_Save();
-                (void)TAK_NetClient_LeaveRoom(c);
-            }
+            join_go(platform, c);
             break;
         case TAK_NC_EV_ROOM_LIST:
             /* The server answered the list, so it had no match to give
@@ -960,8 +967,7 @@ static void take_events(TAK_Platform *platform) {
              * builds the world, before this snapshot or just after it.
              * The battle room is for a game that has not started. */
             if (c->state == TAK_NC_LOADING || c->state == TAK_NC_PLAYING ||
-                (c->seat == TAK_NET_SEAT_NONE &&
-                 c->room.status == TAK_ROOM_IN_PROGRESS)) break;
+                c->room.status == TAK_ROOM_IN_PROGRESS) break;
             /* In a room, so the battle room takes over from here. */
             sg.next_state = GAMESTATE_MULTIPLAYER;
             break;
@@ -985,6 +991,7 @@ static void take_events(TAK_Platform *platform) {
             }
             break;
         case TAK_NC_EV_GONE:
+            sg.join_waits = 0;
             set_status("The connection closed.");
             break;
         default:
@@ -1045,6 +1052,11 @@ int SelectGame_Tick(TAK_Platform *platform, float dt) {
 
     NetSession_Tick(SDL_GetTicks64());
     take_events(platform);
+    /* GO can be lost from a full event queue, and the state cannot. */
+    {
+        TAK_NetClient *jc = client();
+        if (sg.join_waits && jc && jc->state == TAK_NC_PLAYING) join_go(platform, jc);
+    }
     /* After the events, so a failure's own words are the ones left. */
     uint64_t now_ms = SDL_GetTicks64();
     int failed = NetSession_State() == NET_SESSION_FAILED;

@@ -89,6 +89,9 @@ static void session_snapshots(uint64_t now_ms) {
 }
 
 int NetSession_SnapshotPending(void) {
+    /* Nothing more comes to a client let go or cut off. */
+    if (g_session.client.state == TAK_NC_REFUSED || g_session.client.state == TAK_NC_GONE)
+        return 0;
     return g_session.snap != NULL || g_session.client.snap_in_len > 0 ||
            g_session.client.snap_waiting;
 }

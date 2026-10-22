@@ -1803,6 +1803,47 @@ static int take_checked(uint32_t want, int cmds) {
     return 0;
 }
 
+/* A client the relay lets go from its match stops there and says why. A
+ * refusal of something else in the match leaves it playing. */
+TEST(a_client_let_go_from_its_match_stops) {
+    ASSERT_EQ_INT(0, playing_client());
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    TAK_MsgReject r;
+    memset(&r, 0, sizeof r);
+    r.reason = TAK_REJECT_RATE_LIMITED;
+    size_t n = TAK_Msg_RejectEncode(&r, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1300));
+    ASSERT_EQ_INT(TAK_NC_PLAYING, g_c.state);
+    r.reason = TAK_REJECT_GAME_CLOSED;
+    r.detail = TAK_REJECT_DETAIL_LET_GO;
+    n = TAK_Msg_RejectEncode(&r, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1400));
+    ASSERT_EQ_INT(TAK_NC_REFUSED, g_c.state);
+}
+
+/* A world joined from a snapshot drops the live turns that came before
+ * its GO, and takes the log from the snapshot's turn, in order. */
+TEST(a_snapshot_join_takes_its_turns_from_the_snapshots_turn) {
+    ASSERT_EQ_INT(0, welcome_client(7));
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    TAK_MsgStartGame sg;
+    memset(&sg, 0, sizeof sg);
+    sg.match_id = 1;
+    sg.your_seat = 0;
+    sg.turn_ticks = 3;
+    sg.flags = TAK_STARTF_SNAPSHOT;
+    size_t n = TAK_Msg_StartGameEncode(&sg, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1000));
+    ASSERT_EQ_INT(0, feed_turn(100, 1, 2, 1));
+    ASSERT_EQ_INT(0, feed_turn(101, 0, 0, 1));
+    TAK_MsgGo go;
+    go.first_turn = 90;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1200));
+    for (uint32_t t = 90; t < 102; t++) ASSERT_EQ_INT(0, feed_turn(t, 1, 1, 1));
+    for (uint32_t t = 90; t < 102; t++) ASSERT_EQ_INT(0, take_checked(t, 1));
+}
+
 /* A player who rejoins or drops in is sent the whole log while the world
  * is still loading and nothing is taken. Twenty minutes of it, a busy
  * turn every five and an empty run between, is held whole and handed
@@ -2195,7 +2236,8 @@ TEST(a_rejoined_player_s_orders_are_taken) {
     ASSERT(hs >= 0);
     ASSERT(rr->clock.sim[hs].last_seq >= 20);
 
-    hello_w(0, "host", TAK_NET_PROTOCOL_VERSION, 1, t);
+    /* Protocol 9 replays the log: no world here gives a snapshot. */
+    hello_w(0, "host", 9, 1, t);
     for (int k = 0; k < 3000 && rr->clock.sim[hs].status != TAK_PSTATUS_CONNECTED;
          k++, t += 10)
         step_w(t, 0);
@@ -2481,6 +2523,8 @@ int main(void) {
     RUN(a_move_bigger_than_a_turn_goes_over_several_and_loses_nothing);
     RUN(a_finished_tick_is_acknowledged_and_hashed_on_the_sixtieth);
     RUN(outside_a_match_the_simulation_is_never_held_back);
+    RUN(a_snapshot_join_takes_its_turns_from_the_snapshots_turn);
+    RUN(a_client_let_go_from_its_match_stops);
     RUN(twenty_minutes_of_turn_log_is_held_while_the_world_loads);
     RUN(a_ring_that_never_empties_reuses_the_space_of_taken_turns);
     RUN(a_catch_up_feeds_the_queue_without_overflowing_it);

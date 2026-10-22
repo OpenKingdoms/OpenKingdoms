@@ -303,6 +303,10 @@ typedef enum TAK_NetReject {
     TAK_REJECT_REMOVED_BY_HOST   = 30
 } TAK_NetReject;
 
+/* The detail of a GAME_CLOSED sent to a client in a match: the relay let
+ * it go, its world beyond what the log or a snapshot could bring back. */
+#define TAK_REJECT_DETAIL_LET_GO 1u
+
 /* Which hash group differed, carried in a reject's detail byte. */
 typedef enum TAK_NetHashGroup {
     TAK_HASH_UNITS = 0,

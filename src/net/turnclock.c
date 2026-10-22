@@ -535,8 +535,16 @@ static void judge(TAK_TurnClock *c, TAK_TurnHashRow *row, uint64_t now_ms) {
                 if (c->sim[i].awaiting_snap) c->split_targets |= 1u << i;
                 else fell_back = 1;
             }
-            /* One sent to the log at once means the reference goes too. */
-            if (fell_back) TAK_TurnClock_Restart(c, ref, now_ms);
+            /* One sent to the log at once means the reference goes too,
+             * while the log still reaches back to turn 0. */
+            if (fell_back && log_serves(c, 0)) TAK_TurnClock_Restart(c, ref, now_ms);
+            return;
+        }
+        /* No world can settle it and the log no longer reaches turn 0. */
+        if (!from_zero) {
+            note_desync(c, tick, have, 1);
+            c->halted = 1;
+            update_pace(c);
             return;
         }
         note_desync(c, tick, have, 0);
@@ -794,9 +802,9 @@ static void refuse_sim(TAK_TurnClock *c, int sim, uint64_t now_ms) {
     s->pend_set = 0;
     if (s->takeover) { TAK_TurnClock_Forget(c, sim, now_ms); return; }
     if (s->reclaim || s->seat == TAK_NET_SEAT_NONE) {
-        /* Its seat, if any, is already the computer's. */
+        /* Its seat, if any, is already the computer's, and stays named so
+         * a drop in can still take it. */
         s->reclaim = 0;
-        s->seat = TAK_NET_SEAT_NONE;
         s->status = TAK_PSTATUS_DROPPED;
         rejudge(c, now_ms);
         update_pace(c);
@@ -814,7 +822,8 @@ static int begin_catch_up(TAK_TurnClock *c, int sim, uint32_t from_turn,
     if (!log_serves(c, from_turn)) {
         s->awaiting_snap = 0;
         if (s->snap_tries >= TAK_TURN_SNAP_TRIES ||
-            ask_snapshot(c, sim, TAK_TurnClock_SnapDonor(c, 1u << sim), now_ms) != 0)
+            ask_snapshot(c, sim, TAK_TurnClock_SnapDonor(c, (1u << sim) | c->snap_exclude),
+                         now_ms) != 0)
             refuse_sim(c, sim, now_ms);
         return 0;
     }
