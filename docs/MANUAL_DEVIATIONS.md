@@ -1289,6 +1289,16 @@ Format per entry:
   its hull is clear of the yard and of other ships. A ship is a unit
   whose move class needs a minimum water depth. Ground, hover and
   flying units are not changed.
+- Change, the pad: a ship leaves for a spot where its hull keeps 96 px
+  off the next ship to go up on the pad, with a spot ahead of it and no
+  hull on the way there taken first. While a yard waits on its pad it
+  sends its side's own idle ships off the pad's water and out of the
+  way of its launches, which are the ships on the pad and those bound
+  for a point within 1280 px of the yard that is not its rally point.
+  The original only looks again after a random 7 to 21 of its frames
+  and never moves anything (legacy:9373-9382). The Sea Fort's pad lies
+  108 px in front of its centre, and without the push a ship stopped on
+  its way out kept the next from going up.
 - Why: the original keeps units apart by the cells of their move
   class alone (legacy:163193-163195, legacy:219329-219340), and a
   ship's class is a square one and a half to three times shorter than

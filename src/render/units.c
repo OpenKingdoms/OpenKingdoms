@@ -410,6 +410,14 @@ static int ship_hull_blocked(const UnitDef *d, int self, float margin,
                              float heading, int32_t x, int32_t y,
                              int has_from, float from_heading,
                              int32_t from_x, int32_t from_y);
+static int ship_hulls_apart(const UnitDef *d, int32_t x, int32_t y,
+                            float heading, const UnitDef *e, int32_t ex,
+                            int32_t ey, float eheading, float margin);
+static void ships_rebuild(void);
+static void ship_clear_pad(const Unit *f, int32_t pad_x, int32_t pad_y,
+                           const UnitDef *pd);
+static int ship_lane_clear(const UnitDef *d, int self, int32_t x0, int32_t y0,
+                           float h0, int32_t x1, int32_t y1);
 static int unit_start_script(Unit *u, const char *name,
                              const int32_t *args, int n_args);
 
@@ -1231,6 +1239,13 @@ static float projectile_launch_pitch(float speed_ppt, float run,
     return tak_atanf(lob_preferred ? (k + root) : (k - root));
 }
 
+/* A floater, or a building whose yard has no ground cell, which the
+ * original puts up at its waterline (legacy:218971-218975, called at
+ * creation from legacy:219464-219481). */
+static int def_rides_sea(const UnitDef *d) {
+    return d && (d->floater || d->yard_floats);
+}
+
 /* Where a unit stands: the ground, the sea over it for a floater or a
  * flyer, and its altitude on top. The original keeps this on the unit
  * (unit+0x6c), and holds a flyer cruisealt over the higher of the
@@ -1239,7 +1254,7 @@ static float unit_base_height(const GameWorld *w, const Unit *v) {
     if (!w || !v) return 0.0f;
     float g = (float)Terrain_SampleHeight(w, v->world_x, v->world_y);
     const UnitDef *d = Units_GetDef(v->def_idx);
-    if (d && (d->floater || d->can_fly) && (float)w->water_height > g)
+    if (d && (def_rides_sea(d) || d->can_fly) && (float)w->water_height > g)
         g = (float)w->water_height;
     return g + v->flight_alt;
 }
@@ -1256,21 +1271,29 @@ static float unit_air_alt(const GameWorld *w, const Unit *u) {
     return u->flight_alt + lift;
 }
 
-/* A floater, or an upright unit that hovers, rides its waterline under
- * the sea and never under the ground (legacy:234287-234330,
+/* How far a def at (x, y) rides over the ground: its waterline under
+ * the sea, never under the ground (legacy:234287-234330,
  * legacy:184112-184122). Drawing only. */
-static float unit_float_lift(const GameWorld *w, const Unit *u) {
-    const UnitDef *d = Units_GetDef(u->def_idx);
+static float def_float_lift(const GameWorld *w, const UnitDef *d,
+                            int32_t x, int32_t y) {
     if (!w || !d || w->water_height <= 0) return 0.0f;
-    if (!(d->upright ? d->can_hover : d->floater)) return 0.0f;
-    int g = Terrain_SampleHeight(w, u->world_x, u->world_y);
+    if (!(d->upright ? d->can_hover : def_rides_sea(d))) return 0.0f;
+    int g = Terrain_SampleHeight(w, x, y);
     int line = w->water_height - (int)d->waterline;
     return line > g ? (float)(line - g) : 0.0f;
 }
 
 float Units_DrawnAlt(const GameWorld *w, const Unit *u) {
     if (!u) return 0.0f;
-    return unit_air_alt(w, u) + unit_float_lift(w, u);
+    return unit_air_alt(w, u) +
+           def_float_lift(w, Units_GetDef(u->def_idx), u->world_x, u->world_y);
+}
+
+float Units_SiteHeight(const GameWorld *w, int def_idx, int32_t x, int32_t y) {
+    if (!w) return 0.0f;
+    const UnitDef *d = Units_GetDef(def_idx);
+    float g = (float)Terrain_SampleHeight(w, x, y);
+    return d && d->yard_floats ? g + def_float_lift(w, d, x, y) : g;
 }
 
 /* A ghost and a cloaked unit both draw in the original's translucent
@@ -1457,7 +1480,7 @@ static int spawn_projectile(int32_t x, int32_t y,
         if (unit_weapon_muzzle(shooter, wslot, &mdx, &mdy, &mup)) {
             p->from_piece = 1;
             float base = (float)p->src_height;
-            if (sd && (sd->floater || sd->can_fly) &&
+            if (sd && (def_rides_sea(sd) || sd->can_fly) &&
                 lw->water_height > p->src_height)
                 base = (float)lw->water_height;
             float fx = (float)x + mdx, fy = (float)y + mdy;
@@ -6340,12 +6363,16 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
             return -1;
         }
         /* A ship is begun once the last one's hull is off the pad, and
-         * the factory tries again shortly (M-012). */
+         * the factory tries again shortly. The side's own idle ships in
+         * the way are sent off meanwhile (M-012). */
         const UnitDef *hd = def_hull(building_def_idx);
-        if (hd && ship_hull_blocked(hd, -1, UNIT_HULL_MARGIN,
-                                    build_heading_for_def(bd), world_x,
-                                    world_y, 0, 0.0f, 0, 0))
+        int held = hd ? ship_hull_blocked(hd, -1, UNIT_HULL_MARGIN,
+                                          build_heading_for_def(bd), world_x,
+                                          world_y, 0, 0.0f, 0, 0) : 0;
+        if (held) {
+            ship_clear_pad(u, world_x, world_y, hd);
             return -1;
+        }
         /* Nor does one go up on a unit standing on the pad: the
          * placement test at the spot counts units, and the factory looks
          * again shortly (legacy:9363-9382, legacy:219134-219147). */
@@ -6576,11 +6603,73 @@ static int factory_start_next(int fh) {
     return 1;
 }
 
-/* Where a ship leaves its yard for: clear of the yard and of every hull,
- * along the pad's direction or one of the four ways out, further out and
- * to either side in turn (M-012). 0 when nowhere is free. */
+/* Water a yard keeps clear round its pad and its ships leaving it, and
+ * how far out a launch goes at most, in px (M-012). */
+#define SHIP_PAD_CLEAR    48.0f
+#define SHIP_LAUNCH_REACH 1280
+/* How far short of its point a ship can stop: its route ends on the last
+ * cell's placement when the point is not one. */
+#define SHIP_LAUNCH_SLACK 48.0f
+
+/* What a yard's ships keep clear of: the next hull to go up on its pad
+ * and its launches, the side's ships on the pad or bound for a point in
+ * launch reach that is not the rally point (M-012). */
+typedef struct ShipYardWay {
+    const UnitDef *pd;
+    int32_t pad_x, pad_y;
+    float   pad_heading;
+    int16_t movers[32];
+    int     n_movers;
+} ShipYardWay;
+
+static void ship_yard_way(const Unit *f, int32_t pad_x, int32_t pad_y,
+                          const UnitDef *pd, ShipYardWay *yw) {
+    yw->pd = pd;
+    yw->pad_x = pad_x;
+    yw->pad_y = pad_y;
+    yw->pad_heading = build_heading_for_def(pd);
+    yw->n_movers = 0;
+    for (int k = 0; k < g_ship_count && yw->n_movers < 32; k++) {
+        const Unit *o = &g_units[g_ships[k]];
+        const UnitDef *od = def_hull(o->def_idx);
+        if (!od || o->alive != UNIT_ALIVE_ACTIVE || o->player_id != f->player_id ||
+            o->carried_by >= 0 || o->cmd_kind != UNIT_CMD_MOVE ||
+            o->under_construction)
+            continue;
+        int launch = abs(o->cmd_x - f->world_x) <= SHIP_LAUNCH_REACH &&
+                     abs(o->cmd_y - f->world_y) <= SHIP_LAUNCH_REACH &&
+                     !(f->rally_set && o->cmd_x == f->rally_x && o->cmd_y == f->rally_y);
+        if (!launch && ship_hulls_apart(od, o->world_x, o->world_y, o->heading, pd,
+                                        pad_x, pad_y, yw->pad_heading, SHIP_PAD_CLEAR))
+            continue;
+        yw->movers[yw->n_movers++] = g_ships[k];
+    }
+}
+
+/* Whether ship d of handle self at (x, y) comes within clear px of the
+ * pad's next hull or of a ship leaving the pad. */
+static int ship_in_yard_way(const ShipYardWay *yw, const UnitDef *d, int self,
+                            int32_t x, int32_t y, float heading, float clear) {
+    if (!ship_hulls_apart(d, x, y, heading, yw->pd, yw->pad_x, yw->pad_y,
+                          yw->pad_heading, clear))
+        return 1;
+    for (int i = 0; i < yw->n_movers; i++) {
+        const Unit *m = &g_units[yw->movers[i]];
+        const UnitDef *md = def_hull(m->def_idx);
+        if (yw->movers[i] == self || !md) continue;
+        if (!ship_hulls_apart(d, x, y, heading, md, m->world_x, m->world_y,
+                              m->heading, clear))
+            return 1;
+    }
+    return 0;
+}
+
+/* Where a ship leaves its yard for, clear of the yard, the hulls and the
+ * yard's way, a spot ahead with a clear way there first, or 0 (M-012).
+ * One it must turn or push to reach can stop it short in the yard. */
 static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
-                            const UnitDef *btd, const UnitDef *hd) {
+                            const UnitDef *btd, const UnitDef *hd,
+                            const ShipYardWay *yw) {
     const GameWorld *w = World_Get();
     int self = (int)(bt - g_units);
     int fore = hd->hull_fore_px, aft = hd->hull_aft_px;
@@ -6593,6 +6682,8 @@ static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
     float px = (float)(bt->world_x - f->world_x);
     float py = (float)(bt->world_y - f->world_y);
     float plen = sqrtf(px * px + py * py);
+    float hx = tak_sinf(bt->heading), hy = -tak_cosf(bt->heading);
+    for (int pass = 0; pass < 2; pass++)
     for (int way = -1; way < 4; way++) {
         float dx, dy;
         if (way < 0) {
@@ -6617,6 +6708,15 @@ static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
                 if (ship_hull_blocked(hd, self, UNIT_HULL_MARGIN, heading,
                                       cx, cy, 0, 0.0f, 0, 0))
                     continue;
+                if (ship_in_yard_way(yw, hd, self, cx, cy, heading,
+                                     SHIP_PAD_CLEAR + SHIP_LAUNCH_SLACK))
+                    continue;
+                if (pass == 0 &&
+                    (hx * (float)(cx - bt->world_x) +
+                     hy * (float)(cy - bt->world_y) <= 0.0f ||
+                     !ship_lane_clear(hd, self, bt->world_x, bt->world_y,
+                                      bt->heading, cx, cy)))
+                    continue;
                 bt->cmd_kind = UNIT_CMD_MOVE;
                 bt->cmd_x = cx;
                 bt->cmd_y = cy;
@@ -6626,6 +6726,29 @@ static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
         }
     }
     return 0;
+}
+
+/* A yard waiting on its pad at (pad_x, pad_y), where a ship of def pd is
+ * to go up, sends the side's own idle ships in its way off (M-012). */
+static void ship_clear_pad(const Unit *f, int32_t pad_x, int32_t pad_y,
+                           const UnitDef *pd) {
+    const UnitDef *fd = Units_GetDef(f->def_idx);
+    if (!fd || !pd) return;
+    int fx = fd->footprint_x > 0 ? fd->footprint_x : 2;
+    int fz = fd->footprint_z > 0 ? fd->footprint_z : 2;
+    ShipYardWay yw;
+    ship_yard_way(f, pad_x, pad_y, pd, &yw);
+    for (int k = 0; k < g_ship_count; k++) {
+        Unit *o = &g_units[g_ships[k]];
+        const UnitDef *ohd = def_hull(o->def_idx);
+        if (!ohd || o->alive != UNIT_ALIVE_ACTIVE || o->carried_by >= 0 ||
+            o->player_id != f->player_id || o->under_construction ||
+            o->cmd_kind != UNIT_CMD_NONE)
+            continue;
+        if (ship_in_yard_way(&yw, ohd, g_ships[k], o->world_x, o->world_y,
+                             o->heading, SHIP_PAD_CLEAR))
+            ship_launch_spot(f, fx, fz, o, Units_GetDef(o->def_idx), ohd, &yw);
+    }
 }
 
 /* Whether a unit other than skip is walking to a point within reach px
@@ -6751,7 +6874,13 @@ static void factory_release(const Unit *f, const UnitDef *fd, Unit *bt,
     int fx = fd->footprint_x > 0 ? fd->footprint_x : 2;
     int fz = fd->footprint_z > 0 ? fd->footprint_z : 2;
     const UnitDef *hd = def_hull(bt->def_idx);
-    if (hd && ship_launch_spot(f, fx, fz, bt, btd, hd)) return;
+    if (hd) {
+        /* The next one goes up where this one did. */
+        const UnitDef *nd = f->prod_queue_len > 0 ? def_hull(f->prod_queue[0]) : NULL;
+        ShipYardWay yw;
+        ship_yard_way(f, bt->world_x, bt->world_y, nd ? nd : hd, &yw);
+        if (ship_launch_spot(f, fx, fz, bt, btd, hd, &yw)) return;
+    }
     if (!hd && factory_step_off(f, fd, bt, btd)) return;
     int exit_px = (fx > fz ? fx : fz) * 8 + 24;
     /* Off the pad first: keep going the way the pad already points, so
@@ -7415,6 +7544,16 @@ static int ensure_def_capacity(void) {
     return 0;
 }
 
+/* A building's yard with no ground cell: it takes its height from the
+ * float line (legacy:218971-218975). */
+static uint8_t yard_has_no_ground(const UnitDef *d) {
+    if (!d->yardmap || d->bmcode != 0) return 0;
+    int cells = d->footprint_x * d->footprint_z;
+    for (int i = 0; i < cells; i++)
+        if (d->yardmap[i] & TAK_YARD_LEVEL) return 0;
+    return cells > 0;
+}
+
 static int parse_fbi(const char *vfs_path, UnitDef *out) {
     memset(out, 0, sizeof(*out));
 
@@ -7616,6 +7755,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
             if (out->yardmap[i] & TAK_YARD_SACRED) { out->yardmap_sacred = 1; break; }
         }
     }
+    out->yard_floats = yard_has_no_ground(out);
 
     /* A monarch, and anything not bmcode 1, can be neither stoned nor
      * frozen (legacy:163161-163180). */
@@ -9285,6 +9425,8 @@ void Units_LoadFinish(void) {
      * which is every order a player or the server ever gives. */
     uid_rebuild();
     ugrid_rebuild();
+    /* A yard reads the ships afloat before the next tick gathers them. */
+    ships_rebuild();
 }
 
 /* The facing the next Units_Spawn stands at, set only around one call,
@@ -11191,6 +11333,34 @@ static int ship_hull_blocked(const UnitDef *d, int self, float margin,
         if (dn2 + 0.25f < ship_hull_d2(&hc, &ho)) return j + 1;
     }
     return 0;
+}
+
+/* Whether ship d at (x, y) keeps margin px off ship e at (ex, ey). */
+static int ship_hulls_apart(const UnitDef *d, int32_t x, int32_t y,
+                            float heading, const UnitDef *e, int32_t ex,
+                            int32_t ey, float eheading, float margin) {
+    ShipHull a, b;
+    ship_hull_at(d, x, y, heading, &a);
+    ship_hull_at(e, ex, ey, eheading, &b);
+    float need = a.r + b.r + margin;
+    return ship_hull_d2(&a, &b) >= need * need;
+}
+
+/* Whether ship d sails from (x0, y0) straight to (x1, y1) without coming
+ * closer to another hull than margin, past any it starts against. */
+static int ship_lane_clear(const UnitDef *d, int self, int32_t x0, int32_t y0,
+                           float h0, int32_t x1, int32_t y1) {
+    float dx = (float)(x1 - x0), dy = (float)(y1 - y0);
+    float len = sqrtf(dx * dx + dy * dy);
+    float heading = tak_atan2f(dx, -dy);
+    for (float s = 16.0f; s < len; s += 16.0f) {
+        int32_t x = x0 + (int32_t)(dx * s / len);
+        int32_t y = y0 + (int32_t)(dy * s / len);
+        if (ship_hull_blocked(d, self, UNIT_HULL_MARGIN, heading, x, y, 1, h0,
+                              x0, y0))
+            return 0;
+    }
+    return 1;
 }
 
 float Units_DebugHullOverlap(int handle_a, int handle_b) {
@@ -16260,6 +16430,7 @@ int Units_DebugSetDefs(const UnitDef *defs, int count) {
          * caller's: a synthetic def has none. */
         g_defs[i].cob_script = NULL;
         g_defs[i].yardmap = NULL;
+        g_defs[i].yard_floats = 0;
         for (int c = 0; c < 12; c++) g_defs[i].mesh_per_color[c] = NULL;
     }
     g_def_cap = count;
@@ -16332,6 +16503,7 @@ int Units_DebugSetYardmap(int def_idx, const char *spec) {
     d->yardmap_sacred = 0;
     for (int i = 0; i < d->footprint_x * d->footprint_z; i++)
         if (d->yardmap[i] & TAK_YARD_SACRED) d->yardmap_sacred = 1;
+    d->yard_floats = yard_has_no_ground(d);
     return 0;
 }
 
@@ -18307,7 +18479,7 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
     const float tilt  = g_tan_tilt;
     const float ux = (float)world_x;
     const float uz = (float)world_y;
-    const float uh = (float)Terrain_SampleHeight(world, world_x, world_y);
+    const float uh = Units_SiteHeight(world, def_idx, world_x, world_y);
     const float heading = Units_BuildHeadingFacing(def_idx, facing);
     const float ch = tak_cosf(heading), sh = tak_sinf(heading);
     const float y_scale = render_y_scale_for_def(def);

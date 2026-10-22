@@ -690,7 +690,7 @@ static void draw_build_ghost(const GameWorld *world) {
     if (!m) return;
     int32_t wx = s_ghost.x, wy = s_ghost.y;
     Units_SnapBuildSiteFacing(s_ghost.def_idx, s_ghost.facing, &wx, &wy);
-    float h = (float)Terrain_SampleHeight(world, wx, wy);
+    float h = Units_SiteHeight(world, s_ghost.def_idx, wx, wy);
     int n = 0;
     const CobPiece *pieces = Units_GhostPiecesFacing(s_ghost.def_idx, s_ghost.color_idx,
                                                      s_ghost.facing, &n);
@@ -716,9 +716,11 @@ static void draw_build_ghost(const GameWorld *world) {
 }
 
 /* A building's flat ground pieces: a build pad, a floor. A walking
- * unit's flat parts (a rug, a talon plate) stay with it. */
+ * unit's flat parts (a rug, a talon plate) and a floating building's
+ * stay with it. */
 int View3D_GroundPiecesOf(const UnitDef *def, const GpuModel *m) {
-    return def && m && m->flat_count > 0 && !(def->max_velocity > 0.0f);
+    return def && m && m->flat_count > 0 && !(def->max_velocity > 0.0f) &&
+           !def->yard_floats;
 }
 
 /* Overwrites v.xforms on a miss, so never call it mid-frame. */

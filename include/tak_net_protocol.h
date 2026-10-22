@@ -163,8 +163,9 @@
  * air and builds on. 55: a shot drawn at an attack-ground point leaves at
  * the script's release, and is called off when the order's point moves
  * out of reach. 56: a mod's sight jammer puts the fog back over the
- * ground round it for its enemies. */
-#define TAK_ENGINE_BUILD_ID           56
+ * ground round it for its enemies. 57: the Sea Fort and the Floating
+ * Tower float, and a sea yard clears its pad and launches ship after ship. */
+#define TAK_ENGINE_BUILD_ID           57
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
