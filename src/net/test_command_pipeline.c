@@ -3225,7 +3225,8 @@ static void di_close(void *ctx, TAK_ConnId conn) { (void)ctx; (void)conn; }
 
 static void di_hello(TAK_MsgHello *h, int i) {
     memset(h, 0, sizeof *h);
-    h->protocol_version = TAK_NET_PROTOCOL_VERSION;
+    /* Protocol 9 replays the log: these clients give no snapshot. */
+    h->protocol_version = 9;
     h->engine_build_id = TAK_ENGINE_BUILD_ID;
     h->determinism_class = TAK_CLASS_TEST;
     for (int k = 0; k < TAK_NET_TOKEN_BYTES; k++) h->device_token[k] = (uint8_t)(0x30 + i * 16 + k);
