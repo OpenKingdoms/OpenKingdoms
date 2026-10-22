@@ -2169,6 +2169,51 @@ static int same_turns_w(void) {
     return n > 0;
 }
 
+/* A match that hears nothing from the relay for ten seconds is on a link
+ * that died without a word, and says so. Before that, and outside a
+ * match, it is not. */
+TEST(a_match_that_hears_nothing_is_silent) {
+    static TAK_NetClient c;   /* megabytes, too big for a thread's stack */
+    memset(&c, 0, sizeof c);
+    c.state = TAK_NC_PLAYING;
+    ASSERT_EQ_INT(0, TAK_NetClient_Silent(&c, 50000));
+    c.heard_ms = 1000;
+    ASSERT_EQ_INT(0, TAK_NetClient_Silent(&c, 1000 + TAK_NC_SILENT_MS - 1));
+    ASSERT_EQ_INT(1, TAK_NetClient_Silent(&c, 1000 + TAK_NC_SILENT_MS));
+    c.state = TAK_NC_LOBBY;
+    ASSERT_EQ_INT(0, TAK_NetClient_Silent(&c, 1000 + TAK_NC_SILENT_MS));
+}
+
+/* A player back on a fresh connection numbers its orders from 1 again,
+ * and the relay takes them however many it gave before it went. */
+TEST(a_rejoined_player_s_orders_are_taken) {
+    uint64_t t = 0;
+    ASSERT_EQ_INT(0, play_w(30, &t));
+    TAK_RelayRoom *rr = TAK_Relay_FindRoom(&g_relay, g_w[0].room.room_id);
+    ASSERT_NOT_NULL(rr);
+    int hs = TAK_TurnClock_SimOf(&rr->clock, g_w[0].session_id);
+    ASSERT(hs >= 0);
+    ASSERT(rr->clock.sim[hs].last_seq >= 20);
+
+    hello_w(0, "host", TAK_NET_PROTOCOL_VERSION, 1, t);
+    for (int k = 0; k < 3000 && rr->clock.sim[hs].status != TAK_PSTATUS_CONNECTED;
+         k++, t += 10)
+        step_w(t, 0);
+    ASSERT_EQ_INT(TAK_NC_PLAYING, g_w[0].state);
+    ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, rr->clock.sim[hs].status);
+    uint32_t back_at = rr->clock.head;
+    for (int k = 0; k < 3; k++) {
+        uint8_t body[6] = { 9, 8, 7, 6, (uint8_t)k, 0 };
+        TAK_CmdBlob b = { body, sizeof body };
+        ASSERT_EQ_INT(0, TAK_NetClient_SendCommands(&g_w[0], &b, 1));
+        for (int s = 0; s < 50; s++, t += 10) step_w(t, 0);
+    }
+    int after = 0;
+    for (uint32_t k = back_at; k < g_wnext[1] && k < W_TURNS; k++) after += g_wcmds[1][k];
+    printf("(%d of 3 orders after the rejoin reached the other player) ", after);
+    ASSERT_EQ_INT(3, after);
+}
+
 /* Two minutes of match is 2400 turns. The watcher
  * joins, builds its world for five seconds without taking a turn, then
  * catches up and follows live: at no point does it hold more than the
@@ -2453,6 +2498,8 @@ int main(void) {
     RUN(a_blank_name_is_refused_and_a_padded_one_is_trimmed);
 
     TEST_SUITE("Watching a match");
+    RUN(a_rejoined_player_s_orders_are_taken);
+    RUN(a_match_that_hears_nothing_is_silent);
     RUN(a_watcher_catches_up_on_a_long_match_a_window_at_a_time);
     RUN(an_older_watcher_is_sent_the_whole_log_at_once);
     RUN(a_watcher_gives_no_order_and_the_players_hear_who_watches);

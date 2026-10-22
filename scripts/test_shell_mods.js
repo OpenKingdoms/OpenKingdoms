@@ -437,16 +437,34 @@ check('the page chooses the mod set a room needs, and says why it stays', async 
   assert.deepStrictEqual([got.then, got.told], [null, []]);
 });
 
+check('a stored file read in slices comes back whole, its bytes counted as they come', async () => {
+  function fakeFile(bytes) {
+    return { size: bytes.length,
+             arrayBuffer: () => Promise.resolve(bytes.slice().buffer),
+             slice: (a, b) => fakeFile(bytes.subarray(a, b)) };
+  }
+  const readWhole = new Function('READ_SLICE', 'storedStop', functionSource('readWhole') + 'return readWhole;')(1000, false);
+  const src = new Uint8Array(4500);
+  for (let i = 0; i < src.length; i++) src[i] = (i * 7) & 255;
+  const steps = [];
+  const got = await readWhole(fakeFile(src), (n) => steps.push(n));
+  assert.deepStrictEqual(Array.from(got), Array.from(src));
+  assert.deepStrictEqual(steps, [1000, 1000, 1000, 1000, 500]);
+  const small = await readWhole(fakeFile(src.subarray(0, 10)), (n) => steps.push(n));
+  assert.strictEqual(small.length, 10);
+});
+
 check('mods kept in storage without the game files do not pass for them', async () => {
   async function kept(entries) {
     const isArchive = new Function(functionSource('isArchive') + 'return isArchive;')();
-    const tryCache = new Function('opfsDir', 'cacheEntries', 'picker', 'say', 'lazyFile', 'writeGame',
-      'MODELS', 'DATA', 'console', 'isArchive', functionSource('tryCache') + 'return tryCache;')(
-      () => Promise.resolve({}), () => Promise.resolve(entries), {}, () => {}, () => {}, () => {},
-      'models3d', '/data', { log() {}, warn() {} }, isArchive);
-    return tryCache({});
+    const readWhole = new Function('READ_SLICE', 'storedStop', functionSource('readWhole') + 'return readWhole;')(4194304, false);
+    const readStored = new Function('opfsDir', 'cacheEntries', 'bootSay', 'megabytes', 'handStored', 'readWhole',
+      'storedStop', 'storedFS', 'storedHeld', 'console', 'isArchive', functionSource('readStored') + 'return readStored;')(
+      () => Promise.resolve({}), () => Promise.resolve(entries), () => {}, (n) => n, () => {}, readWhole,
+      false, null, [], { log() {}, warn() {} }, isArchive);
+    return readStored();
   }
-  const file = { getFile: () => Promise.resolve({ arrayBuffer: () => Promise.resolve(new ArrayBuffer(1)) }) };
+  const file = { getFile: () => Promise.resolve({ size: 1, arrayBuffer: () => Promise.resolve(new ArrayBuffer(1)) }) };
   assert.strictEqual(await kept([{ rel: 'Mods/TAK Enhanced.hpi', handle: file },
                                  { rel: 'TAKEnhanced/Presets/te.preset.json', handle: file }]), 0);
   assert.strictEqual(await kept([{ rel: 'data.hpi', handle: file }, { rel: 'Mods/x.hpi', handle: file }]), 2);
