@@ -2497,6 +2497,16 @@ TEST(a_player_whose_tab_closed_gets_back_into_the_match) {
     printf("(one frame ran %u ticks of %u held) ", (unsigned)ran, (unsigned)TAK_Match_TickLimit());
     ASSERT(ran > 20);
 
+    /* The link goes under a battle still being played (this data has no
+     * monarchs, so it reads as over) and the battle leaves for Select
+     * Game, still in the match, to be handed it back. */
+    World_Get()->skirmish_stats_open = 0;
+    World_Get()->skirmish_game_over = 0;
+    TAK_NetClient_OnClose(c);
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(1, InGame_TakeReconnect());
+    ASSERT(Settings_GetStr("RejoinMatch", "")[0] != '\0');
+
     TAK_Match_End();
     NetSession_Disconnect();
     InGame_Shutdown();

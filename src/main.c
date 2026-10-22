@@ -734,6 +734,15 @@ static void app_frame(AppState *app) {
                 g_resync_rebuild = 1;
                 app->state = MP_RebuildMatchWorld(&app->platform) == 0
                            ? GAMESTATE_GAME_LOADING : GAMESTATE_MENU;
+            } else if (next_state != GAMESTATE_IN_GAME && InGame_TakeReconnect()) {
+                /* The link went. The match is not left, so the relay
+                 * hands it back to Select Game's new connection. */
+                battle_ended(0);
+                TAK_Match_End();
+                InGame_Shutdown();
+                World_End(&app->platform);
+                app->ingame_initialized = 0;
+                app->state = GAMESTATE_SELECT_GAME;
             } else if (next_state != GAMESTATE_IN_GAME) {
                 BattleConfig again;
                 char again_map[96], again_kingdom[32];
@@ -807,9 +816,12 @@ static void app_frame(AppState *app) {
 #ifdef __EMSCRIPTEN__
 /* Browser frame callback: pump events, run one frame, cancel the loop
  * on quit (the tab reclaims resources; no explicit teardown). */
+static int g_web_loop_running;
+
 static void em_frame(void *arg) {
     AppState *app = (AppState *)arg;
     if (app->quit_requested || !TAK_Platform_PumpEvents(&app->platform)) {
+        g_web_loop_running = 0;
         emscripten_cancel_main_loop();
         return;
     }
@@ -820,6 +832,40 @@ static void em_frame(void *arg) {
 /* App state must outlive main() under Emscripten (main returns while
  * the browser keeps calling em_frame). */
 static AppState g_app;
+
+#ifdef __EMSCRIPTEN__
+/* A hidden tab gets no animation frames, and a player silent for 5 s
+ * stops the match for everyone. While hidden, a worker's clock, which
+ * the browser does not hold back, runs the frames instead. */
+EMSCRIPTEN_KEEPALIVE
+void TAK_WebHiddenFrame(void) {
+    if (g_web_loop_running) em_frame(&g_app);
+}
+
+EM_JS(void, web_frames_when_hidden, (void), {
+    if (typeof document === 'undefined' || typeof Worker === 'undefined') return;
+    var clock = null, ticking = false;
+    var tick = function () {
+        if (!document.hidden) { ticking = false; return; }
+        _TAK_WebHiddenFrame();
+        clock.postMessage(25);
+    };
+    var follow = function () {
+        if (!document.hidden || ticking) return;
+        if (!clock) {
+            try {
+                var src = 'onmessage = function (e) { setTimeout(function () { postMessage(0); }, e.data); };';
+                clock = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+                clock.onmessage = tick;
+            } catch (e) { clock = null; return; }
+        }
+        ticking = true;
+        clock.postMessage(25);
+    };
+    document.addEventListener('visibilitychange', follow);
+    follow();
+});
+#endif
 
 /* The mod set to mount over the game: --mods, or the one played last.
  * Returns 1 when main should stop, for --list-mods. */
@@ -1055,6 +1101,8 @@ int main(int argc, char *argv[]) {
 #ifdef __EMSCRIPTEN__
     /* fps=0 → drive from requestAnimationFrame; simulate_infinite_loop
      * so main() unwinds here and the browser owns the loop. */
+    g_web_loop_running = 1;
+    web_frames_when_hidden();
     emscripten_set_main_loop_arg(em_frame, &g_app, 0, 1);
 #else
     while (!g_app.quit_requested && TAK_Platform_PumpEvents(&g_app.platform)) {
