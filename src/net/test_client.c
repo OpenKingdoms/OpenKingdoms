@@ -2169,6 +2169,21 @@ static int same_turns_w(void) {
     return n > 0;
 }
 
+/* A match that hears nothing from the relay for ten seconds is on a link
+ * that died without a word, and says so. Before that, and outside a
+ * match, it is not. */
+TEST(a_match_that_hears_nothing_is_silent) {
+    TAK_NetClient c;
+    memset(&c, 0, sizeof c);
+    c.state = TAK_NC_PLAYING;
+    ASSERT_EQ_INT(0, TAK_NetClient_Silent(&c, 50000));
+    c.heard_ms = 1000;
+    ASSERT_EQ_INT(0, TAK_NetClient_Silent(&c, 1000 + TAK_NC_SILENT_MS - 1));
+    ASSERT_EQ_INT(1, TAK_NetClient_Silent(&c, 1000 + TAK_NC_SILENT_MS));
+    c.state = TAK_NC_LOBBY;
+    ASSERT_EQ_INT(0, TAK_NetClient_Silent(&c, 1000 + TAK_NC_SILENT_MS));
+}
+
 /* A player back on a fresh connection numbers its orders from 1 again,
  * and the relay takes them however many it gave before it went. */
 TEST(a_rejoined_player_s_orders_are_taken) {
@@ -2484,6 +2499,7 @@ int main(void) {
 
     TEST_SUITE("Watching a match");
     RUN(a_rejoined_player_s_orders_are_taken);
+    RUN(a_match_that_hears_nothing_is_silent);
     RUN(a_watcher_catches_up_on_a_long_match_a_window_at_a_time);
     RUN(an_older_watcher_is_sent_the_whole_log_at_once);
     RUN(a_watcher_gives_no_order_and_the_players_hear_who_watches);

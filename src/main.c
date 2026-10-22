@@ -779,7 +779,12 @@ static void app_frame(AppState *app) {
 
     TAK_Platform_Present(&app->platform);
 
+    /* On the way back into a match the page must not reload for a newer
+     * deploy, whose engine could not rejoin it, so it is not Select Game. */
+    int rejoining = app->state == GAMESTATE_SELECT_GAME &&
+                    Settings_GetStr("RejoinMatch", "")[0];
     const char *name =
+        rejoining                             ? "Rejoining"      :
         app->state == GAMESTATE_MENU          ? "Main Menu"      :
         app->state == GAMESTATE_BATTLE_SETUP  ? "Skirmish Lobby" :
         app->state == GAMESTATE_GAME_LOADING  ? "Loading"        :
@@ -837,18 +842,21 @@ static AppState g_app;
 
 #ifdef __EMSCRIPTEN__
 /* A hidden or covered window gets no animation frames, and a player
- * silent for 5 s stops the match for everyone. A worker's clock, which
- * the browser does not hold back, runs a frame whenever they stop. */
+ * silent for 5 s stops the match for everyone. Online, a worker's clock,
+ * which the browser does not hold back, runs a frame whenever they stop. */
 EMSCRIPTEN_KEEPALIVE
 void TAK_WebFrameWatch(void) {
-    if (g_web_loop_running && emscripten_get_now() - g_web_frame_end_ms > 50.0)
-        em_frame(&g_app);
+    if (!g_web_loop_running || NetSession_State() == NET_SESSION_OFF) return;
+    if (emscripten_get_now() - g_web_frame_end_ms <= 50.0) return;
+    InGame_SetFramesStalled(1);
+    em_frame(&g_app);
+    InGame_SetFramesStalled(0);
 }
 
 EM_JS(void, web_frame_watch, (void), {
     if (typeof Worker === 'undefined') return;
     try {
-        var src = 'onmessage = function () { setTimeout(function () { postMessage(0); }, 20); };';
+        var src = 'onmessage = function () { setTimeout(function () { postMessage(0); }, 10); };';
         var clock = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
         clock.onmessage = function () { _TAK_WebFrameWatch(); clock.postMessage(0); };
         clock.postMessage(0);

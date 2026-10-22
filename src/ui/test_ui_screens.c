@@ -2421,6 +2421,41 @@ TEST(a_match_does_not_start_until_the_server_says_go) {
     VFS_Shutdown();
 }
 
+/* The link goes while a match's world waits for GO. The battle is not
+ * played alone: the screen goes to Select Game to be handed it back. */
+TEST(a_match_world_whose_link_goes_while_loading_is_not_played_alone) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    ASSERT_NOT_NULL(c);
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 21);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1000));
+    n = pl_encode_start(msg, sizeof msg, 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, pl_run_loading(&platform, 900));
+
+    TAK_NetClient_OnClose(c);
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, pl_run_loading(&platform, 8));
+    ASSERT_EQ_INT(0, TAK_Match_IsLive());
+
+    NetSession_Disconnect();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* The hello this machine sends: the rejoin flag, and its token. */
 static int rj_hello(TAK_MsgHello *h) {
     TAK_NetClient *c = NetSession_Client();
@@ -30599,6 +30634,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(mp_room_shows_the_players_the_server_says_are_in_it);
     RUN_UI_TEST(mp_room_opens_with_its_invite);
     RUN_UI_TEST(a_match_does_not_start_until_the_server_says_go);
+    RUN_UI_TEST(a_match_world_whose_link_goes_while_loading_is_not_played_alone);
     RUN_UI_TEST(a_player_whose_tab_closed_gets_back_into_the_match);
     RUN_UI_TEST(a_match_reports_the_verdict_to_the_server_once);
     RUN_UI_TEST(a_seat_beaten_in_a_match_watches_the_rest_of_it);

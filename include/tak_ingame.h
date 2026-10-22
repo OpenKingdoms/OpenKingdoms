@@ -43,6 +43,9 @@ int InGame_TakeResync(void);
  * went. The caller ends the world without leaving the match, and Select
  * Game connects again to be handed it back. */
 int InGame_TakeReconnect(void);
+/* 1 while the browser runs a frame its animation frames did not, which
+ * spends the frame catching the match up. */
+void InGame_SetFramesStalled(int on);
 /* The battle just built is a resync: it replays to the present behind a
  * "Rejoining the battle" plate rather than on screen. */
 void InGame_SetRejoining(uint32_t until_tick);
