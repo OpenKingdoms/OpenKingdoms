@@ -327,6 +327,14 @@ void NetSession_Tick(uint64_t now_ms) {
     if (g_session.has_link) {
         TAK_NetClient_Heartbeat(&g_session.client, now_ms);
         TAK_NetLink_Pump(&g_session.client, now_ms);
+        /* A socket can stay open on a link that died without a word. */
+        if (TAK_NetClient_Silent(&g_session.client, now_ms)) {
+            TAK_NetLink_Close();
+            TAK_NetClient_OnClose(&g_session.client);
+            g_session.state = NET_SESSION_FAILED;
+            g_session.why = "The game server went quiet.";
+            return;
+        }
         if (TAK_NetLink_State() == TAK_LINK_FAILED &&
             g_session.state != NET_SESSION_FAILED) {
             g_session.state = NET_SESSION_FAILED;

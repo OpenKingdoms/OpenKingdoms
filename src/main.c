@@ -734,6 +734,15 @@ static void app_frame(AppState *app) {
                 g_resync_rebuild = 1;
                 app->state = MP_RebuildMatchWorld(&app->platform) == 0
                            ? GAMESTATE_GAME_LOADING : GAMESTATE_MENU;
+            } else if (next_state != GAMESTATE_IN_GAME && InGame_TakeReconnect()) {
+                /* The link went. The match is not left, so the relay
+                 * hands it back to Select Game's new connection. */
+                battle_ended(0);
+                TAK_Match_End();
+                InGame_Shutdown();
+                World_End(&app->platform);
+                app->ingame_initialized = 0;
+                app->state = GAMESTATE_SELECT_GAME;
             } else if (next_state != GAMESTATE_IN_GAME) {
                 BattleConfig again;
                 char again_map[96], again_kingdom[32];
@@ -770,7 +779,12 @@ static void app_frame(AppState *app) {
 
     TAK_Platform_Present(&app->platform);
 
+    /* On the way back into a match the page must not reload for a newer
+     * deploy, whose engine could not rejoin it, so it is not Select Game. */
+    int rejoining = app->state == GAMESTATE_SELECT_GAME &&
+                    Settings_GetStr("RejoinMatch", "")[0];
     const char *name =
+        rejoining                             ? "Rejoining"      :
         app->state == GAMESTATE_MENU          ? "Main Menu"      :
         app->state == GAMESTATE_BATTLE_SETUP  ? "Skirmish Lobby" :
         app->state == GAMESTATE_GAME_LOADING  ? "Loading"        :
@@ -807,19 +821,48 @@ static void app_frame(AppState *app) {
 #ifdef __EMSCRIPTEN__
 /* Browser frame callback: pump events, run one frame, cancel the loop
  * on quit (the tab reclaims resources; no explicit teardown). */
+static int g_web_loop_running;
+static double g_web_frame_end_ms;   /* when the last frame finished */
+
 static void em_frame(void *arg) {
     AppState *app = (AppState *)arg;
     if (app->quit_requested || !TAK_Platform_PumpEvents(&app->platform)) {
+        g_web_loop_running = 0;
         emscripten_cancel_main_loop();
         return;
     }
     app_frame(app);
+    g_web_frame_end_ms = emscripten_get_now();
 }
 #endif
 
 /* App state must outlive main() under Emscripten (main returns while
  * the browser keeps calling em_frame). */
 static AppState g_app;
+
+#ifdef __EMSCRIPTEN__
+/* A hidden or covered window gets no animation frames, and a player
+ * silent for 5 s stops the match for everyone. Online, a worker's clock,
+ * which the browser does not hold back, runs a frame whenever they stop. */
+EMSCRIPTEN_KEEPALIVE
+void TAK_WebFrameWatch(void) {
+    if (!g_web_loop_running || NetSession_State() == NET_SESSION_OFF) return;
+    if (emscripten_get_now() - g_web_frame_end_ms <= 50.0) return;
+    InGame_SetFramesStalled(1);
+    em_frame(&g_app);
+    InGame_SetFramesStalled(0);
+}
+
+EM_JS(void, web_frame_watch, (void), {
+    if (typeof Worker === 'undefined') return;
+    try {
+        var src = 'onmessage = function () { setTimeout(function () { postMessage(0); }, 10); };';
+        var clock = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+        clock.onmessage = function () { _TAK_WebFrameWatch(); clock.postMessage(0); };
+        clock.postMessage(0);
+    } catch (e) {}
+});
+#endif
 
 /* The mod set to mount over the game: --mods, or the one played last.
  * Returns 1 when main should stop, for --list-mods. */
@@ -1055,6 +1098,9 @@ int main(int argc, char *argv[]) {
 #ifdef __EMSCRIPTEN__
     /* fps=0 → drive from requestAnimationFrame; simulate_infinite_loop
      * so main() unwinds here and the browser owns the loop. */
+    g_web_loop_running = 1;
+    g_web_frame_end_ms = emscripten_get_now();
+    web_frame_watch();
     emscripten_set_main_loop_arg(em_frame, &g_app, 0, 1);
 #else
     while (!g_app.quit_requested && TAK_Platform_PumpEvents(&g_app.platform)) {

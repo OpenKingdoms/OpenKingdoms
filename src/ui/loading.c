@@ -1117,10 +1117,13 @@ static void loading_report_progress(void) {
 
 /* The world is built. Returns 1 when the battle may start, which
  * outside a match is always and inside one is when the server says
- * go. */
+ * go, and -1 when the link to the match went. */
 static int loading_match_ready(void) {
     TAK_NetClient *c = NetSession_Client();
     if (!c) return 1;
+    /* The link went under a match's world: not a battle to play alone. */
+    if ((c->state == TAK_NC_GONE || c->state == TAK_NC_REFUSED) && c->start.turn_ticks)
+        return -1;
     if (c->state == TAK_NC_PLAYING) {
         /* A world the relay will restart holds here for that GO. */
         if (MP_SnapshotRejected()) return 0;
@@ -1256,7 +1259,13 @@ int Loading_Tick(TAK_Platform *platform, float frame_dt) {
             /* In a match nobody starts until everyone can. The world
              * is built, so it is hashed and reported, and the screen
              * waits here for the server to say go. */
-            if (!loading_match_ready()) return GAMESTATE_GAME_LOADING;
+            int ready = loading_match_ready();
+            if (ready < 0) {
+                /* Select Game connects again and is handed the match. */
+                World_End(platform);
+                return GAMESTATE_SELECT_GAME;
+            }
+            if (!ready) return GAMESTATE_GAME_LOADING;
             SDL_Rect whole = { 0, 0, 640, 480 };
             fill_rect(off, whole, SDL_MapRGBA(off->format, 0, 0, 0, 0));
             return GAMESTATE_IN_GAME;
