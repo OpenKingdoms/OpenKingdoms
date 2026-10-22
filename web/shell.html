@@ -101,8 +101,16 @@
   }
   .bar.busy span { right: auto; width: 30%; transition: none; animation: ok-sweep 1.3s ease-in-out infinite; }
   .bar.stopped span { animation: none; transform: scaleX(0); }
+  /* A glint crossing a filling bar, so a read the disk holds up for a
+     while still moves. */
+  .bar i {
+    position: absolute; top: 0; bottom: 0; left: 0; width: 30%;
+    background: linear-gradient(90deg, rgba(255,240,200,0), rgba(255,240,200,.5), rgba(255,240,200,0));
+    animation: ok-sweep 1.8s linear infinite;
+  }
+  .bar.busy i, .bar.stopped i { display: none; }
   @keyframes ok-sweep { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
-  @media (prefers-reduced-motion: reduce) { .bar.busy span { animation-duration: 4s; } }
+  @media (prefers-reduced-motion: reduce) { .bar.busy span, .bar i { animation-duration: 4s; } }
 
   /* ---- the scroll ---------------------------------------------------- */
   .scroll {
@@ -511,7 +519,7 @@
       <p class="sub sr-only">An open-source engine for Total Annihilation: Kingdoms</p>
       <div class="boot-body">
         <p id="boot-msg" class="lede">Loading the engine&hellip;</p>
-        <div id="boot-bar" class="bar busy" role="progressbar" aria-labelledby="boot-msg" aria-valuemin="0" aria-valuemax="100"><span></span></div>
+        <div id="boot-bar" class="bar busy" role="progressbar" aria-labelledby="boot-msg" aria-valuemin="0" aria-valuemax="100"><span></span><i></i></div>
       </div>
     </div>
   </div>
@@ -709,9 +717,15 @@
     countsHeld = null;
     held.forEach(function (a) { count.apply(null, a); });
   }
-  window.addEventListener('pagehide', function () {
+  function sendHeldCounts() {
     if (countsHeld) { releaseCounts(); count('flush'); }
+  }
+  /* A tab killed in the background or a crash never sees pagehide. */
+  window.addEventListener('pagehide', sendHeldCounts);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') sendHeldCounts();
   });
+  setTimeout(releaseCounts, 10000);
   count('view', 'landing');
   count('step', 'visit');
   var picker = document.getElementById('picker');
@@ -893,7 +907,7 @@
       return store.getItem('ok.newer') === latest;
     } catch (e) { return false; }
   }
-  var engineUp = false, reloading = false;
+  var engineUp = false, reloading = false, screenSeen = false;
   /* Drops the cached engine and the worker that kept it, then loads the
      page again from the network. True when the stop is handled so. */
   function reloadFresh(what) {
@@ -923,6 +937,13 @@
     /* Some seconds into running the engine is up, and a later mismatch
        in this tab may reload again. */
     postRun: [function () {
+      /* main() has returned or handed over to its loop. A main() that
+         failed returns with no frame drawn and, the runtime being
+         kept, tells no one. */
+      setTimeout(function () {
+        if (!screenSeen && !boot.hidden)
+          stopped('no first frame', 'The game did not start. Reload the page to try again.');
+      }, 20000);
       setTimeout(function () {
         engineUp = true;
         try { sessionStorage.removeItem('ok.reloaded'); } catch (e) {}
@@ -948,13 +969,22 @@
 
   /* An exception out of the engine's main loop ends the loop, and a
      canvas that has stopped says nothing on its own. */
-  function stopped(what) {
+  function stopped(what, said) {
     count('error', what, true);
     releaseCounts();
+    var msg = said || 'The engine stopped: ' + what;
     /* On the boot plate when it is up, since the toast sits over it. */
-    if (!boot.hidden) bootSay('The engine stopped: ' + what, undefined, true);
-    else tell('The engine stopped: ' + what, true);
+    if (!boot.hidden) bootSay(msg, undefined, true);
+    else tell(msg, true);
   }
+  /* The engine's script failing to load raises its error on the script
+     element, which only a capture listener on the window hears. */
+  window.addEventListener('error', function (e) {
+    var el = e.target;
+    if (el && el.tagName === 'SCRIPT' && /tak-re\.js/.test(el.src || ''))
+      stopped('engine script did not load',
+              'The engine could not be downloaded. Check the connection and reload the page.');
+  }, true);
   window.addEventListener('error', function (e) {
     if (reloadFresh(e.message)) return;
     stopped(e.message || 'error');
@@ -981,6 +1011,29 @@
   }
   function megabytes(n) { return Math.round(n / 1048576); }
 
+  /* A big file comes in slices, so the count moves with the bytes on a
+     slow disk rather than once a file. */
+  var READ_SLICE = 4 * 1048576;
+  function readWhole(file, onBytes) {
+    if (file.size <= READ_SLICE) {
+      return file.arrayBuffer().then(function (b) { onBytes(b.byteLength); return new Uint8Array(b); });
+    }
+    var out = new Uint8Array(file.size);
+    var at = 0;
+    function next() {
+      if (at >= file.size || storedStop) return out;
+      var end = Math.min(at + READ_SLICE, file.size);
+      return file.slice(at, end).arrayBuffer().then(function (b) {
+        if (b.byteLength !== end - at) throw new Error('short read of a stored file');
+        out.set(new Uint8Array(b), at);
+        at = end;
+        onBytes(b.byteLength);
+        return next();
+      });
+    }
+    return next();
+  }
+
   /* Resolves to how many files came back, 0 when none are kept. */
   function readStored() {
     return opfsDir(false).then(function (dir) {
@@ -996,6 +1049,7 @@
           });
           if (nclip) console.log('[openkingdoms] ' + nclip + ' clip(s) read in place from browser storage');
           function progress() {
+            if (storedStop) return;
             bootSay('Reading your game files from browser storage, ' + megabytes(done) +
                     ' of ' + megabytes(total) + ' MB', total ? done / total : 1);
           }
@@ -1009,10 +1063,9 @@
               handStored({ rel: e.rel, file: e.file, clip: true });
               return next();
             }
-            return e.file.arrayBuffer().then(function (buf) {
-              done += buf.byteLength;
-              handStored({ rel: e.rel, bytes: new Uint8Array(buf) });
-              progress();
+            return readWhole(e.file, function (n) { done += n; progress(); }).then(function (bytes) {
+              if (storedStop) return 0;
+              handStored({ rel: e.rel, bytes: bytes });
               return next();
             });
           }
@@ -1021,7 +1074,7 @@
         });
       });
     }).then(function (n) {
-      if (n > 0 && !storedFS) bootSay('Loading the engine\u2026');
+      if (n > 0 && !storedFS && !storedStop) bootSay('Loading the engine\u2026');
       return n;
     }, function (e) {
       console.warn('[openkingdoms] cache read failed', e);
@@ -2442,6 +2495,7 @@
   }
 
   Module.onScreen = function (id, x, y, w, h) {
+    screenSeen = true;
     boot.hidden = true;
     screenNow = id;
     screenRoom = w > 0 && h > 0 ? { x: x, y: y, w: w, h: h } : null;
