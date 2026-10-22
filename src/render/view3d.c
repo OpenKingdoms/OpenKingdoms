@@ -1415,7 +1415,7 @@ static void draw_effects(const GameWorld *world, const float planes[6][4]) {
     for (int i = 0; i < en; i++) {
         const ProjectileEffect *e = &es[i];
         if (!e->alive || e->delay_ticks) continue;
-        if (!Fog_ShowsAt(world, e->world_x, e->world_y)) continue;
+        if (!Units_EffectShows(world, e)) continue;
         EffectTex *et = effect_tex_for(e->sprite_idx);
         if (!et) continue;
         int nf = et->strip.num_frames;

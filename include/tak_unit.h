@@ -419,6 +419,9 @@ typedef struct ProjectileEffect {
 
 /* The picture an effect shows now, whatever has played it so far. */
 int Units_EffectPicture(const ProjectileEffect *e);
+/* 1 when the local player sees the effect: its ground is in sight, and a
+ * unit's flame or puff shows only while the unit does. */
+int Units_EffectShows(const struct GameWorld *world, const ProjectileEffect *e);
 
 typedef struct UnitDef {
     char     unitname[TAK_UNITDEF_NAME_MAX];   /* canonical id, e.g. "ARAKING" */

@@ -721,6 +721,8 @@ TEST(an_impact_effect_is_drawn_in_the_3d_view) {
     shutdown_all(&platform);
 }
 
+static int smoke_art_for(int owner, const char *file, const char *seq);
+
 static int effects_owned_by(int owner) {
     int n = 0, count = 0;
     const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
@@ -957,6 +959,16 @@ TEST(damaged_building_flames_are_bounded_visual_requests) {
     ASSERT_NOT_NULL(cob3);
     for (int t = 0x101; t <= 0x109; t++) cob3->host_emit_sfx(cob3->host_user, node, t);
     ASSERT_EQ_INT(0, effects_owned_by(h3));
+    /* In sight, it asks for them like any other. */
+    Fog_SetSeeAll(1);
+    cob3->host_emit_sfx(cob3->host_user, node, 0x104);
+    Fog_SetSeeAll(0);
+    ASSERT_EQ_INT(1, damage_flames_for(h3));
+    /* 0x107 plays purpledeath and 0x108 the pillar of light. */
+    cob->host_emit_sfx(cob->host_user, node, 0x107);
+    cob->host_emit_sfx(cob->host_user, node, 0x108);
+    ASSERT(smoke_art_for(h, "deathmagic", "purpledeath"));
+    ASSERT(smoke_art_for(h, "pillaroflight", "pillaroflight"));
     ASSERT_EQ_INT(0, Units_DebugBuildSparkles(h));
     ASSERT(hash == TAK_SimHash());
     ASSERT(random == World_RandState());
@@ -1107,10 +1119,9 @@ TEST(damage_smoke_is_bounded_and_leaves_sim_unchanged) {
     ASSERT_EQ_INT(0, damage_flames_for(h));
     ASSERT_EQ_INT(0, Units_DebugBuildSparkles(h));
 
-    /* One puff in an east wind: it holds its first picture 8 frames and
-     * each after 4 to 7, drifts with the wind as it rises, and ends on a
-     * picture from the third to the third last
-     * (legacy:201854-201869, legacy:201956-201962). */
+    /* One puff in an east wind holds its first picture 8 frames and each
+     * after 4 to 7, drifts as it rises, and ends between the third and the
+     * second last picture (legacy:201854-201869, legacy:201956-201962). */
     ASSERT_EQ_INT(0, Units_DebugRemove(h));
     Units_TickEngines();
     h = Units_Spawn(def, units[0].player_id, units[0].team_color_idx,

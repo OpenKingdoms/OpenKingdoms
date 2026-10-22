@@ -43,7 +43,7 @@ Flames and smoke are kept per unit, at most 40 flames (legacy:215116) and
 10 puffs (legacy:214686), and a request past that makes nothing. A puff
 rises 0x1fdb*4 a frame and drifts 8 times the wind's parts a frame. It
 holds its first picture 8 frames and each after a random 4 to 7, and it
-is gone on reaching a picture drawn at random from the third to the third
+is gone on reaching a picture drawn at random from the third to the second
 last (legacy:201847-201869, 201941-201966). All of this randomness is the
 C library's, never the simulation's.
 

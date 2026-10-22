@@ -618,6 +618,16 @@ int Units_RadarShowsToLocalPlayer(const Unit *u) {
     return (g_radar_bits[h >> 3] >> (h & 7)) & 1;
 }
 
+/* The original draws a unit's flames and puffs with the unit itself
+ * (legacy:197494-197500), so they go when it does, a cloaked one too. */
+int Units_EffectShows(const GameWorld *world, const ProjectileEffect *e) {
+    if (!e || !Fog_ShowsAt(world, e->world_x, e->world_y)) return 0;
+    uint32_t id = e->damage_owner_id ? e->damage_owner_id : e->puff_owner_id;
+    if (!id || e->owner < 0 || e->owner >= g_unit_count) return 1;
+    const Unit *u = &g_units[e->owner];
+    return u->stable_id != id || unit_visible_to_local_player(world, u);
+}
+
 /* Shots take the same gate (legacy:246721-246738). */
 static int projectile_visible_to_local_player(const GameWorld *world,
                                               const Projectile *p) {
@@ -983,10 +993,9 @@ static int g_smoke_sprites[3];   /* white (0x101), black (0x102), steam (0x109) 
 static void tick_attached_flames(void);
 static void tick_puff(ProjectileEffect *e);
 
-/* The C library's generator the original draws its unit effects with
- * (legacy:201861, 201957, 202459), a stream of its own that the
- * simulation never reads, so a peer that draws more or less stays in
- * step. rand() * n / 0x8000, as the original scales it. */
+/* The C library's rand() the original draws unit effects with, scaled
+ * rand() * n / 0x8000 (legacy:201861, 201957, 202459). The simulation
+ * never reads it, so a peer that draws more or less stays in step. */
 static uint32_t g_fx_crand = 1;
 static int fx_rand(int n) {
     g_fx_crand = g_fx_crand * 214013u + 2531011u;
@@ -1171,14 +1180,21 @@ static int proj_sprite_hold(int idx, int pic) {
     return g_proj_sprites[idx].hold[pic < 64 ? pic : 63];
 }
 
+/* Units' own flames and puffs leave the last slots to impacts and
+ * sparkles, so those still play round a city on fire. */
+#define TAK_PROJ_EFFECTS_KEPT 512
+static int g_fx_unit_emit;
+
 /* A cleared slot, so nothing of the effect that last used it carries
  * over. */
 static ProjectileEffect *proj_effect_slot(void) {
+    int cap = g_fx_unit_emit ? TAK_MAX_PROJ_EFFECTS - TAK_PROJ_EFFECTS_KEPT
+                             : TAK_MAX_PROJ_EFFECTS;
     ProjectileEffect *e = NULL;
-    for (int i = 0; i < g_proj_effect_count && !e; i++)
+    for (int i = 0; i < g_proj_effect_count && i < cap && !e; i++)
         if (!g_proj_effects[i].alive) e = &g_proj_effects[i];
     if (!e) {
-        if (g_proj_effect_count >= TAK_MAX_PROJ_EFFECTS) return NULL;
+        if (g_proj_effect_count >= cap) return NULL;
         e = &g_proj_effects[g_proj_effect_count++];
     }
     memset(e, 0, sizeof(*e));
@@ -17077,9 +17093,9 @@ static void emit_damage_flame(const Unit *u, int node, int32_t type) {
  * 16.16. */
 #define PUFF_RISE_FP  (0x1fdb * 2)
 
-/* A puff of white or black smoke or steam where the piece stands. It
- * holds its first picture 8 frames and ends on a picture drawn at random
- * from the third to the third last (legacy:201928-201962). */
+/* A puff of smoke or steam where the piece stands, which holds its first
+ * picture 8 frames and ends on one drawn at random from the third to the
+ * second last (legacy:201928-201962). */
 static void emit_puff(const Unit *u, int node, int kind) {
     ProjectileEffect pos = {0};
     pos.damage_node = (int16_t)node;
@@ -17136,27 +17152,26 @@ static void emit_one_shot(const Unit *u, int node, int32_t type) {
     if (e) e->owner = (int16_t)(u - g_units);
 }
 
-/* The local player sees a unit's effects only for one it can see, its
- * own or one in sight (legacy:223583, legacy:206797). Bubbles, 0x103,
- * ask for nothing in the original. The wakes and thrust of 0 to 5 are
- * not drawn yet. */
+/* Effects only for a unit the local player can see (legacy:223583,
+ * legacy:206797). Bubbles, 0x103, ask for nothing in the original, and
+ * the wakes and thrust of 0 to 5 are not drawn yet. */
 static void cob_host_emit_sfx(void *user, int node, int32_t type) {
     const Unit *u = (const Unit *)user;
     if (!u || (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) ||
         u->under_construction || node < 0 || node >= UNIT_MESH_MAX_NODES) return;
     if (!unit_visible_to_local_player(World_Get(), u)) return;
+    g_fx_unit_emit = 1;
     if (type >= 0x104 && type <= 0x106) emit_damage_flame(u, node, type);
     else if (type == 0x101) emit_puff(u, node, 0);
     else if (type == 0x102) emit_puff(u, node, 1);
     else if (type == 0x109) emit_puff(u, node, 2);
     else if (type == 0x107 || type == 0x108) emit_one_shot(u, node, type);
+    g_fx_unit_emit = 0;
 }
 
-/* A unit's flames and puffs are its own and go with it
- * (legacy:236203-236218). A flame follows its animated attachment until
- * its animation finishes. Health and flame size belong to the script,
- * not this update. A batch lands in neighbouring slots, so one pose
- * serves a run of them. */
+/* A unit's flames and puffs go with it (legacy:236203-236218), a flame
+ * following its animated piece until its anim ends. A batch lands in
+ * neighbouring slots, so one pose serves a run of them. */
 static void tick_attached_flames(void) {
     NodeXform xf[UNIT_MESH_MAX_NODES];
     const UnitMesh *m = NULL;
@@ -19506,7 +19521,7 @@ static void render_projectile_effects(const struct GameWorld *world,
         const ProjectileEffect *e = &g_proj_effects[i];
         if (!e->alive || e->delay_ticks) continue;
         /* The same gate again (legacy:215736-215749). */
-        if (!Fog_ShowsAt(world, e->world_x, e->world_y)) continue;
+        if (!Units_EffectShows(world, e)) continue;
         if (proj_sprite_ensure(r, e->sprite_idx) != 0) continue;
         const ProjSpriteArt *ps = &g_proj_sprites[e->sprite_idx];
         int frame = Units_EffectPicture(e);
