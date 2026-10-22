@@ -876,23 +876,27 @@ Format per entry:
   whose leader has no route does not march (legacy:18385), so an AI on
   an island sits. All of this is ours, beyond the original, and the
   owner agreed to it. The Dark Mason riding a Ghost Ship to a far
-  lodestone, and scouting rather than seeing the whole map, are left
-  for later.
+  lodestone, scouting rather than seeing the whole map, a build that
+  leans on warships, going back to land play after losing at sea, and
+  fighting at sea are left for later.
 - Measured: in duels of 20 minutes, each seed played twice with the
   seats swapped, a seat with A-013 against one with everything else.
   Over 48 games on Varro Passage and Cairbray Coast Landing, the two
   shipped maps whose two starts lie on separate land, every kingdom
-  against itself, the seat with it put a wave ashore in 28, in 15 of
-  them inside ten minutes, the first at 167 seconds and the median at
-  about 530. Taros did in 10 of 12, first between 167 and 396 seconds,
-  Aramon, Veruna and Zhon in 6 each, between 317 and 1150 seconds.
-  The seat with A-013 killed 361 and lost 679. With the computer of
-  before on both seats the same 48 games saw 70 kills, 64 of them in
-  Zhon's games, where its flyers cross. A wave lost with its transport
-  still costs the most, and a ship crossing narrow water can meet the
-  seat's own ships coming the other way and stop. On Two Castles and
-  Tarosian Plain, where every start walks to every other, 16 games
-  played the same to the unit with it and without.
+  against itself, the seat with it put a wave ashore in 24, in 17 of
+  them inside ten minutes, the first at 164 seconds and the median at
+  about 475. Taros did in 9 of 12, Aramon and Zhon in 6, and Veruna in
+  3, none of them on Varro. The seat with A-013 killed 255, lost 498
+  and won 4 of the 48, the other seat none. With the computer of before
+  on both seats the same 48 games saw 56 kills, 32 of them in Zhon's
+  games on Varro, where its flyers cross, and no landing. Six games a
+  kingdom and map are few, so a difference of one or two landings
+  there is noise, and the seat without A-013 never punishes a home the
+  ferries leave thin. A wave lost with its transport still costs the
+  most, and a ship crossing narrow water can meet the seat's own ships
+  coming the other way and stop. On Two Castles, Tarosian Plain and
+  Lake Lokken, where every start walks to every other, 24 games played
+  the same to the unit with it and without.
 - Citation: the manual describes no AI rule at this level. Behaviour
   note `docs/notes/2026-09-04-legacy-ai.md`, "Water and transports".
 

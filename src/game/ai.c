@@ -2662,9 +2662,10 @@ static void ai_group_next(const GameWorld *world, const Unit *units,
  * down to a third of what it went out with is spent and its members
  * are loose again, the original's disband back into the parent
  * (legacy:18250). A group whose target has died takes the seat's, or
- * under A-012 picks its next from where it stands or holds there. */
+ * under A-012 picks its next from where it stands or holds there. A
+ * seat cut off by water (A-013) is cut_off. */
 static int ai_groups_update(const GameWorld *world, const Unit *units,
-                            int unit_count, int p, int now) {
+                            int unit_count, int p, int now, int cut_off) {
     AiPlayer *ap = &g_ai_players[p];
     int hold = !(g_ai_tactics_off[p] & TAK_AI_TACTIC_HOLD);
     int members[AI_GROUPS] = { 0 };
@@ -2783,11 +2784,11 @@ static int ai_groups_update(const GameWorld *world, const Unit *units,
             ai_group_next(world, units, unit_count, p, s, now, 1, home_threat || near);
             continue;
         }
-        /* Under A-013 a walker that cannot get to a target over water
-         * leaves its group for the gathering, which can carry it, and so
-         * does a ship sent at one on land. */
-        if (live && g->kind == AI_GROUP_ATTACK && g->mode == AI_GROUP_MARCHING &&
-            !(g_ai_tactics_off[p] & TAK_AI_TACTIC_NAVAL)) {
+        /* Under A-013 a walker of a seat cut off that cannot get to a
+         * target over water, or to the shore of one out on it, leaves its
+         * group for the gathering, which can carry it, and so does a ship
+         * sent at one on land. */
+        if (cut_off && live && g->kind == AI_GROUP_ATTACK && g->mode == AI_GROUP_MARCHING) {
             int over_water = -1;
             for (int i = 0; i < unit_count && i < AI_MEMBER_CAP; i++) {
                 if (g_ai_member[i] != s + 1 || units[i].player_id != p ||
@@ -4125,12 +4126,11 @@ static int ai_walks_to(const GameWorld *world, const MoveClassDef *mc, int slope
 }
 
 /* Whether no walker of the seat, one asked a movement class and never a
- * ship, could walk from home to (x, y). No for a spot on water and for
- * a seat with no walkers. */
+ * ship, could walk from home to (x, y), or to the shore by it when it is
+ * out on the water. No with no shore near and for a seat with no walkers. */
 static int ai_home_cut_off(const GameWorld *world, const Unit *units,
                            int unit_count, int p, int32_t x, int32_t y) {
     const AiPlayer *ap = &g_ai_players[p];
-    if (world->water_height > Terrain_SampleHeight(world, x, y)) return 0;
     int probers[AI_WAVE_PROBERS];
     int n = 0;
     for (int i = 0; i < unit_count; i++) {
@@ -4588,7 +4588,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     if (ps.cut_off || g_ai_ferry[p].stage != AI_FERRY_NONE)
         ai_guard_build(world, units, unit_count, p);
     ai_ferry_update(world, units, unit_count, p, now);
-    int forming = ai_groups_update(world, units, unit_count, p, now);
+    int forming = ai_groups_update(world, units, unit_count, p, now, ps.cut_off);
     ai_read_wave(world, units, unit_count, p, now, forming, &ws, &wr);
     /* Cut off by water, the wave waits for a transport and goes aboard
      * one that is free (A-013). */
