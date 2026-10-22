@@ -2937,6 +2937,64 @@ TEST(a_weapon_its_script_never_says_aimed_fires_after_two_seconds_stopped_in_rea
     ASSERT(shots >= 4);
 }
 
+/* An AimWeapon that answers at once, and a FireWeapon that lets the
+ * shot go on port 23 half a second in, as an archer's draw does. */
+static const uint32_t LF_DRAW_SCRIPT[] = {
+    0x10021001u, 22u, 0x10021001u, 0u, 0x10082000u, /* port 22 = 0 */
+    0x10021001u, 0u, 0x10065000u,                   /* return 0 */
+    0x10021001u, 500u, 0x10013000u,                 /* sleep 500 */
+    0x10021001u, 23u, 0x10021001u, 0u, 0x10082000u, /* port 23 = 0 */
+    0x10021001u, 0u, 0x10065000u                    /* return 0 */
+};
+
+/* Ticks from the draw, FireWeapon and the reload, to the shot. With
+ * `away`, the ground order moves out of reach during the draw, and -1
+ * means no shot left. */
+static int lf_draw_to_shot_ex(int ground, int away) {
+    if (!lf_world(0, 0)) return -100;
+    static const char *const names[] = { "AimWeapon", "FireWeapon" };
+    static const uint32_t offsets[] = { 0, 8 };
+    if (Units_DebugSetDefScript(LF_ARCHER, LF_DRAW_SCRIPT,
+                                (int)(sizeof LF_DRAW_SCRIPT / 4),
+                                names, offsets, 2) != 0) return -100;
+    int a = lf_spawn(LF_ARCHER, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_STURDY, 2, LF_SX + 200, LF_ROW);
+    if (a < 0 || t < 0) return -100;
+    lf_ticks(4);
+    if (!(ground ? Units_OrderAttackGround(a, LF_SX + 200, LF_ROW)
+                 : Units_OrderAttack(a, t))) return -100;
+    int drawn = -1, shot = -1;
+    int moved = 0;
+    for (int i = 0; i < 300 && shot < 0; i++) {
+        Units_TickEngines();
+        if (drawn < 0 && lf_unit(a)->weapon_state[0].cooldown_ticks > 0) drawn = i;
+        if (away && drawn >= 0 && !moved && i > drawn + 5) {
+            moved = Units_OrderAttackGround(a, LF_SX + 6000, LF_ROW);
+            if (!moved) return -100;
+        }
+        int n = 0;
+        const Projectile *p = Units_GetProjectiles(&n);
+        for (int k = 0; k < n; k++)
+            if (p[k].alive && p[k].shooter == a) shot = i;
+    }
+    lf_end();
+    return drawn < 0 || shot < 0 ? -1 : shot - drawn;
+}
+
+static int lf_draw_to_shot(int ground) { return lf_draw_to_shot_ex(ground, 0); }
+
+/* A shot at the ground leaves at the script's release, as one at a
+ * unit does (legacy:245894-245906). */
+TEST(a_shot_at_the_ground_leaves_at_the_scripts_release) {
+    int at_unit = lf_draw_to_shot(0);
+    int at_ground = lf_draw_to_shot(1);
+    printf("(at a unit %d ticks, at the ground %d) ", at_unit, at_ground);
+    ASSERT(at_unit >= 29 && at_unit <= 32);
+    ASSERT_EQ_INT(at_unit, at_ground);
+    /* A point moved out of reach during the draw takes no shot. */
+    ASSERT_EQ_INT(-1, lf_draw_to_shot_ex(1, 1));
+}
+
 /* A unit holding position shoots what comes into reach and lets it go
  * when it walks off. One that maneuvers goes after it. */
 static int32_t lf_after_walk_off(int def, int *out_target) {
@@ -3890,6 +3948,7 @@ int main(int argc, char **argv) {
     RUN(a_paralyzer_hold_adds_up_to_a_minute_and_is_passed_over);
     RUN(a_weapon_fires_once_its_script_says_aimed_and_aims_while_it_reloads);
     RUN(a_weapon_its_script_never_says_aimed_fires_after_two_seconds_stopped_in_reach);
+    RUN(a_shot_at_the_ground_leaves_at_the_scripts_release);
     RUN(a_unit_holding_position_does_not_chase);
     RUN(a_fight_of_its_own_looks_again_once_a_wait);
     RUN(a_unit_holding_position_or_ordered_never_looks_again);

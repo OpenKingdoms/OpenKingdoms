@@ -782,6 +782,8 @@ typedef struct UnitWeaponState {
 #define UNIT_DRAW_DRAWN   1   /* FireWeapon runs, nothing released yet */
 #define UNIT_DRAW_RELEASE 2   /* the script set port 23 */
 #define UNIT_DRAW_LOST    3   /* its target went, until the next draw */
+/* draw_target of a shot drawn at an attack-ground order's point. */
+#define UNIT_DRAW_GROUND  (-2)
 
 /* Aggression posture per the legacy engine
  * (the legacy reference ~9063 + 151409). Stored at unit+0x264 bits
