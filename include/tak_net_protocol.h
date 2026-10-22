@@ -158,8 +158,10 @@
  * player's snapshot, which every player in the room has to be able to
  * give and take, so an older build is told to reload or update. 53: a
  * match reads its models from the archives alone, never the game
- * folder's objects3d. */
-#define TAK_ENGINE_BUILD_ID           53
+ * folder's objects3d. 54: a hover attacker holds the point it picked and
+ * backs off only at a creep, and a flying builder steps out of crowded
+ * air and builds on. */
+#define TAK_ENGINE_BUILD_ID           54
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
