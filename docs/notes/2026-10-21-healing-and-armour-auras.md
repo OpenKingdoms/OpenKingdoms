@@ -94,6 +94,8 @@ The same rule makes a monarch dear to heal. A Monarch is 10 seconds of
 build work for 100000 mana, so 20 work a second asks 200000 mana, and a
 damaged monarch beside a healer takes the whole treasury every second
 while it stands there, as in the original. Builders then wait for mana.
+A heal draws at the builders' share but never sets it, since the share
+counts busy builders alone (legacy:235952-235977).
 
 ## Departures
 
@@ -102,10 +104,6 @@ while it stands there, as in the original. Builders then wait for mana.
   caster's owner's own alliance table alone.
 - The ring `showrangeattrib` names is not drawn. No shipped unit asks
   for one.
-- Healing's spending counts in the next tick's demand, so a beat that
-  asks more than the treasury holds leaves builders no share for one
-  tick. The original's share counts busy builders alone
-  (legacy:235952-235977).
 - A heal reaches the fixed point no larger than the health missing, so
   a heal of more than 32767 hit points cannot overflow it.
 
