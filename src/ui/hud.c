@@ -997,10 +997,9 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         int own = hud_selection_is_own();
         uint32_t caps = (seldef_cap && own) ? seldef_cap->cap_flags : 0;
         int n_weapons = (seldef_cap && own) ? seldef_cap->num_weapons : 0;
-        /* Active/Inactive are the onoffable pair (legacy:150430-150436):
-         * for a gate they open and close it. */
-        int onoff = own && ((seldef_cap && seldef_cap->onoffable) ||
-                            Units_SelectedGateState() >= 0);
+        /* Active/Inactive are the onoffable pair, up when any selected
+         * unit has the switch (legacy:150430-150436, 150930-150950). */
+        int onoff = own && Units_SelectedOnOffState() >= 0;
         struct { const char *name; int show; } vis[] = {
             { "MOVE",            (caps & UNIT_CAP_MOVE)      != 0 },
             { "ATTACK",          own && Units_DefTakesAttack(seldef_cap) },
@@ -1100,13 +1099,13 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
          * unit is in, 2 for the others (legacy:150868, legacy:150925).
          * Frame 0 is the disabled slot. Leaving the others with no
          * override showed that dark slot until the mouse arrived. */
-        int gate_state = Units_SelectedGateState();
+        int gate_state = Units_SelectedOnOffState();
         int cloak_state = Units_SelectedCloakState();
         struct { const char *name; int active; } toggles[] = {
             { "Offensive",       aggro == UNIT_AGGRO_OFFENSIVE },
             { "Defensive",       aggro == UNIT_AGGRO_DEFENSIVE },
             { "Passive",         aggro == UNIT_AGGRO_PASSIVE   },
-            /* The current gate state is the lit one (legacy:150430). */
+            /* The switch's state is the lit one (legacy:150430). */
             { "Active",          gate_state == 1 },
             { "Inactive",        gate_state == 0 },
             /* And the cloak order the selection holds (legacy:150974-151000). */
@@ -1785,8 +1784,8 @@ int HUD_HandleSidebarClick(int win_x, int win_y, TAK_Platform *plat) {
     return 0;
 }
 
-/* ACTIVATE/DEACTIVATE reach every selected gate (legacy:151449-151470).
- * The executor skips the units that are not gates. */
+/* ACTIVATE/DEACTIVATE reach every selected unit (legacy:151449-151470).
+ * The executor skips the units without the switch. */
 static void hud_set_selected_gates(int open) {
     TAK_Cmd_EmitSelection(TAK_CMD_GATE, 0, 0, -1, 0, open ? 1u : 0u);
 }
