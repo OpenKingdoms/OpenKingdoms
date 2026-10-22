@@ -2388,6 +2388,77 @@ TEST(a_crowded_hover_attacker_steps_out_far_and_gives_up) {
     mv_end();
 }
 
+/* The Sky Knight from units/tarknigh.fbi in the Harpy's slot: its
+ * flight numbers, hoverattackdistance 175 and a 600 px weapon. */
+static int mv_add_sky_knight(void) {
+    if (mv_add_hover_harpy() < 0) return -1;
+    UnitDef defs[MV_HOVER_COUNT];
+    for (int i = 0; i < MV_HOVER_COUNT; i++) defs[i] = *Units_GetDef(i);
+    UnitDef *d = &defs[MV_HOVER_HARPY];
+    d->max_velocity = 4.5f;
+    d->acceleration = 0.5f;
+    d->brake_rate = 0.15f;
+    d->turn_rate = 200.0f;
+    d->footprint_x = 4;
+    d->footprint_z = 4;
+    d->cruise_alt = 150;
+    d->hover_attack_dist = 175;
+    d->hover_attack_alt = 150;
+    d->weapons[0].range = 600;
+    d->weapons[0].reload_ticks = 180;
+    if (Units_DebugSetDefs(defs, MV_HOVER_COUNT) != MV_HOVER_COUNT) return -1;
+    static const uint32_t ret[] = { 0x10065000u };
+    static const char *const names[] = { "BeginFlight", "BeginLanding" };
+    static const uint32_t offsets[] = { 0, 0 };
+    if (Units_DebugSetDefScript(MV_HOVER_HARPY, ret, 1, names, offsets, 2) != 0)
+        return -1;
+    return MV_HOVER_HARPY;
+}
+
+/* A Sky Knight holds its point off a walker that then walks at it and on
+ * under it. The point stays where it was picked and the knight flies
+ * turned onto the walker, so it backs off no faster than its creep, about
+ * 0.42 px a frame, and is never carried back at the walker's pace
+ * (legacy:190486-190487, legacy:183992-184004). */
+TEST(a_walker_does_not_push_a_hover_attacker_back) {
+    ASSERT_NOT_NULL(mv_world());
+    int knight = mv_add_sky_knight();
+    ASSERT(knight >= 0);
+    int post = Units_Spawn(MV_HOVER_POST, 0, 0, 1700, 1500);
+    int h = Units_Spawn(knight, 1, 0, 1000, 1500);
+    ASSERT(post >= 0 && h >= 0);
+    Units_DebugSetAggro(post, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    ASSERT(Units_OrderAttack(h, post));
+    mv_run(900);
+    ASSERT(Units_OrderMove(post, 300, 1500));
+    float back_max = 0.0f;
+    int64_t nearest2 = INT64_MAX;
+    const Unit *u = mv_unit(h);
+    float px = (float)u->world_x + u->subpixel_x;
+    float py = (float)u->world_y + u->subpixel_y;
+    for (int t = 0; t < 1200; t++) {
+        Units_TickEngines();
+        u = mv_unit(h);
+        float x = (float)u->world_x + u->subpixel_x;
+        float y = (float)u->world_y + u->subpixel_y;
+        float back = -((x - px) * sinf(u->heading) - (y - py) * cosf(u->heading));
+        if (u->flying && back > back_max) back_max = back;
+        px = x;
+        py = y;
+        const Unit *p = mv_unit(post);
+        int64_t d2 = mv_dist2(u, p->world_x, p->world_y);
+        if (d2 < nearest2) nearest2 = d2;
+    }
+    printf("(backed off at up to %.2f px a tick, came within %.0f px of the "
+           "walker, still on it %d) ", (double)back_max, sqrt((double)nearest2),
+           mv_unit(h)->target == post);
+    ASSERT(back_max <= 0.23f);
+    ASSERT(nearest2 < 120 * 120);
+    ASSERT_EQ_INT(post, (int)mv_unit(h)->target);
+    mv_end();
+}
+
 /* One Harpy on a still post for a minute: the flights it makes to a
  * bearing drawn at random, and the shots it fires. */
 static int mv_hover_round_flights(int damage, int *shots) {
@@ -2552,6 +2623,7 @@ int main(int argc, char **argv) {
     RUN(a_hover_attacker_fires_as_it_flies);
     RUN(a_crowded_hover_attacker_steps_out_far_and_gives_up);
     RUN(a_hover_attacker_flies_round_a_target_its_shots_do_not_hurt);
+    RUN(a_walker_does_not_push_a_hover_attacker_back);
     TEST_SUITE("State hash");
     RUN(a_repeated_run_hashes_the_same);
     RUN(a_cold_planner_hashes_the_same);

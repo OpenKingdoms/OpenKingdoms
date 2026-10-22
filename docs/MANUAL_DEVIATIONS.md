@@ -2173,18 +2173,26 @@ Format per entry:
   (docs/notes/2026-10-10-hover-attack.md). While it is still further
   than that distance plus 160 px it steps out of a crowd by the other
   missions' rule, and from there on by the hover attack's own. It
-  counts a point reached within 8 px.
+  counts a point reached within 8 px. Turned onto its target, it moves
+  off its heading at one fixed creep a frame, (2 brakerate +
+  acceleration) / (2 - acceleration / maxvelocity), and along it at the
+  walk's speed.
 - Why: the original sends a target that fails a reach test on the
   unit's path to a formation move, which steps out by the common rule,
   and flies the rest with a plain move that does not. That test was not
   traced, so the engine draws the line where the attack turns its
   weapons on. The original's move to a point stops within 4 px. Ours
   stops within 8, and a point it stopped short of would never wake the
-  attack, so the attack takes the walk's radius.
+  attack, so the attack takes the walk's radius. The original's flyer
+  keeps a velocity of its own, drags it, turns all but brakerate of it
+  onto the heading each frame and thrusts at its point. Our walk keeps a
+  speed and a heading and no velocity, so it takes the speed off the
+  heading that this settles at, the original's when the flyer backs
+  away. Sideways the original's is a little faster and drifts forward.
 - Citation: the far test and the formation move (legacy:30139,
   legacy:30467-30502, legacy:235678-235762), the hover attack's step out
-  (legacy:30636-30705) and the move to its point (legacy:30362-30364).
-  The manual is silent.
+  (legacy:30636-30705), the move to its point (legacy:30362-30364) and
+  the flight (legacy:183961-184057). The manual is silent.
 
 ## D-040: A unit at its leash still fights what it reaches
 
