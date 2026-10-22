@@ -8136,11 +8136,14 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_SWEEPS),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_FIRE_STEPS));
         fprintf(stderr, "duel:   seat %d escorts %d pressed on %d held ground %d "
-                "regrouped %d\n", p,
+                "regrouped %d ferries %d landings %d first ashore at %d s\n", p,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_ESCORTS),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_PRESSED),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_HOLDS),
-                TAK_AI_DebugCount(p, TAK_AI_COUNT_REGROUPED));
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_REGROUPED),
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_FERRIES),
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_LANDINGS),
+                TAK_AI_DebugFirstLanding(p) >= 0 ? TAK_AI_DebugFirstLanding(p) / 60 : -1);
         int secs = world->skirmish_elapsed_ticks / 60;
         int64_t fs = tally->home_s[p] + tally->away_s[p];
         fprintf(stderr, "duel:   seat %d lodestones on average %d.%02d of %d pads, at "
@@ -29893,6 +29896,84 @@ TEST(a_mission_loaded_from_the_skirmish_screen_plays_on_as_saved) {
     sb_teardown(&platform);
 }
 
+/* A-013. Saved while a computer's ship is carrying a wave over the water,
+ * the battle plays on from the load as it did unsaved. */
+TEST(a_ferry_under_way_plays_on_the_same_after_a_load) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    sb_clear_saves();
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "Varro Passage", sizeof(cfg.map_name) - 1);
+    cfg.seed = 7919;
+    for (int k = 0; k < 2; k++) {
+        cfg.players[k].kind = TAK_SLOT_AI;
+        cfg.players[k].ai_difficulty = 2;
+        cfg.players[k].side = 0;
+    }
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "Varro Passage", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    InGame_DebugPlayWithoutHumans(1);
+    int sailing = 0, waited = 0;
+    while (waited < 20 * 3600 && !sailing) {
+        InGame_DebugRunSimTicks(60);
+        waited += 60;
+        for (int p = 1; p <= 2; p++)
+            if (TAK_AI_DebugFerryStage(p) == 3) sailing = p;
+    }
+    printf("(seat %d sailing after %d ticks) ", sailing, waited);
+    ASSERT(sailing > 0);
+
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, sb_open_menu_and_press("SaveGame"));
+    SaveBrowser_SetName("Over the Water");
+    ASSERT_EQ_INT(SAVEBROWSER_SAVED, SaveBrowser_Press("SaveGame"));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_TakeBrowserResult(SAVEBROWSER_SAVED));
+    InGameMenu_Close();
+    InGame_DebugRunSimTicks(1800);
+    uint32_t played = TAK_SimHash();
+    int played_stage = TAK_AI_DebugFerryStage(sailing);
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    BattleSetup_Press("LoadSkirmish");
+    ASSERT_EQ_INT(1, BattleSetup_BrowserOpen());
+    ASSERT_EQ_INT(1, SaveBrowser_RowCount());
+    SaveBrowser_SelectRow(0);
+    ASSERT_EQ_INT(SAVEBROWSER_LOAD_READY, SaveBrowser_Press("LoadGame"));
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING,
+                  BattleSetup_DebugBrowserResult(SAVEBROWSER_LOAD_READY, &platform));
+    BattleSetup_Shutdown();
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_STR("", Loading_SaveRefusal());
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    InGame_DebugPlayWithoutHumans(1);
+    ASSERT_EQ_INT(3, TAK_AI_DebugFerryStage(sailing));
+    InGame_DebugRunSimTicks(1800);
+    uint32_t loaded = TAK_SimHash();
+    printf("(world %08x / %08x, ferry stage %d / %d) ", played, loaded, played_stage,
+           TAK_AI_DebugFerryStage(sailing));
+    ASSERT_EQ_INT(played_stage, TAK_AI_DebugFerryStage(sailing));
+    ASSERT_EQ_INT((int)played, (int)loaded);
+    InGame_DebugPlayWithoutHumans(0);
+    sb_teardown(&platform);
+}
+
 TEST(a_load_brings_back_one_army_not_two) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -31028,6 +31109,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_load_brings_back_one_army_not_two);
     RUN_UI_TEST(a_campaign_save_loaded_from_the_book_takes_orders);
     RUN_UI_TEST(a_mission_loaded_from_the_skirmish_screen_plays_on_as_saved);
+    RUN_UI_TEST(a_ferry_under_way_plays_on_the_same_after_a_load);
     RUN_UI_TEST(the_books_load_dialog_is_shown_and_its_escape_stays_with_it);
     RUN_UI_TEST(the_load_dialog_waits_for_its_saves_before_calling_them_none);
     RUN_UI_TEST(the_load_dialog_still_says_when_there_are_no_saves);

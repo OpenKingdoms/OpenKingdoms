@@ -833,6 +833,73 @@ Format per entry:
   note `docs/notes/2026-09-04-legacy-ai.md`, "Roles", "Attack waves"
   and the gap list.
 
+## A-013: A computer cut off by water carries its army over
+
+- Change: a seat whose wave target stands on ground no walker of its
+  could walk to from home, each movement class asked and ships never
+  asked, is cut off (`TAK_AI_TACTIC_NAVAL`). Home is what is asked, so a
+  unit shut in by rubble does not cut its seat off, and where one class
+  walks and another cannot the seat is not cut off and plays as without
+  A-013. A cut off seat's goal planner wants a transport before more
+  army: a producer that makes one trains one, and with none a builder
+  puts up a yard that does, on water near home that reaches the
+  target's water. A transport too hurt to sail or still holding a load
+  does not count, so a seat with none fit and nothing to make one
+  strikes as it would without A-013. While a transport is free or
+  coming the walkers wait for it instead of striking, and the flyers
+  gathered with them strike on their own strength. A ferry goes for the
+  enemy asset on the target's ground, a building, lodestone, builder or
+  the monarch, that is worth most for the enemy arms round it, counting
+  every enemy unit the way the target choice does. The walkers go
+  aboard once a full hold, or as many as the seat has, is gathered with
+  the strength a strike needs against those arms, or with a launch's
+  worth of at least half their strength when the long wait of A-007 is
+  up. A rider too hurt to fight stays home, and one aboard stays with
+  its wave. A ship's riders walk to a shore it can stand off first, a
+  flyer picks them up where they are. A ship waits in open water with
+  room round its hull, no other ship close by and no yard near, and a
+  crossing cut short sails on from where it stopped. The transport
+  holds its fire on the way, sets the wave down on ground that walks to
+  the target, the nearest past 448 px from it and dearer where enemy
+  arms stand, and the wave attacks from there. A landing that fails is
+  tried elsewhere twice, then the wave goes back ashore at home. A
+  crossing lost with its transport waits three times as long before
+  the next. One ferry a seat at a time. A walker in a group marching at
+  a target over water, and a ship sent at one on land, go back to the
+  gathering. The code is the ferry section of `src/game/ai.c`, the
+  crossing rows of the army domain in `src/game/ai_htn.c` and the ferry
+  goal and its two actions in `src/game/ai_plan.c`.
+- Why: issue #454. On an island start the computer never attacked a
+  player on another landmass, and a player there was safe for good. The
+  original's skirmish AI never loads a transport. A candidate the
+  pathfinder cannot reach is never taken (legacy:15473) and a group
+  whose leader has no route does not march (legacy:18385), so an AI on
+  an island sits. All of this is ours, beyond the original, and the
+  owner agreed to it. The Dark Mason riding a Ghost Ship to a far
+  lodestone, scouting rather than seeing the whole map, a build that
+  leans on warships, going back to land play after losing at sea, and
+  fighting at sea are left for later.
+- Measured: in duels of 20 minutes, each seed played twice with the
+  seats swapped, a seat with A-013 against one with everything else.
+  Over 48 games on Varro Passage and Cairbray Coast Landing, the two
+  shipped maps whose two starts lie on separate land, every kingdom
+  against itself, the seat with it put a wave ashore in 24, in 17 of
+  them inside ten minutes, the first at 164 seconds and the median at
+  about 475. Taros did in 9 of 12, Aramon and Zhon in 6, and Veruna in
+  3, none of them on Varro. The seat with A-013 killed 255, lost 498
+  and won 4 of the 48, the other seat none. With the computer of before
+  on both seats the same 48 games saw 56 kills, 32 of them in Zhon's
+  games on Varro, where its flyers cross, and no landing. Six games a
+  kingdom and map are few, so a difference of one or two landings
+  there is noise, and the seat without A-013 never punishes a home the
+  ferries leave thin. A wave lost with its transport still costs the
+  most, and a ship crossing narrow water can meet the seat's own ships
+  coming the other way and stop. On Two Castles, Tarosian Plain and
+  Lake Lokken, where every start walks to every other, 24 games played
+  the same to the unit with it and without.
+- Citation: the manual describes no AI rule at this level. Behaviour
+  note `docs/notes/2026-09-04-legacy-ai.md`, "Water and transports".
+
 ## T-001: Flying transports load and unload by the ground rules
 
 - Change: The Roc and the Ghost Ship pick up and set down units the way

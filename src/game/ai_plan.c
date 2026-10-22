@@ -10,8 +10,8 @@
 
 /* Goals in the order ties are broken. */
 static const AiGoal k_goal_order[] = {
-    AI_GOAL_ECONOMY, AI_GOAL_DEFEND, AI_GOAL_CLEAR, AI_GOAL_ATTACK, AI_GOAL_ARMY,
-    AI_GOAL_EXPAND
+    AI_GOAL_ECONOMY, AI_GOAL_DEFEND, AI_GOAL_CLEAR, AI_GOAL_ATTACK, AI_GOAL_FERRY,
+    AI_GOAL_ARMY, AI_GOAL_EXPAND
 };
 
 /* The planner's world, one integer each. */
@@ -33,6 +33,11 @@ enum {
     V_TOWER_VALUE,          /* what one tower adds */
     V_WAVED,                /* a wave went this plan */
     V_RUBBLE,               /* rubble the seat's units are stuck at */
+    V_CUT_OFF,              /* the target is over water (A-013) */
+    V_TRANSPORTS,
+    V_FERRY_MAKERS,
+    V_FERRY_MAKERS_IDLE,
+    V_YARDS_PENDING,
     V_COUNT
 };
 
@@ -116,6 +121,31 @@ static const GoapAction k_actions[AI_ACT_COUNT - 1] = {
                  AI_EFFECT(V_RUBBLE, AI_EFF_SUB, 1) },
         .tag = AI_ACTOR_BUILDER,
     },
+    /* Cut off by water, a seat with nothing that makes a transport puts
+     * up a yard that does, one at a time (A-013). */
+    [ACT(AI_ACT_BUILD_YARD)] = {
+        .name = "build yard",
+        .pre = { AI_COND(V_BUILDERS_IDLE, AI_OP_GT, 0),
+                 AI_COND(V_BUILD_EFF, AI_OP_GE, 70),
+                 AI_COND(V_CUT_OFF, AI_OP_NE, 0),
+                 AI_COND(V_FERRY_MAKERS, AI_OP_EQ, 0),
+                 AI_COND(V_YARDS_PENDING, AI_OP_EQ, 0) },
+        .eff = { AI_EFFECT(V_BUILDERS_IDLE, AI_EFF_SUB, 1),
+                 AI_EFFECT(V_YARDS_PENDING, AI_EFF_ADD, 1),
+                 AI_EFFECT(V_FERRY_MAKERS, AI_EFF_ADD, 1),
+                 AI_EFFECT(V_FERRY_MAKERS_IDLE, AI_EFF_ADD, 1) },
+        .tag = AI_ACTOR_BUILDER,
+    },
+    /* And a producer that makes one trains it, on the training gate. */
+    [ACT(AI_ACT_TRAIN_TRANSPORT)] = {
+        .name = "train transport",
+        .pre = { AI_COND(V_FERRY_MAKERS_IDLE, AI_OP_GT, 0),
+                 AI_COND(V_BUILD_EFF, AI_OP_GE, 23),
+                 AI_COND(V_CUT_OFF, AI_OP_NE, 0) },
+        .eff = { AI_EFFECT(V_FERRY_MAKERS_IDLE, AI_EFF_SUB, 1),
+                 AI_EFFECT(V_TRANSPORTS, AI_EFF_ADD, 1) },
+        .tag = AI_ACTOR_FACTORY,
+    },
 };
 
 static const GoapDomain k_domain = {
@@ -148,6 +178,9 @@ static const GoapGoal k_goals[AI_GOAL_COUNT] = {
     [AI_GOAL_CLEAR] = {
         .want = { AI_COND_START(V_RUBBLE, AI_OP_LT, V_RUBBLE) },
     },
+    [AI_GOAL_FERRY] = {
+        .want = { AI_COND_START(V_TRANSPORTS, AI_OP_GT, V_TRANSPORTS) },
+    },
 };
 
 static void plan_world(const AiPlanState *s, const AiPlanCosts *c,
@@ -169,6 +202,11 @@ static void plan_world(const AiPlanState *s, const AiPlanCosts *c,
     w[V_UNIT_VALUE]        = c->unit_value;
     w[V_TOWER_VALUE]       = c->tower_value;
     w[V_RUBBLE]            = s->rubble;
+    w[V_CUT_OFF]           = s->cut_off ? 1 : 0;
+    w[V_TRANSPORTS]        = s->transports;
+    w[V_FERRY_MAKERS]      = s->ferry_makers;
+    w[V_FERRY_MAKERS_IDLE] = s->ferry_makers_idle;
+    w[V_YARDS_PENDING]     = s->yards_pending;
 }
 
 AiActorClass AI_Plan_ActorOf(AiAction action) {
@@ -224,6 +262,10 @@ int AI_Plan_GoalPriority(const AiPlanState *s, AiGoal goal) {
         /* Below a threat at home and a stalled economy, above the rest:
          * an army that cannot get out does none of it. */
         return s->rubble > 0 ? 80 : 0;
+    case AI_GOAL_FERRY:
+        /* An army that cannot reach the enemy wants one transport before
+         * more of itself (A-013). */
+        return s->cut_off && s->transports <= 0 ? 65 : 0;
     default:
         return 0;
     }
