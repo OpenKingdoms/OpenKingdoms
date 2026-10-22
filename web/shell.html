@@ -938,12 +938,15 @@
        in this tab may reload again. */
     postRun: [function () {
       /* main() has returned or handed over to its loop. A main() that
-         failed returns with no frame drawn and, the runtime being
-         kept, tells no one. */
-      setTimeout(function () {
-        if (!screenSeen && !boot.hidden)
-          stopped('no first frame', 'The game did not start. Reload the page to try again.');
-      }, 20000);
+         failed draws no frame and tells no one. Only time the page is
+         shown counts, since a hidden tab draws no frames either. */
+      var shownSecs = 0;
+      var firstFrame = setInterval(function () {
+        if (screenSeen || boot.hidden) { clearInterval(firstFrame); return; }
+        if (document.hidden || ++shownSecs < 20) return;
+        clearInterval(firstFrame);
+        stopped('no first frame', 'The game did not start. Reload the page to try again.');
+      }, 1000);
       setTimeout(function () {
         engineUp = true;
         try { sessionStorage.removeItem('ok.reloaded'); } catch (e) {}
