@@ -65,8 +65,9 @@ enum {
  * scout or a raid is not sent while another member is out.
  *
  * A target over water is carried to while a transport is free or coming:
- * a full hold goes aboard on a strike's strength, a launch's worth when
- * the long wait is up, and otherwise the wave waits for it (A-013). */
+ * a full hold goes aboard on a strike's strength, a launch's worth at
+ * half the guard's where it lands when the long wait is up, and
+ * otherwise the wave waits for it (A-013). */
 static const HtnTask k_tasks[T_COUNT] = {
     [T_ARMY] = {
         .name = "army", .compound = 1, .method_count = 5,
@@ -126,7 +127,9 @@ static const HtnTask k_tasks[T_COUNT] = {
             { .name = "ferry after the long wait",
               .pre = { AI_COND(W_FERRY_READY, AI_OP_NE, 0),
                        AI_COND(W_SIEGE_DUE, AI_OP_NE, 0),
-                       AI_COND_VAR(W_MASSED, AI_OP_GE, W_LAUNCH) },
+                       AI_COND_VAR(W_MASSED, AI_OP_GE, W_LAUNCH),
+                       AI_COND_SCALED(W_WAVE_VALUE, 2, AI_OP_GE,
+                                      W_ENEMY_AT_TARGET, 1) },
               .subtasks = { P_FERRY }, .subtask_count = 1 },
             { .name = "wait for a boat",
               .subtasks = { P_MASS }, .subtask_count = 1 },

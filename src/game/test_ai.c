@@ -2349,7 +2349,7 @@ static int test_ai_failed_sites_are_hashed_and_saved(void) {
      * groups and who is in them first, then the strength seen at the
      * target, then the wave reachability tail, then the failed sites. */
     /* A build before the ferries wrote no ferry tail (A-013). */
-    unsigned int ferry_n = n - (unsigned int)(TAK_MAX_PLAYERS + 1) * 17u * 4u;
+    unsigned int ferry_n = n - (unsigned int)(TAK_MAX_PLAYERS + 1) * 19u * 4u;
     ASSERT_EQ_INT(0, TAK_AI_LoadState(buf, ferry_n));
     ASSERT_TRUE(TAK_SimHash_AI(TAK_SIM_HASH_SEED) == after);
     /* A build before the 8192 unit pool wrote 2048 members. */
@@ -2744,6 +2744,12 @@ static int test_htn_ferries_a_wave_over_water(void) {
     ASSERT_EQ_INT(AI_TASK_MASS, AI_Htn_WaveTask(&s));
     s.siege_due = 1;
     ASSERT_EQ_INT(AI_TASK_FERRY, AI_Htn_WaveTask(&s));
+    /* Even then not at under half the guard where it lands. */
+    s.enemy_at_target = 81;
+    ASSERT_EQ_INT(AI_TASK_MASS, AI_Htn_WaveTask(&s));
+    s.enemy_at_target = 80;
+    ASSERT_EQ_INT(AI_TASK_FERRY, AI_Htn_WaveTask(&s));
+    s.enemy_at_target = 0;
     s.massed = s.launch - 1;
     ASSERT_EQ_INT(AI_TASK_MASS, AI_Htn_WaveTask(&s));
     s.siege_due = 0;
@@ -2756,6 +2762,35 @@ static int test_htn_ferries_a_wave_over_water(void) {
     s.ferry_ready = 1;
     s.ferry_coming = 1;
     ASSERT_EQ_INT(AI_TASK_STRIKE, AI_Htn_WaveTask(&s));
+    return 0;
+}
+
+/* A-013. A seat cut off by water ferries its wave to the asset on the
+ * target's ground with the least guard for its worth, here a lodestone
+ * well away from the guarded monarch, never one on other ground. */
+static int test_ai_ferry_aims_where_the_guard_is_thin(void) {
+    GameWorld w;
+    static const int loner[5] = { 0, 2, 0, 2, 2 };
+    setup_hostility_fixture(&w, loner);
+    g_visible = 0;
+    g_conn_split = 1;
+    g_conn_x = 3100;
+    g_conn_y = 1000;
+    for (int k = 0; k < 10; k++)
+        hf_add_unit(1, HF_TROOP, 200 + 16 * (k % 5), 200 + 16 * (k / 5));
+    int outlying = hf_add_unit(1, HF_LODE, 2400, 800);
+    TAK_AI_DebugSetWaveTarget(2, 0);
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_EQ_INT(outlying, TAK_AI_DebugFerryAim(2));
+    /* Guarded as well as the monarch, it is not worth more. */
+    for (int k = 0; k < 10; k++)
+        hf_add_unit(1, HF_TROOP, 2400 + 16 * (k % 5), 760 + 16 * (k / 5));
+    hf_run_ticks(&w, 120, 1);
+    ASSERT_EQ_INT(0, TAK_AI_DebugFerryAim(2));
+    /* On ground it can walk there is no ferry to aim. */
+    g_conn_split = 0;
+    hf_run_ticks(&w, 180, 1);
+    ASSERT_EQ_INT(-1, TAK_AI_DebugFerryAim(2));
     return 0;
 }
 
@@ -3796,6 +3831,7 @@ int main(void) {
     if (test_htn_weighs_strength_before_it_strikes() != 0) return 1;
     if (test_htn_breaks_off_and_raids() != 0) return 1;
     if (test_htn_ferries_a_wave_over_water() != 0) return 1;
+    if (test_ai_ferry_aims_where_the_guard_is_thin() != 0) return 1;
     if (test_plan_cut_off_builds_a_yard_then_a_transport() != 0) return 1;
     if (test_ai_wave_waits_out_a_garrison_it_can_see() != 0) return 1;
     if (test_ai_outmatched_members_come_home() != 0) return 1;

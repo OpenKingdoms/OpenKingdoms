@@ -842,15 +842,21 @@ Format per entry:
   goal planner then wants a transport before more army: a producer that makes one trains
   one, and with none a builder puts up a yard that does, on water near
   home that reaches the target's water. Its army waits for the
-  transport instead of striking, and goes aboard on the strength a
-  strike needs once a full hold is gathered, or with a launch's worth
-  when the long wait of A-007 is up. A ship's riders walk to a shore it
-  can stand off first, a flyer picks them up where they are. The
+  transport instead of striking. A ferry goes for the enemy asset on
+  the target's ground, a building, lodestone, builder or the monarch,
+  that is worth most for the enemy arms round it, counting every enemy
+  unit the way the target choice does. The wave goes aboard once a full
+  hold is gathered with the strength a strike needs against those arms,
+  or with a launch's worth of at least half their strength when the
+  long wait of A-007 is up. A ship's riders walk to a shore it can
+  stand off first, a flyer picks them up where they are. A ship waits
+  in open water with room round its hull and no other ship close by,
+  and a crossing cut short sails on from where it stopped. The
   transport holds its fire on the way, sets the wave down on ground
   that walks to the target, the nearest past 448 px from it and dearer
-  where enemy strength is seen, and the wave attacks from there. A
-  landing that fails is tried elsewhere twice, then the wave goes back
-  ashore at home. One ferry a seat at a time. Fighters it cannot carry
+  where enemy arms stand, and the wave attacks from there. A landing
+  that fails is tried elsewhere twice, then the wave goes back ashore
+  at home. One ferry a seat at a time. Fighters it cannot carry
   stay behind, and a flyer among them goes at the target on its own
   wings. A walker in a group marching at a target over water or out on
   it, and a ship sent at one on land, go back to the gathering. The
@@ -870,18 +876,17 @@ Format per entry:
   seats swapped, a seat with A-013 against one with everything else.
   Over 48 games on Varro Passage and Cairbray Coast Landing, the two
   shipped maps whose two starts lie on separate land, every kingdom
-  against itself, the seat with it put a wave ashore in 22, in 16 of
-  them inside ten minutes, the first at 134 seconds and the median at
-  about 320. Taros did in 9 of 12, first between 134 and 283 seconds,
-  Aramon in 5 and Zhon in 5, between 317 and 971 seconds, and Veruna
-  in 3, all on Cairbray, between 625 and 822 seconds. On Varro none
-  of Veruna's ferries got ashore. With the computer of before on both
-  seats the same 48 games saw 70 kills, 64 of them in Zhon's games,
-  where its flyers cross. The seat with A-013 killed 285 and lost 879,
-  as its waves land a few at a time against a whole army at home. On
-  Two Castles and Tarosian
-  Plain, where every start walks to every other, 16 games played the
-  same to the unit with it and without.
+  against itself, the seat with it put a wave ashore in 28, in 15 of
+  them inside ten minutes, the first at 167 seconds and the median at
+  about 530. Taros did in 10 of 12, first between 167 and 396 seconds,
+  Aramon, Veruna and Zhon in 6 each, between 317 and 1150 seconds.
+  The seat with A-013 killed 361 and lost 679. With the computer of
+  before on both seats the same 48 games saw 70 kills, 64 of them in
+  Zhon's games, where its flyers cross. A wave lost with its transport
+  still costs the most, and a ship crossing narrow water can meet the
+  seat's own ships coming the other way and stop. On Two Castles and
+  Tarosian Plain, where every start walks to every other, 16 games
+  played the same to the unit with it and without.
 - Citation: the manual describes no AI rule at this level. Behaviour
   note `docs/notes/2026-09-04-legacy-ai.md`, "Water and transports".
 

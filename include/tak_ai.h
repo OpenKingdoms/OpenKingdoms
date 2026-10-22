@@ -53,6 +53,8 @@ int  TAK_AI_DebugCount(int player_id, int kind);
  * wave went ashore over water, -1 before it has. */
 int  TAK_AI_DebugFerryStage(int player_id);
 int  TAK_AI_DebugFirstLanding(int player_id);
+/* The unit a seat cut off by water would ferry a wave to, -1 when not. */
+int  TAK_AI_DebugFerryAim(int player_id);
 /* The method the seat's army was last planned by, "" before any. */
 const char *TAK_AI_DebugWaveReason(int player_id);
 /* Which of the army's behaviours of A-007 a seat uses, for measuring

@@ -1124,15 +1124,23 @@ typedef struct AiFerry {
     int32_t  pick_sx, pick_sy;
     int32_t  land_x, land_y;  /* where it goes ashore, and the water off it */
     int32_t  sea_x, sea_y;
+    int32_t  sail_x, sail_y;  /* where the ship was last sent on from */
     int      tick;            /* the stage began */
     int      tries;           /* landings ordered */
     int      cooldown_until;  /* no ferry before this tick */
     int      build_until;     /* no water build before this tick */
     int      aggro;           /* the transport's posture before it sailed */
 } AiFerry;
-#define AI_FERRY_WORDS 17
+#define AI_FERRY_WORDS 19
 
 static AiFerry g_ai_ferry[TAK_MAX_PLAYERS + 1];
+/* What a ferry goes for, chosen afresh each think of a seat cut off. */
+typedef struct AiFerryAim {
+    int      handle, player;
+    uint32_t id;
+    int32_t  x, y, guard;
+} AiFerryAim;
+static AiFerryAim g_ai_ferry_aim[TAK_MAX_PLAYERS + 1];
 /* Whether a transport is on its way for the seat that is thinking. */
 static int g_ai_ferry_coming[TAK_MAX_PLAYERS + 1];
 
@@ -1154,7 +1162,10 @@ static void ai_reset_state(void) {
     for (int p = 0; p <= TAK_MAX_PLAYERS; p++) g_ai_first_landing[p] = -1;
     memset(g_ai_ferry, 0, sizeof(g_ai_ferry));
     memset(g_ai_ferry_coming, 0, sizeof(g_ai_ferry_coming));
-    for (int p = 0; p <= TAK_MAX_PLAYERS; p++) g_ai_ferry[p].transport = -1;
+    for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
+        g_ai_ferry[p].transport = -1;
+        g_ai_ferry_aim[p].handle = -1;
+    }
     g_ai_naval_ready = 0;
     g_ai_rng = g_ai_seed;     /* derived from the session seed */
     AI_Influence_Reset();
@@ -1245,6 +1256,8 @@ uint32_t TAK_SimHash_AI(uint32_t h) {
         h = TAK_HashI32(h, f->cooldown_until);
         h = TAK_HashI32(h, f->build_until);
         h = TAK_HashI32(h, f->aggro);
+        h = TAK_HashI32(h, f->sail_x);
+        h = TAK_HashI32(h, f->sail_y);
     }
     /* Membership, four handles to a word, over the slots in use: the
      * rest of the table is empty and the pool is large. */
@@ -1377,6 +1390,7 @@ void TAK_AI_SaveState(unsigned char *out) {
             f->pick_x, f->pick_y, f->pick_sx, f->pick_sy,
             f->land_x, f->land_y, f->sea_x, f->sea_y,
             f->tick, f->tries, f->cooldown_until, f->build_until, f->aggro,
+            f->sail_x, f->sail_y,
         };
         for (int k = 0; k < AI_FERRY_WORDS; k++) tak_put_i32(p + 4 * k, w[k]);
         p += AI_FERRY_WORDS * 4;
@@ -1503,6 +1517,7 @@ int TAK_AI_LoadState(const unsigned char *in, unsigned int len) {
             f->tick = w[12];         f->tries = w[13];
             f->cooldown_until = w[14]; f->build_until = w[15];
             f->aggro = w[16];
+            f->sail_x = w[17];       f->sail_y = w[18];
             f8 += AI_FERRY_WORDS * 4;
         }
     }
@@ -1560,6 +1575,11 @@ void TAK_AI_DebugSetTactics(int player_id, int mask) {
 int TAK_AI_DebugFirstLanding(int player_id) {
     if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return -1;
     return g_ai_first_landing[player_id];
+}
+
+int TAK_AI_DebugFerryAim(int player_id) {
+    if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return -1;
+    return g_ai_ferry_aim[player_id].handle;
 }
 
 int TAK_AI_DebugFerryStage(int player_id) {
@@ -2870,12 +2890,22 @@ static int ai_groups_update(const GameWorld *world, const Unit *units,
 
 /* A landing is looked for this far round the target on this grid, this
  * far off it, this far from one that failed, and costs this many px for
- * each point of enemy strength seen there. */
+ * each point of enemy strength there. */
 #define AI_LANDING_REACH     2560
 #define AI_LANDING_STEP      64
 #define AI_LANDING_STANDOFF  448
 #define AI_LANDING_AVOID     256
 #define AI_LANDING_THREAT_PX 8
+/* Open water a ship waits in: tiles spare round its footprint, and px
+ * kept from other ships. */
+#define AI_SEA_MARGIN   2
+#define AI_SEA_CROWD_PX 160
+/* A crossing that stopped this far on from its last order sails on. */
+#define AI_SAIL_LEG_PX  256
+/* How far enemy arms are felt, in 256 px rings, and the guard a target
+ * with none is weighed as having. */
+#define AI_GUARD_RINGS 3
+#define AI_GUARD_FLOOR 8
 /* How long gathering, loading and a crossing may take, the wait before a
  * failed ferry is tried again (60 Hz ticks), and the landings tried. */
 #define AI_FERRY_GATHER_TICKS 3600
@@ -2911,23 +2941,127 @@ static int ai_ferry_transport(const Unit *units, int unit_count, int p) {
     return best;
 }
 
-/* Whether a ship of class mc floats at (x, y) with room for its hull,
- * as the route planner places it. */
+/* Whether a ship of class mc floats at (x, y) with room for its hull and
+ * the margin all round, as the route planner places it. */
 static int ai_floats_at(const GameWorld *world, const MoveClassDef *mc,
                         int slope, int32_t x, int32_t y) {
-    int fx = mc && mc->footprint_x > 0 ? mc->footprint_x : 2;
-    int fz = mc && mc->footprint_z > 0 ? mc->footprint_z : 2;
+    int fx = (mc && mc->footprint_x > 0 ? mc->footprint_x : 2) + 2 * AI_SEA_MARGIN;
+    int fz = (mc && mc->footprint_z > 0 ? mc->footprint_z : 2) + 2 * AI_SEA_MARGIN;
     int tx = (int)(x >> 4) - fx / 2, ty = (int)(y >> 4) - fz / 2;
     if (tx < 0 || ty < 0) return 0;
     int c = TAK_PathClearanceAt(world, mc, slope, tx, ty);
     return c >= fx && c >= fz;
 }
 
+/* Another ship lies close by, so a ship waiting there could be boxed in. */
+static int ai_ships_near(const Unit *units, int unit_count, int t, int32_t x, int32_t y) {
+    for (int i = 0; i < unit_count; i++) {
+        if (i == t || units[i].alive != UNIT_ALIVE_ACTIVE) continue;
+        if (!ai_within(units[i].world_x, units[i].world_y, x, y, AI_SEA_CROWD_PX)) continue;
+        if (ai_def_is_ship(Units_GetDef(units[i].def_idx))) return 1;
+    }
+    return 0;
+}
+
+/* Enemy arms round each 256 px cell, every one the target choice knows
+ * of, built in the think of a seat with a ferry to plan (A-013). */
+static int32_t g_ai_guard[AI_INF_MAX_W * AI_INF_MAX_H];
+static int g_ai_guard_w, g_ai_guard_h;
+
+static void ai_guard_build(const GameWorld *world, const Unit *units,
+                           int unit_count, int p) {
+    int w = (world->map_pixels_w + AI_INF_CELL_PX - 1) >> AI_INF_CELL_SHIFT;
+    int h = (world->map_pixels_h + AI_INF_CELL_PX - 1) >> AI_INF_CELL_SHIFT;
+    g_ai_guard_w = w < 1 ? 1 : w > AI_INF_MAX_W ? AI_INF_MAX_W : w;
+    g_ai_guard_h = h < 1 ? 1 : h > AI_INF_MAX_H ? AI_INF_MAX_H : h;
+    memset(g_ai_guard, 0, sizeof(g_ai_guard));
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->under_construction) continue;
+        if (!ai_valid_player(world, u->player_id) ||
+            !Units_PlayersAreEnemies(p, u->player_id)) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || d->num_weapons <= 0) continue;
+        int32_t v = AI_UnitCombatValue(d);
+        int cx = (int)(u->world_x >> AI_INF_CELL_SHIFT), cy = (int)(u->world_y >> AI_INF_CELL_SHIFT);
+        /* Halved for each ring out, three rings. */
+        for (int dy = -AI_GUARD_RINGS; dy <= AI_GUARD_RINGS; dy++) {
+            int y = cy + dy;
+            if (y < 0 || y >= g_ai_guard_h) continue;
+            for (int dx = -AI_GUARD_RINGS; dx <= AI_GUARD_RINGS; dx++) {
+                int x = cx + dx;
+                if (x < 0 || x >= g_ai_guard_w) continue;
+                int ring = abs(dx) > abs(dy) ? abs(dx) : abs(dy);
+                g_ai_guard[y * AI_INF_MAX_W + x] += v >> ring;
+            }
+        }
+    }
+}
+
+static int32_t ai_guard_at(int32_t x, int32_t y) {
+    int cx = (int)(x >> AI_INF_CELL_SHIFT), cy = (int)(y >> AI_INF_CELL_SHIFT);
+    if (x < 0 || y < 0 || cx >= g_ai_guard_w || cy >= g_ai_guard_h) return 0;
+    return g_ai_guard[cy * AI_INF_MAX_W + cx];
+}
+
+static int ai_walks_to(const GameWorld *world, const MoveClassDef *mc, int slope,
+                       int h, int32_t ax, int32_t ay, int32_t x, int32_t y);
+
+/* The enemy asset on the target's ground worth most for the arms round
+ * it, so a wave lands by an outlying building, lodestone or builder
+ * rather than into the army. The seat's target without a walker. */
+static void ai_ferry_aim(const GameWorld *world, const Unit *units,
+                         int unit_count, int p) {
+    const AiPlayer *ap = &g_ai_players[p];
+    AiFerryAim *a = &g_ai_ferry_aim[p];
+    a->handle = ap->target_handle;
+    a->player = ap->target_player;
+    a->id = ap->target_stable_id;
+    a->x = ap->target_x;
+    a->y = ap->target_y;
+    a->guard = ai_guard_at(a->x, a->y);
+    int h = -1;
+    for (int i = 0; i < unit_count && h < 0; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p || u->under_construction)
+            continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (ai_def_is_mobile_combat(d) && !d->can_fly && !ai_def_is_ship(d)) h = i;
+    }
+    if (h < 0 || ap->target_handle < 0) return;
+    const UnitDef *hd = Units_GetDef(units[h].def_idx);
+    const MoveClassDef *mc = hd->movement_class[0]
+                           ? TAK_MoveInfo_Find(&world->moveinfo, hd->movement_class) : NULL;
+    int64_t best = -1;
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *t = &units[i];
+        if (t->alive != UNIT_ALIVE_ACTIVE) continue;
+        if (!ai_valid_player(world, t->player_id) ||
+            !Units_PlayersAreEnemies(p, t->player_id)) continue;
+        const UnitDef *td = Units_GetDef(t->def_idx);
+        if (!td || td->is_feature) continue;
+        int32_t asset = AI_UnitAssetValue(td, world->cfg.monarch_expendable);
+        if (asset <= 0) continue;
+        int32_t guard = ai_guard_at(t->world_x, t->world_y);
+        int64_t score = (int64_t)asset * 256 / (guard + AI_GUARD_FLOOR);
+        if (score <= best) continue;
+        if (!ai_walks_to(world, mc, hd->max_slope, h, ap->target_x, ap->target_y,
+                         t->world_x, t->world_y)) continue;
+        best = score;
+        a->handle = i;
+        a->player = t->player_id;
+        a->id = t->stable_id;
+        a->x = t->world_x;
+        a->y = t->world_y;
+        a->guard = guard;
+    }
+}
+
 /* Where a transport sets a rider down for a walk to (tx, ty) and the water
  * it stands off at, a ship's within its unloading reach: nearest past the
  * standoff, else nearest at all, never by a failed one. 1 when found. */
-static int ai_landing_point(const GameWorld *world, const Unit *units, int t,
-                            int rider, int32_t tx, int32_t ty, int32_t *out_x,
+static int ai_landing_point(const GameWorld *world, const Unit *units, int unit_count,
+                            int t, int rider, int32_t tx, int32_t ty, int32_t *out_x,
                             int32_t *out_y, int32_t *sea_x, int32_t *sea_y,
                             int avoid, int32_t ax, int32_t ay) {
     const Unit *tu = &units[t];
@@ -2953,8 +3087,8 @@ static int ai_landing_point(const GameWorld *world, const Unit *units, int t,
             int32_t d = ai_approx_dist((int64_t)x - tx, (int64_t)y - ty);
             if (d > AI_LANDING_REACH) continue;
             int far = d >= AI_LANDING_STANDOFF;
-            /* Ground the enemy is seen to hold costs more to land on. */
-            int32_t threat = AI_Influence_At(units[rider].player_id, AI_INF_THREAT, x, y);
+            /* Ground the enemy holds costs more to land on. */
+            int32_t threat = ai_guard_at(x, y);
             if (threat > 0) d += threat * AI_LANDING_THREAT_PX;
             if (far ? (found && d >= best) : (found || (near_found && d >= near_best)))
                 continue;
@@ -2973,6 +3107,7 @@ static int ai_landing_point(const GameWorld *world, const Unit *units, int t,
                     wy = y + dirs[k & 7][1] * r;
                     shore = Units_CanStandAt(t, wx, wy) &&
                             ai_floats_at(world, tmc, td->max_slope, wx, wy) &&
+                            !ai_ships_near(units, unit_count, t, wx, wy) &&
                             TAK_PathGroundConnected(world, tmc, td->max_slope,
                                                     tu->world_x, tu->world_y, wx, wy);
                 }
@@ -3031,8 +3166,9 @@ static int ai_ferry_launch(const GameWorld *world, const Unit *units,
                            int unit_count, int p, int slot, int now) {
     AiPlayer *ap = &g_ai_players[p];
     AiFerry *f = &g_ai_ferry[p];
+    const AiFerryAim *aim = &g_ai_ferry_aim[p];
     int t = ai_ferry_transport(units, unit_count, p);
-    if (t < 0 || ap->target_handle < 0) return 0;
+    if (t < 0 || aim->handle < 0) return 0;
     const UnitDef *td = Units_GetDef(units[t].def_idx);
     int riders[64];
     int n = 0;
@@ -3047,12 +3183,12 @@ static int ai_ferry_launch(const GameWorld *world, const Unit *units,
         f->cooldown_until = now + AI_FERRY_RETRY;
         return 0;
     }
-    int ok = ai_landing_point(world, units, t, riders[0], ap->target_x, ap->target_y,
+    int ok = ai_landing_point(world, units, unit_count, t, riders[0], aim->x, aim->y,
                               &f->land_x, &f->land_y, &f->sea_x, &f->sea_y, 0, 0, 0);
     f->pick_x = units[riders[0]].world_x;
     f->pick_y = units[riders[0]].world_y;
     if (ok && !td->can_fly)
-        ok = ai_landing_point(world, units, t, riders[0], ap->base_x, ap->base_y,
+        ok = ai_landing_point(world, units, unit_count, t, riders[0], ap->base_x, ap->base_y,
                               &f->pick_x, &f->pick_y, &f->pick_sx, &f->pick_sy, 0, 0, 0);
     if (!ok) {
         f->cooldown_until = now + AI_FERRY_RETRY;
@@ -3071,8 +3207,8 @@ static int ai_ferry_launch(const GameWorld *world, const Unit *units,
         g_ai_member[i] = 0;
         const UnitDef *d = Units_GetDef(units[i].def_idx);
         if (d && d->can_fly && units[i].cmd_kind == UNIT_CMD_NONE)
-            ai_dispatch_at(world, units, unit_count, i, p, d, ap->target_player,
-                           ap->target_handle, ap->target_x, ap->target_y);
+            ai_dispatch_at(world, units, unit_count, i, p, d, aim->player,
+                           aim->handle, aim->x, aim->y);
     }
     if (td->can_fly) {
         Units_OrderLoadList(t, riders, n, 0);
@@ -3086,11 +3222,11 @@ static int ai_ferry_launch(const GameWorld *world, const Unit *units,
     g->mode = AI_GROUP_MARCHING;
     g->kind = AI_GROUP_FERRY;
     g->launch = n;
-    g->target_player = ap->target_player;
-    g->target_handle = ap->target_handle;
-    g->target_stable_id = ap->target_stable_id;
-    g->target_x = ap->target_x;
-    g->target_y = ap->target_y;
+    g->target_player = aim->player;
+    g->target_handle = aim->handle;
+    g->target_stable_id = aim->id;
+    g->target_x = aim->x;
+    g->target_y = aim->y;
     f->slot = slot;
     f->transport = t;
     f->transport_id = units[t].stable_id;
@@ -3098,8 +3234,9 @@ static int ai_ferry_launch(const GameWorld *world, const Unit *units,
     f->tries = 0;
     g_ai_counts[p][TAK_AI_COUNT_FERRIES]++;
     if (ai_trace())
-        fprintf(stderr, "AI %d: ferry of %d aboard %s from (%d,%d) for (%d,%d)\n", p, n,
-                td->unitname, f->pick_x, f->pick_y, f->land_x, f->land_y);
+        fprintf(stderr, "AI %d: ferry of %d aboard %s from (%d,%d) for (%d,%d) at unit %d "
+                "guard %d\n", p, n, td->unitname, f->pick_x, f->pick_y, f->land_x, f->land_y,
+                aim->handle, aim->guard);
     return 1;
 }
 
@@ -3162,6 +3299,8 @@ static void ai_ferry_update(const GameWorld *world, const Unit *units,
             f->stage = AI_FERRY_LANDING;
         } else {
             Units_CommandMoveUnit(t, f->sea_x, f->sea_y);
+            f->sail_x = tu->world_x;
+            f->sail_y = tu->world_y;
             f->stage = AI_FERRY_SAILING;
         }
         if (ai_trace())
@@ -3184,6 +3323,14 @@ static void ai_ferry_update(const GameWorld *world, const Unit *units,
     if (f->stage == AI_FERRY_SAILING) {
         int there = ai_within(tu->world_x, tu->world_y, f->sea_x, f->sea_y, 128);
         if (!there && tu->cmd_kind == UNIT_CMD_MOVE && age <= AI_FERRY_SAIL_TICKS) return;
+        if (!there && age <= AI_FERRY_SAIL_TICKS &&
+            !ai_within(tu->world_x, tu->world_y, f->sail_x, f->sail_y, AI_SAIL_LEG_PX)) {
+            /* A crossing cut short sails on from where it got to. */
+            Units_CommandMoveUnit(t, f->sea_x, f->sea_y);
+            f->sail_x = tu->world_x;
+            f->sail_y = tu->world_y;
+            return;
+        }
         Units_OrderUnload(t, f->land_x, f->land_y);
         f->stage = AI_FERRY_LANDING;
         f->tick = now;
@@ -3218,13 +3365,15 @@ static void ai_ferry_update(const GameWorld *world, const Unit *units,
     if (f->tries >= AI_FERRY_LANDINGS) { aim_x = ap->base_x; aim_y = ap->base_y; }
     int32_t fail_x = f->land_x, fail_y = f->land_y;
     if (f->tries <= AI_FERRY_LANDINGS &&
-        ai_landing_point(world, units, t, first, aim_x, aim_y, &f->land_x, &f->land_y,
+        ai_landing_point(world, units, unit_count, t, first, aim_x, aim_y, &f->land_x, &f->land_y,
                          &f->sea_x, &f->sea_y, 1, fail_x, fail_y)) {
         if (td->can_fly) {
             Units_OrderUnload(t, f->land_x, f->land_y);
             f->stage = AI_FERRY_LANDING;
         } else {
             Units_CommandMoveUnit(t, f->sea_x, f->sea_y);
+            f->sail_x = tu->world_x;
+            f->sail_y = tu->world_y;
             f->stage = AI_FERRY_SAILING;
         }
         f->tries++;
@@ -4417,22 +4566,34 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     AiWaveState ws;
     AiWaveRead wr;
     AiWavePlan wplan;
+    if (ps.cut_off || g_ai_ferry[p].stage != AI_FERRY_NONE)
+        ai_guard_build(world, units, unit_count, p);
     ai_ferry_update(world, units, unit_count, p, now);
     int forming = ai_groups_update(world, units, unit_count, p, now);
     ai_read_wave(world, units, unit_count, p, now, forming, &ws, &wr);
     /* Cut off by water, the wave waits for a transport and goes aboard
      * one that is free (A-013). */
     const AiFerry *ferry = &g_ai_ferry[p];
+    g_ai_ferry_aim[p].handle = -1;
     if (ps.cut_off) {
         ws.cut_off = 1;
+        ai_ferry_aim(world, units, unit_count, p);
         int t = ferry->stage == AI_FERRY_NONE && now >= ferry->cooldown_until
               ? ai_ferry_transport(units, unit_count, p) : -1;
         ws.ferry_ready = t >= 0;
         ws.ferry_coming = ws.ferry_ready ||
                           (g_ai_ferry_coming[p] &&
                            (ferry->stage != AI_FERRY_NONE || now >= ferry->cooldown_until));
+        ws.hold = ws.launch;
+        if (t >= 0) {
+            int full = Units_GetDef(units[t].def_idx)->transport_capacity;
+            if (full > ws.members) full = ws.members;
+            if (ws.hold < full) ws.hold = full;
+        }
         /* A crossing waits for a full hold, or for all there is, of the
-         * walkers gathered. */
+         * walkers gathered, and weighs what one hold carries against the
+         * arms round where it goes. */
+        int32_t carried = 0;
         ws.massed = 0;
         for (int i = 0; forming >= 0 && i < unit_count && i < AI_MEMBER_CAP; i++) {
             const Unit *u = &units[i];
@@ -4440,13 +4601,11 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
             if (g_ai_member[i] != forming + 1 || u->player_id != p || !d) continue;
             if (u->alive != UNIT_ALIVE_ACTIVE || u->cmd_kind != UNIT_CMD_NONE) continue;
             if (d->can_fly || ai_def_is_ship(d) || !ai_at_stage(ap, u)) continue;
-            ws.massed++;
+            if (ws.massed++ < ws.hold) carried += AI_UnitCombatValue(d);
         }
-        ws.hold = ws.launch;
-        if (t >= 0) {
-            int full = Units_GetDef(units[t].def_idx)->transport_capacity;
-            if (full > ws.members) full = ws.members;
-            if (ws.hold < full) ws.hold = full;
+        if (ws.ferry_coming) {
+            ws.wave_value = carried;
+            ws.enemy_at_target = g_ai_ferry_aim[p].guard;
         }
     }
     if (g_ai_tactics_off[p] & TAK_AI_TACTIC_STRENGTH) {
