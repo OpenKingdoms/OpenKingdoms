@@ -160,8 +160,10 @@
  * match reads its models from the archives alone, never the game
  * folder's objects3d. 54: a hover attacker holds the point it picked and
  * backs off only at a creep, and a flying builder steps out of crowded
- * air and builds on. */
-#define TAK_ENGINE_BUILD_ID           54
+ * air and builds on. 55: a shot drawn at an attack-ground point leaves at
+ * the script's release, and is called off when the order's point moves
+ * out of reach. */
+#define TAK_ENGINE_BUILD_ID           55
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
