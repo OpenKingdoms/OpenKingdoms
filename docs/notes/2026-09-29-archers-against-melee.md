@@ -58,6 +58,13 @@ legacy:249460-249461), so a caster whose target dies during the cast
 keeps it. A script that never sets port 23 still fires the moment its
 aim is ready, as before.
 
+A shot at a ground point is drawn and let go the same way, since the
+original's weapon holds a unit or a point alike and releases either on
+port 23 (legacy:245894-245906, legacy:233903-233911). The Mage Archer's
+arrow at the ground leaves 127 ticks into its draw and the Mage
+Builder's hammer 46, as at a unit. The shot goes where the order points
+when it leaves, and an order of another kind calls it off.
+
 ## The computer's archers
 
 A-010 used to send the computer's archers to firing positions round

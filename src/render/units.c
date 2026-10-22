@@ -9642,8 +9642,9 @@ static void cob_host_set_unit_value(void *user, int port, int32_t value) {
                     ws->draw = UNIT_DRAW_NONE;
                     return;
                 }
-                if (ws->draw_target < 0) ws->draw_target = u->target;
-                if (ws->draw_target >= 0) ws->draw = UNIT_DRAW_RELEASE;
+                if (ws->draw_target == -1) ws->draw_target = u->target;
+                if (ws->draw_target >= 0 || ws->draw_target == UNIT_DRAW_GROUND)
+                    ws->draw = UNIT_DRAW_RELEASE;
             }
             return;
         case 26: /* FINISHED_DYING: the death is over (legacy:223401-223403) */
@@ -13003,11 +13004,11 @@ static void flame_particle(const Projectile *p, int idx) {
 }
 
 static void fire_ground_shot_now(Unit *u, int shooter_idx, int slot,
-                                 const UnitWeapon *wp) {
+                                 const UnitWeapon *wp, int run_fire_script) {
     if (!u || !wp) return;
     cloak_hold(u, Units_GetDef(u->def_idx), CLOAK_FIRE_TICKS);
     if (wp->mana_per_shot > 0) BattleRecord_Cast(u->player_id);
-    start_fire_script(u, slot);
+    if (run_fire_script) start_fire_script(u, slot);
     const GameWorld *sw = World_Get();
     play_weapon_start_sound(u, wp);
     float speed = (float)wp->velocity_pps;
@@ -13078,10 +13079,10 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
 }
 
 static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
-                             const UnitWeapon *wp) {
+                             const UnitWeapon *wp, int run_fire_script) {
     ShotTally outer = g_shot_tally;
     shot_tally_begin(shooter_idx);
-    fire_ground_shot_now(u, shooter_idx, slot, wp);
+    fire_ground_shot_now(u, shooter_idx, slot, wp, run_fire_script);
     shot_tally_end();
     g_shot_tally = outer;
 }
@@ -13139,9 +13140,13 @@ static void tick_weapon_draw(Unit *u, int shooter_idx, int slot,
                              const UnitDef *def, UnitWeaponState *ws) {
     if (ws->draw == UNIT_DRAW_NONE || ws->draw == UNIT_DRAW_LOST) return;
     int t = ws->draw_target;
-    if (t < 0 || t >= g_unit_count || t != u->target ||
-        g_units[t].alive != UNIT_ALIVE_ACTIVE ||
-        !unit_can_see_target(u, &g_units[t])) {
+    /* A shot drawn at the ground goes where the order points as it
+     * leaves, and with the order. */
+    int ground = t == UNIT_DRAW_GROUND;
+    if (ground ? u->cmd_kind != UNIT_CMD_ATTACK_GROUND :
+        (t < 0 || t >= g_unit_count || t != u->target ||
+         g_units[t].alive != UNIT_ALIVE_ACTIVE ||
+         !unit_can_see_target(u, &g_units[t]))) {
         ws->draw = UNIT_DRAW_LOST;
         ws->draw_target = -1;
         if (u->cob) {
@@ -13166,6 +13171,10 @@ static void tick_weapon_draw(Unit *u, int shooter_idx, int slot,
             if (w) (void)Economy_TrySpend(&w->economy, u->player_id,
                                           wp->mana_per_shot);
         }
+    }
+    if (ground) {
+        fire_ground_shot(u, shooter_idx, slot, wp, 0);
+        return;
     }
     /* The shot leaves at the signal wherever the target stands. A blow
      * strikes only what is in reach as it lands (legacy:246456-246468),
@@ -13985,7 +13994,7 @@ static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
          * drawn shot pays when it leaves
          * (legacy:249341-249342, legacy:249460-249461). */
         int draws = def->script_launches && u->cob &&
-                    !ground && u->target >= 0;
+                    (ground || u->target >= 0);
         int may_fire = 1;
         if (wp->mana_per_shot > 0) {
             if (def->max_mana > 0) {
@@ -14013,16 +14022,17 @@ static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
             /* A shot that leaves now has the script aim again for the
              * next (legacy:249457). A drawn one does as it is let go. */
             if (!draws) ws->aim_target = -1;
-            if (ground) {
-                fire_ground_shot(u, i, slot, wp);
-                return;
-            }
-            /* A script that releases its own shot draws
-             * now and lets go at port 23. */
+            /* A script that releases its own shot draws now and lets
+             * go at port 23, at a unit or a ground point alike
+             * (legacy:245894-245906, legacy:233903-233911). */
             if (draws) {
                 start_fire_script(u, slot);
                 ws->draw = UNIT_DRAW_DRAWN;
-                ws->draw_target = u->target;
+                ws->draw_target = ground ? UNIT_DRAW_GROUND : u->target;
+                return;
+            }
+            if (ground) {
+                fire_ground_shot(u, i, slot, wp, 1);
                 return;
             }
             fire_weapon_shot(u, i, slot, wp, u->target, 0, 1);
@@ -20652,7 +20662,7 @@ int Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y) {
     if (u->alive != UNIT_ALIVE_ACTIVE || !d || slot < 0 || slot >= d->num_weapons) return 0;
     u->cmd_x = x;
     u->cmd_y = y;
-    fire_ground_shot(u, handle, slot, &d->weapons[slot]);
+    fire_ground_shot(u, handle, slot, &d->weapons[slot], 1);
     return 1;
 }
 
