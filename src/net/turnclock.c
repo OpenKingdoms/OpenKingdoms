@@ -848,6 +848,9 @@ int TAK_TurnClock_Reconnect(TAK_TurnClock *c, int sim, uint32_t from_turn,
     /* Every turn from here to the head has to still be in the log. */
     if (!TAK_TurnClock_CanReplay(c)) return -1;
     TAK_TurnSim *s = &c->sim[sim];
+    /* A fresh connection numbers its orders from 1 again. */
+    s->seq_seen = 0;
+    s->last_seq = 0;
     int was_dropped = (s->status == TAK_PSTATUS_DROPPED);
     s->reclaim = (uint8_t)(was_dropped && s->seat != TAK_NET_SEAT_NONE &&
                            TAK_TurnClock_ComputerHolds(c, s->seat) &&

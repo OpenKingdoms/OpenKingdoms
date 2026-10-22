@@ -137,6 +137,7 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
     if (c->state == TAK_NC_GONE) return -1;
     TAK_NetFrame f;
     if (TAK_Net_Split(msg, len, &f) != 0) return -1;
+    c->heard_ms = now_ms;
 
     switch (f.type) {
     case TAK_MSG_WELCOME: {
@@ -364,6 +365,11 @@ void TAK_NetClient_Heartbeat(TAK_NetClient *c, uint64_t now_ms) {
     p.sent_ms = now_ms;
     uint8_t frame[64];
     (void)queue(c, frame, TAK_Msg_PingEncode(TAK_MSG_PING, &p, frame, sizeof frame));
+}
+
+int TAK_NetClient_Silent(const TAK_NetClient *c, uint64_t now_ms) {
+    if (c->state != TAK_NC_PLAYING || !c->heard_ms || now_ms < c->heard_ms) return 0;
+    return now_ms - c->heard_ms >= TAK_NC_SILENT_MS;
 }
 
 /* ── What a screen asks for ────────────────────────────────────────── */

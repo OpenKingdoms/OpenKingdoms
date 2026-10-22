@@ -73,6 +73,9 @@ typedef struct {
 /* How often a client measures its own round trip, the relay's own
  * heartbeat cadence. */
 #define TAK_NC_PING_MS    2000u
+/* The relay pings every 2 s and sends a turn every 50 ms, so a match
+ * that hears nothing this long is on a link that has died unnoticed. */
+#define TAK_NC_SILENT_MS  10000u
 
 /* One turn, ready to hand to the simulation. */
 typedef struct TAK_NetTurn {
@@ -106,6 +109,7 @@ typedef struct TAK_NetClient {
     uint32_t         ping_ms;
     uint64_t         next_ping_ms;
     uint32_t         ping_seq;
+    uint64_t         heard_ms;     /* the last message of any kind */
 
     /* The match, once one starts. */
     TAK_MsgStartGame    start;
@@ -214,6 +218,9 @@ size_t TAK_NetClient_TakeMessage(TAK_NetClient *c, void *out, size_t cap);
 /* Queue a PING when one is due, once welcomed. The relay sends it
  * straight back, and the PONG sets `ping_ms`. Call it every frame. */
 void TAK_NetClient_Heartbeat(TAK_NetClient *c, uint64_t now_ms);
+
+/* 1 when a match has heard nothing from the relay for TAK_NC_SILENT_MS. */
+int TAK_NetClient_Silent(const TAK_NetClient *c, uint64_t now_ms);
 
 /* Read the events this exchange produced, then forget them. */
 int  TAK_NetClient_PollEvent(TAK_NetClient *c, TAK_NetClientEvent *out);

@@ -136,6 +136,43 @@ int InGame_TakeResync(void) {
     return r;
 }
 
+/* InGame_Tick left the battle because the link to the relay went. */
+static int ig_reconnect;
+/* This frame runs because animation frames stopped. */
+static int ig_frames_stalled;
+
+void InGame_SetFramesStalled(int on) { ig_frames_stalled = on; }
+
+int InGame_TakeReconnect(void) {
+    int r = ig_reconnect;
+    ig_reconnect = 0;
+    return r;
+}
+
+/* The link went under a battle still being played, not one the server
+ * refused, halted or saw out. */
+static int ig_link_lost(const GameWorld *world) {
+    const TAK_NetClient *c = NetSession_Client();
+    if (!c || NetSession_State() != NET_SESSION_FAILED) return 0;
+    if (c->state == TAK_NC_REFUSED || c->pace.reason == TAK_PACE_DESYNC_HALT) return 0;
+    return !world->skirmish_game_over && !world->skirmish_stats_open;
+}
+
+/* A link that keeps going is not chased forever: three times in five
+ * minutes, then the battle says the connection was lost. */
+#define IG_RECONNECTS     3
+#define IG_RECONNECT_MS   (5u * 60u * 1000u)
+static uint64_t ig_reconnected_ms[IG_RECONNECTS];
+
+static int ig_may_reconnect(uint64_t now_ms) {
+    uint64_t oldest = ig_reconnected_ms[0];
+    if (oldest && now_ms - oldest < IG_RECONNECT_MS) return 0;
+    memmove(ig_reconnected_ms, ig_reconnected_ms + 1,
+            (IG_RECONNECTS - 1) * sizeof ig_reconnected_ms[0]);
+    ig_reconnected_ms[IG_RECONNECTS - 1] = now_ms ? now_ms : 1;
+    return 1;
+}
+
 void InGame_SetRejoining(uint32_t until_tick) {
     ig.rejoining = 1;
     ig.rejoin_until = until_tick;
@@ -1976,6 +2013,18 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             return GAMESTATE_GAME_LOADING;
         }
     }
+    /* The link went. Select Game connects again and the relay hands the
+     * match back, as it does to a reloaded page, rather than the battle
+     * standing still. */
+    if (TAK_Match_IsLive() && ig_link_lost(world) && ig_may_reconnect(SDL_GetTicks64())) {
+        ig_reconnect = 1;
+        return GAMESTATE_SELECT_GAME;
+    }
+    /* Gone after the verdict, the banner would wait for ticks that never
+     * come. The statistics need none. */
+    if (TAK_Match_IsLive() && NetSession_State() == NET_SESSION_FAILED &&
+        world->skirmish_game_over && !world->skirmish_stats_open && !ig_play_on(world))
+        world->skirmish_stats_open = 1;
     /* A snapshot is coming to replace this world, which stops behind the
      * plate until the GO that brings it. */
     if (TAK_Match_IsLive() && NetSession_SnapshotPending()) {
@@ -2002,9 +2051,11 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * frame spends its budget catching up rather than the four ticks a
      * frame the clock allows. */
     ig.catching_up = 0;
-    if (TAK_Match_IsLive() &&
-        (ig.rejoining || TAK_Match_TicksBehind() > SIM_TICKS_PER_SECOND)) {
-        ig.catching_up = 1;
+    int far_behind = TAK_Match_TicksBehind() > SIM_TICKS_PER_SECOND;
+    /* A frame the browser held back catches up whatever it holds. */
+    if (TAK_Match_IsLive() && (ig.rejoining || far_behind ||
+                               (ig_frames_stalled && TAK_Match_TicksBehind() > 0))) {
+        ig.catching_up = ig.rejoining || far_behind;
         uint64_t until = SDL_GetTicks64() + (ig.rejoining ? 50 : 12);
         while (SDL_GetTicks64() < until) {
             /* The queue takes 128 turns at a time. */

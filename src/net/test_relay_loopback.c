@@ -660,6 +660,8 @@ static void rejoin(Client *c) {
     c->sim_off = 0;
     c->trace_len = 0;
     c->done_turns = 0;
+    /* A new connection numbers its orders from 1, as the game's does. */
+    c->cmd_seq = 0;
     c->conn = TAK_FakeNet_Connect(&net);
     TAK_Relay_OnConnect(&relay, c->conn, g_now);
     send_hello(c, 1);

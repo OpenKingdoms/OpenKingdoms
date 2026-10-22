@@ -81,6 +81,10 @@ static struct {
      * needs a different sentence from one on an address a player
      * typed. */
     int  tried_default;
+    /* A match of ours is held through the relay's countdown, so a link
+     * that fails on the way back is tried again until then. */
+    uint64_t rejoin_until_ms, rejoin_next_ms;
+    int      failure_told;   /* this failure's words are on the screen */
 
     /* Asked for a room list and waiting, so the screen can say so
      * rather than showing an empty list that looks like no games. */
@@ -693,6 +697,8 @@ int SelectGame_Init(TAK_Platform *platform) {
 
     NetSession_DefaultAddress(sg.address, sizeof sg.address);
     if (!sg.address[0]) load_address();
+    if (Settings_GetStr("RejoinMatch", "")[0])
+        sg.rejoin_until_ms = SDL_GetTicks64() + (uint64_t)TAK_ROOM_TIMEOUT_MAX * 1000u;
     if (sg.address[0]) {
         /* A browser came from somewhere, so there is an address to try
          * and the player never has to know its name. Whether anything
@@ -1007,7 +1013,22 @@ int SelectGame_Tick(TAK_Platform *platform, float dt) {
     if (!sg.open || !sg.rt) return GAMESTATE_MENU;
 
     NetSession_Tick(SDL_GetTicks64());
-    if (NetSession_State() == NET_SESSION_FAILED) {
+    take_events(platform);
+    /* After the events, so a failure's own words are the ones left. */
+    uint64_t now_ms = SDL_GetTicks64();
+    int failed = NetSession_State() == NET_SESSION_FAILED;
+    if (!failed) sg.failure_told = 0;
+    if (failed && sg.address[0] && now_ms < sg.rejoin_until_ms &&
+        Settings_GetStr("RejoinMatch", "")[0]) {
+        if (!sg.rejoin_next_ms) {
+            sg.rejoin_next_ms = now_ms + 3000u;
+            set_status("Reconnecting to your game...");
+        } else if (now_ms >= sg.rejoin_next_ms) {
+            sg.rejoin_next_ms = 0;
+            connect_to(sg.address);
+        }
+    } else if (failed && !sg.failure_told) {
+        sg.failure_told = 1;
         if (sg.tried_default) {
             /* The page's own origin answered nothing. That is not a
              * thing the player did, and "the connection closed" tells
@@ -1021,7 +1042,6 @@ int SelectGame_Tick(TAK_Platform *platform, float dt) {
             if (why && why[0]) set_status(why);
         }
     }
-    take_events(platform);
     if (ModFetch_Changed()) set_status(ModFetch_Text());
     if (sg.next_state != GAMESTATE_SELECT_GAME) {
         int next = sg.next_state;

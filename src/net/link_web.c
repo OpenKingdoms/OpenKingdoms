@@ -216,7 +216,13 @@ void TAK_NetLink_Pump(TAK_NetClient *c, uint64_t now_ms) {
         g_link.in_len -= off;
     }
 
-    if (g_link.state != TAK_LINK_OPEN) return;
+    if (g_link.state != TAK_LINK_OPEN) {
+        /* Closed under the game. The client hears of it as a native
+         * one does, or a match stands still without a word. */
+        if (g_link.state == TAK_LINK_FAILED && c->state != TAK_NC_REFUSED)
+            TAK_NetClient_OnClose(c);
+        return;
+    }
 
     uint8_t msg[TAK_NET_FRAME_MAX];
     size_t n;
