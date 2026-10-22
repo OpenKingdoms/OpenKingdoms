@@ -10930,6 +10930,7 @@ void Units_RecomputeEconomy(struct GameWorld *world) {
 static void unit_remove_now(int handle) {
     Unit *u = &g_units[handle];
     if (u->alive == UNIT_ALIVE_DEAD) return;
+    g_selection_count = slot_list_drop(g_selection, g_selection_count, handle);
     if (u->alive == UNIT_ALIVE_ACTIVE) {
         occ_lift(handle);
     }
@@ -11015,6 +11016,9 @@ uint32_t Units_DebugFramesLost(int player_id) {
  * (legacy:227119-227144, 227346). */
 static void apply_killed_as(Unit *t, int t_idx, int bursts) {
     if (t->alive != 1) return;
+    /* The orders panel is the selected units still standing, so a death
+     * leaves the selection (legacy:153469-153474). */
+    g_selection_count = slot_list_drop(g_selection, g_selection_count, t_idx);
     t->death_blast = bursts ? unit_death_blast_for(t) : 0;
     if (t->under_construction && t->player_id >= 1 &&
         t->player_id <= TAK_MAX_PLAYERS) {
