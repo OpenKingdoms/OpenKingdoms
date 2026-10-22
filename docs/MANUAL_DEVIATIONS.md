@@ -2283,6 +2283,27 @@ Format per entry:
   (legacy:127856-127884, legacy:128007).
   docs/notes/2026-10-02-cleanup-completion-effect.md.
 
+## D-045: Radar and sight jamming, tags for mods
+
+- Change: two unit tags the original never reads, `radardistancejam`
+  and `sightdistancejam`, radii in world pixels that no shipped unit
+  sets (docs/MODDING.md). Within an enemy radar jammer's radius a unit
+  gets no radar blip. Within an enemy sight jammer's radius the ground
+  goes back to explored for that player's sight, all but the nine cells
+  round each of its own units, and its units cannot see or pick targets
+  there. A jammer works while it is finished and alive, and with
+  `onoffable` only while it is on. It never jams its own side or its
+  allies.
+- Why: a playtester asked for Total Annihilation's radar jamming and
+  for sight jamming (#319). The original has neither, so the base game
+  is unchanged. Sight jamming changes each seat's fog, which the
+  simulation and the computer players read, so it is simulation state
+  and in the hash and saves through the fog layers. Radar jamming, like
+  radar, is drawing only. The nine cells are the ones the original's
+  stamp lights round a unit whatever its sight (legacy:167402).
+- Citation: the manual is silent. Radar itself is the original's
+  (legacy:208642-208655, docs/notes/2026-10-21-radar.md).
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

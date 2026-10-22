@@ -539,8 +539,10 @@ int Units_IsVisibleToLocalPlayer(const Unit *u) {
  * player's unit within radardistance of a finished unit of the
  * viewer's own, cloaked ones apart, and only the minimap draws the mark
  * (legacy:208642-208655, legacy:208580-208590). The circle is flat, on
- * world positions (legacy:220374-220455). */
+ * world positions (legacy:220374-220455). radardistancejam is ours, for
+ * mods: what stands within an enemy jammer's radius stays off it. */
 static uint8_t  g_radar_bits[(TAK_MAX_UNITS + 7) / 8];
+static int      g_radar_jam[TAK_MAX_UNITS];
 static int      g_radar_cand[TAK_MAX_UNITS];
 static uint32_t g_radar_tick;
 static int      g_radar_viewer;
@@ -558,6 +560,14 @@ static void radar_build(int viewer) {
     g_radar_viewer = viewer;
     g_radar_built = 1;
     if (viewer < 1 || viewer > TAK_MAX_PLAYERS) return;
+    int nj = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *j = &g_units[i];
+        const UnitDef *d = Units_GetDef(j->def_idx);
+        if (d && d->radar_jam_distance > 0 && Unit_JamsNow(j, d) &&
+            unit_players_are_enemies(viewer, j->player_id))
+            g_radar_jam[nj++] = i;
+    }
     for (int i = 0; i < g_unit_count; i++) {
         const Unit *s = &g_units[i];
         if (s->player_id != viewer || s->alive != UNIT_ALIVE_ACTIVE ||
@@ -576,7 +586,12 @@ static void radar_build(int viewer) {
             if (t->alive != UNIT_ALIVE_ACTIVE || t->player_id == viewer ||
                 t->cloaked || (g_radar_bits[ti >> 3] & (1u << (ti & 7))) ||
                 !within_px(s, t, r)) continue;
-            g_radar_bits[ti >> 3] |= (uint8_t)(1u << (ti & 7));
+            int jammed = 0;
+            for (int q = 0; q < nj && !jammed; q++) {
+                const Unit *j = &g_units[g_radar_jam[q]];
+                jammed = within_px(j, t, Units_GetDef(j->def_idx)->radar_jam_distance);
+            }
+            if (!jammed) g_radar_bits[ti >> 3] |= (uint8_t)(1u << (ti & 7));
         }
     }
 }
@@ -7459,6 +7474,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->max_health     = TDF_ReadInt(tdf, "maxdamage", 0);
     out->sight_distance = TDF_ReadInt(tdf, "sightdistance", 0);
     out->radar_distance = TDF_ReadInt(tdf, "radardistance", 0);
+    out->radar_jam_distance = TDF_ReadInt(tdf, "radardistancejam", 0);
+    out->sight_jam_distance = TDF_ReadInt(tdf, "sightdistancejam", 0);
     out->can_fly        = TDF_ReadInt(tdf, "canfly", 0);
     out->cruise_alt     = TDF_ReadInt(tdf, "cruisealt", 0);
     out->hover_attack   = (uint8_t)(TDF_ReadInt(tdf, "hoverattack", 0) & 1);

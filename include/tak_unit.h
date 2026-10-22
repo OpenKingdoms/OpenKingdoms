@@ -475,6 +475,10 @@ typedef struct UnitDef {
     int32_t  max_health;       /* maxdamage; 0 if not specified */
     int32_t  sight_distance;   /* world pixels; 0 if not specified */
     int32_t  radar_distance;   /* radardistance; radar-only detection radius */
+    /* radardistancejam and sightdistancejam, in world pixels: tags of
+     * our own for mods, which no shipped unit sets (docs/MODDING.md). */
+    int32_t  radar_jam_distance;
+    int32_t  sight_jam_distance;
     int32_t  can_fly;          /* canfly; needed for air target filters */
     int32_t  cruise_alt;       /* cruisealt: flight height above ground (legacy:162970) */
     /* hoverattack, hoverattackdistance and hoverattackaltitude, the last
@@ -1724,6 +1728,13 @@ int               Units_IsVisibleToLocalPlayer(const Unit *u);
  * and the full screen radar. Drawing only: the main view, picking and
  * the simulation never read it (legacy:208470-208526). */
 int               Units_RadarShowsToLocalPlayer(const Unit *u);
+
+/* A jammer works while it is finished and alive, and one that can be
+ * switched on and off only while it is on. */
+static inline int Unit_JamsNow(const Unit *u, const UnitDef *d) {
+    return u && d && u->alive == UNIT_ALIVE_ACTIVE && !u->under_construction &&
+           (!d->onoffable || u->cob_activation);
+}
 
 /* Does seat player_id see unit `handle`, by the test its units take
  * targets with and its screen draws by (legacy:206797)? */

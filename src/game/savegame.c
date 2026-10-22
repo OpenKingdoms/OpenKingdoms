@@ -813,6 +813,12 @@ static uint64_t hash_unit_def(const UnitDef *d) {
     h = h64_i32(h, d->max_health);
     h = h64_i32(h, d->sight_distance);
     h = h64_i32(h, d->radar_distance);
+    /* The jam tags only a mod sets join only when set, so a save of an
+     * unmodded battle keeps its hashes. */
+    if (d->radar_jam_distance || d->sight_jam_distance) {
+        h = h64_i32(h, d->radar_jam_distance);
+        h = h64_i32(h, d->sight_jam_distance);
+    }
     h = h64_i32(h, d->can_fly);
     h = h64_i32(h, d->cruise_alt);
     h = h64_i32(h, d->activate_when_built);
