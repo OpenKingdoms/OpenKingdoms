@@ -7796,6 +7796,24 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->bmcode    = TDF_ReadInt(tdf, "bmcode",    0);
     out->is_gate   = TDF_ReadInt(tdf, "gate",      0);
     out->onoffable = TDF_ReadInt(tdf, "onoffable", 0);
+    /* The three auras. An absent section is a scale of 1 with no
+     * radius (legacy:163515-163527, legacy:231765-231795). */
+    static const char *const aura_sections[3] = {
+        "AdjustArmor", "AdjustAttack", "AdjustJoy"
+    };
+    for (int k = 0; k < 3; k++) {
+        UnitAura *a = &out->auras[k];
+        a->adjustment = 1.0f;
+        a->radius = 0;
+        a->edge = 0.0f;
+        a->affects_enemy = 0;
+        if (TDF_PushSection(tdf, aura_sections[k]) != 0) continue;
+        a->adjustment = TDF_ReadFloat(tdf, "Adjustment", 1.0f);
+        a->radius = TDF_ReadInt(tdf, "Radius", 0);
+        a->edge = TDF_ReadFloat(tdf, "EdgeEffectiveness", 0.0f);
+        a->affects_enemy = TDF_ReadInt(tdf, "AffectsEnemy", 0) != 0;
+        TDF_PopSection(tdf);
+    }
     out->yardmap = Occ_BuildYardmap(TDF_ReadString(tdf, "yardmap", ""),
                                     out->bmcode,
                                     out->footprint_x, out->footprint_z);
@@ -9612,6 +9630,8 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->heal_frac_256 = 0;
     u->attack_pct = 100;
     u->armor_pct = 100;
+    u->aura_attack = 1.0f;
+    u->aura_armor = 1.0f;
     u->cob_yard_open = 0;
     u->cob_bugger_off = 0;
     u->magic_death = 0;
@@ -10044,6 +10064,19 @@ static int32_t unit_scaled_damage(int shooter, const Unit *victim, int32_t damag
     if (victim) armor_level = Units_GetVeteranLevel((int)(victim - g_units));
     int32_t hit = Units_ScaleDamageVeteran(attack, victim ? victim->armor_pct : 100,
                                            attack_level, armor_level, damage);
+    /* The auras on both: a live shooter's attack, the victim's armour,
+     * an armour of 0 or less taken as 1, before the roll
+     * (legacy:245324-245343). */
+    float aura = 1.0f;
+    if (shooter >= 0 && shooter < g_unit_count &&
+        g_units[shooter].alive == UNIT_ALIVE_ACTIVE && g_units[shooter].aura_attack > 0.0f)
+        aura = g_units[shooter].aura_attack;
+    if (victim && victim->aura_armor > 0.0f) aura /= victim->aura_armor;
+    if (aura != 1.0f && hit > 0) {
+        float scaled = (float)hit * aura;
+        hit = scaled >= 2147483520.0f ? 0x7fffffff : (int32_t)scaled;
+        if (hit < 1) hit = 1;
+    }
     /* +DoubleShot and +HalfShot, the last step of the original's roll
      * (legacy:245333-245342). */
     const GameWorld *w = World_Get();
@@ -16273,9 +16306,10 @@ int Units_GateState(int handle) {
     const Unit *u = &g_units[handle];
     if (u->alive != UNIT_ALIVE_ACTIVE) return -1;
     const UnitDef *d = Units_GetDef(u->def_idx);
-    /* The order buttons exist for onoffable defs (legacy:150430-150436);
-     * this API is scoped to gates. */
-    if (!d || !d->is_gate || !d->onoffable) return -1;
+    /* The order buttons exist for every onoffable def, a gate or such as
+     * the Sacred Fire, and light the state it is in (legacy:150430-150436,
+     * legacy:151449-151470). */
+    if (!d || !d->onoffable) return -1;
     return u->cob_activation ? 1 : 0;
 }
 
@@ -16283,9 +16317,9 @@ void Units_SetGateOpen(int handle, int open) {
     if (Units_GateState(handle) < 0) return;
     Unit *u = &g_units[handle];
     gate_issue_order(u, open);
-    /* Legacy re-evaluates on the next brain tick, which would undo a
-     * player's order immediately. Hold it long enough to be visible. */
-    u->gate_hold = GATE_HOLD_TICKS;
+    /* Legacy re-evaluates a gate on the next brain tick, which would undo
+     * a player's order immediately. Hold it long enough to be visible. */
+    if (Units_GetDef(u->def_idx)->is_gate) u->gate_hold = GATE_HOLD_TICKS;
 }
 
 /* The on/off order takes any onoffable unit, a gate or not, and runs its
@@ -16356,6 +16390,94 @@ static void magic_death_tick(Unit *u, int i) {
     fprintf(stderr, "Units_TickEngines: unit %d despawned (whiteout done)\n", i);
 }
 
+/* A repair's applicator (legacy:39540-39580): `amt` build work against
+ * the target's buildtime is that share of its whole health, paid by
+ * `player` at its buildcost, and nothing for a unit already whole. */
+static void unit_heal_paid(int player, Unit *t, float amt) {
+    const UnitDef *td = Units_GetDef(t->def_idx);
+    if (!td || t->health >= t->max_health || amt <= 0.0f) return;
+    float bt = td->buildtime > 0.0f ? td->buildtime : 100.0f;
+    float cost = td->build_cost > 0 ? (float)td->build_cost : bt;
+    GameWorld *w = World_Get();
+    float paid = w ? Economy_SpendAtShare(&w->economy, player, cost * amt / bt) : 0.0f;
+    if (paid <= 0.0f) return;
+    float hp = (float)t->max_health * (paid / cost);
+    /* Past full is paid for and lost. Clamped first, a heal of a god's
+     * worth cannot overflow the fixed point. */
+    float missing = (float)(t->max_health - t->health);
+    if (hp > missing) hp = missing;
+    int64_t acc = (int64_t)t->heal_frac_256 * 256 + (int64_t)(hp * 65536.0f);
+    t->health += (int32_t)(acc >> 16);
+    t->heal_frac_256 = (uint8_t)((acc >> 8) & 0xff);
+    if (t->health > t->max_health) t->health = t->max_health;
+}
+
+/* How strongly an aura reaches a unit `d2` px squared away: its edge
+ * effectiveness at the centre, rising to the whole at its radius
+ * (legacy:237131-237139). */
+static float aura_reach(const UnitAura *a, int64_t d2) {
+    float d = sqrtf((float)d2);
+    return (1.0f - a->edge) * (d / (float)a->radius) + a->edge;
+}
+
+/* `t` is in the aura of `s`: another unit within its radius, on its own
+ * side and allies or, for an aura that affects enemies, on the other
+ * side alone (legacy:220374-220459, legacy:237117-237129). */
+static int aura_takes(const Unit *s, const UnitAura *a, const Unit *t, int64_t *out_d2) {
+    if (t == s || (t->alive != UNIT_ALIVE_ACTIVE && t->alive != UNIT_ALIVE_TRANSPORTED))
+        return 0;
+    int64_t dx = (int64_t)t->world_x - s->world_x, dy = (int64_t)t->world_y - s->world_y;
+    int64_t d2 = dx * dx + dy * dy;
+    if (d2 > (int64_t)a->radius * a->radius) return 0;
+    int allied = !unit_players_are_enemies(s->player_id, t->player_id);
+    if (allied == (a->affects_enemy != 0)) return 0;
+    *out_d2 = d2;
+    return 1;
+}
+
+/* Each frame attack and armour start from 1 and each aura in reach scales
+ * them by (adjustment - 1) x reach + 1 (legacy:235814-235890). Once a
+ * second AdjustJoy heals, split over all it reaches (legacy:237192-237228). */
+static void tick_auras(void) {
+    for (int i = 0; i < g_unit_count; i++) {
+        g_units[i].aura_attack = 1.0f;
+        g_units[i].aura_armor = 1.0f;
+    }
+    int joy_frame = (g_sim_tick % 60u) == 0u;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *s = &g_units[i];
+        if (s->alive != UNIT_ALIVE_ACTIVE || s->under_construction) continue;
+        const UnitDef *d = Units_GetDef(s->def_idx);
+        if (!d) continue;
+        for (int k = UNIT_AURA_ARMOR; k <= UNIT_AURA_ATTACK; k++) {
+            const UnitAura *a = &d->auras[k];
+            if (a->radius <= 0) continue;
+            for (int j = 0; j < g_unit_count; j++) {
+                Unit *t = &g_units[j];
+                int64_t d2 = 0;
+                if (!aura_takes(s, a, t, &d2)) continue;
+                float v = (a->adjustment - 1.0f) * aura_reach(a, d2) + 1.0f;
+                if (k == UNIT_AURA_ARMOR) t->aura_armor *= v;
+                else t->aura_attack *= v;
+            }
+        }
+        const UnitAura *a = &d->auras[UNIT_AURA_JOY];
+        if (!joy_frame || a->radius <= 0) continue;
+        int count = 0;
+        for (int pass = 0; pass < 2; pass++) {
+            for (int j = 0; j < g_unit_count; j++) {
+                Unit *t = &g_units[j];
+                int64_t d2 = 0;
+                if (t->under_construction || !aura_takes(s, a, t, &d2)) continue;
+                if (pass == 0) count++;
+                else unit_heal_paid(s->player_id, t,
+                                    aura_reach(a, d2) * a->adjustment / (float)count);
+            }
+            if (count == 0) break;
+        }
+    }
+}
+
 void Units_TickEngines(void) {
     g_sim_tick++;
     g_sound_tick++;
@@ -16366,6 +16488,7 @@ void Units_TickEngines(void) {
     ugrid_rebuild();
     shot_flyers_rebuild();
     ships_rebuild();
+    tick_auras();
     /* Plans per tick. A* is a byte-array walk now (passability bitmap),
      * so this is cheap; keep it generous enough that a large squad
      * order does not queue for long. */

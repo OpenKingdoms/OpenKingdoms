@@ -433,6 +433,19 @@ int Units_EffectPicture(const ProjectileEffect *e);
 /* 1 when the local player sees the effect: its ground is in sight, and a
  * unit's flame or puff shows only while the unit does. */
 int Units_EffectShows(const struct GameWorld *world, const ProjectileEffect *e);
+/* An aura a unit casts round itself: its file's [AdjustArmor],
+ * [AdjustAttack] or [AdjustJoy] section (legacy:163515-163527), read as
+ * legacy:231765-231795. A radius of 0 is no aura. */
+typedef struct UnitAura {
+    float   adjustment;      /* a scale for armour and attack, a heal for joy */
+    int32_t radius;          /* px */
+    float   edge;            /* edgeeffectiveness */
+    uint8_t affects_enemy;   /* the other side only, else its own and allies */
+} UnitAura;
+
+#define UNIT_AURA_ARMOR  0
+#define UNIT_AURA_ATTACK 1
+#define UNIT_AURA_JOY    2
 
 typedef struct UnitDef {
     char     unitname[TAK_UNITDEF_NAME_MAX];   /* canonical id, e.g. "ARAKING" */
@@ -634,6 +647,7 @@ typedef struct UnitDef {
     int32_t  bmcode;
     int32_t  is_gate;
     int32_t  onoffable;
+    UnitAura auras[3];       /* UNIT_AURA_* */
     /* Set when any yardmap cell carries the sacred bit ('S',
      * legacy:163237): the building only stands on a sacred site. */
     int      yardmap_sacred;
@@ -1295,6 +1309,11 @@ typedef struct Unit {
      * the renderer reads each frame. NULL if the unit's def has no
      * cob_script. Allocated on Spawn, freed on death/clear. */
     CobEngine *cob;
+
+    /* What the auras round it scale its attack and its armour by this
+     * tick. Worked out afresh before any hit lands, so neither saved
+     * nor hashed. */
+    float      aura_attack, aura_armor;
 } Unit;
 
 /* ── UnitDef registry (static, per-world) ─────────────────────────── */
@@ -2448,17 +2467,17 @@ void              Units_CommandSetWeaponSlotSelected(int slot);
  * selection). Used by the HUD to highlight the active aggro button. */
 int               Units_GetSelectedAggroMode(void);
 
-/* ── Gate open/close order ────────────────────────────────────────
+/* ── Activate / deactivate order ──────────────────────────────────
  *
  * The legacy order panel shows an Active / Inactive button pair for
  * any `onoffable` def and issues the ACTIVATE / DEACTIVATE order
  * (legacy:151449-151470), which flips the unit's activation bit and
  * runs the COB Activate / Deactivate thread (legacy:236399-236406).
- * A gate's Activate opens its yard, Deactivate closes it.
+ * A gate's Activate opens its yard, the Sacred Fire's lights its fire.
  *
- * Units_GateState: 1 open (active), 0 closed, -1 if the handle is not
- * an onoffable gate. Units_SetGateOpen issues the order and holds it
- * briefly against the auto-open scan. */
+ * Units_GateState: 1 active (a gate open), 0 not, -1 if the handle is
+ * not an onoffable unit. Units_SetGateOpen issues the order, and holds
+ * a gate's briefly against the auto-open scan. */
 int               Units_GateState(int handle);
 void              Units_SetGateOpen(int handle, int open);
 

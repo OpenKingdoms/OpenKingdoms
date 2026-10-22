@@ -15925,11 +15925,10 @@ TEST(a_nanoframe_does_not_self_heal) {
     corpse_shutdown(&platform);
 }
 
-/* A worker's repair runs off the target's buildtime, the same divisor
- * the build itself uses, and the builder's workertime is the numerator
- * (legacy:32674). It is not healtime: healtime is the free self repair
- * and is a couple of hundred times slower. */
-TEST(a_priest_repairs_a_swordsman_in_its_build_time) {
+/* A repair is workertime over the target's buildtime, the build's own
+ * divisor (legacy:32674), not healtime, the free self repair a couple of
+ * hundred times slower. A Mage Builder works it. */
+TEST(a_builder_repairs_a_swordsman_in_its_build_time) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
     if (boot_rc == 1) return;
@@ -15939,7 +15938,7 @@ TEST(a_priest_repairs_a_swordsman_in_its_build_time) {
     world->economy.players[0].max_mana = 1000000;
     world->economy.players[0].mana = 900000.0f;
 
-    int pdef = Units_FindDefByName("ARAPRIES");
+    int pdef = Units_FindDefByName("ARABUILD");
     int sdef = Units_FindDefByName("ARASWORD");
     ASSERT(pdef >= 0 && sdef >= 0);
     const UnitDef *pd = Units_GetDef(pdef);
@@ -15947,6 +15946,7 @@ TEST(a_priest_repairs_a_swordsman_in_its_build_time) {
     ASSERT_NOT_NULL(pd);
     ASSERT_NOT_NULL(sd);
     ASSERT(pd->worker_time > 0.0f && sd->buildtime > 0.0f);
+    ASSERT_EQ_INT(0, pd->auras[UNIT_AURA_JOY].radius);
 
     int unit_count = 0;
     const Unit *units = Units_GetActive(&unit_count);
@@ -15971,7 +15971,7 @@ TEST(a_priest_repairs_a_swordsman_in_its_build_time) {
         (sd->heal_time * 8.0f / 30.0f) / sd->buildtime * (float)max_hp;
     float per_tick = repair_per_tick + self_per_call / 16.0f;
     int expect_ticks = (int)((float)(max_hp - 1) / per_tick);
-    /* A swordsman costs ninety-nine seconds of build work and a priest
+    /* A swordsman costs ninety-nine seconds of build work and a builder
      * brings ten of them a second, so this is about ten seconds. */
     ASSERT(expect_ticks > 60 && expect_ticks < 60 * 20);
 
@@ -30873,7 +30873,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_unit_with_zero_healtime_never_heals);
     RUN_UI_TEST(self_heal_stops_at_maximum);
     RUN_UI_TEST(a_nanoframe_does_not_self_heal);
-    RUN_UI_TEST(a_priest_repairs_a_swordsman_in_its_build_time);
+    RUN_UI_TEST(a_builder_repairs_a_swordsman_in_its_build_time);
     RUN_UI_TEST(a_raised_enemy_joins_the_raiser);
     RUN_UI_TEST(a_raise_that_cannot_spawn_leaves_the_body);
     RUN_UI_TEST(an_ai_player_orders_a_raise_for_itself);

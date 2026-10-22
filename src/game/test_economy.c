@@ -96,6 +96,19 @@ static void test_fractional_spend_available(void) {
     EXPECT(fabsf(paid) < 0.001f);
 }
 
+/* A heal draws at the share and never lowers it, so a starved heal
+ * leaves the next tick's builders their whole share (legacy:235952-235977). */
+static void test_a_heal_never_lowers_the_share(void) {
+    EconomyState eco;
+    Economy_Init(&eco);
+    Economy_OnMonarchSpawn(&eco, 1, 1000, 0.0f);
+    eco.players[0].mana = 30.0f;
+    float paid = Economy_SpendAtShare(&eco, 1, 500.0f);
+    EXPECT(fabsf(paid - 30.0f) < 0.001f);
+    Economy_Tick(&eco);
+    EXPECT(Economy_GetShare(&eco, 1) > 0.99f);
+}
+
 /* Issue #252. A barracks was reported building nothing at all beside a
  * second one, at an empty pool with income still coming in. The
  * treasury used to pay whoever asked first, so the first consumer took
@@ -214,6 +227,7 @@ int main(void) {
     test_cap_clamp();
     test_insufficient_spend();
     test_fractional_spend_available();
+    test_a_heal_never_lowers_the_share();
     test_two_consumers_share_a_dry_pool();
     test_a_full_pool_pays_in_full();
     test_lodestone_adjust();

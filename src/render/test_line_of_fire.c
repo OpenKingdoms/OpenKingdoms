@@ -24,6 +24,7 @@
 #include "tak_sim_rand.h"
 #include "tak_unit.h"
 #include "tak_world.h"
+#include "tak_economy.h"
 
 #include <SDL.h>
 #include <stdio.h>
@@ -41,7 +42,7 @@ enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_FLYPICK, LF_BLADEPICK, LF_BROAD, LF_SWIRL, LF_CANNON, LF_TORCH,
        LF_SWEEPER, LF_BOMBER, LF_STURDY, LF_TWISTER, LF_TORNADO,
        LF_ROVEROAM, LF_HAWK, LF_MASON, LF_FREEZER, LF_ICEMAN, LF_BREATHER,
-       LF_TURRET, LF_STUNNER, LF_RADAR, LF_JAMMER, LF_DEF_COUNT };
+       LF_TURRET, LF_STUNNER, LF_RADAR, LF_JAMMER, LF_PRIEST, LF_PATIENT, LF_SHAMAN, LF_FIRE, LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
 #define LF_SX   800
@@ -402,6 +403,20 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     lf_fill(&defs[LF_JAMMER], "TESTJAM", 1.2f, 300);
     defs[LF_JAMMER].sight_distance = 100;
     defs[LF_JAMMER].radar_jam_distance = 150;
+    /* An acolyte's healing, a unit 1000 build work deep that costs 100 to
+     * build, and a shaman's armour and attack, all as the files have them. */
+    lf_fill(&defs[LF_PRIEST], "TESTPRIEST", 1.2f, 1000);
+    defs[LF_PRIEST].auras[UNIT_AURA_JOY] = (UnitAura){ 250.0f, 200, 0.6f, 0 };
+    lf_fill(&defs[LF_PATIENT], "TESTPATIENT", 1.2f, 1000);
+    defs[LF_PATIENT].buildtime = 1000.0f;
+    defs[LF_PATIENT].build_cost = 100;
+    lf_fill(&defs[LF_SHAMAN], "TESTSHAMAN", 1.2f, 1000);
+    defs[LF_SHAMAN].auras[UNIT_AURA_ARMOR] = (UnitAura){ 1.2f, 200, 0.1f, 0 };
+    defs[LF_SHAMAN].auras[UNIT_AURA_ATTACK] = (UnitAura){ 1.2f, 200, 0.1f, 0 };
+    /* A Sacred Fire: onoffable, no gate. */
+    lf_fill(&defs[LF_FIRE], "TESTFIRE", 0.0f, 1000);
+    defs[LF_FIRE].onoffable = 1;
+    defs[LF_FIRE].auras[UNIT_AURA_JOY] = (UnitAura){ 45.0f, 90, 1.0f, 0 };
 
     FeatureDef fdefs[FD_COUNT];
     memset(fdefs, 0, sizeof fdefs);
@@ -3069,6 +3084,129 @@ TEST(a_shot_at_the_ground_leaves_at_the_scripts_release) {
     ASSERT_EQ_INT(-1, lf_draw_to_shot_ex(1, 1));
 }
 
+/* Ticks until the next of the original's every 30 frames. */
+static void lf_to_joy_frame(void) {
+    while ((Units_SimTick() + 1u) % 60u != 0u) Units_TickEngines();
+}
+
+/* An acolyte heals its AdjustJoy radius once a second, as build work
+ * split over all it reaches and paid at each one's buildcost
+ * (legacy:235862-235882, legacy:237192-237228, legacy:39540-39580). */
+TEST(an_acolyte_heals_its_side_at_the_originals_rate) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    Economy_AdjustCaps(&w->economy, 1, 100000, 0.0f);
+    int priest = lf_spawn(LF_PRIEST, 1, LF_SX, LF_ROW);
+    int near = lf_spawn(LF_PATIENT, 1, LF_SX + 100, LF_ROW);
+    int far = lf_spawn(LF_PATIENT, 1, LF_SX + 300, LF_ROW);
+    int foe = lf_spawn(LF_PATIENT, 2, LF_SX, LF_ROW + 100);
+    ASSERT(priest >= 0 && near >= 0 && far >= 0 && foe >= 0);
+    Units_SetHealthPercent(near, 10);
+    Units_SetHealthPercent(far, 10);
+    Units_SetHealthPercent(foe, 10);
+    lf_to_joy_frame();
+    int32_t mana = Economy_GetMana(&w->economy, 1);
+    Units_TickEngines();
+    /* 100 px of a 200 px radius reaches 0.6 + 0.4 x 0.5 = 0.8: 200 build
+     * work, a fifth of a 1000 deep unit, 200 of its 1000 hp for 20 mana. */
+    int healed = lf_unit(near)->health - 100;
+    int spent = mana - Economy_GetMana(&w->economy, 1);
+    printf("(one in reach: +%d hp for %d mana) ", healed, spent);
+    ASSERT_EQ_INT(200, healed);
+    ASSERT(spent >= 19 && spent <= 21);
+    ASSERT_EQ_INT(100, lf_unit(far)->health);
+    ASSERT_EQ_INT(100, lf_unit(foe)->health);
+    /* A second in reach, at the edge, takes half of 250 at full reach
+     * and the first half its 200: a healer's work is split. */
+    Units_SetHealthPercent(near, 10);
+    Unit *fu = (Unit *)lf_unit(far);
+    fu->world_x = LF_SX - 200;
+    lf_to_joy_frame();
+    Units_TickEngines();
+    int a = lf_unit(near)->health - 100, b = lf_unit(far)->health - 100;
+    printf("(two in reach: +%d and +%d) ", a, b);
+    ASSERT_EQ_INT(100, a);
+    ASSERT_EQ_INT(125, b);
+    /* Nothing between the beats. */
+    int before = lf_unit(near)->health;
+    for (int i = 0; i < 59; i++) Units_TickEngines();
+    ASSERT_EQ_INT(before, lf_unit(near)->health);
+    /* A tenth of a 400000 deep unit is a heal past 32767 hit points,
+     * which must not overflow into a wound. */
+    Unit *nu = (Unit *)lf_unit(near);
+    nu->max_health = 400000;
+    nu->health = 100;
+    lf_to_joy_frame();
+    Units_TickEngines();
+    printf("(a deep unit: %d hp) ", lf_unit(near)->health);
+    ASSERT(lf_unit(near)->health >= 40000);
+    lf_end();
+}
+
+/* Any onoffable unit takes the activate and deactivate order, not a gate
+ * alone (legacy:150430-150436, legacy:151449-151470). Its aura is no
+ * part of it: the Sacred Fire heals on or off (legacy:235838-235882). */
+TEST(a_sacred_fire_takes_the_onoff_order_and_heals_either_way) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    Economy_AdjustCaps(&w->economy, 1, 100000, 0.0f);
+    int fire = lf_spawn(LF_FIRE, 1, LF_SX, LF_ROW);
+    int near = lf_spawn(LF_PATIENT, 1, LF_SX + 60, LF_ROW);
+    ASSERT(fire >= 0 && near >= 0);
+    ASSERT_EQ_INT(0, Units_GateState(fire));
+    Units_SetGateOpen(fire, 1);
+    ASSERT_EQ_INT(1, Units_GateState(fire));
+    Units_SetGateOpen(fire, 0);
+    ASSERT_EQ_INT(0, Units_GateState(fire));
+    Units_SetHealthPercent(near, 10);
+    lf_to_joy_frame();
+    Units_TickEngines();
+    printf("(off, beside it: +%d hp) ", lf_unit(near)->health - 100);
+    ASSERT_EQ_INT(45, lf_unit(near)->health - 100);
+    lf_end();
+}
+
+/* A shaman's armour and attack scale what is in its radius by
+ * (adjustment - 1) times its reach plus 1, each tick (legacy:235838-235860,
+ * legacy:237112-237188), and leave everything else as it was. */
+TEST(a_shamans_auras_scale_armour_and_attack) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int shaman = lf_spawn(LF_SHAMAN, 1, LF_SX, LF_ROW);
+    int ally = lf_spawn(LF_BOLT, 1, LF_SX + 100, LF_ROW);
+    int lone = lf_spawn(LF_BOLT, 1, LF_SX + 600, LF_ROW + 600);
+    int foe = lf_spawn(LF_STURDY, 2, LF_SX + 100, LF_ROW + 20);
+    ASSERT(shaman >= 0 && ally >= 0 && lone >= 0 && foe >= 0);
+    Units_TickEngines();
+    /* 0.1 + 0.9 x 0.5 = 0.55 reach, so 1 + 0.2 x 0.55 = 1.11. */
+    float atk = lf_unit(ally)->aura_attack, arm = lf_unit(ally)->aura_armor;
+    printf("(ally attack x%.3f armour x%.3f, foe x%.3f) ", atk, arm, lf_unit(foe)->aura_armor);
+    ASSERT(atk > 1.109f && atk < 1.111f);
+    ASSERT(arm > 1.109f && arm < 1.111f);
+    ASSERT(lf_unit(lone)->aura_attack == 1.0f);
+    ASSERT(lf_unit(foe)->aura_armor == 1.0f);
+    ASSERT(lf_unit(shaman)->aura_armor == 1.0f);
+    /* The ally's bolt of 40 hits for 44, the lone one's for 40, and an
+     * enemy bolt on the ally for 36. */
+    int32_t hp = lf_unit(foe)->health;
+    ASSERT(lf_fire(ally, foe, 120).fired);
+    int32_t by_ally = hp - lf_unit(foe)->health;
+    hp = lf_unit(foe)->health;
+    ASSERT(lf_fire(lone, foe, 120).fired);
+    int32_t by_lone = hp - lf_unit(foe)->health;
+    int shooter = lf_spawn(LF_BOLT, 2, LF_SX + 300, LF_ROW);
+    ASSERT(shooter >= 0);
+    hp = lf_unit(ally)->health;
+    ASSERT(lf_fire(shooter, ally, 120).fired);
+    int32_t on_ally = hp - lf_unit(ally)->health;
+    printf("(hits: %d from the ally, %d from the lone one, %d on the ally) ",
+           by_ally, by_lone, on_ally);
+    ASSERT_EQ_INT(44, by_ally);
+    ASSERT_EQ_INT(40, by_lone);
+    ASSERT_EQ_INT(36, on_ally);
+    lf_end();
+}
+
 /* A unit holding position shoots what comes into reach and lets it go
  * when it walks off. One that maneuvers goes after it. */
 static int32_t lf_after_walk_off(int def, int *out_target) {
@@ -4023,6 +4161,9 @@ int main(int argc, char **argv) {
     RUN(a_weapon_fires_once_its_script_says_aimed_and_aims_while_it_reloads);
     RUN(a_weapon_its_script_never_says_aimed_fires_after_two_seconds_stopped_in_reach);
     RUN(a_shot_at_the_ground_leaves_at_the_scripts_release);
+    RUN(an_acolyte_heals_its_side_at_the_originals_rate);
+    RUN(a_shamans_auras_scale_armour_and_attack);
+    RUN(a_sacred_fire_takes_the_onoff_order_and_heals_either_way);
     RUN(a_unit_holding_position_does_not_chase);
     RUN(a_fight_of_its_own_looks_again_once_a_wait);
     RUN(a_unit_holding_position_or_ordered_never_looks_again);
