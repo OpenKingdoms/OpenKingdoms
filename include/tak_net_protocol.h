@@ -162,8 +162,9 @@
  * backs off only at a creep, and a flying builder steps out of crowded
  * air and builds on. 55: a shot drawn at an attack-ground point leaves at
  * the script's release, and is called off when the order's point moves
- * out of reach. */
-#define TAK_ENGINE_BUILD_ID           55
+ * out of reach. 56: a mod's sight jammer puts the fog back over the
+ * ground round it for its enemies. */
+#define TAK_ENGINE_BUILD_ID           56
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
