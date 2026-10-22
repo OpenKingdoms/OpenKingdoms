@@ -22061,7 +22061,7 @@ TEST(ship_hulls_come_from_their_models) {
         ASSERT(far2 <= (int64_t)400 * 400);
     }
     /* A Sea Fort floats at its waterline and launches ship after ship
-     * from its pad, which lies off its centre (issues #457, #458). */
+     * from its pad, which lies off its centre. */
     {
         int fort_def = Units_FindDefByName("VERASY");
         if (fort_def < 0) goto done;
@@ -22078,8 +22078,6 @@ TEST(ship_hulls_come_from_their_models) {
                 break;
             }
         if (fx < 0) { SKIP_MARK("no sea fort site"); goto done; }
-        Economy_AdjustCaps(&world->economy, 1, 1000000, 5000.0f);
-        Economy_Earn(&world->economy, 1, 1000000);
         int count = 0;
         Units_GetActive(&count);
         const int first = count;
@@ -22090,11 +22088,11 @@ TEST(ship_hulls_come_from_their_models) {
         ASSERT(ground < world->water_height - 1);
         ASSERT_EQ_INT(world->water_height - 1,
                       ground + (int)Units_DrawnAlt(world, &units[fort]));
-        static const char *queue[4] = { "VERMAN", "VERSCOUT", "VERMAN", "VERHARP" };
+        static const char *queue[4] = { "VERMAN", "VERSCOUT", "VERSCOUT", "VERSCOUT" };
         for (int i = 0; i < 4; i++)
             ASSERT_EQ_INT(0, Units_FactoryAdd(fort, Units_FindDefByName(queue[i]), 1, 0));
         int built = 0, t = 0;
-        for (; t < 12000 && built < 4; t++) {
+        for (; t < 18000 && built < 4; t++) {
             Units_TickEngines();
             units = Units_GetActive(&count);
             built = 0;

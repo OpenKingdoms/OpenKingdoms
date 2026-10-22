@@ -413,6 +413,7 @@ static int ship_hull_blocked(const UnitDef *d, int self, float margin,
 static int ship_hulls_apart(const UnitDef *d, int32_t x, int32_t y,
                             float heading, const UnitDef *e, int32_t ex,
                             int32_t ey, float eheading, float margin);
+static void ships_rebuild(void);
 static void ship_clear_pad(const Unit *f, int32_t pad_x, int32_t pad_y,
                            const UnitDef *pd);
 static int ship_lane_clear(const UnitDef *d, int self, int32_t x0, int32_t y0,
@@ -1239,8 +1240,8 @@ static float projectile_launch_pitch(float speed_ppt, float run,
 }
 
 /* A floater, or a building whose yard has no ground cell, which the
- * original places at its waterline (legacy:218897-218911,
- * legacy:39295-39301). */
+ * original puts up at its waterline (legacy:218971-218975, called at
+ * creation from legacy:219464-219481). */
 static int def_rides_sea(const UnitDef *d) {
     return d && (d->floater || d->yard_floats);
 }
@@ -6602,17 +6603,17 @@ static int factory_start_next(int fh) {
     return 1;
 }
 
-/* Water a yard keeps clear round its pad and its ships under way, in px
- * (M-012). */
+/* Water a yard keeps clear round its pad and its ships leaving it, and
+ * how far out a launch goes at most, in px (M-012). */
 #define SHIP_PAD_CLEAR    48.0f
+#define SHIP_LAUNCH_REACH 1280
 /* How far short of its point a ship can stop: its route ends on the last
  * cell's placement when the point is not one. */
 #define SHIP_LAUNCH_SLACK 48.0f
-/* How far round the pad the side's ships under way count, in px. */
-#define SHIP_YARD_WATER   768
 
 /* What a yard's ships keep clear of: the next hull to go up on its pad
- * and the side's ships under way near the pad (M-012). */
+ * and its launches, the side's ships on the pad or bound for a point in
+ * launch reach that is not the rally point (M-012). */
 typedef struct ShipYardWay {
     const UnitDef *pd;
     int32_t pad_x, pad_y;
@@ -6630,17 +6631,23 @@ static void ship_yard_way(const Unit *f, int32_t pad_x, int32_t pad_y,
     yw->n_movers = 0;
     for (int k = 0; k < g_ship_count && yw->n_movers < 32; k++) {
         const Unit *o = &g_units[g_ships[k]];
-        if (o->player_id != f->player_id || o->carried_by >= 0 ||
-            o->cmd_kind == UNIT_CMD_NONE || o->under_construction ||
-            abs(o->world_x - pad_x) > SHIP_YARD_WATER ||
-            abs(o->world_y - pad_y) > SHIP_YARD_WATER)
+        const UnitDef *od = def_hull(o->def_idx);
+        if (!od || o->alive != UNIT_ALIVE_ACTIVE || o->player_id != f->player_id ||
+            o->carried_by >= 0 || o->cmd_kind != UNIT_CMD_MOVE ||
+            o->under_construction)
+            continue;
+        int launch = abs(o->cmd_x - f->world_x) <= SHIP_LAUNCH_REACH &&
+                     abs(o->cmd_y - f->world_y) <= SHIP_LAUNCH_REACH &&
+                     !(f->rally_set && o->cmd_x == f->rally_x && o->cmd_y == f->rally_y);
+        if (!launch && ship_hulls_apart(od, o->world_x, o->world_y, o->heading, pd,
+                                        pad_x, pad_y, yw->pad_heading, SHIP_PAD_CLEAR))
             continue;
         yw->movers[yw->n_movers++] = g_ships[k];
     }
 }
 
 /* Whether ship d of handle self at (x, y) comes within clear px of the
- * pad's next hull or of a ship under way. */
+ * pad's next hull or of a ship leaving the pad. */
 static int ship_in_yard_way(const ShipYardWay *yw, const UnitDef *d, int self,
                             int32_t x, int32_t y, float heading, float clear) {
     if (!ship_hulls_apart(d, x, y, heading, yw->pd, yw->pad_x, yw->pad_y,
@@ -6648,20 +6655,18 @@ static int ship_in_yard_way(const ShipYardWay *yw, const UnitDef *d, int self,
         return 1;
     for (int i = 0; i < yw->n_movers; i++) {
         const Unit *m = &g_units[yw->movers[i]];
-        if (yw->movers[i] == self) continue;
-        if (!ship_hulls_apart(d, x, y, heading, def_hull(m->def_idx),
-                              m->world_x, m->world_y, m->heading, clear))
+        const UnitDef *md = def_hull(m->def_idx);
+        if (yw->movers[i] == self || !md) continue;
+        if (!ship_hulls_apart(d, x, y, heading, md, m->world_x, m->world_y,
+                              m->heading, clear))
             return 1;
     }
     return 0;
 }
 
-/* Where a ship leaves its yard for: clear of the yard, of every hull and
- * of the yard's way, along the way out from the yard or one of the four
- * ways, further out and to either side in turn (M-012). A spot ahead of
- * it with no hull on the way there comes first, as one a ship has to
- * turn or push to reach can leave it stopped short in the yard's water.
- * 0 when nowhere is free. */
+/* Where a ship leaves its yard for, clear of the yard, the hulls and the
+ * yard's way, a spot ahead with a clear way there first, or 0 (M-012).
+ * One it must turn or push to reach can stop it short in the yard. */
 static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
                             const UnitDef *btd, const UnitDef *hd,
                             const ShipYardWay *yw) {
@@ -7539,8 +7544,8 @@ static int ensure_def_capacity(void) {
     return 0;
 }
 
-/* A building's yard with no ground cell: the placement test then takes
- * its height from the float line (legacy:218897-218911). */
+/* A building's yard with no ground cell: it takes its height from the
+ * float line (legacy:218971-218975). */
 static uint8_t yard_has_no_ground(const UnitDef *d) {
     if (!d->yardmap || d->bmcode != 0) return 0;
     int cells = d->footprint_x * d->footprint_z;
@@ -9420,6 +9425,8 @@ void Units_LoadFinish(void) {
      * which is every order a player or the server ever gives. */
     uid_rebuild();
     ugrid_rebuild();
+    /* A yard reads the ships afloat before the next tick gathers them. */
+    ships_rebuild();
 }
 
 /* The facing the next Units_Spawn stands at, set only around one call,

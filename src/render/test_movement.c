@@ -1336,6 +1336,63 @@ TEST(a_shipyard_launches_ship_after_ship) {
     mv_end();
 }
 
+/* Finished products of the yard at (yx, yy), counted over handles past
+ * skip. */
+static int mv_yard_built(int yard, int skip) {
+    int count = 0, n = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count; i++)
+        if (i != yard && i != skip && units[i].alive == UNIT_ALIVE_ACTIVE &&
+            !units[i].under_construction) n++;
+    return n;
+}
+
+/* A ship of the side's left idle over the pad is sent off it, and the
+ * yard builds (M-012). */
+TEST(a_shipyard_builds_past_an_idle_ship_on_its_pad) {
+    ASSERT_NOT_NULL(mv_sea());
+    int32_t yx = 1536, yy = 1536;
+    int yard = Units_Spawn(MV_DEF_YARD, 1, 0, yx, yy);
+    int parked = Units_Spawn(MV_DEF_GALLEY, 1, 0, yx, yy + 120);
+    ASSERT(yard >= 0 && parked >= 0);
+    Units_DebugSetAggro(parked, UNIT_AGGRO_PASSIVE);
+    mv_run(2);
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(yard, MV_DEF_GALLEY));
+    int t = 0;
+    for (; t < 3600 && mv_yard_built(yard, parked) < 1; t++) Units_TickEngines();
+    printf("(built after %d ticks, the parked ship moved to %d,%d) ", t,
+           mv_unit(parked)->world_x - yx, mv_unit(parked)->world_y - yy);
+    ASSERT_EQ_INT(1, mv_yard_built(yard, parked));
+    mv_end();
+}
+
+/* A ship parked near the rally point is no business of the yard's while
+ * its products sail past it (M-012). */
+TEST(a_shipyard_leaves_a_ship_parked_by_its_rally_point_alone) {
+    ASSERT_NOT_NULL(mv_sea());
+    int32_t yx = 1536, yy = 1536;
+    int yard = Units_Spawn(MV_DEF_YARD, 1, 0, yx, yy);
+    int parked = Units_Spawn(MV_DEF_GALLEY, 1, 0, yx + 150, yy + 450);
+    ASSERT(yard >= 0 && parked >= 0);
+    Units_DebugSetAggro(parked, UNIT_AGGRO_PASSIVE);
+    Units_FactorySetRally(yard, yx, yy + 450);
+    for (int k = 0; k < 6; k++)
+        ASSERT_EQ_INT(0, Units_FactoryEnqueue(yard, MV_DEF_GALLEY));
+    int orders = 0;
+    for (int t = 0; t < 9000 && mv_yard_built(yard, parked) < 6; t++) {
+        Units_TickEngines();
+        if (mv_unit(parked)->cmd_kind != UNIT_CMD_NONE) {
+            orders++;
+            Units_OrderStop(parked);
+        }
+    }
+    printf("(%d built, the parked ship ordered off %d times) ",
+           mv_yard_built(yard, parked), orders);
+    ASSERT_EQ_INT(6, mv_yard_built(yard, parked));
+    ASSERT_EQ_INT(0, orders);
+    mv_end();
+}
+
 /* A fleet sent through a strait about two hulls wide gets through with
  * no hull through another. Past it there is room for the fleet in line. */
 TEST(a_fleet_sails_a_narrow_strait) {
@@ -2154,11 +2211,9 @@ TEST(a_unit_under_the_sea_tells_its_script_it_is_in_water) {
     mv_end();
 }
 
-/* A building whose yard has no ground cell, as the Sea Fort's and the
- * Floating Tower's have none, stands at its waterline over the sea for
- * drawing, its shots and the shots at it, and on dry ground where there
- * is no sea over it. One with ground cells stands on the sea floor
- * (legacy:218897-218911, legacy:39295-39301). */
+/* A building whose yard has no ground cell stands at its waterline over
+ * the sea and on dry ground elsewhere, drawn and shot at, and one with
+ * ground cells on the sea floor (legacy:218971-218975). */
 TEST(a_building_on_a_water_yard_floats_at_its_waterline) {
     GameWorld *w = mv_sea();
     ASSERT_NOT_NULL(w);
@@ -2642,6 +2697,8 @@ int main(int argc, char **argv) {
     TEST_SUITE("Ships");
     RUN(ships_sent_to_one_place_keep_their_hulls_apart);
     RUN(a_shipyard_launches_ship_after_ship);
+    RUN(a_shipyard_builds_past_an_idle_ship_on_its_pad);
+    RUN(a_shipyard_leaves_a_ship_parked_by_its_rally_point_alone);
     RUN(a_fleet_sails_a_narrow_strait);
     RUN(a_ground_crowd_packs_as_it_did);
     TEST_SUITE("Flyers");

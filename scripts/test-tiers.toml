@@ -122,7 +122,6 @@ ui = [
   ["healing_spends_mana_over_time", 1],
   ["two_factories_at_an_empty_pool_both_build", 1],
   ["the_battle_record_keeps_what_an_end_screen_tells", 1],
-  ["ship_hulls_come_from_their_models", 1],
 ]
 
 [[tier1]]
@@ -142,6 +141,7 @@ ui = [
   ["completed_wall_blocks_units", 1],
   ["every_flyer_kind_keeps_off_the_water", 1],
   ["boats_stay_in_water_ghost_ships_do_not", 1],
+  ["ship_hulls_come_from_their_models", 1],
   ["skirmish_ai_duel_reaches_game_over", 1],
   ["group_selection_and_control_groups", 1],
   ["tech_tree_all_builder_menus_resolve", 1],
