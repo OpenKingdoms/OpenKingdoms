@@ -9642,7 +9642,9 @@ static void cob_host_set_unit_value(void *user, int port, int32_t value) {
                     ws->draw = UNIT_DRAW_NONE;
                     return;
                 }
-                if (ws->draw_target == -1) ws->draw_target = u->target;
+                if (ws->draw_target == -1)
+                    ws->draw_target = u->target >= 0 ? u->target
+                                    : u->cmd_kind == UNIT_CMD_ATTACK_GROUND ? UNIT_DRAW_GROUND : -1;
                 if (ws->draw_target >= 0 || ws->draw_target == UNIT_DRAW_GROUND)
                     ws->draw = UNIT_DRAW_RELEASE;
             }
@@ -13136,14 +13138,23 @@ static int unit_weapon_reaches(const Unit *u, const UnitDef *def, int slot,
  * (legacy:245900-245904). A target lost meanwhile takes the shot with
  * it: the script hears TargetCleared (legacy:233924-233940), the reload
  * stays spent and a late port 23 releases nothing. */
+/* The attack-ground point is in the weapon's reach, the test that sets
+ * an attack-ground order attacking. */
+static int ground_point_in_reach(const Unit *u, const UnitWeapon *wp) {
+    int64_t dx = (int64_t)(u->cmd_x - u->world_x), dy = (int64_t)(u->cmd_y - u->world_y);
+    int64_t range = weapon_effective_range(wp);
+    return range > 0 && dx * dx + dy * dy <= range * range;
+}
+
 static void tick_weapon_draw(Unit *u, int shooter_idx, int slot,
                              const UnitDef *def, UnitWeaponState *ws) {
     if (ws->draw == UNIT_DRAW_NONE || ws->draw == UNIT_DRAW_LOST) return;
     int t = ws->draw_target;
     /* A shot drawn at the ground goes where the order points as it
-     * leaves, and with the order. */
+     * leaves, and with the order or a point moved out of reach. */
     int ground = t == UNIT_DRAW_GROUND;
-    if (ground ? u->cmd_kind != UNIT_CMD_ATTACK_GROUND :
+    if (ground ? u->cmd_kind != UNIT_CMD_ATTACK_GROUND ||
+                 !ground_point_in_reach(u, &def->weapons[slot]) :
         (t < 0 || t >= g_unit_count || t != u->target ||
          g_units[t].alive != UNIT_ALIVE_ACTIVE ||
          !unit_can_see_target(u, &g_units[t]))) {

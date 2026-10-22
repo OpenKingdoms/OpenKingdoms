@@ -2947,8 +2947,10 @@ static const uint32_t LF_DRAW_SCRIPT[] = {
     0x10021001u, 0u, 0x10065000u                    /* return 0 */
 };
 
-/* Ticks from the draw, FireWeapon and the reload, to the shot. */
-static int lf_draw_to_shot(int ground) {
+/* Ticks from the draw, FireWeapon and the reload, to the shot. With
+ * `away`, the ground order moves out of reach during the draw, and -1
+ * means no shot left. */
+static int lf_draw_to_shot_ex(int ground, int away) {
     if (!lf_world(0, 0)) return -100;
     static const char *const names[] = { "AimWeapon", "FireWeapon" };
     static const uint32_t offsets[] = { 0, 8 };
@@ -2962,9 +2964,14 @@ static int lf_draw_to_shot(int ground) {
     if (!(ground ? Units_OrderAttackGround(a, LF_SX + 200, LF_ROW)
                  : Units_OrderAttack(a, t))) return -100;
     int drawn = -1, shot = -1;
+    int moved = 0;
     for (int i = 0; i < 300 && shot < 0; i++) {
         Units_TickEngines();
         if (drawn < 0 && lf_unit(a)->weapon_state[0].cooldown_ticks > 0) drawn = i;
+        if (away && drawn >= 0 && !moved && i > drawn + 5) {
+            moved = Units_OrderAttackGround(a, LF_SX + 6000, LF_ROW);
+            if (!moved) return -100;
+        }
         int n = 0;
         const Projectile *p = Units_GetProjectiles(&n);
         for (int k = 0; k < n; k++)
@@ -2974,6 +2981,8 @@ static int lf_draw_to_shot(int ground) {
     return drawn < 0 || shot < 0 ? -1 : shot - drawn;
 }
 
+static int lf_draw_to_shot(int ground) { return lf_draw_to_shot_ex(ground, 0); }
+
 /* A shot at the ground leaves at the script's release, as one at a
  * unit does (legacy:245894-245906). */
 TEST(a_shot_at_the_ground_leaves_at_the_scripts_release) {
@@ -2982,6 +2991,8 @@ TEST(a_shot_at_the_ground_leaves_at_the_scripts_release) {
     printf("(at a unit %d ticks, at the ground %d) ", at_unit, at_ground);
     ASSERT(at_unit >= 29 && at_unit <= 32);
     ASSERT_EQ_INT(at_unit, at_ground);
+    /* A point moved out of reach during the draw takes no shot. */
+    ASSERT_EQ_INT(-1, lf_draw_to_shot_ex(1, 1));
 }
 
 /* A unit holding position shoots what comes into reach and lets it go
