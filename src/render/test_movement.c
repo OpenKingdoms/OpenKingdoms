@@ -2154,6 +2154,44 @@ TEST(a_unit_under_the_sea_tells_its_script_it_is_in_water) {
     mv_end();
 }
 
+/* A building whose yard has no ground cell, as the Sea Fort's and the
+ * Floating Tower's have none, stands at its waterline over the sea for
+ * drawing, its shots and the shots at it, and on dry ground where there
+ * is no sea over it. One with ground cells stands on the sea floor
+ * (legacy:218897-218911, legacy:39295-39301). */
+TEST(a_building_on_a_water_yard_floats_at_its_waterline) {
+    GameWorld *w = mv_sea();
+    ASSERT_NOT_NULL(w);
+    UnitDef defs[MV_DEF_SEA_COUNT];
+    for (int i = 0; i < MV_DEF_SEA_COUNT; i++) defs[i] = *Units_GetDef(i);
+    defs[MV_DEF_HUT].bmcode = 0;
+    defs[MV_DEF_HUT].waterline = 1;
+    ASSERT_EQ_INT(MV_DEF_SEA_COUNT, Units_DebugSetDefs(defs, MV_DEF_SEA_COUNT));
+    ASSERT_EQ_INT(0, Units_DebugSetYardmap(MV_DEF_HUT, "w"));
+    ASSERT_EQ_INT(0, Units_DebugSetYardmap(MV_DEF_YARD, "o"));
+    int tower = Units_Spawn(MV_DEF_HUT, 1, 0, 1500, 1500);
+    int yard = Units_Spawn(MV_DEF_YARD, 1, 0, 1800, 1500);
+    ASSERT(tower >= 0 && yard >= 0);
+    /* The deep sea, then dry land. */
+    static const int ground[2] = { MV_SEABED, MV_WATER + 10 };
+    static const int drawn_at[2] = { MV_WATER - 1, MV_WATER + 10 };
+    static const int stands_at[2] = { MV_WATER, MV_WATER + 10 };
+    size_t hn = (size_t)w->tnt.height_w * (size_t)w->tnt.height_h;
+    for (int k = 0; k < 2; k++) {
+        memset(w->tnt.heightmap, ground[k], hn);
+        float g = (float)ground[k];
+        printf("(ground %d: tower drawn %.0f, stands %.0f) ", ground[k],
+               (double)(g + Units_DrawnAlt(w, mv_unit(tower))),
+               (double)Units_DebugStandHeight(tower));
+        ASSERT_EQ_INT(drawn_at[k], (int)(g + Units_DrawnAlt(w, mv_unit(tower))));
+        ASSERT_EQ_INT(drawn_at[k], (int)Units_SiteHeight(w, MV_DEF_HUT, 1500, 1500));
+        ASSERT_EQ_INT(stands_at[k], (int)Units_DebugStandHeight(tower));
+        ASSERT(Units_DrawnAlt(w, mv_unit(yard)) == 0.0f);
+        ASSERT_EQ_INT(ground[k], (int)Units_DebugStandHeight(yard));
+    }
+    mv_end();
+}
+
 /* ── Hover attack ────────────────────────────────────────────────────── */
 
 enum { MV_HOVER_HARPY = MV_DEF_COUNT, MV_HOVER_POST, MV_HOVER_COUNT };
@@ -2620,6 +2658,7 @@ int main(int argc, char **argv) {
     RUN(the_landing_search_repeats_exactly);
     RUN(a_flyer_cruises_over_the_sea_not_the_sea_floor);
     RUN(a_ship_is_drawn_at_its_waterline_not_on_the_sea_floor);
+    RUN(a_building_on_a_water_yard_floats_at_its_waterline);
     RUN(a_unit_under_the_sea_tells_its_script_it_is_in_water);
     RUN(a_flyer_never_lands_on_sea_it_had_not_explored);
     RUN(a_crowded_flying_builder_steps_out_and_builds_on);

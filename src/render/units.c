@@ -1231,6 +1231,13 @@ static float projectile_launch_pitch(float speed_ppt, float run,
     return tak_atanf(lob_preferred ? (k + root) : (k - root));
 }
 
+/* A floater, or a building whose yard has no ground cell, which the
+ * original places at its waterline (legacy:218897-218911,
+ * legacy:39295-39301). */
+static int def_rides_sea(const UnitDef *d) {
+    return d && (d->floater || d->yard_floats);
+}
+
 /* Where a unit stands: the ground, the sea over it for a floater or a
  * flyer, and its altitude on top. The original keeps this on the unit
  * (unit+0x6c), and holds a flyer cruisealt over the higher of the
@@ -1239,7 +1246,7 @@ static float unit_base_height(const GameWorld *w, const Unit *v) {
     if (!w || !v) return 0.0f;
     float g = (float)Terrain_SampleHeight(w, v->world_x, v->world_y);
     const UnitDef *d = Units_GetDef(v->def_idx);
-    if (d && (d->floater || d->can_fly) && (float)w->water_height > g)
+    if (d && (def_rides_sea(d) || d->can_fly) && (float)w->water_height > g)
         g = (float)w->water_height;
     return g + v->flight_alt;
 }
@@ -1256,21 +1263,29 @@ static float unit_air_alt(const GameWorld *w, const Unit *u) {
     return u->flight_alt + lift;
 }
 
-/* A floater, or an upright unit that hovers, rides its waterline under
- * the sea and never under the ground (legacy:234287-234330,
+/* How far a def at (x, y) rides over the ground: its waterline under
+ * the sea, never under the ground (legacy:234287-234330,
  * legacy:184112-184122). Drawing only. */
-static float unit_float_lift(const GameWorld *w, const Unit *u) {
-    const UnitDef *d = Units_GetDef(u->def_idx);
+static float def_float_lift(const GameWorld *w, const UnitDef *d,
+                            int32_t x, int32_t y) {
     if (!w || !d || w->water_height <= 0) return 0.0f;
-    if (!(d->upright ? d->can_hover : d->floater)) return 0.0f;
-    int g = Terrain_SampleHeight(w, u->world_x, u->world_y);
+    if (!(d->upright ? d->can_hover : def_rides_sea(d))) return 0.0f;
+    int g = Terrain_SampleHeight(w, x, y);
     int line = w->water_height - (int)d->waterline;
     return line > g ? (float)(line - g) : 0.0f;
 }
 
 float Units_DrawnAlt(const GameWorld *w, const Unit *u) {
     if (!u) return 0.0f;
-    return unit_air_alt(w, u) + unit_float_lift(w, u);
+    return unit_air_alt(w, u) +
+           def_float_lift(w, Units_GetDef(u->def_idx), u->world_x, u->world_y);
+}
+
+float Units_SiteHeight(const GameWorld *w, int def_idx, int32_t x, int32_t y) {
+    if (!w) return 0.0f;
+    const UnitDef *d = Units_GetDef(def_idx);
+    float g = (float)Terrain_SampleHeight(w, x, y);
+    return d && d->yard_floats ? g + def_float_lift(w, d, x, y) : g;
 }
 
 /* A ghost and a cloaked unit both draw in the original's translucent
@@ -1457,7 +1472,7 @@ static int spawn_projectile(int32_t x, int32_t y,
         if (unit_weapon_muzzle(shooter, wslot, &mdx, &mdy, &mup)) {
             p->from_piece = 1;
             float base = (float)p->src_height;
-            if (sd && (sd->floater || sd->can_fly) &&
+            if (sd && (def_rides_sea(sd) || sd->can_fly) &&
                 lw->water_height > p->src_height)
                 base = (float)lw->water_height;
             float fx = (float)x + mdx, fy = (float)y + mdy;
@@ -7415,6 +7430,16 @@ static int ensure_def_capacity(void) {
     return 0;
 }
 
+/* A building's yard with no ground cell: the placement test then takes
+ * its height from the float line (legacy:218897-218911). */
+static uint8_t yard_has_no_ground(const UnitDef *d) {
+    if (!d->yardmap || d->bmcode != 0) return 0;
+    int cells = d->footprint_x * d->footprint_z;
+    for (int i = 0; i < cells; i++)
+        if (d->yardmap[i] & TAK_YARD_LEVEL) return 0;
+    return cells > 0;
+}
+
 static int parse_fbi(const char *vfs_path, UnitDef *out) {
     memset(out, 0, sizeof(*out));
 
@@ -7616,6 +7641,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
             if (out->yardmap[i] & TAK_YARD_SACRED) { out->yardmap_sacred = 1; break; }
         }
     }
+    out->yard_floats = yard_has_no_ground(out);
 
     /* A monarch, and anything not bmcode 1, can be neither stoned nor
      * frozen (legacy:163161-163180). */
@@ -16260,6 +16286,7 @@ int Units_DebugSetDefs(const UnitDef *defs, int count) {
          * caller's: a synthetic def has none. */
         g_defs[i].cob_script = NULL;
         g_defs[i].yardmap = NULL;
+        g_defs[i].yard_floats = 0;
         for (int c = 0; c < 12; c++) g_defs[i].mesh_per_color[c] = NULL;
     }
     g_def_cap = count;
@@ -16332,6 +16359,7 @@ int Units_DebugSetYardmap(int def_idx, const char *spec) {
     d->yardmap_sacred = 0;
     for (int i = 0; i < d->footprint_x * d->footprint_z; i++)
         if (d->yardmap[i] & TAK_YARD_SACRED) d->yardmap_sacred = 1;
+    d->yard_floats = yard_has_no_ground(d);
     return 0;
 }
 
@@ -18307,7 +18335,7 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
     const float tilt  = g_tan_tilt;
     const float ux = (float)world_x;
     const float uz = (float)world_y;
-    const float uh = (float)Terrain_SampleHeight(world, world_x, world_y);
+    const float uh = Units_SiteHeight(world, def_idx, world_x, world_y);
     const float heading = Units_BuildHeadingFacing(def_idx, facing);
     const float ch = tak_cosf(heading), sh = tak_sinf(heading);
     const float y_scale = render_y_scale_for_def(def);

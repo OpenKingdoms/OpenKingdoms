@@ -615,6 +615,9 @@ typedef struct UnitDef {
     /* Set when any yardmap cell carries the sacred bit ('S',
      * legacy:163237): the building only stands on a sacred site. */
     int      yardmap_sacred;
+    /* Set for a building whose yard has no ground cell: it is placed at
+     * sea level less its waterline (legacy:218897-218911). */
+    uint8_t  yard_floats;
 
     /* Inline [WEAPON1..3] sections from FBI. num_weapons is 0..3. */
     int          num_weapons;
@@ -1535,8 +1538,13 @@ void              Units_DebugSetAggro(int handle, int aggro_mode);
 
 /* How high over the ground under it a unit is drawn: its altitude, on
  * top of the sea for a flyer over water (legacy:190499-190507), and a
- * floater or wading hover unit at its waterline (legacy:234287-234330). */
+ * floater, a wading hover unit or a building that floats at its
+ * waterline (legacy:234287-234330, legacy:218897-218911). */
 float             Units_DrawnAlt(const struct GameWorld *w, const Unit *u);
+/* The height a building of def_idx stands at on (x, y): the ground, or
+ * its waterline under the sea for one whose yard floats. */
+float             Units_SiteHeight(const struct GameWorld *w, int def_idx,
+                                   int32_t x, int32_t y);
 
 /* How opaque a unit is drawn, 0..255: a ghost at half (legacy:197442-197457,
  * legacy:372436-372441), or 255. */
