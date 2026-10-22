@@ -2663,9 +2663,9 @@ static void ai_group_next(const GameWorld *world, const Unit *units,
  * are loose again, the original's disband back into the parent
  * (legacy:18250). A group whose target has died takes the seat's, or
  * under A-012 picks its next from where it stands or holds there. A
- * seat cut off by water (A-013) is cut_off. */
+ * seat cut off by water with a boat coming (A-013) is ferrying. */
 static int ai_groups_update(const GameWorld *world, const Unit *units,
-                            int unit_count, int p, int now, int cut_off) {
+                            int unit_count, int p, int now, int ferrying) {
     AiPlayer *ap = &g_ai_players[p];
     int hold = !(g_ai_tactics_off[p] & TAK_AI_TACTIC_HOLD);
     int members[AI_GROUPS] = { 0 };
@@ -2784,11 +2784,10 @@ static int ai_groups_update(const GameWorld *world, const Unit *units,
             ai_group_next(world, units, unit_count, p, s, now, 1, home_threat || near);
             continue;
         }
-        /* Under A-013 a walker of a seat cut off that cannot get to a
-         * target over water, or to the shore of one out on it, leaves its
-         * group for the gathering, which can carry it, and so does a ship
-         * sent at one on land. */
-        if (cut_off && live && g->kind == AI_GROUP_ATTACK && g->mode == AI_GROUP_MARCHING) {
+        /* A-013: while a boat comes, a walker that cannot reach a target
+         * over water, or its shore, goes back to the gathering, and so
+         * does a ship sent at one on land. */
+        if (ferrying && live && g->kind == AI_GROUP_ATTACK && g->mode == AI_GROUP_MARCHING) {
             int over_water = -1;
             for (int i = 0; i < unit_count && i < AI_MEMBER_CAP; i++) {
                 if (g_ai_member[i] != s + 1 || units[i].player_id != p ||
@@ -2918,11 +2917,65 @@ static int ai_groups_update(const GameWorld *world, const Unit *units,
 /* How far inland the first ashore stand off the landing, in px. */
 #define AI_BEACH_PX           192
 
-/* The seat's best transport free to carry a wave: built, empty, fit and
- * doing nothing but standing or moving. The largest hold wins, then the
- * nearest home. -1 for none. */
-static int ai_ferry_transport(const Unit *units, int unit_count, int p) {
+/* Shore builds a seat's search may route check, and how far round home
+ * or the target it looks for water, in px. */
+#define AI_SHORE_CHECKS 12
+#define AI_SHORE_REACH  2048
+
+/* The water nearest the seat's target a ship of ship_def floats on. */
+static int ai_target_water(const AiPlayer *ap, int ship_def, int32_t *wx, int32_t *wy) {
+    for (int r = 0; r <= AI_SHORE_REACH; r += 64) {
+        for (int k = -r; k <= r; k += 64) {
+            const int32_t c[4][2] = {
+                { ap->target_x + k, ap->target_y - r }, { ap->target_x + k, ap->target_y + r },
+                { ap->target_x - r, ap->target_y + k }, { ap->target_x + r, ap->target_y + k },
+            };
+            for (int i = 0; i < 4; i++)
+                if (Units_IsBuildSiteFree(ship_def, c[i][0], c[i][1])) {
+                    *wx = c[i][0];
+                    *wy = c[i][1];
+                    return 1;
+                }
+        }
+    }
+    return 0;
+}
+
+/* The target water of one ship type, looked for once a caller. */
+typedef struct AiSeaMemo { int def, ok; int32_t x, y; } AiSeaMemo;
+
+/* Whether a ship of def_idx at (x, y), or one launched from a yard
+ * there, could sail to the water by the seat's target. A flyer can. */
+static int ai_sails_to_target(const GameWorld *world, int p, int def_idx, int yard,
+                              int32_t x, int32_t y, AiSeaMemo *memo) {
+    const UnitDef *d = Units_GetDef(def_idx);
+    if (!d || !ai_def_is_ship(d)) return 1;
+    if (memo->def != def_idx) {
+        memo->def = def_idx;
+        memo->ok = ai_target_water(&g_ai_players[p], def_idx, &memo->x, &memo->y);
+    }
+    if (!memo->ok) return 0;
+    const MoveClassDef *mc = TAK_MoveInfo_Find(&world->moveinfo, d->movement_class);
+    if (!yard) return TAK_PathGroundConnected(world, mc, d->max_slope, x, y, memo->x, memo->y);
+    static const int8_t dirs[8][2] = { { 1, 0 }, { 1, 1 }, { 0, 1 }, { -1, 1 },
+                                       { -1, 0 }, { -1, -1 }, { 0, -1 }, { 1, -1 } };
+    for (int r = 96; r <= 288; r += 96)
+        for (int k = 0; k < 8; k++) {
+            int32_t px = x + dirs[k][0] * r, py = y + dirs[k][1] * r;
+            if (Units_IsBuildSiteFree(def_idx, px, py) &&
+                TAK_PathGroundConnected(world, mc, d->max_slope, px, py, memo->x, memo->y))
+                return 1;
+        }
+    return 0;
+}
+
+/* The seat's best transport free to carry a wave: built, empty, fit,
+ * doing nothing but standing or moving, and able to get there. The
+ * largest hold wins, then the nearest home. -1 for none. */
+static int ai_ferry_transport(const GameWorld *world, const Unit *units, int unit_count,
+                              int p) {
     const AiPlayer *ap = &g_ai_players[p];
+    AiSeaMemo memo = { -1, 0, 0, 0 };
     int best = -1, best_cap = 0;
     int64_t best_d = 0;
     for (int i = 0; i < unit_count; i++) {
@@ -2932,6 +2985,8 @@ static int ai_ferry_transport(const Unit *units, int unit_count, int p) {
         if (!ai_naval_is((int)u->def_idx, AI_NAVAL_TRANSPORT)) continue;
         if (u->cmd_kind != UNIT_CMD_NONE && u->cmd_kind != UNIT_CMD_MOVE) continue;
         if (ai_unit_hurt(u)) continue;
+        if (!ai_sails_to_target(world, p, (int)u->def_idx, 0, u->world_x, u->world_y, &memo))
+            continue;
         int cap = Units_GetDef(u->def_idx)->transport_capacity;
         int64_t dx = u->world_x - ap->base_x, dy = u->world_y - ap->base_y;
         int64_t d = dx * dx + dy * dy;
@@ -3150,6 +3205,39 @@ static void ai_ferry_end(int p, int now, int cooldown) {
     f->cooldown_until = now + cooldown;
 }
 
+/* A transport of the seat with riders still aboard and no ferry to sail
+ * sets them down by home, or where it is when it finds no shore there. */
+static void ai_ferry_set_down(const GameWorld *world, const Unit *units, int unit_count,
+                              int p, int t) {
+    const AiPlayer *ap = &g_ai_players[p];
+    int rider = -1;
+    for (int i = 0; i < unit_count && rider < 0; i++)
+        if (units[i].alive == UNIT_ALIVE_TRANSPORTED && units[i].carried_by == t) rider = i;
+    if (rider < 0) return;
+    int32_t lx = units[t].world_x, ly = units[t].world_y, sx = 0, sy = 0;
+    if (ap->base_known)
+        ai_landing_point(world, units, unit_count, t, rider, ap->base_x, ap->base_y,
+                         &lx, &ly, &sx, &sy, 0, 0, 0);
+    if (ai_trace())
+        fprintf(stderr, "AI %d: transport %d sets its riders down at (%d,%d)\n", p, t, lx, ly);
+    Units_OrderUnload(t, lx, ly);
+}
+
+/* The seat's first transport standing idle with riders aboard and no
+ * ferry of its own, or -1. */
+static int ai_ferry_stray(const Unit *units, int unit_count, int p) {
+    const AiFerry *f = &g_ai_ferry[p];
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p || u->cargo_count <= 0) continue;
+        if (u->cmd_kind != UNIT_CMD_NONE || !ai_naval_is((int)u->def_idx, AI_NAVAL_TRANSPORT))
+            continue;
+        if (f->stage != AI_FERRY_NONE && f->transport == i) continue;
+        return i;
+    }
+    return -1;
+}
+
 /* The members of the ferry's group still ashore and fit to carry, up to
  * cap, within 256 px of the boarding point when near is set. */
 static int ai_ferry_riders(const Unit *units, int unit_count, int p, int slot, int t,
@@ -3172,7 +3260,7 @@ static int ai_ferry_launch(const GameWorld *world, const Unit *units,
     AiPlayer *ap = &g_ai_players[p];
     AiFerry *f = &g_ai_ferry[p];
     const AiFerryAim *aim = &g_ai_ferry_aim[p];
-    int t = ai_ferry_transport(units, unit_count, p);
+    int t = ai_ferry_transport(world, units, unit_count, p);
     if (t < 0 || aim->handle < 0) return 0;
     const UnitDef *td = Units_GetDef(units[t].def_idx);
     int riders[64];
@@ -3390,6 +3478,7 @@ static void ai_ferry_update(const GameWorld *world, const Unit *units,
         return;
     }
     ai_ferry_end(p, now, AI_FERRY_RETRY);
+    ai_ferry_set_down(world, units, unit_count, p, t);
 }
 
 /* The best transport a maker of def maker_def puts up for the seat, by
@@ -3422,11 +3511,6 @@ static int ai_yard_def_of(const Unit *units, int unit_count, int p,
     return -1;
 }
 
-/* Shore builds a seat's search may route check, and how far round home
- * it looks for water, in px. */
-#define AI_SHORE_CHECKS 12
-#define AI_SHORE_REACH  2048
-
 /* A site for def on water near home that ship_def's class sails from to
  * the water by the wave target, one the builder can get to, so what goes
  * up there can go to sea. 1 and the site when one is found. */
@@ -3439,22 +3523,8 @@ static int ai_shore_site(const Unit *units, int actor_idx, int p, int def_idx,
     const MoveClassDef *mc = sd->movement_class[0]
                            ? TAK_MoveInfo_Find(&world->moveinfo, sd->movement_class)
                            : NULL;
-    /* The water nearest the target the ship could float on. */
     int32_t wx = -1, wy = -1;
-    for (int r = 0; r <= AI_SHORE_REACH && wx < 0; r += 64) {
-        for (int k = -r; k <= r && wx < 0; k += 64) {
-            const int32_t c[4][2] = {
-                { ap->target_x + k, ap->target_y - r }, { ap->target_x + k, ap->target_y + r },
-                { ap->target_x - r, ap->target_y + k }, { ap->target_x + r, ap->target_y + k },
-            };
-            for (int i = 0; i < 4 && wx < 0; i++)
-                if (Units_IsBuildSiteFree(ship_def, c[i][0], c[i][1])) {
-                    wx = c[i][0];
-                    wy = c[i][1];
-                }
-        }
-    }
-    if (wx < 0) return 0;
+    if (!ai_target_water(ap, ship_def, &wx, &wy)) return 0;
     int checks = AI_SHORE_CHECKS;
     for (int r = 64; r <= AI_SHORE_REACH && checks > 0; r += 64) {
         for (int k = -r; k <= r && checks > 0; k += 64) {
@@ -3490,10 +3560,18 @@ static int ai_try_start_on_shore(int actor_idx, int def_idx, int p) {
     int ship_def = def_idx;
     if (ai_naval_is(def_idx, AI_NAVAL_YARD))
         ship_def = ai_transport_def_of(units, unit_count, p, def_idx);
-    if (ad->max_velocity <= 0.0f || ship_def < 0 ||
-        !ai_def_is_ship(Units_GetDef(ship_def)))
-        return ai_try_start_build_def(actor_idx, def_idx);
     const GameWorld *world = World_Get();
+    if (ad->max_velocity <= 0.0f) {
+        /* A yard trains only a ship that can sail to the target's water. */
+        AiSeaMemo memo = { -1, 0, 0, 0 };
+        if (ship_def >= 0 && world &&
+            !ai_sails_to_target(world, p, ship_def, 1, units[actor_idx].world_x,
+                                units[actor_idx].world_y, &memo))
+            return 0;
+        return ai_try_start_build_def(actor_idx, def_idx);
+    }
+    if (ship_def < 0 || !ai_def_is_ship(Units_GetDef(ship_def)))
+        return ai_try_start_build_def(actor_idx, def_idx);
     int32_t x = 0, y = 0;
     if (!ai_shore_site(units, actor_idx, p, def_idx, ship_def, &x, &y)) {
         g_ai_ferry[p].build_until = (world ? world->skirmish_elapsed_ticks : 0) +
@@ -4152,9 +4230,6 @@ static int ai_home_cut_off(const GameWorld *world, const Unit *units,
     return n > 0;
 }
 
-/* What a seat cut off by water has toward a crossing: its transports,
- * the producers that can make one and of them those free to, the yards
- * going up, and the price of a yard and of a transport (A-013). */
 /* A transport the seat can still ferry with: one going up, the ferry's
  * own, or one whole enough and empty. */
 static int ai_transport_usable(int p, int i, const Unit *u) {
@@ -4165,9 +4240,14 @@ static int ai_transport_usable(int p, int i, const Unit *u) {
     return u->carried_by < 0 && u->cargo_count == 0 && !ai_unit_hurt(u);
 }
 
-static void ai_plan_read_naval(const Unit *units, int unit_count, int p,
-                               int now, AiPlanState *s, AiPlanCosts *c) {
+/* What a seat cut off by water has toward a crossing: its transports,
+ * the producers that can make one and of them those free to, the yards
+ * going up, and the price of a yard and of a transport (A-013). A ship
+ * or a yard on water that does not lead to the target's is none. */
+static void ai_plan_read_naval(const GameWorld *world, const Unit *units, int unit_count,
+                               int p, int now, AiPlanState *s, AiPlanCosts *c) {
     const AiPlayer *ap = &g_ai_players[p];
+    AiSeaMemo memo = { -1, 0, 0, 0 };
     int yard_def = -1, transport_def = -1;
     for (int i = 0; i < unit_count; i++) {
         const Unit *u = &units[i];
@@ -4175,7 +4255,8 @@ static void ai_plan_read_naval(const Unit *units, int unit_count, int p,
         int di = (int)u->def_idx;
         const UnitDef *d = Units_GetDef(di);
         if (!d) continue;
-        if (ai_naval_is(di, AI_NAVAL_TRANSPORT) && ai_transport_usable(p, i, u))
+        if (ai_naval_is(di, AI_NAVAL_TRANSPORT) && ai_transport_usable(p, i, u) &&
+            ai_sails_to_target(world, p, di, 0, u->world_x, u->world_y, &memo))
             s->transports++;
         if (u->under_construction) {
             if (ai_naval_is(di, AI_NAVAL_YARD)) s->yards_pending++;
@@ -4183,6 +4264,9 @@ static void ai_plan_read_naval(const Unit *units, int unit_count, int p,
         }
         if (ai_naval_is(di, AI_NAVAL_MAKER)) {
             int td = ai_transport_def_of(units, unit_count, p, di);
+            if (td >= 0 && d->max_velocity <= 0.0f &&
+                !ai_sails_to_target(world, p, td, 1, u->world_x, u->world_y, &memo))
+                td = -1;
             if (td >= 0) {
                 s->ferry_makers++;
                 int idle = d->max_velocity > 0.0f
@@ -4482,7 +4566,7 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
                  !(g_ai_tactics_off[p] & TAK_AI_TACTIC_NAVAL) &&
                  ai_home_cut_off(world, units, unit_count, p, ap->target_x, ap->target_y);
     g_ai_ferry_coming[p] = 0;
-    if (s->cut_off) ai_plan_read_naval(units, unit_count, p, now, s, c);
+    if (s->cut_off) ai_plan_read_naval(world, units, unit_count, p, now, s, c);
 }
 
 /* Book a started action so the next actor this tick plans on it. */
@@ -4585,10 +4669,17 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     AiWaveState ws;
     AiWaveRead wr;
     AiWavePlan wplan;
-    if (ps.cut_off || g_ai_ferry[p].stage != AI_FERRY_NONE)
+    int stray = (g_ai_tactics_off[p] & TAK_AI_TACTIC_NAVAL)
+              ? -1 : ai_ferry_stray(units, unit_count, p);
+    if (ps.cut_off || g_ai_ferry[p].stage != AI_FERRY_NONE || stray >= 0)
         ai_guard_build(world, units, unit_count, p);
     ai_ferry_update(world, units, unit_count, p, now);
-    int forming = ai_groups_update(world, units, unit_count, p, now, ps.cut_off);
+    if (stray >= 0 && ai_wave_due(world, p, now, AI_WAVE_PATIENCE))
+        ai_ferry_set_down(world, units, unit_count, p, stray);
+    const AiFerry *fr = &g_ai_ferry[p];
+    int ferrying = ps.cut_off && g_ai_ferry_coming[p] &&
+                   (fr->stage != AI_FERRY_NONE || now >= fr->cooldown_until);
+    int forming = ai_groups_update(world, units, unit_count, p, now, ferrying);
     ai_read_wave(world, units, unit_count, p, now, forming, &ws, &wr);
     /* Cut off by water, the wave waits for a transport and goes aboard
      * one that is free (A-013). */
@@ -4601,31 +4692,34 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
         ws.cut_off = 1;
         ai_ferry_aim(world, units, unit_count, p);
         int t = ferry->stage == AI_FERRY_NONE && now >= ferry->cooldown_until
-              ? ai_ferry_transport(units, unit_count, p) : -1;
+              ? ai_ferry_transport(world, units, unit_count, p) : -1;
         ws.ferry_ready = t >= 0;
         ws.ferry_coming = ws.ferry_ready ||
                           (g_ai_ferry_coming[p] &&
                            (ferry->stage != AI_FERRY_NONE || now >= ferry->cooldown_until));
-        int walkers = 0;
+        int walkers = 0, home = 0;
         for (int i = 0; i < unit_count; i++) {
             const Unit *u = &units[i];
             if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p || u->under_construction)
                 continue;
             const UnitDef *d = Units_GetDef(u->def_idx);
-            if (ai_def_is_mobile_combat(d) && !d->can_fly && !ai_def_is_ship(d)) walkers++;
+            if (!ai_def_is_mobile_combat(d) || d->can_fly || ai_def_is_ship(d)) continue;
+            walkers++;
+            home += ai_at_stage(ap, u);
         }
+        if (home < 1) home = 1;
         if (walkers == 0) ws.ferry_coming = 0;
         if (ws.ferry_coming) {
             /* The walkers wait for a full hold or a launch's worth, of
-             * what walkers there are, and weigh what one hold carries
-             * against the arms round where it goes. */
+             * those at home, and weigh what one hold carries against the
+             * arms round where it goes. */
             air = ws;
             air.cut_off = air.ferry_ready = air.ferry_coming = 0;
             air.massed = 0;
             air.wave_value = 0;
             ws.hold = t >= 0 ? Units_GetDef(units[t].def_idx)->transport_capacity : ws.launch;
-            if (ws.hold > walkers) ws.hold = walkers;
-            if (ws.launch > walkers) ws.launch = walkers;
+            if (ws.hold > home) ws.hold = home;
+            if (ws.launch > home) ws.launch = home;
             ws.massed = 0;
             ws.wave_value = 0;
             ws.enemy_at_target = g_ai_ferry_aim[p].guard;

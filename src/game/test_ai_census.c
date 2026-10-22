@@ -292,6 +292,10 @@ int Units_IsBuildSiteClear(int def_idx, int32_t world_x, int32_t world_y) {
 
 /* The site search's test that counts every unit. The stub above has no
  * units to count. */
+int Units_IsBuildSiteFree(int def_idx, int32_t world_x, int32_t world_y) {
+    return Units_IsBuildSiteClear(def_idx, world_x, world_y);
+}
+
 /* The transport orders a ferry gives (A-013). No mock seat ferries. */
 int Units_CanSetDownAt(int def_idx, int32_t world_x, int32_t world_y) {
     (void)def_idx; (void)world_x; (void)world_y;
@@ -301,10 +305,6 @@ int TAK_PathClearanceAt(const struct GameWorld *world,
                         const struct MoveClassDef *move_class,
                         int fallback_max_slope, int tile_x, int tile_y) {
     (void)world; (void)move_class; (void)fallback_max_slope; (void)tile_x; (void)tile_y;
-    return 0;
-}
-int Terrain_SampleHeight(const struct GameWorld *world, int32_t x, int32_t y) {
-    (void)world; (void)x; (void)y;
     return 0;
 }
 int Units_CanCarry(int carrier, int rider) { (void)carrier; (void)rider; return 0; }
@@ -320,10 +320,6 @@ int Units_OrderUnload(int handle, int32_t world_x, int32_t world_y) {
 int Units_CanStandAt(int handle, int32_t world_x, int32_t world_y) {
     (void)handle; (void)world_x; (void)world_y;
     return 1;
-}
-
-int Units_IsBuildSiteFree(int def_idx, int32_t world_x, int32_t world_y) {
-    return Units_IsBuildSiteClear(def_idx, world_x, world_y);
 }
 
 /* As units.c: the lowest dead slot, else a new one, under construction

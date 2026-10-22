@@ -93,10 +93,14 @@ int TAK_PathGroundConnected(const struct GameWorld *world,
            (ay >= g_conn_y) == (by >= g_conn_y);
 }
 
+/* Only the class a test names BOAT is found, and it needs water. */
+static MoveClassDef g_boat_class;
 const MoveClassDef *TAK_MoveInfo_Find(const MoveInfoTable *table,
                                       const char *name) {
-    (void)table; (void)name;
-    return NULL;
+    (void)table;
+    if (!name || strcmp(name, "BOAT") != 0) return NULL;
+    g_boat_class.min_water_depth = 10;
+    return &g_boat_class;
 }
 
 float Economy_GetShare(const EconomyState *eco, int player_id) {
@@ -312,6 +316,10 @@ int Units_IsBuildSiteClear(int def_idx, int32_t world_x, int32_t world_y) {
 
 /* The site search's test that counts every unit. The stub above has no
  * units to count. */
+int Units_IsBuildSiteFree(int def_idx, int32_t world_x, int32_t world_y) {
+    return Units_IsBuildSiteClear(def_idx, world_x, world_y);
+}
+
 /* The transport orders a ferry gives (A-013). No mock seat ferries. */
 int Units_CanSetDownAt(int def_idx, int32_t world_x, int32_t world_y) {
     (void)def_idx; (void)world_x; (void)world_y;
@@ -323,27 +331,22 @@ int TAK_PathClearanceAt(const struct GameWorld *world,
     (void)world; (void)move_class; (void)fallback_max_slope; (void)tile_x; (void)tile_y;
     return 0;
 }
-int Terrain_SampleHeight(const struct GameWorld *world, int32_t x, int32_t y) {
-    (void)world; (void)x; (void)y;
-    return 0;
-}
 int Units_CanCarry(int carrier, int rider) { (void)carrier; (void)rider; return 0; }
 int Units_OrderLoadList(int carrier, const int *riders, int count, int queued) {
     (void)carrier; (void)riders; (void)count; (void)queued;
     return 0;
 }
+static int g_unload_calls, g_last_unload_handle = -1;
 int Units_OrderUnload(int handle, int32_t world_x, int32_t world_y) {
-    (void)handle; (void)world_x; (void)world_y;
+    (void)world_x; (void)world_y;
+    g_unload_calls++;
+    g_last_unload_handle = handle;
     return 0;
 }
 
 int Units_CanStandAt(int handle, int32_t world_x, int32_t world_y) {
     (void)handle; (void)world_x; (void)world_y;
     return 1;
-}
-
-int Units_IsBuildSiteFree(int def_idx, int32_t world_x, int32_t world_y) {
-    return Units_IsBuildSiteClear(def_idx, world_x, world_y);
 }
 
 int Units_BeginBuildingForUnit(int builder_handle,
@@ -2814,6 +2817,121 @@ static int test_ai_a_hurt_transport_holds_nobody_back(void) {
     return 0;
 }
 
+/* A-013. A transport left idle with riders still aboard, its ferry over,
+ * sets them down by home rather than keep them in the hold for good. */
+static int test_ai_a_transport_left_loaded_sets_its_riders_down(void) {
+    GameWorld w;
+    static const int loner[5] = { 0, 2, 0, 2, 2 };
+    setup_hostility_fixture(&w, loner);
+    g_visible = 0;
+    g_conn_split = 1;
+    g_conn_x = 3100;
+    g_conn_y = 1000;
+    int troop = hf_troop(2);
+    strcpy(g_defs[HF_FERRY].unitname, "TARSHIP");
+    strcpy(g_defs[HF_FERRY].category, "TAR AIR TRANSPORT");
+    g_defs[HF_FERRY].max_velocity = 3.0f;
+    g_defs[HF_FERRY].can_fly = 1;
+    g_defs[HF_FERRY].cap_flags = UNIT_CAP_TRANSPORT;
+    g_defs[HF_FERRY].transport_capacity = 4;
+    int ferry = hf_add_unit(2, HF_FERRY, 3600, 400);
+    g_units[ferry].carried_by = -1;
+    g_units[ferry].cargo_count = 1;
+    int rider = hf_add_unit(2, HF_TROOP, 3600, 400);
+    g_units[rider].alive = UNIT_ALIVE_TRANSPORTED;
+    g_units[rider].carried_by = (int16_t)ferry;
+    (void)troop;
+    g_unload_calls = 0;
+    g_last_unload_handle = -1;
+    hf_run_ticks(&w, 1800, 1);
+    ASSERT_EQ_INT(1, g_unload_calls);
+    ASSERT_EQ_INT(ferry, g_last_unload_handle);
+    return 0;
+}
+
+/* A-013. Cut off with no boat coming, a wave that strikes is not broken up
+ * and sent again every think: its walkers stay out on their march. */
+static int test_ai_no_boat_coming_strikes_once(void) {
+    GameWorld w;
+    static const int loner[5] = { 0, 2, 0, 2, 2 };
+    setup_hostility_fixture(&w, loner);
+    g_visible = 0;
+    g_conn_split = 1;
+    g_conn_x = 3100;
+    g_conn_y = 1000;
+    int troop = hf_troop(2);
+    for (int k = 1; k < 4; k++)
+        hf_add_unit(2, HF_TROOP, g_units[troop].world_x + 16 * k, g_units[troop].world_y);
+    TAK_AI_DebugSetWaveTarget(2, 0);
+    for (int k = 0; k < 12; k++) hf_run_ticks(&w, 60 + 60 * k, 1);
+    int strikes = TAK_AI_DebugCount(2, TAK_AI_COUNT_STRIKES);
+    printf("[%d strikes in 12 thinks] ", strikes);
+    ASSERT_TRUE(strikes <= 1);
+    return 0;
+}
+
+/* A-013. The hold a crossing waits for is what the walkers at home can
+ * fill, so two at home with two more out on a march go aboard. */
+static int test_ai_the_hold_waits_for_walkers_at_home_only(void) {
+    GameWorld w;
+    static const int loner[5] = { 0, 2, 0, 2, 2 };
+    setup_hostility_fixture(&w, loner);
+    g_visible = 0;
+    g_conn_split = 1;
+    g_conn_x = 3100;
+    g_conn_y = 2400;
+    int troop = hf_troop(2);
+    hf_add_unit(2, HF_TROOP, g_units[troop].world_x + 16, g_units[troop].world_y);
+    for (int k = 0; k < 2; k++) {
+        int away = hf_add_unit(2, HF_TROOP, 3900, 2300 - 40 * k);
+        g_units[away].cmd_kind = UNIT_CMD_MOVE;
+        g_units[away].cmd_x = 3900;
+        g_units[away].cmd_y = 2360;
+    }
+    strcpy(g_defs[HF_FERRY].unitname, "TARSHIP");
+    strcpy(g_defs[HF_FERRY].category, "TAR AIR TRANSPORT");
+    g_defs[HF_FERRY].max_velocity = 3.0f;
+    g_defs[HF_FERRY].can_fly = 1;
+    g_defs[HF_FERRY].cap_flags = UNIT_CAP_TRANSPORT;
+    g_defs[HF_FERRY].transport_capacity = 4;
+    int ferry = hf_add_unit(2, HF_FERRY, g_units[troop].world_x + 64, g_units[troop].world_y);
+    g_units[ferry].carried_by = -1;
+    TAK_AI_DebugSetWaveTarget(2, 0);
+    int ferried = 0;
+    for (int k = 0; k < 4 && !ferried; k++) {
+        hf_run_ticks(&w, 60 + 60 * k, 1);
+        ferried = strcmp("ferry a full hold", TAK_AI_DebugWaveReason(2)) == 0;
+    }
+    printf("[%s] ", TAK_AI_DebugWaveReason(2));
+    ASSERT_TRUE(ferried);
+    return 0;
+}
+
+/* A-013. A ship on water that does not lead to the target's is no boat
+ * coming, so the seat strikes as it would without one. */
+static int test_ai_a_ship_on_other_water_is_no_boat(void) {
+    GameWorld w;
+    static const int loner[5] = { 0, 2, 0, 2, 2 };
+    setup_hostility_fixture(&w, loner);
+    g_visible = 0;
+    g_conn_split = 1;
+    g_conn_x = 3100;
+    g_conn_y = 1000;
+    strcpy(g_defs[HF_FERRY].unitname, "VERMAN");
+    strcpy(g_defs[HF_FERRY].category, "VER SHIP TRANSPORT");
+    strcpy(g_defs[HF_FERRY].movement_class, "BOAT");
+    g_defs[HF_FERRY].max_velocity = 2.0f;
+    g_defs[HF_FERRY].cap_flags = UNIT_CAP_TRANSPORT;
+    g_defs[HF_FERRY].transport_capacity = 4;
+    int ferry = hf_add_unit(2, HF_FERRY, 3600, 400);
+    g_units[ferry].carried_by = -1;
+    TAK_AI_DebugSetWaveTarget(2, 0);
+    for (int k = 0; k < 4; k++) hf_run_ticks(&w, 60 + 60 * k, 1);
+    printf("[%s] ", TAK_AI_DebugWaveReason(2));
+    ASSERT_TRUE(strcmp("wait for a boat", TAK_AI_DebugWaveReason(2)) != 0);
+    return 0;
+}
+
 /* A-013. A seat one of whose walker classes walks to the target is not
  * cut off, though another cannot (#232's Lake Lokken): that one walks
  * and nothing waits for a boat. */
@@ -3911,6 +4029,10 @@ int main(void) {
     if (test_htn_ferries_a_wave_over_water() != 0) return 1;
     if (test_ai_ferry_aims_where_the_guard_is_thin() != 0) return 1;
     if (test_ai_a_hurt_transport_holds_nobody_back() != 0) return 1;
+    if (test_ai_a_transport_left_loaded_sets_its_riders_down() != 0) return 1;
+    if (test_ai_no_boat_coming_strikes_once() != 0) return 1;
+    if (test_ai_the_hold_waits_for_walkers_at_home_only() != 0) return 1;
+    if (test_ai_a_ship_on_other_water_is_no_boat() != 0) return 1;
     if (test_ai_a_seat_one_walker_class_walks_from_is_not_cut_off() != 0) return 1;
     if (test_plan_cut_off_builds_a_yard_then_a_transport() != 0) return 1;
     if (test_ai_wave_waits_out_a_garrison_it_can_see() != 0) return 1;
