@@ -3089,9 +3089,8 @@ static void lf_to_joy_frame(void) {
     while ((Units_SimTick() + 1u) % 60u != 0u) Units_TickEngines();
 }
 
-/* An acolyte heals what is in its AdjustJoy radius once a second: its
- * adjustment times its reach, split between all it reaches, as build
- * work against each unit's buildtime and paid at its buildcost
+/* An acolyte heals its AdjustJoy radius once a second, as build work
+ * split over all it reaches and paid at each one's buildcost
  * (legacy:235862-235882, legacy:237192-237228, legacy:39540-39580). */
 TEST(an_acolyte_heals_its_side_at_the_originals_rate) {
     GameWorld *w = lf_world(0, 0);

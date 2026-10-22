@@ -15925,11 +15925,9 @@ TEST(a_nanoframe_does_not_self_heal) {
     corpse_shutdown(&platform);
 }
 
-/* A worker's repair runs off the target's buildtime, the same divisor
- * the build itself uses, and the builder's workertime is the numerator
- * (legacy:32674). It is not healtime: healtime is the free self repair
- * and is a couple of hundred times slower. A Mage Builder works it, as
- * an Acolyte's healing aura would add its own. */
+/* A repair is workertime over the target's buildtime, the build's own
+ * divisor (legacy:32674), not healtime, the free self repair a couple of
+ * hundred times slower. A Mage Builder works it. */
 TEST(a_builder_repairs_a_swordsman_in_its_build_time) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);

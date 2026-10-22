@@ -107,6 +107,9 @@ int  Economy_TrySpend(EconomyState *eco, int player_id, int32_t amount);
  * to everyone who asks, so a second factory building at an empty pool
  * creeps along beside the first instead of standing still. */
 float Economy_SpendAvailable(EconomyState *eco, int player_id, float amount);
+/* The same draw at the share, for a heal, which never sets the share: it
+ * counts busy builders alone (legacy:235952-235977). */
+float Economy_SpendAtShare(EconomyState *eco, int player_id, float amount);
 
 /* Add mana (e.g. lodestone capture). Caps at max_mana. */
 void Economy_Earn   (EconomyState *eco, int player_id, int32_t amount);

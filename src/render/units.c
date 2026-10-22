@@ -16390,17 +16390,16 @@ static void magic_death_tick(Unit *u, int i) {
     fprintf(stderr, "Units_TickEngines: unit %d despawned (whiteout done)\n", i);
 }
 
-/* A paid heal, the applicator a repair also takes (legacy:39540-39580):
- * `amt` build work toward the target's buildtime, that share of its
- * whole health, paid by `player` at the target's buildcost from what its
- * treasury gives, and nothing at all for a unit already whole. */
+/* A repair's applicator (legacy:39540-39580): `amt` build work against
+ * the target's buildtime is that share of its whole health, paid by
+ * `player` at its buildcost, and nothing for a unit already whole. */
 static void unit_heal_paid(int player, Unit *t, float amt) {
     const UnitDef *td = Units_GetDef(t->def_idx);
     if (!td || t->health >= t->max_health || amt <= 0.0f) return;
     float bt = td->buildtime > 0.0f ? td->buildtime : 100.0f;
     float cost = td->build_cost > 0 ? (float)td->build_cost : bt;
     GameWorld *w = World_Get();
-    float paid = w ? Economy_SpendAvailable(&w->economy, player, cost * amt / bt) : 0.0f;
+    float paid = w ? Economy_SpendAtShare(&w->economy, player, cost * amt / bt) : 0.0f;
     if (paid <= 0.0f) return;
     float hp = (float)t->max_health * (paid / cost);
     /* Past full is paid for and lost. Clamped first, a heal of a god's
@@ -16436,13 +16435,9 @@ static int aura_takes(const Unit *s, const UnitAura *a, const Unit *t, int64_t *
     return 1;
 }
 
-/* The auras each frame (legacy:235814-235890): every unit's attack and
- * armour start again from 1, and each complete unit on the map scales
- * them in its AdjustArmor and AdjustAttack radius by (adjustment - 1)
- * times its reach plus 1. Once every 30 frames an AdjustJoy heals each
- * complete unit in its radius by its adjustment times its reach, as
- * build work split evenly between all it reaches and paid for by its
- * owner (legacy:237192-237228). */
+/* Each frame attack and armour start from 1 and each aura in reach scales
+ * them by (adjustment - 1) x reach + 1 (legacy:235814-235890). Once a
+ * second AdjustJoy heals, split over all it reaches (legacy:237192-237228). */
 static void tick_auras(void) {
     for (int i = 0; i < g_unit_count; i++) {
         g_units[i].aura_attack = 1.0f;

@@ -107,14 +107,15 @@ int Economy_TrySpend(EconomyState *eco, int player_id, int32_t amount) {
     return 1;
 }
 
-float Economy_SpendAvailable(EconomyState *eco, int player_id, float amount) {
+static float spend_at_share(EconomyState *eco, int player_id, float amount,
+                            int demand) {
     PlayerEconomy *p = slot_for(eco, player_id);
     if (!p || amount <= 0.0f) return 0.0f;
     /* The whole of what was asked counts as demand, before the share
      * trims it, or the next tick's share would be worked out from the
      * starved figure and the treasury would never climb back out
      * (legacy:39479-39482). */
-    p->demand_accum += amount;
+    if (demand) p->demand_accum += amount;
     float paid = amount * p->share;
     if (paid > p->mana) paid = p->mana;
     if (paid <= 0.0f) return 0.0f;
@@ -122,6 +123,14 @@ float Economy_SpendAvailable(EconomyState *eco, int player_id, float amount) {
     p->spent_accum += paid;
     p->spent_total += (double)paid;
     return paid;
+}
+
+float Economy_SpendAvailable(EconomyState *eco, int player_id, float amount) {
+    return spend_at_share(eco, player_id, amount, 1);
+}
+
+float Economy_SpendAtShare(EconomyState *eco, int player_id, float amount) {
+    return spend_at_share(eco, player_id, amount, 0);
 }
 
 void Economy_Earn(EconomyState *eco, int player_id, int32_t amount) {
