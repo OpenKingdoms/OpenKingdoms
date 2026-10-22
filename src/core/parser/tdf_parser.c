@@ -534,6 +534,16 @@ int TDF_OpenSection(TDFFile *tdf, int index) {
 }
 
 
+/* The Nth child section, entered with the old position pushed so a
+ * PopSection returns to it. */
+int TDF_PushSectionAt(TDFFile *tdf, int index) {
+    if (!tdf || !tdf->current_section || tdf->nav_depth >= 32) return -1;
+    TDFEntry *parent = tdf->current_section;
+    if (TDF_OpenSection(tdf, index) != 0) return -1;
+    tdf->nav_stack[tdf->nav_depth++] = parent;
+    return 0;
+}
+
 /* ── TDF_PopSection ──────────────────────────────────────────────────── */
 void TDF_PopSection(TDFFile *tdf) {
 	if (tdf && tdf->nav_depth > 0) {

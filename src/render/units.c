@@ -953,8 +953,10 @@ static uint32_t g_live_renderer_gen;
 static ProjSpriteArt g_proj_sprites[TAK_PROJ_SPRITE_MAX];
 static int           g_proj_sprite_count = 0;
 
-/* Impact effects: explosionclass sprite played once where a shot lands. */
-#define TAK_MAX_PROJ_EFFECTS 512
+/* Impact effects, sparkles and every unit's flames and puffs. Units keep
+ * theirs within their own counts, so the pool holds about forty burning
+ * keeps. */
+#define TAK_MAX_PROJ_EFFECTS 2048
 static ProjectileEffect g_proj_effects[TAK_MAX_PROJ_EFFECTS];
 static int              g_proj_effect_count = 0;
 
@@ -972,10 +974,31 @@ static ExplosionClassDef g_expl_classes[TAK_EXPL_CLASS_MAX];
 static int               g_expl_class_count = 0;
 static int               g_expl_loaded = 0;
 static int g_damage_flames_loaded;
-static int g_damage_flame_sprites[3];
+/* Each flame size's anims, from every file in gamedata/damageflames. */
+#define DAMAGE_FLAME_ANIMS_MAX 32
+static int g_damage_flame_anims[3][DAMAGE_FLAME_ANIMS_MAX];
+static int g_damage_flame_anim_count[3];
 static int g_smoke_loaded;
-static int g_smoke_sprites[2];   /* [0]=white (0x101), [1]=black (0x102) */
+static int g_smoke_sprites[3];   /* white (0x101), black (0x102), steam (0x109) */
 static void tick_attached_flames(void);
+static void tick_puff(ProjectileEffect *e);
+
+/* The C library's generator the original draws its unit effects with
+ * (legacy:201861, 201957, 202459), a stream of its own that the
+ * simulation never reads, so a peer that draws more or less stays in
+ * step. rand() * n / 0x8000, as the original scales it. */
+static uint32_t g_fx_crand = 1;
+static int fx_rand(int n) {
+    g_fx_crand = g_fx_crand * 214013u + 2531011u;
+    int64_t r = (int64_t)((g_fx_crand >> 16) & 0x7fffu);
+    return (int)(r * n / 0x8000);
+}
+
+int Units_EffectPicture(const ProjectileEffect *e) {
+    if (!e) return 0;
+    if (e->puff_owner_id) return e->pic;
+    return e->age_ticks / (e->ticks_per_frame ? e->ticks_per_frame : 2);
+}
 
 const ProjectileEffect *Units_GetProjectileEffects(int *out_count) {
     if (out_count) *out_count = g_proj_effect_count;
@@ -992,8 +1015,7 @@ int Units_GetEffectInfo(int i, const char **out_file, const char **out_seq,
     if (out_seq) *out_seq = g_proj_sprites[e->sprite_idx].seq;
     if (out_frame) {
         int frames = g_proj_sprites[e->sprite_idx].num_frames;
-        int frame = e->age_ticks /
-                    (e->ticks_per_frame ? e->ticks_per_frame : 2);
+        int frame = Units_EffectPicture(e);
         if (e->loops && frames > 0) frame %= frames;
         *out_frame = frame;
     }
@@ -3105,6 +3127,10 @@ static void tick_projectiles(void) {
         ProjectileEffect *e = &g_proj_effects[i];
         if (!e->alive) continue;
         if (e->delay_ticks) { e->delay_ticks--; continue; }
+        if (e->puff_owner_id) {
+            tick_puff(e);
+            if (!e->alive) continue;
+        }
         if (e->vx_fp || e->vy_fp) {
             e->x_acc += e->vx_fp; e->world_x += e->x_acc >> 16; e->x_acc &= 0xffff;
             e->y_acc += e->vy_fp; e->world_y += e->y_acc >> 16; e->y_acc &= 0xffff;
@@ -9197,6 +9223,7 @@ void Units_ClearInstances(void) {
     g_unit_count = 0;
     g_projectile_count = 0;
     g_proj_effect_count = 0;
+    g_fx_crand = 1;
     ugrid_rebuild();
     g_shot_flyer_count = 0;
     g_ship_count = 0;
@@ -16927,24 +16954,46 @@ static int debug_find_node(const UnitMesh *m, const char *piece_name) {
     return -1;
 }
 
+/* Every TDF in gamedata/damageflames adds the gaf and anim of each of
+ * its smallflame, mediumflame and largeflame sections to that size's
+ * list, an anim with no pictures left out (legacy:202524-202640). */
 static void load_damage_flames(void) {
     if (g_damage_flames_loaded) return;
     g_damage_flames_loaded = 1;
-    for (int i = 0; i < 3; i++) g_damage_flame_sprites[i] = -1;
-    TDFFile *tdf = TDF_Open("gamedata/damageflames/damageflames.tdf");
-    if (!tdf) return;
-    if (TDF_Load(tdf) == 0) {
-        static const char *sections[] = {"smallflame", "mediumflame", "largeflame"};
-        for (int i = 0; i < 3; i++) {
-            if (TDF_PushSection(tdf, sections[i]) != 0) continue;
-            int si = proj_sprite_index(TDF_ReadString(tdf, "gaf", ""),
-                                       TDF_ReadString(tdf, "anim", ""));
-            g_damage_flame_sprites[i] = si;
-            if (si >= 0) g_proj_sprites[si].fx_palette = 1;
-            TDF_PopSection(tdf);
+    for (int i = 0; i < 3; i++) g_damage_flame_anim_count[i] = 0;
+    static const char *sizes[] = {"smallflame", "mediumflame", "largeflame"};
+    char **paths = NULL;
+    int n_paths = 0;
+    if (VFS_ListFiles("gamedata/damageflames/*.tdf", &paths, &n_paths) != 0) return;
+    for (int pi = 0; pi < n_paths; pi++) {
+        TDFFile *tdf = TDF_Open(paths[pi]);
+        tak_free(paths[pi]);
+        if (!tdf) continue;
+        if (TDF_Load(tdf) == 0) {
+            /* One shared section cursor, so the names first, each read
+             * where it stands so a size named twice adds both. */
+            char names[16][40];
+            int n_names = 0;
+            for (const char *sec = TDF_GetFirstSection(tdf); sec && n_names < 16;
+                 sec = TDF_GetNextSection(tdf))
+                snprintf(names[n_names++], sizeof(names[0]), "%s", sec);
+            for (int ni = 0; ni < n_names; ni++) {
+                int size = -1;
+                for (int k = 0; k < 3 && size < 0; k++)
+                    if (strcmp(names[ni], sizes[k]) == 0) size = k;
+                if (size < 0 || g_damage_flame_anim_count[size] >= DAMAGE_FLAME_ANIMS_MAX ||
+                    TDF_PushSectionAt(tdf, ni) != 0) continue;
+                int si = proj_sprite_index(TDF_ReadString(tdf, "gaf", ""),
+                                           TDF_ReadString(tdf, "anim", ""));
+                TDF_PopSection(tdf);
+                if (si < 0 || proj_sprite_frames(si) <= 0) continue;
+                g_proj_sprites[si].fx_palette = 1;
+                g_damage_flame_anims[size][g_damage_flame_anim_count[size]++] = si;
+            }
         }
+        TDF_Close(tdf);
     }
-    TDF_Close(tdf);
+    tak_free(paths);
 }
 
 static const UnitMesh *damage_flame_mesh(const Unit *u) {
@@ -16981,28 +17030,42 @@ static int damage_flame_position(ProjectileEffect *e, const Unit *u) {
 static void load_smoke_sprites(void) {
     if (g_smoke_loaded) return;
     g_smoke_loaded = 1;
-    /* White smoke is the bigsmoke TAF, black is smoke01 in smoke.gaf
-     * (legacy:161419-161424). */
+    /* White smoke is the bigsmoke TAF, black is smoke01 in smoke.gaf,
+     * steam the steam TAF (legacy:161416-161424). */
     g_smoke_sprites[0] = proj_sprite_index("bigsmoke", "bigsmoke");
     g_smoke_sprites[1] = proj_sprite_index("smoke", "Smoke01");
+    g_smoke_sprites[2] = proj_sprite_index("steam", "steam");
     if (g_smoke_sprites[1] >= 0) g_proj_sprites[g_smoke_sprites[1]].fx_palette = 1;
 }
 
-/* Presentation budgets. Dropping a request never changes the script,
- * its random draws, or gameplay state. */
-#define DAMAGE_FLAME_BUDGET  (TAK_MAX_PROJ_EFFECTS / 4)
-#define SMOKE_BUDGET         (TAK_MAX_PROJ_EFFECTS / 8)
+/* A unit keeps at most 40 flames (legacy:215116) and 10 puffs
+ * (legacy:214686). A request past that is dropped without touching the
+ * script, its random draws, or gameplay state. */
+#define UNIT_FLAMES_MAX 40
+#define UNIT_PUFFS_MAX  10
 
+static int unit_effects_live(const Unit *u, int puffs) {
+    int live = 0;
+    for (int i = 0; i < g_proj_effect_count; i++) {
+        const ProjectileEffect *e = &g_proj_effects[i];
+        if (e->alive && (puffs ? e->puff_owner_id : e->damage_owner_id) == u->stable_id)
+            live++;
+    }
+    return live;
+}
+
+/* A new flame takes one of its size's anims at random
+ * (legacy:202452-202461). */
 static void emit_damage_flame(const Unit *u, int node, int32_t type) {
     ProjectileEffect attachment = {0};
     attachment.damage_node = (int16_t)node;
     if (!damage_flame_position(&attachment, u)) return;
-    int live = 0;
-    for (int i = 0; i < g_proj_effect_count; i++)
-        if (g_proj_effects[i].alive && g_proj_effects[i].damage_owner_id) live++;
-    if (live >= DAMAGE_FLAME_BUDGET) return;
+    if (unit_effects_live(u, 0) >= UNIT_FLAMES_MAX) return;
     load_damage_flames();
-    ProjectileEffect *e = spawn_unit_fx_moving(g_damage_flame_sprites[type - 0x104],
+    int size = (int)(type - 0x104);
+    int n = g_damage_flame_anim_count[size];
+    if (n <= 0) return;
+    ProjectileEffect *e = spawn_unit_fx_moving(g_damage_flame_anims[size][fx_rand(n)],
         attachment.world_x, attachment.world_y, attachment.height, 0);
     if (!e) return;
     e->owner = (int16_t)(u - g_units);
@@ -17010,56 +17073,105 @@ static void emit_damage_flame(const Unit *u, int node, int32_t type) {
     e->damage_node = (int16_t)node;
 }
 
-/* A puff rises a quarter pixel a tick (16.16) over its 10 or 16
- * pictures at 4 ticks each. */
-#define SMOKE_RISE_FP  (65536 / 4)
+/* A puff rises 0x1fdb*4 a frame (legacy:201855), half that a tick, in
+ * 16.16. */
+#define PUFF_RISE_FP  (0x1fdb * 2)
 
-static int is_smoke_sprite(int si) {
-    return g_smoke_loaded &&
-           (si == g_smoke_sprites[0] || si == g_smoke_sprites[1]);
-}
-
-static void emit_smoke(const Unit *u, int node, int32_t type) {
+/* A puff of white or black smoke or steam where the piece stands. It
+ * holds its first picture 8 frames and ends on a picture drawn at random
+ * from the third to the third last (legacy:201928-201962). */
+static void emit_puff(const Unit *u, int node, int kind) {
     ProjectileEffect pos = {0};
     pos.damage_node = (int16_t)node;
     if (!damage_flame_position(&pos, u)) return;
+    if (unit_effects_live(u, 1) >= UNIT_PUFFS_MAX) return;
     load_smoke_sprites();
-    int live = 0;
-    for (int i = 0; i < g_proj_effect_count; i++)
-        if (g_proj_effects[i].alive && is_smoke_sprite(g_proj_effects[i].sprite_idx))
-            live++;
-    if (live >= SMOKE_BUDGET) return;
-    int idx = (type == 0x102) ? 1 : 0;
-    ProjectileEffect *e = spawn_unit_fx_moving(g_smoke_sprites[idx],
-        pos.world_x, pos.world_y, pos.height, SMOKE_RISE_FP);
+    int sprite = g_smoke_sprites[kind];
+    int pics = proj_sprite_pics(sprite);
+    int end = fx_rand(pics - 3) + 2;
+    ProjectileEffect *e = spawn_unit_fx_moving(sprite, pos.world_x, pos.world_y,
+                                               pos.height, PUFF_RISE_FP);
     if (!e) return;
+    if (end < 1) end = 1;
+    if (end > pics) end = pics;
     e->owner = (int16_t)(u - g_units);
+    e->puff_owner_id = u->stable_id;
+    e->stop_fp = INT32_MAX;
+    e->life_ticks = 0;
+    e->pic = 0;
+    e->pic_end = (uint8_t)(end < 255 ? end : 255);
+    e->pic_left = 16;
 }
 
+/* One step of a puff: the wind carries it, 8 times its parts a frame
+ * (legacy:201854-201857), and once its picture has held it takes the
+ * next for a random 4 to 7 frames, gone at its last (legacy:201858-201869). */
+static void tick_puff(ProjectileEffect *e) {
+    const GameWorld *w = World_Get();
+    e->vx_fp = w ? w->wind_x * 4 : 0;
+    e->vy_fp = w ? w->wind_z * 4 : 0;
+    if (e->pic_left > 1) {
+        e->pic_left--;
+        return;
+    }
+    e->pic_left = (uint16_t)(2 * (fx_rand(4) + 4));
+    if (++e->pic >= e->pic_end) e->alive = 0;
+}
+
+/* 0x107 plays purpledeath from deathmagic.gaf and 0x108 the pillar of
+ * light once where the piece stands (legacy:223651-223663,
+ * legacy:161490-161496). */
+static void emit_one_shot(const Unit *u, int node, int32_t type) {
+    static int purple = -2, pillar = -2;
+    if (purple == -2) {
+        purple = proj_sprite_index("deathmagic", "purpledeath");
+        if (purple >= 0) g_proj_sprites[purple].fx_palette = 1;
+    }
+    if (pillar == -2) pillar = proj_sprite_index("pillaroflight", "pillaroflight");
+    ProjectileEffect pos = {0};
+    pos.damage_node = (int16_t)node;
+    if (!damage_flame_position(&pos, u)) return;
+    ProjectileEffect *e = spawn_unit_fx_moving(type == 0x107 ? purple : pillar,
+                                               pos.world_x, pos.world_y, pos.height, 0);
+    if (e) e->owner = (int16_t)(u - g_units);
+}
+
+/* The local player sees a unit's effects only for one it can see, its
+ * own or one in sight (legacy:223583, legacy:206797). Bubbles, 0x103,
+ * ask for nothing in the original. The wakes and thrust of 0 to 5 are
+ * not drawn yet. */
 static void cob_host_emit_sfx(void *user, int node, int32_t type) {
     const Unit *u = (const Unit *)user;
     if (!u || (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) ||
         u->under_construction || node < 0 || node >= UNIT_MESH_MAX_NODES) return;
+    if (!unit_visible_to_local_player(World_Get(), u)) return;
     if (type >= 0x104 && type <= 0x106) emit_damage_flame(u, node, type);
-    else if (type == 0x101 || type == 0x102) emit_smoke(u, node, type);
+    else if (type == 0x101) emit_puff(u, node, 0);
+    else if (type == 0x102) emit_puff(u, node, 1);
+    else if (type == 0x109) emit_puff(u, node, 2);
+    else if (type == 0x107 || type == 0x108) emit_one_shot(u, node, type);
 }
 
-/* Follow the animated attachment until the emitted animation finishes.
- * Health and flame size belong to the script, not this update. A batch
- * lands in neighbouring slots, so one pose serves a run of them. */
+/* A unit's flames and puffs are its own and go with it
+ * (legacy:236203-236218). A flame follows its animated attachment until
+ * its animation finishes. Health and flame size belong to the script,
+ * not this update. A batch lands in neighbouring slots, so one pose
+ * serves a run of them. */
 static void tick_attached_flames(void) {
     NodeXform xf[UNIT_MESH_MAX_NODES];
     const UnitMesh *m = NULL;
     uint32_t posed = 0;
     for (int i = 0; i < g_proj_effect_count; i++) {
         ProjectileEffect *e = &g_proj_effects[i];
-        if (!e->alive || !e->damage_owner_id) continue;
+        uint32_t id = e->damage_owner_id ? e->damage_owner_id : e->puff_owner_id;
+        if (!e->alive || !id) continue;
         const Unit *u = e->owner >= 0 && e->owner < g_unit_count ? &g_units[e->owner] : NULL;
-        if (!u || u->stable_id != e->damage_owner_id ||
+        if (!u || u->stable_id != id ||
             (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING)) {
             e->alive = 0;
             continue;
         }
+        if (!e->damage_owner_id) continue;
         if (posed != u->stable_id) {
             m = damage_flame_pose(u, xf);
             posed = u->stable_id;
@@ -19397,8 +19509,7 @@ static void render_projectile_effects(const struct GameWorld *world,
         if (!Fog_ShowsAt(world, e->world_x, e->world_y)) continue;
         if (proj_sprite_ensure(r, e->sprite_idx) != 0) continue;
         const ProjSpriteArt *ps = &g_proj_sprites[e->sprite_idx];
-        int frame = e->age_ticks /
-                    (e->ticks_per_frame ? e->ticks_per_frame : 2);
+        int frame = Units_EffectPicture(e);
         if (frame >= ps->num_frames) {
             if (!e->loops || ps->num_frames <= 0) continue;   /* played out */
             frame %= ps->num_frames;

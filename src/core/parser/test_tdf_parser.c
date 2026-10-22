@@ -405,6 +405,27 @@ TEST(open_section_by_index) {
     cleanup_temp();
 }
 
+/* Two sections of one name are each reachable by index, and a pop
+ * returns to the parent for the next. */
+TEST(push_section_at_reaches_each_of_two_alike) {
+    write_temp_tdf(
+        "[smallflame]\n{\n    anim=one;\n}\n"
+        "[smallflame]\n{\n    anim=two;\n}\n"
+    );
+    TDFFile *tdf = TDF_Open(TEMP_TDF);
+    ASSERT_NOT_NULL(tdf);
+    ASSERT_EQ_INT(0, TDF_Load(tdf));
+    ASSERT_EQ_INT(0, TDF_PushSectionAt(tdf, 0));
+    ASSERT_EQ_STR("one", TDF_ReadString(tdf, "anim", NULL));
+    TDF_PopSection(tdf);
+    ASSERT_EQ_INT(0, TDF_PushSectionAt(tdf, 1));
+    ASSERT_EQ_STR("two", TDF_ReadString(tdf, "anim", NULL));
+    TDF_PopSection(tdf);
+    ASSERT_EQ_INT(-1, TDF_PushSectionAt(tdf, 2));
+    TDF_Close(tdf);
+    cleanup_temp();
+}
+
 /* ══════════════════════════════════════════════════════════════════════════
  *  Nested subsections (tree model)
  * ══════════════════════════════════════════════════════════════════════════ */
@@ -760,6 +781,7 @@ int main(void) {
     RUN(push_section_finds_existing);
     RUN(push_section_returns_zero_for_missing);
     RUN(open_section_by_index);
+    RUN(push_section_at_reaches_each_of_two_alike);
 
     TEST_SUITE("Nested subsections");
     RUN(parse_nested_subsection);

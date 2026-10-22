@@ -1419,7 +1419,7 @@ static void draw_effects(const GameWorld *world, const float planes[6][4]) {
         EffectTex *et = effect_tex_for(e->sprite_idx);
         if (!et) continue;
         int nf = et->strip.num_frames;
-        int frame = e->age_ticks / (e->ticks_per_frame ? e->ticks_per_frame : 2);
+        int frame = Units_EffectPicture(e);
         if (frame >= nf) {
             if (!e->loops || nf <= 0) continue;
             frame %= nf;
