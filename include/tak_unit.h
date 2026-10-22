@@ -57,8 +57,12 @@ typedef struct UnitMeshBatch {
 typedef struct UnitMeshNode {
     char    name[32];
     int16_t parent;             /* index in nodes[]; -1 for root */
-    int16_t _pad;
+    uint8_t emit_count;         /* of the piece's first two vertices, below */
+    uint8_t _pad;
     float   offset[3];          /* static offset from parent (TA units) */
+    /* The piece's first two 3DO vertices, node-local: a wake or thrust
+     * runs from one toward the other. */
+    float   emit[2][3];
 } UnitMeshNode;
 
 /* One piece's transform from its node's local space to the model's
@@ -415,6 +419,13 @@ typedef struct ProjectileEffect {
     uint32_t puff_owner_id;
     uint8_t  pic, pic_end;
     uint16_t pic_left;
+    /* A wake or thrust point: its unit's stable id, its colour (the
+     * original's ARGB), its stage and the ticks the stage holds and has
+     * left. A point has no sprite. */
+    uint32_t wake_owner_id;
+    uint32_t argb;
+    uint8_t  wake_stage, wake_hold;
+    uint16_t wake_left;
 } ProjectileEffect;
 
 /* The picture an effect shows now, whatever has played it so far. */

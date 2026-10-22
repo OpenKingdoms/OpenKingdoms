@@ -618,11 +618,15 @@ int Units_RadarShowsToLocalPlayer(const Unit *u) {
     return (g_radar_bits[h >> 3] >> (h & 7)) & 1;
 }
 
-/* The original draws a unit's flames and puffs with the unit itself
- * (legacy:197494-197500), so they go when it does, a cloaked one too. */
+/* The original draws a unit's flames, puffs and wakes with the unit
+ * itself (legacy:197494-197500, legacy:210545-210596), so they go when it
+ * does, a cloaked one too. */
 int Units_EffectShows(const GameWorld *world, const ProjectileEffect *e) {
-    if (!e || !Fog_ShowsAt(world, e->world_x, e->world_y)) return 0;
-    uint32_t id = e->damage_owner_id ? e->damage_owner_id : e->puff_owner_id;
+    if (!e) return 0;
+    /* A wake point has no sight test of its own (legacy:215190-215228). */
+    if (!e->wake_owner_id && !Fog_ShowsAt(world, e->world_x, e->world_y)) return 0;
+    uint32_t id = e->damage_owner_id ? e->damage_owner_id :
+                  e->puff_owner_id ? e->puff_owner_id : e->wake_owner_id;
     if (!id || e->owner < 0 || e->owner >= g_unit_count) return 1;
     const Unit *u = &g_units[e->owner];
     return u->stable_id != id || unit_visible_to_local_player(world, u);
@@ -992,6 +996,7 @@ static int g_smoke_loaded;
 static int g_smoke_sprites[3];   /* white (0x101), black (0x102), steam (0x109) */
 static void tick_attached_flames(void);
 static void tick_puff(ProjectileEffect *e);
+static void tick_wake(ProjectileEffect *e);
 
 /* The C library's rand() the original draws unit effects with, scaled
  * rand() * n / 0x8000 (legacy:201861, 201957, 202459). The simulation
@@ -3143,6 +3148,10 @@ static void tick_projectiles(void) {
         ProjectileEffect *e = &g_proj_effects[i];
         if (!e->alive) continue;
         if (e->delay_ticks) { e->delay_ticks--; continue; }
+        if (e->wake_owner_id) {
+            tick_wake(e);
+            continue;
+        }
         if (e->puff_owner_id) {
             tick_puff(e);
             if (!e->alive) continue;
@@ -8279,6 +8288,12 @@ static void bake_emit(const Obj3DNode *n,
         out->offset[0] = (float)n->offset_x;
         out->offset[1] = (float)n->offset_y;
         out->offset[2] = (float)n->offset_z;
+        out->emit_count = (uint8_t)(n->num_vertices < 2 ? n->num_vertices : 2);
+        for (int k = 0; k < out->emit_count; k++) {
+            out->emit[k][0] = n->vertices[k].x;
+            out->emit[k][1] = n->vertices[k].y;
+            out->emit[k][2] = n->vertices[k].z;
+        }
     }
 
     /* Per-node selection-mesh skip: when selection_marker != -1, the
@@ -17134,6 +17149,100 @@ static void tick_puff(ProjectileEffect *e) {
     if (++e->pic >= e->pic_end) e->alive = 0;
 }
 
+/* A wake point's colour at each of its six stages, as the original's
+ * ARGB (legacy:201707, legacy:201746). */
+static const uint32_t k_wake_argb[6] = {
+    0xff29dedeu, 0xff25c2c2u, 0xff1f9d9du, 0xff186d6du, 0xff134c4cu, 0xff0f2f2fu
+};
+/* A unit keeps at most 100 wake points (legacy:214947). */
+#define UNIT_WAKES_MAX 100
+
+static int unit_wakes_live(const Unit *u) {
+    int live = 0;
+    for (int i = 0; i < g_proj_effect_count; i++)
+        if (g_proj_effects[i].alive && g_proj_effects[i].wake_owner_id == u->stable_id)
+            live++;
+    return live;
+}
+
+/* A point of a posed piece in the world, in pixels: across, up, and
+ * down the map, as a flame's node is placed. */
+static void piece_point_world(const Unit *u, const NodeXform *x, const float v[3],
+                              float out[3]) {
+    float p0 = x->rot[0] * v[0] + x->rot[1] * v[1] + x->rot[2] * v[2] + x->trans[0];
+    float p1 = x->rot[3] * v[0] + x->rot[4] * v[1] + x->rot[5] * v[2] + x->trans[1];
+    float p2 = x->rot[6] * v[0] + x->rot[7] * v[1] + x->rot[8] * v[2] + x->trans[2];
+    float ch = tak_cosf(u->heading), sh = tak_sinf(u->heading);
+    out[0] = (float)u->world_x - (ch * p0 + sh * p2) * UNIT_MODEL_TO_WORLD;
+    out[1] = (float)unit_base_height(World_Get(), u) + p1 * UNIT_MODEL_TO_WORLD;
+    out[2] = (float)u->world_y - (sh * p0 - ch * p2) * UNIT_MODEL_TO_WORLD;
+}
+
+/* Wakes and thrust, types 2 to 5: a point that starts at the piece's
+ * first vertex, or its second for 4 and 5, give or take 3 px each way,
+ * and moves half a pixel a frame toward the other. It holds each of its
+ * six colours 16 frames, or 8 for 3 and 5 (legacy:223617-223628,
+ * legacy:201754-201843, legacy:201731-201750). */
+static void emit_wake(const Unit *u, int node, int32_t type) {
+    NodeXform xf[UNIT_MESH_MAX_NODES];
+    const UnitMesh *m = damage_flame_pose(u, xf);
+    if (!m || node >= m->node_count || m->nodes[node].emit_count < 2) return;
+    if (unit_wakes_live(u) >= UNIT_WAKES_MAX) return;
+    float a[3], b[3];
+    int back = type == 4 || type == 5;
+    piece_point_world(u, &xf[node], m->nodes[node].emit[back ? 1 : 0], a);
+    piece_point_world(u, &xf[node], m->nodes[node].emit[back ? 0 : 1], b);
+    float d[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] };
+    float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    if (!(len > 0.0f)) return;
+    for (int k = 0; k < 3; k++) a[k] += (float)(fx_rand(7) - 3);
+    ProjectileEffect *e = proj_effect_slot();
+    if (!e) return;
+    /* Half a pixel a frame is a quarter a tick, in 16.16. */
+    float step = 0.25f * 65536.0f / len;
+    int32_t x_fp = (int32_t)floorf(a[0] * 65536.0f);
+    int32_t y_fp = (int32_t)floorf(a[2] * 65536.0f);
+    e->world_x = x_fp >> 16;
+    e->x_acc = x_fp & 0xffff;
+    e->world_y = y_fp >> 16;
+    e->y_acc = y_fp & 0xffff;
+    e->height_fp = (int32_t)floorf(a[1] * 65536.0f);
+    e->height = e->height_fp >> 16;
+    e->vx_fp = (int32_t)(d[0] * step);
+    e->rise = (int32_t)(d[1] * step);
+    e->vy_fp = (int32_t)(d[2] * step);
+    e->sprite_idx = -1;
+    e->owner = (int16_t)(u - g_units);
+    e->wake_owner_id = u->stable_id;
+    e->argb = k_wake_argb[0];
+    e->wake_stage = 0;
+    e->wake_hold = (uint8_t)((type == 2 || type == 4) ? 32 : 16);
+    e->wake_left = e->wake_hold;
+    e->alive = 1;
+}
+
+/* One step of a wake point: it moves, is gone over ground at or above
+ * the sea, and once its colour has held it takes the next, gone after
+ * the sixth (legacy:201685-201712). */
+static void tick_wake(ProjectileEffect *e) {
+    e->x_acc += e->vx_fp; e->world_x += e->x_acc >> 16; e->x_acc &= 0xffff;
+    e->y_acc += e->vy_fp; e->world_y += e->y_acc >> 16; e->y_acc &= 0xffff;
+    e->height_fp += e->rise;
+    e->height = e->height_fp >> 16;
+    const GameWorld *w = World_Get();
+    if (w && Terrain_SampleHeight(w, e->world_x, e->world_y) >= w->water_height) {
+        e->alive = 0;
+        return;
+    }
+    if (--e->wake_left > 0) return;
+    e->wake_left = e->wake_hold;
+    if (++e->wake_stage >= 6) {
+        e->alive = 0;
+        return;
+    }
+    e->argb = k_wake_argb[e->wake_stage];
+}
+
 /* 0x107 plays purpledeath from deathmagic.gaf and 0x108 the pillar of
  * light once where the piece stands (legacy:223651-223663,
  * legacy:161490-161496). */
@@ -17154,7 +17263,7 @@ static void emit_one_shot(const Unit *u, int node, int32_t type) {
 
 /* Effects only for a unit the local player can see (legacy:223583,
  * legacy:206797). Bubbles, 0x103, ask for nothing in the original, and
- * the wakes and thrust of 0 to 5 are not drawn yet. */
+ * types 0 and 1, which no shipped script asks for, are not drawn. */
 static void cob_host_emit_sfx(void *user, int node, int32_t type) {
     const Unit *u = (const Unit *)user;
     if (!u || (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) ||
@@ -17166,19 +17275,21 @@ static void cob_host_emit_sfx(void *user, int node, int32_t type) {
     else if (type == 0x102) emit_puff(u, node, 1);
     else if (type == 0x109) emit_puff(u, node, 2);
     else if (type == 0x107 || type == 0x108) emit_one_shot(u, node, type);
+    else if (type >= 2 && type <= 5) emit_wake(u, node, type);
     g_fx_unit_emit = 0;
 }
 
-/* A unit's flames and puffs go with it (legacy:236203-236218), a flame
- * following its animated piece until its anim ends. A batch lands in
- * neighbouring slots, so one pose serves a run of them. */
+/* A unit's flames, puffs and wakes go with it (legacy:236203-236218), a
+ * flame following its animated piece until its anim ends. A batch lands
+ * in neighbouring slots, so one pose serves a run of them. */
 static void tick_attached_flames(void) {
     NodeXform xf[UNIT_MESH_MAX_NODES];
     const UnitMesh *m = NULL;
     uint32_t posed = 0;
     for (int i = 0; i < g_proj_effect_count; i++) {
         ProjectileEffect *e = &g_proj_effects[i];
-        uint32_t id = e->damage_owner_id ? e->damage_owner_id : e->puff_owner_id;
+        uint32_t id = e->damage_owner_id ? e->damage_owner_id :
+                      e->puff_owner_id ? e->puff_owner_id : e->wake_owner_id;
         if (!e->alive || !id) continue;
         const Unit *u = e->owner >= 0 && e->owner < g_unit_count ? &g_units[e->owner] : NULL;
         if (!u || u->stable_id != id ||
@@ -19520,6 +19631,17 @@ static void render_projectile_effects(const struct GameWorld *world,
     for (int i = 0; i < g_proj_effect_count; i++) {
         const ProjectileEffect *e = &g_proj_effects[i];
         if (!e->alive || e->delay_ticks) continue;
+        if (e->wake_owner_id) {
+            /* One pixel of its colour, while its unit shows
+             * (legacy:215190-215228, legacy:201715-201725). */
+            if (!Units_EffectShows(world, e)) continue;
+            SDL_SetRenderDrawColor(r, (Uint8)(e->argb >> 16), (Uint8)(e->argb >> 8),
+                                   (Uint8)e->argb, (Uint8)(e->argb >> 24));
+            SDL_RenderDrawPoint(r, e->world_x - world->cam_x,
+                                e->world_y - world->cam_y -
+                                (int)((float)e->height * g_tan_tilt));
+            continue;
+        }
         /* The same gate again (legacy:215736-215749). */
         if (!Units_EffectShows(world, e)) continue;
         if (proj_sprite_ensure(r, e->sprite_idx) != 0) continue;
