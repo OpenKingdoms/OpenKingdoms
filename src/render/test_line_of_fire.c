@@ -1949,6 +1949,33 @@ TEST(a_unit_dying_as_its_side_is_taken_off_still_bursts) {
     lf_end();
 }
 
+/* A selected unit that dies leaves the selection, so the orders panel
+ * reads the selected units still standing (legacy:153469-153474). */
+TEST(a_unit_that_dies_leaves_the_selection_to_the_rest) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    lf_dying_script(LF_BOMBER, 1);
+    int bomber = lf_spawn(LF_BOMBER, 1, LF_TX, LF_ROW);
+    int rest = lf_spawn(LF_STURDY, 1, LF_SX, LF_ROW + 300);
+    ASSERT(bomber >= 0 && rest >= 0);
+    lf_ticks(4);
+    Units_SelectSingle(bomber);
+    Units_SelectAdd(rest);
+    ASSERT_EQ_INT(bomber, Units_DebugKillHandle(bomber));
+    ASSERT_EQ_INT(UNIT_ALIVE_DYING, lf_unit(bomber)->alive);
+    int n = 0;
+    const int *sel = Units_GetSelection(&n);
+    ASSERT_EQ_INT(1, n);
+    ASSERT_EQ_INT(rest, sel[0]);
+    ASSERT(Units_GetSelectedDef() == Units_GetDef(LF_STURDY));
+    lf_ticks(60);
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, lf_unit(bomber)->alive);
+    ASSERT(Units_GetSelectedDef() == Units_GetDef(LF_STURDY));
+    Units_SelectSingle(-1);
+    lf_dying_script(LF_BOMBER, 0);
+    lf_end();
+}
+
 /* ── remastered battlefield rules (D-036) ─────────────────────────── */
 
 /* A rock is indestructible in the original (legacy:128756). Under the
@@ -4060,6 +4087,7 @@ int main(int argc, char **argv) {
     RUN(a_frame_or_a_side_taken_off_never_bursts);
     RUN(a_death_blast_owed_comes_back_with_a_save);
     RUN(a_unit_dying_as_its_side_is_taken_off_still_bursts);
+    RUN(a_unit_that_dies_leaves_the_selection_to_the_rest);
     TEST_SUITE("Remastered battlefield");
     RUN(a_remastered_battle_breaks_a_rock_the_original_cannot);
     RUN(a_sweeping_spell_reaches_scenery_under_the_remastered_rules);

@@ -2462,6 +2462,13 @@ int               Units_GetSelectedAggroMode(void);
 int               Units_GateState(int handle);
 void              Units_SetGateOpen(int handle, int open);
 
+/* Any onoffable unit, a gate or not: 1 on, 0 off, -1 for a unit with
+ * no switch. Units_SetOnOff issues the order. */
+int               Units_OnOffState(int handle);
+void              Units_SetOnOff(int handle, int on);
+/* The selection's switch: 1 all on, 0 all off, 2 mixed, -1 none. */
+int               Units_SelectedOnOffState(void);
+
 /* Same, for the first selected unit. What the HUD button row calls. */
 int               Units_SelectedGateState(void);
 void              Units_ToggleSelectedGate(void);

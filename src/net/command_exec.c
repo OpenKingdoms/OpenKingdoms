@@ -442,8 +442,8 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
             break;
         case TAK_CMD_GATE:
             for (int i = 0; i < count; i++) {
-                if (Units_GateState(g_exec_handles[i]) < 0) continue;
-                Units_SetGateOpen(g_exec_handles[i], cmd->arg != 0);
+                if (Units_OnOffState(g_exec_handles[i]) < 0) continue;
+                Units_SetOnOff(g_exec_handles[i], cmd->arg != 0);
                 applied++;
             }
             break;

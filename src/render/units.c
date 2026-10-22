@@ -10930,6 +10930,7 @@ void Units_RecomputeEconomy(struct GameWorld *world) {
 static void unit_remove_now(int handle) {
     Unit *u = &g_units[handle];
     if (u->alive == UNIT_ALIVE_DEAD) return;
+    g_selection_count = slot_list_drop(g_selection, g_selection_count, handle);
     if (u->alive == UNIT_ALIVE_ACTIVE) {
         occ_lift(handle);
     }
@@ -11015,6 +11016,9 @@ uint32_t Units_DebugFramesLost(int player_id) {
  * (legacy:227119-227144, 227346). */
 static void apply_killed_as(Unit *t, int t_idx, int bursts) {
     if (t->alive != 1) return;
+    /* The orders panel is the selected units still standing, so a death
+     * leaves the selection (legacy:153469-153474). */
+    g_selection_count = slot_list_drop(g_selection, g_selection_count, t_idx);
     t->death_blast = bursts ? unit_death_blast_for(t) : 0;
     if (t->under_construction && t->player_id >= 1 &&
         t->player_id <= TAK_MAX_PLAYERS) {
@@ -16282,6 +16286,37 @@ void Units_SetGateOpen(int handle, int open) {
     /* Legacy re-evaluates on the next brain tick, which would undo a
      * player's order immediately. Hold it long enough to be visible. */
     u->gate_hold = GATE_HOLD_TICKS;
+}
+
+/* The on/off order takes any onoffable unit, a gate or not, and runs its
+ * Activate or Deactivate (legacy:151449-151470, legacy:236390-236406). */
+int Units_OnOffState(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return -1;
+    const Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return -1;
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d || !d->onoffable) return -1;
+    return u->cob_activation ? 1 : 0;
+}
+
+void Units_SetOnOff(int handle, int on) {
+    if (Units_OnOffState(handle) < 0) return;
+    if (Units_GateState(handle) >= 0) { Units_SetGateOpen(handle, on); return; }
+    gate_issue_order(&g_units[handle], on);
+}
+
+/* As the original's panel lights the pair: one state when every
+ * switched unit selected agrees, 2 when they differ
+ * (legacy:150430-150436, legacy:150930-150950). */
+int Units_SelectedOnOffState(void) {
+    int state = -1;
+    for (int s = 0; s < g_selection_count; s++) {
+        int st = Units_OnOffState(g_selection[s]);
+        if (st < 0) continue;
+        if (state < 0) state = st;
+        else if (state != st) state = 2;
+    }
+    return state;
 }
 
 int Units_SelectedGateState(void) {

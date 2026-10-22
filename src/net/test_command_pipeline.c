@@ -268,6 +268,30 @@ static void cp_cmd_unit(int handle) {
     g_cmd.unit_ids[g_cmd.unit_count++] = Units_GetStableId(handle);
 }
 
+/* ── the on/off pair ───────────────────────────────────────────────── */
+
+/* Active and Inactive switch any onoffable unit, not only a gate: the
+ * order flips its activation and runs Activate or Deactivate
+ * (legacy:151449-151470, legacy:236390-236406). */
+TEST(the_on_off_order_switches_a_unit_that_is_not_a_gate) {
+    ASSERT_NOT_NULL(cp_world());
+    UnitDef *d = (UnitDef *)Units_GetDef(CP_DEF_GUARDED);
+    d->onoffable = 1;
+    int fire = Units_Spawn(CP_DEF_GUARDED, 1, 0, 800, 800);
+    ASSERT(fire >= 0);
+    ASSERT_EQ_INT(0, (int)cp_unit(fire)->cob_activation);
+    cp_cmd(TAK_CMD_GATE, 1);
+    g_cmd.arg = 1;
+    cp_cmd_unit(fire);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(1, (int)cp_unit(fire)->cob_activation);
+    g_cmd.arg = 0;
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(0, (int)cp_unit(fire)->cob_activation);
+    d->onoffable = 0;
+    cp_end();
+}
+
 /* ── the ownership check ───────────────────────────────────────────── */
 
 /* One command from seat 1 naming a unit of seat 1 and a unit of seat 2.
@@ -3493,6 +3517,7 @@ TEST(a_player_who_drops_in_mid_game_sees_the_same_world_as_everyone) {
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("The one ownership check");
+    RUN(the_on_off_order_switches_a_unit_that_is_not_a_gate);
     RUN(a_command_moves_only_the_units_its_seat_owns);
     RUN(a_command_with_no_standing_units_does_nothing);
     RUN(the_executor_runs_every_unit_command);
