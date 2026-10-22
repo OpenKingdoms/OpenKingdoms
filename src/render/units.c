@@ -16403,8 +16403,12 @@ static void unit_heal_paid(int player, Unit *t, float amt) {
     float paid = w ? Economy_SpendAvailable(&w->economy, player, cost * amt / bt) : 0.0f;
     if (paid <= 0.0f) return;
     float hp = (float)t->max_health * (paid / cost);
-    int32_t acc = (int32_t)t->heal_frac_256 * 256 + (int32_t)(hp * 65536.0f);
-    t->health += acc >> 16;
+    /* Past full is paid for and lost. Clamped first, a heal of a god's
+     * worth cannot overflow the fixed point. */
+    float missing = (float)(t->max_health - t->health);
+    if (hp > missing) hp = missing;
+    int64_t acc = (int64_t)t->heal_frac_256 * 256 + (int64_t)(hp * 65536.0f);
+    t->health += (int32_t)(acc >> 16);
     t->heal_frac_256 = (uint8_t)((acc >> 8) & 0xff);
     if (t->health > t->max_health) t->health = t->max_health;
 }

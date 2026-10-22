@@ -3132,6 +3132,15 @@ TEST(an_acolyte_heals_its_side_at_the_originals_rate) {
     int before = lf_unit(near)->health;
     for (int i = 0; i < 59; i++) Units_TickEngines();
     ASSERT_EQ_INT(before, lf_unit(near)->health);
+    /* A tenth of a 400000 deep unit is a heal past 32767 hit points,
+     * which must not overflow into a wound. */
+    Unit *nu = (Unit *)lf_unit(near);
+    nu->max_health = 400000;
+    nu->health = 100;
+    lf_to_joy_frame();
+    Units_TickEngines();
+    printf("(a deep unit: %d hp) ", lf_unit(near)->health);
+    ASSERT(lf_unit(near)->health >= 40000);
     lf_end();
 }
 

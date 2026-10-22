@@ -90,6 +90,11 @@ A swordsman is 99 seconds of build work for 285 mana, so an Acolyte's 180
 a second at that range is nearly two whole swordsmen of healing and
 costs 518 mana.
 
+The same rule makes a monarch dear to heal. A Monarch is 10 seconds of
+build work for 100000 mana, so 20 work a second asks 200000 mana, and a
+damaged monarch beside a healer takes the whole treasury every second
+while it stands there, as in the original. Builders then wait for mana.
+
 ## Departures
 
 - Who counts as an ally is the engine's rule: the lobby's teams, or an
@@ -97,6 +102,12 @@ costs 518 mana.
   caster's owner's own alliance table alone.
 - The ring `showrangeattrib` names is not drawn. No shipped unit asks
   for one.
+- Healing's spending counts in the next tick's demand, so a beat that
+  asks more than the treasury holds leaves builders no share for one
+  tick. The original's share counts busy builders alone
+  (legacy:235952-235977).
+- A heal reaches the fixed point no larger than the health missing, so
+  a heal of more than 32767 hit points cannot overflow it.
 
 ## Tests
 
