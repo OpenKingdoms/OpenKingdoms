@@ -410,6 +410,13 @@ static int ship_hull_blocked(const UnitDef *d, int self, float margin,
                              float heading, int32_t x, int32_t y,
                              int has_from, float from_heading,
                              int32_t from_x, int32_t from_y);
+static int ship_hulls_apart(const UnitDef *d, int32_t x, int32_t y,
+                            float heading, const UnitDef *e, int32_t ex,
+                            int32_t ey, float eheading, float margin);
+static void ship_clear_pad(const Unit *f, int32_t pad_x, int32_t pad_y,
+                           const UnitDef *pd);
+static int ship_lane_clear(const UnitDef *d, int self, int32_t x0, int32_t y0,
+                           float h0, int32_t x1, int32_t y1);
 static int unit_start_script(Unit *u, const char *name,
                              const int32_t *args, int n_args);
 
@@ -6355,12 +6362,16 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
             return -1;
         }
         /* A ship is begun once the last one's hull is off the pad, and
-         * the factory tries again shortly (M-012). */
+         * the factory tries again shortly. The side's own idle ships in
+         * the way are sent off meanwhile (M-012). */
         const UnitDef *hd = def_hull(building_def_idx);
-        if (hd && ship_hull_blocked(hd, -1, UNIT_HULL_MARGIN,
-                                    build_heading_for_def(bd), world_x,
-                                    world_y, 0, 0.0f, 0, 0))
+        int held = hd ? ship_hull_blocked(hd, -1, UNIT_HULL_MARGIN,
+                                          build_heading_for_def(bd), world_x,
+                                          world_y, 0, 0.0f, 0, 0) : 0;
+        if (held) {
+            ship_clear_pad(u, world_x, world_y, hd);
             return -1;
+        }
         /* Nor does one go up on a unit standing on the pad: the
          * placement test at the spot counts units, and the factory looks
          * again shortly (legacy:9363-9382, legacy:219134-219147). */
@@ -6591,11 +6602,69 @@ static int factory_start_next(int fh) {
     return 1;
 }
 
-/* Where a ship leaves its yard for: clear of the yard and of every hull,
- * along the pad's direction or one of the four ways out, further out and
- * to either side in turn (M-012). 0 when nowhere is free. */
+/* Water a yard keeps clear round its pad and its ships under way, in px
+ * (M-012). */
+#define SHIP_PAD_CLEAR    48.0f
+/* How far short of its point a ship can stop: its route ends on the last
+ * cell's placement when the point is not one. */
+#define SHIP_LAUNCH_SLACK 48.0f
+/* How far round the pad the side's ships under way count, in px. */
+#define SHIP_YARD_WATER   768
+
+/* What a yard's ships keep clear of: the next hull to go up on its pad
+ * and the side's ships under way near the pad (M-012). */
+typedef struct ShipYardWay {
+    const UnitDef *pd;
+    int32_t pad_x, pad_y;
+    float   pad_heading;
+    int16_t movers[32];
+    int     n_movers;
+} ShipYardWay;
+
+static void ship_yard_way(const Unit *f, int32_t pad_x, int32_t pad_y,
+                          const UnitDef *pd, ShipYardWay *yw) {
+    yw->pd = pd;
+    yw->pad_x = pad_x;
+    yw->pad_y = pad_y;
+    yw->pad_heading = build_heading_for_def(pd);
+    yw->n_movers = 0;
+    for (int k = 0; k < g_ship_count && yw->n_movers < 32; k++) {
+        const Unit *o = &g_units[g_ships[k]];
+        if (o->player_id != f->player_id || o->carried_by >= 0 ||
+            o->cmd_kind == UNIT_CMD_NONE || o->under_construction ||
+            abs(o->world_x - pad_x) > SHIP_YARD_WATER ||
+            abs(o->world_y - pad_y) > SHIP_YARD_WATER)
+            continue;
+        yw->movers[yw->n_movers++] = g_ships[k];
+    }
+}
+
+/* Whether ship d of handle self at (x, y) comes within clear px of the
+ * pad's next hull or of a ship under way. */
+static int ship_in_yard_way(const ShipYardWay *yw, const UnitDef *d, int self,
+                            int32_t x, int32_t y, float heading, float clear) {
+    if (!ship_hulls_apart(d, x, y, heading, yw->pd, yw->pad_x, yw->pad_y,
+                          yw->pad_heading, clear))
+        return 1;
+    for (int i = 0; i < yw->n_movers; i++) {
+        const Unit *m = &g_units[yw->movers[i]];
+        if (yw->movers[i] == self) continue;
+        if (!ship_hulls_apart(d, x, y, heading, def_hull(m->def_idx),
+                              m->world_x, m->world_y, m->heading, clear))
+            return 1;
+    }
+    return 0;
+}
+
+/* Where a ship leaves its yard for: clear of the yard, of every hull and
+ * of the yard's way, along the way out from the yard or one of the four
+ * ways, further out and to either side in turn (M-012). A spot ahead of
+ * it with no hull on the way there comes first, as one a ship has to
+ * turn or push to reach can leave it stopped short in the yard's water.
+ * 0 when nowhere is free. */
 static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
-                            const UnitDef *btd, const UnitDef *hd) {
+                            const UnitDef *btd, const UnitDef *hd,
+                            const ShipYardWay *yw) {
     const GameWorld *w = World_Get();
     int self = (int)(bt - g_units);
     int fore = hd->hull_fore_px, aft = hd->hull_aft_px;
@@ -6608,6 +6677,8 @@ static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
     float px = (float)(bt->world_x - f->world_x);
     float py = (float)(bt->world_y - f->world_y);
     float plen = sqrtf(px * px + py * py);
+    float hx = tak_sinf(bt->heading), hy = -tak_cosf(bt->heading);
+    for (int pass = 0; pass < 2; pass++)
     for (int way = -1; way < 4; way++) {
         float dx, dy;
         if (way < 0) {
@@ -6632,6 +6703,15 @@ static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
                 if (ship_hull_blocked(hd, self, UNIT_HULL_MARGIN, heading,
                                       cx, cy, 0, 0.0f, 0, 0))
                     continue;
+                if (ship_in_yard_way(yw, hd, self, cx, cy, heading,
+                                     SHIP_PAD_CLEAR + SHIP_LAUNCH_SLACK))
+                    continue;
+                if (pass == 0 &&
+                    (hx * (float)(cx - bt->world_x) +
+                     hy * (float)(cy - bt->world_y) <= 0.0f ||
+                     !ship_lane_clear(hd, self, bt->world_x, bt->world_y,
+                                      bt->heading, cx, cy)))
+                    continue;
                 bt->cmd_kind = UNIT_CMD_MOVE;
                 bt->cmd_x = cx;
                 bt->cmd_y = cy;
@@ -6641,6 +6721,29 @@ static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
         }
     }
     return 0;
+}
+
+/* A yard waiting on its pad at (pad_x, pad_y), where a ship of def pd is
+ * to go up, sends the side's own idle ships in its way off (M-012). */
+static void ship_clear_pad(const Unit *f, int32_t pad_x, int32_t pad_y,
+                           const UnitDef *pd) {
+    const UnitDef *fd = Units_GetDef(f->def_idx);
+    if (!fd || !pd) return;
+    int fx = fd->footprint_x > 0 ? fd->footprint_x : 2;
+    int fz = fd->footprint_z > 0 ? fd->footprint_z : 2;
+    ShipYardWay yw;
+    ship_yard_way(f, pad_x, pad_y, pd, &yw);
+    for (int k = 0; k < g_ship_count; k++) {
+        Unit *o = &g_units[g_ships[k]];
+        const UnitDef *ohd = def_hull(o->def_idx);
+        if (!ohd || o->alive != UNIT_ALIVE_ACTIVE || o->carried_by >= 0 ||
+            o->player_id != f->player_id || o->under_construction ||
+            o->cmd_kind != UNIT_CMD_NONE)
+            continue;
+        if (ship_in_yard_way(&yw, ohd, g_ships[k], o->world_x, o->world_y,
+                             o->heading, SHIP_PAD_CLEAR))
+            ship_launch_spot(f, fx, fz, o, Units_GetDef(o->def_idx), ohd, &yw);
+    }
 }
 
 /* Whether a unit other than skip is walking to a point within reach px
@@ -6766,7 +6869,13 @@ static void factory_release(const Unit *f, const UnitDef *fd, Unit *bt,
     int fx = fd->footprint_x > 0 ? fd->footprint_x : 2;
     int fz = fd->footprint_z > 0 ? fd->footprint_z : 2;
     const UnitDef *hd = def_hull(bt->def_idx);
-    if (hd && ship_launch_spot(f, fx, fz, bt, btd, hd)) return;
+    if (hd) {
+        /* The next one goes up where this one did. */
+        const UnitDef *nd = f->prod_queue_len > 0 ? def_hull(f->prod_queue[0]) : NULL;
+        ShipYardWay yw;
+        ship_yard_way(f, bt->world_x, bt->world_y, nd ? nd : hd, &yw);
+        if (ship_launch_spot(f, fx, fz, bt, btd, hd, &yw)) return;
+    }
     if (!hd && factory_step_off(f, fd, bt, btd)) return;
     int exit_px = (fx > fz ? fx : fz) * 8 + 24;
     /* Off the pad first: keep going the way the pad already points, so
@@ -11217,6 +11326,34 @@ static int ship_hull_blocked(const UnitDef *d, int self, float margin,
         if (dn2 + 0.25f < ship_hull_d2(&hc, &ho)) return j + 1;
     }
     return 0;
+}
+
+/* Whether ship d at (x, y) keeps margin px off ship e at (ex, ey). */
+static int ship_hulls_apart(const UnitDef *d, int32_t x, int32_t y,
+                            float heading, const UnitDef *e, int32_t ex,
+                            int32_t ey, float eheading, float margin) {
+    ShipHull a, b;
+    ship_hull_at(d, x, y, heading, &a);
+    ship_hull_at(e, ex, ey, eheading, &b);
+    float need = a.r + b.r + margin;
+    return ship_hull_d2(&a, &b) >= need * need;
+}
+
+/* Whether ship d sails from (x0, y0) straight to (x1, y1) without coming
+ * closer to another hull than margin, past any it starts against. */
+static int ship_lane_clear(const UnitDef *d, int self, int32_t x0, int32_t y0,
+                           float h0, int32_t x1, int32_t y1) {
+    float dx = (float)(x1 - x0), dy = (float)(y1 - y0);
+    float len = sqrtf(dx * dx + dy * dy);
+    float heading = tak_atan2f(dx, -dy);
+    for (float s = 16.0f; s < len; s += 16.0f) {
+        int32_t x = x0 + (int32_t)(dx * s / len);
+        int32_t y = y0 + (int32_t)(dy * s / len);
+        if (ship_hull_blocked(d, self, UNIT_HULL_MARGIN, heading, x, y, 1, h0,
+                              x0, y0))
+            return 0;
+    }
+    return 1;
 }
 
 float Units_DebugHullOverlap(int handle_a, int handle_b) {

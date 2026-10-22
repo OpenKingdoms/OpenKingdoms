@@ -122,6 +122,7 @@ ui = [
   ["healing_spends_mana_over_time", 1],
   ["two_factories_at_an_empty_pool_both_build", 1],
   ["the_battle_record_keeps_what_an_end_screen_tells", 1],
+  ["ship_hulls_come_from_their_models", 1],
 ]
 
 [[tier1]]

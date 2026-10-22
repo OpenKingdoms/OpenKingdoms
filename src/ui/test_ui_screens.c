@@ -22060,6 +22060,52 @@ TEST(ship_hulls_come_from_their_models) {
         ASSERT(worst <= 2.0f);
         ASSERT(far2 <= (int64_t)400 * 400);
     }
+    /* A Sea Fort floats at its waterline and launches ship after ship
+     * from its pad, which lies off its centre (issues #457, #458). */
+    {
+        int fort_def = Units_FindDefByName("VERASY");
+        if (fort_def < 0) goto done;
+        int32_t fx = -1, fy = -1;
+        for (int32_t y = 640; y < world->map_pixels_h - 768 && fx < 0; y += 64)
+            for (int32_t x = 640; x < world->map_pixels_w - 640; x += 64) {
+                int32_t sx = x, sy = y;
+                Units_SnapBuildSiteFacing(fort_def, 0, &sx, &sy);
+                if ((int64_t)(sx - cx) * (sx - cx) + (int64_t)(sy - cy) * (sy - cy) <
+                        (int64_t)1600 * 1600 ||
+                    !Units_IsBuildSiteFreeFacing(fort_def, sx, sy, 0))
+                    continue;
+                fx = sx; fy = sy;
+                break;
+            }
+        if (fx < 0) { SKIP_MARK("no sea fort site"); goto done; }
+        Economy_AdjustCaps(&world->economy, 1, 1000000, 5000.0f);
+        Economy_Earn(&world->economy, 1, 1000000);
+        int count = 0;
+        Units_GetActive(&count);
+        const int first = count;
+        int fort = Units_Spawn(fort_def, 1, 0, fx, fy);
+        ASSERT(fort >= first);
+        const Unit *units = Units_GetActive(&count);
+        int ground = Terrain_SampleHeight(world, fx, fy);
+        ASSERT(ground < world->water_height - 1);
+        ASSERT_EQ_INT(world->water_height - 1,
+                      ground + (int)Units_DrawnAlt(world, &units[fort]));
+        static const char *queue[4] = { "VERMAN", "VERSCOUT", "VERMAN", "VERHARP" };
+        for (int i = 0; i < 4; i++)
+            ASSERT_EQ_INT(0, Units_FactoryAdd(fort, Units_FindDefByName(queue[i]), 1, 0));
+        int built = 0, t = 0;
+        for (; t < 12000 && built < 4; t++) {
+            Units_TickEngines();
+            units = Units_GetActive(&count);
+            built = 0;
+            for (int i = first; i < count; i++)
+                if (i != fort && units[i].alive == UNIT_ALIVE_ACTIVE &&
+                    !units[i].under_construction)
+                    built++;
+        }
+        printf("(sea fort launched %d of 4 in %d ticks) ", built, t);
+        ASSERT_EQ_INT(4, built);
+    }
 done:
     Loading_Shutdown();
     World_End(&platform);
