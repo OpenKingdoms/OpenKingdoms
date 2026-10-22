@@ -232,15 +232,16 @@ static int minimap_dot_rect(const GameWorld *world, const SDL_Rect *map,
  * refresh and draws every unit carrying the minimap-visible bit
  * (legacy:208470-208524), colouring the blip from the owner's player
  * record rather than the viewer's (legacy:208505). Own units carry the
- * bit unconditionally, anyone else's only while the local player's
- * sight covers the ground they stand on, or with Line of Sight off
- * while that ground is explored (legacy:208633-208707). That is the
- * rule Units_IsVisibleToLocalPlayer applies. */
+ * bit unconditionally, anyone else's while the local player's sight
+ * covers the ground they stand on, or with Line of Sight off while that
+ * ground is explored (legacy:208633-208707), which is the rule
+ * Units_IsVisibleToLocalPlayer applies, or while the viewer's radar
+ * reaches them (legacy:208642-208655). */
 static int minimap_shows_unit(const GameWorld *world, const Unit *u) {
     /* +Radar shows every unit (legacy:208463-208465). */
     int me = Units_LocalPlayer();
     if (world && me >= 1 && me <= TAK_MAX_PLAYERS && world->console.radar[me]) return 1;
-    return Units_IsVisibleToLocalPlayer(u);
+    return Units_IsVisibleToLocalPlayer(u) || Units_RadarShowsToLocalPlayer(u);
 }
 
 /* The large radar's blips, at the art's own size on the canvas. */

@@ -80,6 +80,45 @@ it while you work.
 Edit a file, start the game again, and the change is in. There is no
 packing step.
 
+## Unit tags beyond the original
+
+A unit file can set two tags the original never reads. No shipped unit
+sets either, so the game plays as the original unless a mod adds them.
+Both are radii in world pixels, the scale `sightdistance` uses, and both
+go in the `[UNITINFO]` section:
+
+```
+radardistancejam = 300;
+sightdistancejam = 200;
+```
+
+`radardistancejam` hides units from enemy radar. Radar is the
+original's `radardistance`: every unit of another player within that
+radius of one of your finished units shows as a blip on the minimap and
+the full screen radar, and nowhere else. A unit within an enemy
+jammer's radius gets no blip. One your own sight covers still shows,
+since sight never needed radar.
+
+`sightdistancejam` puts the fog back over the ground round the jammer
+for every enemy player, computer players included. Their units cannot
+see into it, so they cannot pick targets there, while the ground they
+have seen stays explored. Each of their units still sees the cells right
+round itself, so a unit that walks up to a jammer finds it. Sight
+jamming needs Line of Sight on. With it off every player sees the whole
+explored map, so a sight jammer hides nothing. It does not hide radar
+blips either, and radar often reaches far past sight, so pair it with
+`radardistancejam` to hide a force from both.
+
+A jammer jams while it is finished and alive. Give it `onoffable = 1`
+and it jams only while it is switched on, so pair that with
+`activatewhenbuilt = 1` unless its script switches it on. A jammer
+never jams its own side or its allies, and an ally's jammer never hides
+anything from you.
+
+Sight jamming changes what units can see, so it is part of the
+simulation: a game with a sight jammer in it plays the same on every
+machine, and saves keep it. Radar and radar jamming are drawing only.
+
 ## Choosing a mod set
 
 In the browser, pick your game folder as usual. If it has mods in it, a

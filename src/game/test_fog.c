@@ -22,6 +22,11 @@ const UnitDef *Units_GetDef(int idx) {
     return &g_test_defs[idx];
 }
 
+/* Seats with a team of their own are enemies unless they share it. */
+int Units_PlayersAreEnemies(int a, int b) {
+    return a != b;
+}
+
 /* The reveal anchor. It is simulation state on the unit rather than a
  * cache, so fog.c asks the unit layer for it and this fixture owns the
  * unit array. Same rule as the real one: the anchor follows the unit
@@ -508,6 +513,60 @@ static int test_a_watcher_sees_the_whole_map_and_no_seat_changes(void) {
     return 0;
 }
 
+/* sightdistancejam, a tag of our own for mods: an enemy jammer puts
+ * the ground round it back under fog for a seat, all but the nine cells
+ * round the seat's own unit, and never for its own side. One that can
+ * be switched off jams only while it is on. */
+static int test_a_sight_jammer_fogs_its_ground_for_the_enemy(void) {
+    GameWorld w;
+    memset(&w, 0, sizeof(w));
+    memset(g_test_units, 0, sizeof(g_test_units));
+    memset(g_test_defs, 0, sizeof(g_test_defs));
+    w.map_pixels_w = 1024;
+    w.map_pixels_h = 512;
+    w.cfg.line_of_sight = 1;
+    ASSERT_EQ_INT(0, Fog_Init(&w));
+    g_test_unit_count = 2;
+    g_test_defs[0].sight_distance = 320;
+    g_test_defs[1].sight_distance = 64;
+    g_test_defs[1].sight_jam_distance = 128;
+    g_test_units[0].alive = UNIT_ALIVE_ACTIVE;
+    g_test_units[0].player_id = 1;
+    g_test_units[0].def_idx = 0;
+    g_test_units[0].world_x = 208;
+    g_test_units[0].world_y = 272;
+    g_test_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_test_units[1].player_id = 2;
+    g_test_units[1].def_idx = 1;
+    g_test_units[1].world_x = 336;
+    g_test_units[1].world_y = 272;
+
+    Fog_Update(&w, 1);
+    Fog_Update(&w, 2);
+    /* The jammer and the ground round it are fogged for seat 1. */
+    ASSERT_EQ_INT(TAK_FOG_EXPLORED, Fog_StateAtForPlayer(&w, 1, 336, 272));
+    ASSERT_EQ_INT(TAK_FOG_EXPLORED, Fog_StateAtForPlayer(&w, 1, 432, 272));
+    ASSERT_EQ_INT(0, Fog_IsVisibleForPlayer(&w, 1, 336, 272));
+    /* Inside the radius, but one cell from seat 1's own unit. */
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 240, 272));
+    /* Past the radius seat 1 still sees. */
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 496, 272));
+    /* Its own side sees round it. */
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 2, 336, 272));
+
+    /* Switched off, it jams nothing. */
+    g_test_defs[1].onoffable = 1;
+    Fog_Update(&w, 1);
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 336, 272));
+    g_test_units[1].cob_activation = 1;
+    Fog_Update(&w, 1);
+    ASSERT_EQ_INT(TAK_FOG_EXPLORED, Fog_StateAtForPlayer(&w, 1, 336, 272));
+
+    Fog_Free(&w);
+    g_test_unit_count = 0;
+    return 0;
+}
+
 int main(void) {
     int failed = 0;
     failed |= test_map_revealed_initializes_explored();
@@ -521,6 +580,7 @@ int main(void) {
     failed |= test_the_nine_cells_around_a_unit_are_always_lit();
     failed |= test_the_reveal_follows_the_unit_across_a_cell_boundary();
     failed |= test_a_watcher_sees_the_whole_map_and_no_seat_changes();
+    failed |= test_a_sight_jammer_fogs_its_ground_for_the_enemy();
     if (failed) return 1;
     puts("test_fog: ok");
     return 0;

@@ -41,7 +41,7 @@ enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_FLYPICK, LF_BLADEPICK, LF_BROAD, LF_SWIRL, LF_CANNON, LF_TORCH,
        LF_SWEEPER, LF_BOMBER, LF_STURDY, LF_TWISTER, LF_TORNADO,
        LF_ROVEROAM, LF_HAWK, LF_MASON, LF_FREEZER, LF_ICEMAN, LF_BREATHER,
-       LF_TURRET, LF_STUNNER, LF_DEF_COUNT };
+       LF_TURRET, LF_STUNNER, LF_RADAR, LF_JAMMER, LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
 #define LF_SX   800
@@ -394,6 +394,14 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     strncpy(wp->damage_type, "paralyzer", sizeof(wp->damage_type) - 1);
     wp->paralyzer = 1;
     wp->reload_ticks = 30;
+    /* A scout that sees 100 px and has radar to 600, and a radar
+     * jammer reaching 150 as a mod could make one. */
+    lf_fill(&defs[LF_RADAR], "TESTRADAR", 1.2f, 300);
+    defs[LF_RADAR].sight_distance = 100;
+    defs[LF_RADAR].radar_distance = 600;
+    lf_fill(&defs[LF_JAMMER], "TESTJAM", 1.2f, 300);
+    defs[LF_JAMMER].sight_distance = 100;
+    defs[LF_JAMMER].radar_jam_distance = 150;
 
     FeatureDef fdefs[FD_COUNT];
     memset(fdefs, 0, sizeof fdefs);
@@ -2167,6 +2175,45 @@ TEST(a_ranged_unit_waits_to_see_before_it_acquires) {
     for (int i = 0; i < 4; i++) Units_TickEngines();
     ASSERT_EQ_INT(1, Units_IsVisibleToLocalPlayer(lf_unit(e)));
     ASSERT_EQ_INT(e, lf_unit(a)->target);
+    lf_end();
+}
+
+/* Radar shows a unit beyond sight as a blip on the minimap and nowhere
+ * else: its side neither sees nor targets it (legacy:208642-208655,
+ * legacy:208580-208590). */
+TEST(radar_shows_a_blip_beyond_sight_and_nothing_more) {
+    GameWorld *w = lf_world(1, 1);
+    ASSERT_NOT_NULL(w);
+    int r = lf_spawn(LF_RADAR, 1, LF_SX, LF_ROW);
+    int near = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
+    int far = lf_spawn(LF_TARGET, 2, LF_SX + 700, LF_ROW);
+    ASSERT(r >= 0 && near >= 0 && far >= 0);
+    lf_fog(w);
+    Units_TickEngines();
+    ASSERT_EQ_INT(0, Units_IsVisibleToLocalPlayer(lf_unit(near)));
+    ASSERT_EQ_INT(0, Units_SideSees(1, near));
+    ASSERT_EQ_INT(1, Units_RadarShowsToLocalPlayer(lf_unit(near)));
+    ASSERT_EQ_INT(0, Units_RadarShowsToLocalPlayer(lf_unit(far)));
+    ASSERT_EQ_INT(0, Units_RadarShowsToLocalPlayer(lf_unit(r)));
+    lf_end();
+}
+
+/* radardistancejam, ours for mods: an enemy jammer hides what stands
+ * within its radius from radar, an ally's hides nothing. */
+TEST(an_enemy_radar_jammer_hides_blips_and_an_allys_does_not) {
+    GameWorld *w = lf_world(1, 1);
+    ASSERT_NOT_NULL(w);
+    int r = lf_spawn(LF_RADAR, 1, LF_SX, LF_ROW);
+    int near = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
+    int ally = lf_spawn(LF_JAMMER, 3, LF_SX + 450, LF_ROW + 64);
+    ASSERT(r >= 0 && near >= 0 && ally >= 0);
+    lf_fog(w);
+    Units_TickEngines();
+    ASSERT_EQ_INT(1, Units_RadarShowsToLocalPlayer(lf_unit(near)));
+    int jam = lf_spawn(LF_JAMMER, 2, LF_SX + 450, LF_ROW - 64);
+    ASSERT(jam >= 0);
+    for (int i = 0; i < 12; i++) Units_TickEngines();   /* the next marking */
+    ASSERT_EQ_INT(0, Units_RadarShowsToLocalPlayer(lf_unit(near)));
     lf_end();
 }
 
@@ -4035,6 +4082,8 @@ int main(int argc, char **argv) {
     RUN(a_blocked_volley_hashes_the_same);
     TEST_SUITE("What a side sees");
     RUN(a_ranged_unit_waits_to_see_before_it_acquires);
+    RUN(radar_shows_a_blip_beyond_sight_and_nothing_more);
+    RUN(an_enemy_radar_jammer_hides_blips_and_an_allys_does_not);
     RUN(a_hit_is_answered_and_leaves_its_shooter_unseen);
     RUN(return_fire_needs_the_shooter_in_reach);
     RUN(a_blade_answers_a_seen_shooter_inside_its_leash);

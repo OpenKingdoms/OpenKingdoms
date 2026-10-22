@@ -167,6 +167,47 @@ int Fog_SharesSight(const GameWorld *world, int viewer, int owner) {
     return a->team == b->team;
 }
 
+/* sightdistancejam, a tag of our own for mods: ground within an enemy
+ * jammer's radius goes back under fog for this seat. The nine cells
+ * round each of its own eyes stay lit, as the stamp lights them
+ * whatever the radius (legacy:167402). */
+static void fog_jam(GameWorld *world, uint8_t *layer, int player_id,
+                    const Unit *units, int unit_count) {
+    int jammed = 0;
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *j = &units[i];
+        const UnitDef *d = Units_GetDef((int)j->def_idx);
+        if (!d || d->sight_jam_distance <= 0 || !Unit_JamsNow(j, d) ||
+            !Units_PlayersAreEnemies(player_id, (int)j->player_id)) continue;
+        int r = d->sight_jam_distance;
+        int cx0 = j->world_x / FOG_CELL_PX, cy0 = j->world_y / FOG_CELL_PX;
+        int reach = r / FOG_CELL_PX + 1;
+        for (int fy = cy0 - reach; fy <= cy0 + reach; fy++) {
+            if (fy < 0 || fy >= world->fog_h) continue;
+            for (int fx = cx0 - reach; fx <= cx0 + reach; fx++) {
+                if (fx < 0 || fx >= world->fog_w) continue;
+                int dx = fx - cx0, dy = fy - cy0;
+                if ((int64_t)(dx * dx + dy * dy) * (FOG_CELL_PX * FOG_CELL_PX) >
+                    (int64_t)r * r) continue;
+                uint8_t *c = &layer[fog_idx(world, fx, fy)];
+                if (*c == TAK_FOG_VISIBLE) *c = TAK_FOG_EXPLORED;
+            }
+        }
+        jammed = 1;
+    }
+    if (!jammed) return;
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != 1 || u->under_construction || !u->fog_lit ||
+            !Fog_SharesSight(world, player_id, (int)u->player_id)) continue;
+        int cx0 = u->fog_x / FOG_CELL_PX, cy0 = u->fog_y / FOG_CELL_PX;
+        for (int fy = cy0 - 1; fy <= cy0 + 1; fy++)
+            for (int fx = cx0 - 1; fx <= cx0 + 1; fx++)
+                if (fx >= 0 && fy >= 0 && fx < world->fog_w && fy < world->fog_h)
+                    layer[fog_idx(world, fx, fy)] = TAK_FOG_VISIBLE;
+    }
+}
+
 void Fog_Update(GameWorld *world, int player_id) {
     uint8_t *layer = fog_layer(world, player_id);
     if (!world || !layer || world->fog_w <= 0 || world->fog_h <= 0)
@@ -255,6 +296,7 @@ void Fog_Update(GameWorld *world, int player_id) {
             c->n = cn;
         }
     }
+    fog_jam(world, layer, player_id, units, unit_count);
 }
 
 int Fog_StateAtForPlayer(const GameWorld *world, int player_id,
