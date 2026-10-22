@@ -2176,7 +2176,8 @@ Format per entry:
   counts a point reached within 8 px. Turned onto its target, it moves
   off its heading at one fixed creep a frame, (2 brakerate +
   acceleration) / (2 - acceleration / maxvelocity), and along it at the
-  walk's speed.
+  walk's speed. On a point on the ground it turns onto that point while
+  it is in range and flies straight at its own point at full speed.
 - Why: the original sends a target that fails a reach test on the
   unit's path to a formation move, which steps out by the common rule,
   and flies the rest with a plain move that does not. That test was not
@@ -2188,7 +2189,11 @@ Format per entry:
   onto the heading each frame and thrusts at its point. Our walk keeps a
   speed and a heading and no velocity, so it takes the speed off the
   heading that this settles at, the original's when the flyer backs
-  away. Sideways the original's is a little faster and drifts forward.
+  away. Sideways the original's is about 40% faster and drifts forward
+  as fast again. Against a point on the ground the original builds a
+  plain move with nothing to face (legacy:30328-30338,
+  legacy:190557-190562), so it faces its way, and how it then aims its
+  weapons there was not traced. Ours keeps what it did before.
 - Citation: the far test and the formation move (legacy:30139,
   legacy:30467-30502, legacy:235678-235762), the hover attack's step out
   (legacy:30636-30705), the move to its point (legacy:30362-30364) and

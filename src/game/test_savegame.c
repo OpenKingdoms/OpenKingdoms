@@ -1743,8 +1743,9 @@ static uint32_t rec_u32(const uint8_t *r, int at) {
  * flyer's air traffic at 1000, version 12 a hover attack at 1024,
  * version 13 a fight's post at 1036, version 14 a self destruct's
  * count at 1047, version 15 what hit it last at 1049, version 16 the
- * cloak at 1057, version 17 a paralyzer's hold at 1060 and version 18
- * a magic death at 1062. */
+ * cloak at 1057, version 17 a paralyzer's hold at 1060, version 18
+ * a magic death at 1062, and version 19 a hover point on the map rather
+ * than off its target, in the same bytes. */
 TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
@@ -1756,7 +1757,7 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
-    ASSERT_EQ_INT(18, (int)version);
+    ASSERT_EQ_INT(19, (int)version);
     ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24 + 12 + 11 + 2 + 8 + 3 + 2 + 3,
                   (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;

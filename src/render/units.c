@@ -11989,6 +11989,7 @@ double g_walk_calls;
  * turned onto its target. */
 static int   g_walk_face_on;
 static float g_walk_face;
+static int   g_walk_creep;   /* turned onto a unit, off the heading at a creep */
 
 /* A flyer's speed off its heading in px a tick. Each frame the original
  * turns all but brakerate of it onto the heading, then thrusts by
@@ -11997,8 +11998,8 @@ static float g_walk_face;
 static float flyer_creep_ppt(const UnitDef *def) {
     float top = def->max_velocity;
     if (top <= 0.0f) return 0.0f;
-    float a = def->acceleration < top ? def->acceleration : top;
-    if (a < 0.0f) a = 0.0f;
+    /* No acceleration is instant, as the walk takes it. */
+    float a = def->acceleration > 0.0f && def->acceleration < top ? def->acceleration : top;
     float b = def->brake_rate > 0.0f ? def->brake_rate : 0.0f;
     return (2.0f * b + a) / (2.0f - a / top) * 0.5f;
 }
@@ -12245,8 +12246,9 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     }
 
     /* Move along the heading (legacy:183366-183372). A flyer holding a
-     * heading makes for its point at full speed only along that heading,
-     * and at its creep any other way (legacy:183992-184004). */
+     * heading moves at its point, turned onto a unit at full speed only
+     * along that heading and at its creep any other way
+     * (legacy:183992-184004). */
     float dir_x = tak_sinf(u->heading);
     float dir_y = -tak_cosf(u->heading);
     float step_x = dir_x * v, step_y = dir_y * v;
@@ -12255,6 +12257,8 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         float len = sqrtf(sx * sx + sy * sy);
         step_x = len > 0.0f ? sx / len * v : 0.0f;
         step_y = len > 0.0f ? sy / len * v : 0.0f;
+    }
+    if (g_walk_face_on && g_walk_creep) {
         float fwd = step_x * dir_x + step_y * dir_y;
         if (fwd < 0.0f) fwd = 0.0f;
         float ox = step_x - dir_x * fwd, oy = step_y - dir_y * fwd;
@@ -13720,7 +13724,7 @@ static void hover_reset(Unit *u) {
 
 /* Its point on the map. It stays where it was picked, off a target
  * unit as off the ground, and does not follow the target
- * (legacy:190458-190478, legacy:190486-190487). */
+ * (legacy:190458-190478, legacy:190495-190496). */
 static void hover_point(const Unit *u, int32_t *x, int32_t *y) {
     *x = u->hover_x;
     *y = u->hover_y;
@@ -15371,13 +15375,19 @@ static void Units_TickCombat(void) {
                 ensure_thread(u, "walk", &u->walk_thread_slot, NULL, 0);
                 /* A hover attacker's weapons stay on its target as it
                  * flies (legacy:30223-30253). Within 320 px of its point
-                 * it holds itself turned onto the target, and further out
-                 * or on an air leg it faces its way (legacy:241346-241351). */
+                 * it holds itself turned onto a target unit, and further
+                 * out or on an air leg it faces its way
+                 * (legacy:241346-241351). On a point on the ground it turns
+                 * onto the point while in range and flies straight, ours
+                 * (D-039). */
                 int64_t gox = (int64_t)goal_x - u->world_x;
                 int64_t goy = (int64_t)goal_y - u->world_y;
-                if (hovering && (u->hover_events & UNIT_HOVER_ARMED) &&
-                    !air_leg_on && unit_faces_target(def) &&
-                    gox * gox + goy * goy <= (int64_t)HOVER_FACE_PX * HOVER_FACE_PX) {
+                int on_unit = u->target >= 0 && u->target < g_unit_count;
+                if (hovering && unit_faces_target(def) &&
+                    (on_unit ? (u->hover_events & UNIT_HOVER_ARMED) && !air_leg_on &&
+                               gox * gox + goy * goy <=
+                                   (int64_t)HOVER_FACE_PX * HOVER_FACE_PX
+                             : target_in_range)) {
                     int32_t fx = u->cmd_x, fy = u->cmd_y;
                     if (u->target >= 0 && u->target < g_unit_count) {
                         fx = g_units[u->target].world_x;
@@ -15385,12 +15395,14 @@ static void Units_TickCombat(void) {
                     }
                     if (fx != u->world_x || fy != u->world_y) {
                         g_walk_face_on = 1;
+                        g_walk_creep = on_unit;
                         g_walk_face = tak_atan2f((float)(fx - u->world_x),
                                                  -(float)(fy - u->world_y));
                     }
                 }
                 int arrived = walk_tick(u, def, goal_x, goal_y);
                 g_walk_face_on = 0;
+                g_walk_creep = 0;
                 if (hovering && target_in_range) unit_fire_tick(u, i, def);
                 if (arrived) {
                     u->velocity = 0; u->cur_speed_ppt = 0.0f;

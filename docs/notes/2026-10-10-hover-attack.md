@@ -102,7 +102,7 @@ attacked this way at once. Since 2026-10-16 they take off like the rest.
 - The point stays on the map where it was picked. The original's move
   to it names the target unit only for the flyer to face, and keeps
   the point where it was set (legacy:190458-190478,
-  legacy:190486-190487). It is reached within 8 px, where the walk
+  legacy:190495-190496). It is reached within 8 px, where the walk
   stops for it, not the original's 4 (D-039). Between points the flyer
   is moving, and at its point it holds and attacks.
 - Within 320 px of its point the flyer turns onto its target at its

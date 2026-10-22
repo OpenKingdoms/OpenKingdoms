@@ -2419,7 +2419,7 @@ static int mv_add_sky_knight(void) {
  * under it. The point stays where it was picked and the knight flies
  * turned onto the walker, so it backs off no faster than its creep, about
  * 0.42 px a frame, and is never carried back at the walker's pace
- * (legacy:190486-190487, legacy:183992-184004). */
+ * (legacy:190495-190496, legacy:183992-184004). */
 TEST(a_walker_does_not_push_a_hover_attacker_back) {
     ASSERT_NOT_NULL(mv_world());
     int knight = mv_add_sky_knight();
@@ -2433,7 +2433,7 @@ TEST(a_walker_does_not_push_a_hover_attacker_back) {
     mv_run(900);
     ASSERT(Units_OrderMove(post, 300, 1500));
     float back_max = 0.0f;
-    int64_t nearest2 = INT64_MAX;
+    int64_t nearest2 = INT64_MAX, point_far2 = 0;
     const Unit *u = mv_unit(h);
     float px = (float)u->world_x + u->subpixel_x;
     float py = (float)u->world_y + u->subpixel_y;
@@ -2449,12 +2449,18 @@ TEST(a_walker_does_not_push_a_hover_attacker_back) {
         const Unit *p = mv_unit(post);
         int64_t d2 = mv_dist2(u, p->world_x, p->world_y);
         if (d2 < nearest2) nearest2 = d2;
+        /* Its point is a place on the map near it, not an offset. */
+        if (u->hover_state != UNIT_HOVER_NONE) {
+            int64_t pd2 = mv_dist2(u, u->hover_x, u->hover_y);
+            if (pd2 > point_far2) point_far2 = pd2;
+        }
     }
     printf("(backed off at up to %.2f px a tick, came within %.0f px of the "
            "walker, still on it %d) ", (double)back_max, sqrt((double)nearest2),
            mv_unit(h)->target == post);
     ASSERT(back_max <= 0.23f);
     ASSERT(nearest2 < 120 * 120);
+    ASSERT(point_far2 < 500 * 500);
     ASSERT_EQ_INT(post, (int)mv_unit(h)->target);
     mv_end();
 }
