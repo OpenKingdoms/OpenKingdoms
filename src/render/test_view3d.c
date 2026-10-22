@@ -36,6 +36,7 @@
 #include "tak_model_store.h"
 #include "tak_tex_atlas.h"
 #include "tak_sim_hash.h"
+#include "tak_savegame.h"
 #include "tak_gl3d.h"
 #include "tak_world.h"
 #include "tak_util.h"
@@ -1165,6 +1166,180 @@ TEST(damage_smoke_is_bounded_and_leaves_sim_unchanged) {
     ASSERT(x_end - x0 > 0);
     ASSERT(h_end - h0 > 0);
 
+    shutdown_all(&platform);
+}
+
+static int wakes_for(int owner) {
+    int n = 0, count = 0;
+    const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
+    for (int i = 0; i < n; i++)
+        if (fx[i].alive && fx[i].owner == owner && fx[i].wake_owner_id) count++;
+    return count;
+}
+
+/* The wake point just emitted for `owner`, -1 for none. */
+static int wake_slot_newest(int owner) {
+    int n = 0, slot = -1;
+    const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
+    for (int i = 0; i < n; i++)
+        if (fx[i].alive && fx[i].owner == owner && fx[i].wake_owner_id &&
+            fx[i].wake_stage == 0 && fx[i].wake_left == fx[i].wake_hold) slot = i;
+    return slot;
+}
+
+/* Open water a wake can run 64 px across in any direction. */
+static int find_open_water(const GameWorld *w, int32_t *ox, int32_t *oy) {
+    for (int32_t y = 128; y < w->map_pixels_h - 128; y += 32)
+        for (int32_t x = 128; x < w->map_pixels_w - 128; x += 32) {
+            int ok = 1;
+            for (int dy = -64; dy <= 64 && ok; dy += 16)
+                for (int dx = -64; dx <= 64 && ok; dx += 16)
+                    if (Terrain_SampleHeight(w, x + dx, y + dy) >= w->water_height) ok = 0;
+            if (ok) { *ox = x; *oy = y; return 1; }
+        }
+    return 0;
+}
+
+static int piece_node(const Unit *u, const char *name) {
+    for (int i = 0; u->cob && i < u->cob->script->num_pieces; i++)
+        if (tak_stricmp(u->cob->script->piece_names[i], name) == 0)
+            return u->cob->piece_to_node[i];
+    return -1;
+}
+
+/* An archer wading leaves the original's wake from its wake piece: a
+ * point that steps through six colours, 32 ticks each for type 2 and 16
+ * for type 3, moving a quarter pixel a tick, 100 at most a unit and gone
+ * over land (legacy:201685-201843, legacy:214947). It changes nothing
+ * the simulation keeps: 120 ticks from one save end on the same hash
+ * with wakes and without. */
+TEST(a_wading_archer_leaves_the_originals_wake) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int32_t wx = 0, wy = 0;
+    if (!find_open_water(world, &wx, &wy)) {
+        shutdown_all(&platform);
+        SKIP_MARK("no open water on the map");
+        return;
+    }
+    int n = 0;
+    Unit *units = (Unit *)Units_GetActive(&n);
+    int def = Units_FindDefByName("ARAARCH");
+    ASSERT(def >= 0);
+    int h = Units_Spawn(def, units[0].player_id, units[0].team_color_idx, wx, wy);
+    int land = Units_Spawn(def, units[0].player_id, units[0].team_color_idx,
+                           units[0].world_x + 96, units[0].world_y);
+    ASSERT(h >= 0 && land >= 0);
+    Units_TickEngines();
+    int node = piece_node(&units[h], "WakeR");
+    ASSERT(node >= 0);
+    CobEngine *cob = units[h].cob;
+
+    uint32_t hash = TAK_SimHash(), random = World_RandState();
+    cob->host_emit_sfx(cob->host_user, node, 2);
+    int a = wake_slot_newest(h);
+    cob->host_emit_sfx(cob->host_user, node, 3);
+    int b = wake_slot_newest(h);
+    ASSERT(a >= 0 && b >= 0 && a != b);
+    ASSERT(hash == TAK_SimHash());
+    ASSERT(random == World_RandState());
+    int ne = 0;
+    const ProjectileEffect *fx = Units_GetProjectileEffects(&ne);
+    ASSERT_EQ_INT((int)0xff29dedeu, (int)fx[a].argb);
+    int32_t ax = fx[a].world_x, ay = fx[a].world_y, ah = fx[a].height;
+    int32_t a_x = ax, a_y = ay, a_h = ah;
+    int a_life = -1, b_life = -1, a_changes = 0, b_changes = 0, bad = 0;
+    uint32_t a_prev = fx[a].argb, b_prev = fx[b].argb;
+    int a_last = 0, b_last = 0;
+    for (int t = 1; t <= 260 && (a_life < 0 || b_life < 0); t++) {
+        Units_TickEngines();
+        fx = Units_GetProjectileEffects(&ne);
+        if (a_life < 0) {
+            if (a >= ne || !fx[a].alive || !fx[a].wake_owner_id) {
+                a_life = t;
+            } else {
+                if (fx[a].argb != a_prev) {
+                    if (t - a_last != 32) bad++;
+                    a_last = t; a_prev = fx[a].argb; a_changes++;
+                }
+                a_x = fx[a].world_x; a_y = fx[a].world_y; a_h = fx[a].height;
+            }
+        }
+        if (b_life < 0) {
+            if (b >= ne || !fx[b].alive || !fx[b].wake_owner_id) {
+                b_life = t;
+            } else if (fx[b].argb != b_prev) {
+                if (t - b_last != 16) bad++;
+                b_last = t; b_prev = fx[b].argb; b_changes++;
+            }
+        }
+    }
+    float moved = sqrtf((float)((a_x - ax) * (a_x - ax) + (a_y - ay) * (a_y - ay) +
+                                (a_h - ah) * (a_h - ah)));
+    printf("(type 2: %d colours more, gone at %d, moved %.0f px; type 3: %d "
+           "colours more, gone at %d) ", a_changes, a_life, moved, b_changes, b_life);
+    ASSERT_EQ_INT(0, bad);
+    ASSERT_EQ_INT(5, a_changes);
+    ASSERT_EQ_INT(192, a_life);
+    ASSERT_EQ_INT(5, b_changes);
+    ASSERT_EQ_INT(96, b_life);
+    ASSERT(moved >= 44.0f && moved <= 52.0f);
+
+    /* A hundred a unit, and none over land. */
+    for (int i = 0; i < 300; i++) cob->host_emit_sfx(cob->host_user, node, 2 + i % 4);
+    ASSERT_EQ_INT(100, wakes_for(h));
+    CobEngine *lc = units[land].cob;
+    lc->host_emit_sfx(lc->host_user, node, 2);
+    ASSERT_EQ_INT(1, wakes_for(land));
+    Units_TickEngines();
+    ASSERT_EQ_INT(0, wakes_for(land));
+
+    /* The 3D view draws them. */
+    world->cam_x = wx - world->viewport_w / 2;
+    world->cam_y = wy - world->viewport_h / 2;
+    Timer timer;
+    Timer_Init(&timer);
+    ASSERT_EQ_INT(1, InGame_SetView3D(1));
+    ASSERT(frame(&platform, &timer));
+    printf("(3D view: %d wake points) ", View3D_DebugDrawCounts().wakes);
+    ASSERT(View3D_DebugDrawCounts().wakes > 50);
+    ASSERT_EQ_INT(1, InGame_SetView3D(0));
+    ASSERT(frame(&platform, &timer));
+
+    /* From one save, 120 ticks with wakes and 120 without end alike. */
+    char err[256] = { 0 };
+    const char *path = "v3d_wakes.oksave";
+    remove(path);
+    ASSERT_EQ_INT(0, Save_Write(path, err, sizeof err));
+    uint32_t ends[2] = { 0, 0 };
+    for (int run = 0; run < 2; run++) {
+        TAK_SaveGame *sg = Save_Read(path, err, sizeof err);
+        ASSERT_NOT_NULL(sg);
+        int applied = Save_Apply(sg, err, sizeof err);
+        Save_ReadClose(sg);
+        if (applied != 0) printf("(%s) ", err);
+        ASSERT_EQ_INT(0, applied);
+        units = (Unit *)Units_GetActive(&n);
+        cob = units[h].cob;
+        ASSERT_NOT_NULL(cob);
+        int most = 0;
+        for (int t = 0; t < 120; t++) {
+            if (run == 0 && t % 4 == 0)
+                for (int k = 2; k <= 5; k++) cob->host_emit_sfx(cob->host_user, node, k);
+            Units_TickEngines();
+            if (wakes_for(h) > most) most = wakes_for(h);
+        }
+        if (run == 0) ASSERT(most > 0);
+        else ASSERT_EQ_INT(0, most);
+        ends[run] = TAK_SimHash();
+    }
+    remove(path);
+    printf("(after 120 ticks: %08x with wakes, %08x without) ",
+           (unsigned)ends[0], (unsigned)ends[1]);
+    ASSERT(ends[0] == ends[1]);
     shutdown_all(&platform);
 }
 
@@ -2652,6 +2827,7 @@ int main(int argc, char **argv) {
     RUN_NAMED(damaged_building_flames_are_bounded_visual_requests);
     RUN_NAMED(damage_smoke_follows_the_retail_script);
     RUN_NAMED(damage_smoke_is_bounded_and_leaves_sim_unchanged);
+    RUN_NAMED(a_wading_archer_leaves_the_originals_wake);
     RUN_NAMED(a_flame_weapon_streams_particles_instead_of_a_ray);
     RUN_NAMED(a_ring_spell_lays_its_rings_from_the_data);
     RUN_NAMED(a_storm_rains_its_drops_from_the_data);

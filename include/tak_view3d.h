@@ -26,6 +26,7 @@ typedef struct View3DDrawCounts {
     int ghost_grounds;   /* build previews whose ground pieces drew apart */
     int features_at_work;   /* sprite features drawn dying or burning */
     int flames;             /* the flames on the burning ones */
+    int wakes;              /* wake and thrust points */
 } View3DDrawCounts;
 
 /* The build preview for this frame: the building stands at the site

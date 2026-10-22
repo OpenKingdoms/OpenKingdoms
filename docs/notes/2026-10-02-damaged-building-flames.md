@@ -27,11 +27,18 @@ own or one in sight (legacy:223583, 206797). For a building the types are:
   plays 0x107 as she wades in or out, and the Pillar of Light 0x108.
 - 0x103, bubbles, calls a routine that does nothing (legacy:223636-223640,
   :214990), so nothing is drawn.
-- 0 to 5 are wakes and thrust. Shipped scripts use 2 to 5, and type 2 is
-  the wake 97 walkers leave in water. They are their own particle lists
-  of up to 100 a unit, drawn as points whose sizes come from a table the
-  reference does not carry (legacy:214923-214988, :201685-201760,
-  :215189-215230).
+- 2 to 5 are wakes and thrust, and type 2 is the wake 97 walkers leave
+  in water. Each asks for one point in a list of up to 100 a unit
+  (legacy:214923-214988). The point starts at the piece's first vertex,
+  or its second for 4 and 5, 3 px either way at random on each axis, and
+  moves half a pixel a frame toward the other (legacy:201754-201843). It
+  shows six colours in turn, 16 frames each for 2 and 4 and 8 for 3 and
+  5, and is gone after the sixth or over ground at or above the sea
+  (legacy:201685-201712). It is drawn as one pixel of its colour wherever
+  it is on the screen (legacy:215190-215228). The six colours run from a
+  light teal to a dark one (legacy:201707, legacy:201746).
+- 0 and 1 start an emitter of another kind (legacy:214913-214921,
+  legacy:216166). No shipped script asks for either.
 
 The flame sizes come from every TDF in gamedata/damageflames. Each
 `smallflame`, `mediumflame` or `largeflame` section adds its `gaf` and
@@ -67,7 +74,10 @@ puffs, counted by its stable id, and its puffs go with it as its flames
 do. A puff plays its pictures by the rules above, half a frame's rise and
 drift each tick. The flame anims come from every TDF in the folder, the
 section names matched exactly as the original matches them, and a flame
-draws its anim from its size's list. The shared pool holds 2048 effects.
+draws its anim from its size's list. A wake point keeps the piece's
+first two vertices from the model bake, moves a quarter pixel a tick and
+holds each colour twice its frames in ticks. A unit keeps 100. The shared
+pool holds 2048 effects.
 
 The effects draw from a C library generator of their own, which the
 simulation never reads, so a peer that sees more or less of a battle
@@ -88,8 +98,9 @@ the engine moved to build 22.
 
 ## Departures
 
-- The wakes and thrust of types 0 to 5 are not drawn. Their point sizes
-  sit in a table the reference text does not carry.
+- Types 0 and 1 are not drawn. No shipped script asks for them.
+- The 3D view draws a wake point as a speck 1.5 px across facing the
+  camera, where the classic view draws one pixel.
 
 ## Tests
 
@@ -106,4 +117,8 @@ puffs a unit with a second unit keeping its own, an enemy keep out of
 sight emitting nothing, a puff's picture holds, its end, its drift and
 its rise, a reused unit slot, that flames and smoke are not counted as a
 ring's sparkles, that the simulation hash and random state do not move,
-and that flames draw in both views.
+and that flames draw in both views. An archer wading on two castles
+leaves wake points whose colours step every 32 ticks for type 2 and 16
+for type 3, which are gone at 192 and 96 ticks and move about 48 px, 100
+at most for the unit, none over land, drawn in the 3D view, and 120 ticks
+from one save end on the same simulation hash with wakes and without.

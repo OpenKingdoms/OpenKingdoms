@@ -1435,6 +1435,41 @@ static void draw_effects(const GameWorld *world, const float planes[6][4]) {
     tak_free(bb);
 }
 
+/* Wake and thrust points: a speck of the point's colour facing the
+ * camera, the classic view's one pixel. */
+#define V3_WAKE_PX 1.5f
+static void draw_wakes(const GameWorld *world, const float planes[6][4]) {
+    int en = 0;
+    const ProjectileEffect *es = Units_GetProjectileEffects(&en);
+    int n = 0;
+    for (int i = 0; i < en; i++) if (es[i].alive && es[i].wake_owner_id) n++;
+    if (n <= 0 || ensure_stream(n * 4, n * 6) != 0) return;
+    float rx = cosf(v.cam.yaw) * V3_WAKE_PX * 0.5f, rz = -sinf(v.cam.yaw) * V3_WAKE_PX * 0.5f;
+    int nv = 0, ni = 0;
+    for (int i = 0; i < en; i++) {
+        const ProjectileEffect *e = &es[i];
+        if (!e->alive || !e->wake_owner_id || !Units_EffectShows(world, e)) continue;
+        float c[3] = { (float)e->world_x, (float)e->height, (float)e->world_y };
+        if (!Camera3D_SphereInFrustum(planes, c, V3_WAKE_PX)) continue;
+        float r = (float)((e->argb >> 16) & 0xff) / 255.0f;
+        float g = (float)((e->argb >> 8) & 0xff) / 255.0f;
+        float b = (float)(e->argb & 0xff) / 255.0f;
+        float a = (float)((e->argb >> 24) & 0xff) / 255.0f;
+        float h = V3_WAKE_PX * 0.5f;
+        float *o = v.stream_v + (size_t)nv * 9;
+        put_vert(o + 0,  c[0] - rx, c[1] + h, c[2] - rz, 0.0f, 0.0f, r, g, b, a);
+        put_vert(o + 9,  c[0] + rx, c[1] + h, c[2] + rz, 1.0f, 0.0f, r, g, b, a);
+        put_vert(o + 18, c[0] + rx, c[1] - h, c[2] + rz, 1.0f, 1.0f, r, g, b, a);
+        put_vert(o + 27, c[0] - rx, c[1] - h, c[2] - rz, 0.0f, 1.0f, r, g, b, a);
+        uint16_t *q = v.stream_i + ni;
+        q[0] = (uint16_t)nv; q[1] = (uint16_t)(nv + 1); q[2] = (uint16_t)(nv + 2);
+        q[3] = (uint16_t)nv; q[4] = (uint16_t)(nv + 2); q[5] = (uint16_t)(nv + 3);
+        nv += 4; ni += 6;
+        s_counts.wakes++;
+    }
+    if (nv > 0) GL3D_DrawSprites(v.stream_v, nv, v.stream_i, ni, NULL, 1, 0);
+}
+
 /* Beams: a jagged ribbon from muzzle to target in three widths, the
  * outer ones fainter, jittered afresh each frame the way the classic
  * rays flicker. */
@@ -1585,6 +1620,7 @@ static void v3_render(const GameWorld *world, TAK_Platform *plat,
     draw_units(world, planes, 0);
     draw_build_ghost(world);
     draw_effects(world, planes);
+    draw_wakes(world, planes);
     draw_beams(world);
     draw_water(world);
     draw_units(world, planes, 1);
