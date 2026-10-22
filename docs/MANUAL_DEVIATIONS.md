@@ -835,34 +835,40 @@ Format per entry:
 
 ## A-013: A computer cut off by water carries its army over
 
-- Change: a seat whose wave target stands on ground some walker of its
-  could not walk to from home, one walker asked a movement class and
-  ships never asked, is cut off (`TAK_AI_TACTIC_NAVAL`). Home is what
-  is asked, so a unit shut in by rubble does not cut its seat off. Its
-  goal planner then wants a transport before more army: a producer that makes one trains
-  one, and with none a builder puts up a yard that does, on water near
-  home that reaches the target's water. Its army waits for the
-  transport instead of striking. A ferry goes for the enemy asset on
-  the target's ground, a building, lodestone, builder or the monarch,
-  that is worth most for the enemy arms round it, counting every enemy
-  unit the way the target choice does. The wave goes aboard once a full
-  hold is gathered with the strength a strike needs against those arms,
-  or with a launch's worth of at least half their strength when the
-  long wait of A-007 is up. A ship's riders walk to a shore it can
-  stand off first, a flyer picks them up where they are. A ship waits
-  in open water with room round its hull and no other ship close by,
-  and a crossing cut short sails on from where it stopped. The
-  transport holds its fire on the way, sets the wave down on ground
-  that walks to the target, the nearest past 448 px from it and dearer
-  where enemy arms stand, and the wave attacks from there. A landing
-  that fails is tried elsewhere twice, then the wave goes back ashore
-  at home. One ferry a seat at a time. Fighters it cannot carry
-  stay behind, and a flyer among them goes at the target on its own
-  wings. A walker in a group marching at a target over water or out on
-  it, and a ship sent at one on land, go back to the gathering. The
-  code is the ferry section of `src/game/ai.c`, the crossing rows of
-  the army domain in `src/game/ai_htn.c` and the ferry goal and its two
-  actions in `src/game/ai_plan.c`.
+- Change: a seat whose wave target stands on ground no walker of its
+  could walk to from home, each movement class asked and ships never
+  asked, is cut off (`TAK_AI_TACTIC_NAVAL`). Home is what is asked, so a
+  unit shut in by rubble does not cut its seat off, and where one class
+  walks and another cannot the seat is not cut off and plays as without
+  A-013. A cut off seat's goal planner wants a transport before more
+  army: a producer that makes one trains one, and with none a builder
+  puts up a yard that does, on water near home that reaches the
+  target's water. A transport too hurt to sail or still holding a load
+  does not count, so a seat with none fit and nothing to make one
+  strikes as it would without A-013. While a transport is free or
+  coming the walkers wait for it instead of striking, and the flyers
+  gathered with them strike on their own strength. A ferry goes for the
+  enemy asset on the target's ground, a building, lodestone, builder or
+  the monarch, that is worth most for the enemy arms round it, counting
+  every enemy unit the way the target choice does. The walkers go
+  aboard once a full hold, or as many as the seat has, is gathered with
+  the strength a strike needs against those arms, or with a launch's
+  worth of at least half their strength when the long wait of A-007 is
+  up. A rider too hurt to fight stays home, and one aboard stays with
+  its wave. A ship's riders walk to a shore it can stand off first, a
+  flyer picks them up where they are. A ship waits in open water with
+  room round its hull, no other ship close by and no yard near, and a
+  crossing cut short sails on from where it stopped. The transport
+  holds its fire on the way, sets the wave down on ground that walks to
+  the target, the nearest past 448 px from it and dearer where enemy
+  arms stand, and the wave attacks from there. A landing that fails is
+  tried elsewhere twice, then the wave goes back ashore at home. A
+  crossing lost with its transport waits three times as long before
+  the next. One ferry a seat at a time. A walker in a group marching at
+  a target over water, and a ship sent at one on land, go back to the
+  gathering. The code is the ferry section of `src/game/ai.c`, the
+  crossing rows of the army domain in `src/game/ai_htn.c` and the ferry
+  goal and its two actions in `src/game/ai_plan.c`.
 - Why: issue #454. On an island start the computer never attacked a
   player on another landmass, and a player there was safe for good. The
   original's skirmish AI never loads a transport. A candidate the

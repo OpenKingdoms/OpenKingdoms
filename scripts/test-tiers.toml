@@ -257,6 +257,7 @@ ui = [
   ["the_next_chapter_plays_its_clip_after_a_win", 1],
   ["a_campaign_save_loaded_from_the_book_takes_orders", 1],
   ["a_mission_loaded_from_the_skirmish_screen_plays_on_as_saved", 1],
+  ["a_ferry_under_way_plays_on_the_same_after_a_load", 1],
   ["the_books_load_dialog_is_shown_and_its_escape_stays_with_it", 1],
   ["the_lobby_load_button_opens_the_load_dialog", 1],
   ["skirmish_setup_error_requires_two_spawnable_players", 1],

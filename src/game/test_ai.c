@@ -2765,6 +2765,84 @@ static int test_htn_ferries_a_wave_over_water(void) {
     return 0;
 }
 
+/* A-013. A transport too hurt to sail is no boat coming: with nothing
+ * that could make another, the seat's flyers still strike rather than
+ * the whole army waiting on the water for good. */
+#define HF_FERRY 7
+static int test_ai_a_hurt_transport_holds_nobody_back(void) {
+    GameWorld w;
+    static const int loner[5] = { 0, 2, 0, 2, 2 };
+    setup_hostility_fixture(&w, loner);
+    g_visible = 0;
+    g_conn_split = 1;
+    g_conn_x = 3100;
+    g_conn_y = 1000;
+    int troop = hf_troop(2);
+    strcpy(g_defs[HF_FLYER].unitname, "TARDRAGON");
+    strcpy(g_defs[HF_FLYER].category, "TAR AIR ATTACK");
+    g_defs[HF_FLYER].max_velocity = 3.0f;
+    g_defs[HF_FLYER].can_fly = 1;
+    g_defs[HF_FLYER].num_weapons = 1;
+    g_defs[HF_FLYER].sight_distance = 300;
+    g_defs[HF_FLYER].weapons[0].range = 100;
+    strcpy(g_defs[HF_FERRY].unitname, "TARSHIP");
+    strcpy(g_defs[HF_FERRY].category, "TAR AIR TRANSPORT");
+    g_defs[HF_FERRY].max_velocity = 3.0f;
+    g_defs[HF_FERRY].can_fly = 1;
+    g_defs[HF_FERRY].cap_flags = UNIT_CAP_TRANSPORT;
+    g_defs[HF_FERRY].transport_capacity = 4;
+    int flyer = hf_add_unit(2, HF_FLYER, g_units[troop].world_x, g_units[troop].world_y);
+    int ferry = hf_add_unit(2, HF_FERRY, g_units[troop].world_x + 64, g_units[troop].world_y);
+    g_units[ferry].health = 20;
+    g_units[ferry].carried_by = -1;
+    TAK_AI_DebugSetWaveTarget(2, 0);
+    for (int k = 0; k < 4; k++) hf_run_ticks(&w, 60 + 60 * k, 1);
+    printf("[%s] ", TAK_AI_DebugWaveReason(2));
+    ASSERT_TRUE(strcmp("wait for a boat", TAK_AI_DebugWaveReason(2)) != 0);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[flyer].cmd_kind);
+    /* A sound one is a boat the walkers wait for, and the flyers go on
+     * without them. */
+    g_units[ferry].health = 100;
+    int late = hf_add_unit(2, HF_FLYER, g_units[troop].world_x + 16, g_units[troop].world_y);
+    for (int k = 0; k < 4; k++) hf_run_ticks(&w, 300 + 60 * k, 1);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[late].cmd_kind);
+    hf_run_ticks(&w, 1800, 1);
+    printf("[%s] ", TAK_AI_DebugWaveReason(2));
+    ASSERT_TRUE(strcmp("wait for a boat", TAK_AI_DebugWaveReason(2)) == 0);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[troop].cmd_kind);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[late].cmd_kind);
+    return 0;
+}
+
+/* A-013. A seat one of whose walker classes walks to the target is not
+ * cut off, though another cannot (#232's Lake Lokken): that one walks
+ * and nothing waits for a boat. */
+static int test_ai_a_seat_one_walker_class_walks_from_is_not_cut_off(void) {
+    GameWorld w;
+    static const int loner[5] = { 0, 2, 0, 2, 2 };
+    setup_hostility_fixture(&w, loner);
+    g_visible = 0;
+    g_conn_split = 1;
+    g_conn_x = 3100;
+    g_conn_y = 1000;
+    TAK_AI_DebugSetWaveTarget(2, 0);
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_TRUE(TAK_AI_DebugFerryAim(2) >= 0);
+    g_conn_climbs = 40;
+    strcpy(g_defs[HF_CLIMBER].unitname, "TARCLIMB");
+    strcpy(g_defs[HF_CLIMBER].category, "TAR MELEE ATTACK");
+    strcpy(g_defs[HF_CLIMBER].movement_class, "CLIMBER");
+    g_defs[HF_CLIMBER].max_velocity = 1.0f;
+    g_defs[HF_CLIMBER].max_slope = 40;
+    g_defs[HF_CLIMBER].num_weapons = 1;
+    g_defs[HF_CLIMBER].sight_distance = 140;
+    g_defs[HF_CLIMBER].weapons[0].range = 40;
+    hf_add_unit(2, HF_CLIMBER, g_units[hf_troop(2)].world_x, g_units[hf_troop(2)].world_y + 32);
+    hf_run_ticks(&w, 120, 1);
+    ASSERT_EQ_INT(-1, TAK_AI_DebugFerryAim(2));
+    return 0;
+}
+
 /* A-013. A seat cut off by water ferries its wave to the asset on the
  * target's ground with the least guard for its worth, here a lodestone
  * well away from the guarded monarch, never one on other ground. */
@@ -3832,6 +3910,8 @@ int main(void) {
     if (test_htn_breaks_off_and_raids() != 0) return 1;
     if (test_htn_ferries_a_wave_over_water() != 0) return 1;
     if (test_ai_ferry_aims_where_the_guard_is_thin() != 0) return 1;
+    if (test_ai_a_hurt_transport_holds_nobody_back() != 0) return 1;
+    if (test_ai_a_seat_one_walker_class_walks_from_is_not_cut_off() != 0) return 1;
     if (test_plan_cut_off_builds_a_yard_then_a_transport() != 0) return 1;
     if (test_ai_wave_waits_out_a_garrison_it_can_see() != 0) return 1;
     if (test_ai_outmatched_members_come_home() != 0) return 1;
