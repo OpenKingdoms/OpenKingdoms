@@ -21,7 +21,10 @@
 <meta name="twitter:card" content="summary_large_image">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Uncial+Antiqua&family=Alegreya:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+<!-- Not render blocking, so a slow font host never holds the first paint
+     or the scripts below it. The text shows in Georgia until it lands. -->
+<link href="https://fonts.googleapis.com/css2?family=Uncial+Antiqua&family=Alegreya:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Uncial+Antiqua&family=Alegreya:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet"></noscript>
 <link rel="preload" as="image" href="scroll-pick.jpg">
 <link rel="preload" as="image" href="scroll-ready.jpg">
 <style>
@@ -78,6 +81,28 @@
 
   #picker { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 10; background: var(--backdrop); }
   #picker[hidden] { display: none; }
+  /* What the page is doing until the picker or the game is up. Under the
+     toast, so a warning sent while it shows is still read. */
+  #boot { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 4; background: var(--backdrop); }
+  #boot[hidden] { display: none; }
+  #boot .boot-body { margin: auto 0; display: flex; flex-direction: column; gap: var(--gap); text-align: center; }
+  #boot-msg.err { color: var(--ox); font-weight: 600; }
+  /* A bar the compositor draws, so it keeps moving while the page's own
+     thread is busy. A sweep while the size is unknown, filled when it is. */
+  .bar {
+    position: relative; overflow: hidden; height: calc(.5 * var(--u));
+    border: calc(.1 * var(--u)) solid var(--gold-deep); border-radius: calc(.3 * var(--u));
+    background: #cdb98e;
+  }
+  .bar span {
+    position: absolute; inset: 0; transform-origin: left center;
+    background: linear-gradient(180deg, #a8341f, #7a1f1f);
+    transform: scaleX(0); transition: transform .2s linear;
+  }
+  .bar.busy span { right: auto; width: 30%; transition: none; animation: ok-sweep 1.3s ease-in-out infinite; }
+  .bar.stopped span { animation: none; transform: scaleX(0); }
+  @keyframes ok-sweep { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+  @media (prefers-reduced-motion: reduce) { .bar.busy span { animation-duration: 4s; } }
 
   /* ---- the scroll ---------------------------------------------------- */
   .scroll {
@@ -436,7 +461,7 @@
    * plain parchment card with a real title. */
   @media (max-width: 899px), (max-height: 455px), (max-aspect-ratio: 1 / 1) {
     html, body { overflow: auto; }
-    #picker { padding: 20px; overflow: auto; flex-direction: column; justify-content: flex-start; gap: 16px; }
+    #picker, #boot { padding: 20px; overflow: auto; flex-direction: column; justify-content: flex-start; gap: 16px; }
     #live { position: static; width: min(680px, 94vw); max-height: none; flex: none; }
     #where .where-body { position: static; width: auto; margin-top: 8px; }
     .scroll { flex: none; }
@@ -477,6 +502,20 @@
 </head>
 <body>
 <canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+
+<div id="boot" aria-busy="true">
+  <div class="scroll">
+    <div class="plate plate-pick"></div>
+    <div class="stage">
+      <h1 class="sr-only">OpenKingdoms</h1>
+      <p class="sub sr-only">An open-source engine for Total Annihilation: Kingdoms</p>
+      <div class="boot-body">
+        <p id="boot-msg" class="lede">Loading the engine&hellip;</p>
+        <div id="boot-bar" class="bar busy" role="progressbar" aria-labelledby="boot-msg" aria-valuemin="0" aria-valuemax="100"><span></span></div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div id="picker" hidden>
   <div class="scroll">
@@ -653,13 +692,26 @@
      page load, so options.cfg has never survived a reload. */
   var PREFDIR = '/libsdl/OpenKingdoms/OpenKingdoms';
   /* The site's visit counts (counts.js, privacy.html). A page whose
-     counts.js did not load plays the same. */
+     counts.js did not load plays the same. Held until the page waits on
+     the player: their first read of session storage soon after the
+     browser starts can freeze the page for seconds on a busy disk. */
+  var countsHeld = [];
   function count(what) {
+    if (countsHeld) { countsHeld.push(arguments); return; }
     try {
       var c = window.OKCounts;
       if (c && c[what]) c[what].apply(c, Array.prototype.slice.call(arguments, 1));
     } catch (e) {}
   }
+  function releaseCounts() {
+    var held = countsHeld;
+    if (!held) return;
+    countsHeld = null;
+    held.forEach(function (a) { count.apply(null, a); });
+  }
+  window.addEventListener('pagehide', function () {
+    if (countsHeld) { releaseCounts(); count('flush'); }
+  });
   count('view', 'landing');
   count('step', 'visit');
   var picker = document.getElementById('picker');
@@ -673,6 +725,33 @@
   var canvas = document.getElementById('canvas');
 
   function say(msg, err) { status.textContent = msg; status.className = err ? 'err' : ''; }
+
+  /* The boot plate, up from the first paint until the picker or the
+     engine's first frame takes over. frac is how far along, or none for
+     a step whose length is not known. */
+  var boot = document.getElementById('boot');
+  var bootMsg = document.getElementById('boot-msg');
+  var bootBar = document.getElementById('boot-bar');
+  var bootErr = false;
+  function bootSay(msg, frac, err) {
+    /* A stop stays said. */
+    if (bootErr && !err) return;
+    bootErr = !!err;
+    bootMsg.textContent = msg;
+    bootMsg.className = 'lede' + (err ? ' err' : '');
+    var known = typeof frac === 'number';
+    bootBar.className = 'bar' + (err ? ' stopped' : known ? '' : ' busy');
+    bootBar.querySelector('span').style.transform = known ? 'scaleX(' + Math.max(0, Math.min(1, frac)) + ')' : '';
+    if (known) bootBar.setAttribute('aria-valuenow', String(Math.round(frac * 100)));
+    else bootBar.removeAttribute('aria-valuenow');
+    boot.hidden = false;
+  }
+  function showPicker() {
+    picker.hidden = false;
+    boot.hidden = true;
+    bootErr = false;
+    releaseCounts();
+  }
 
   var toast = document.getElementById('toast');
   var toastText = document.getElementById('toast-text');
@@ -719,10 +798,12 @@
   /* A preset, or the manifest a registry install puts beside one. */
   function isPreset(name) { return /\.json$|\.mod\.tdf$/i.test(name); }
   /* A file under the folder the engine is handed, with its folders made. */
-  function writeGame(FS, path, bytes) {
+  /* own: the bytes are the page's to give, so they become the file
+     with no second copy. */
+  function writeGame(FS, path, bytes, own) {
     var cut = path.lastIndexOf('/');
     if (cut > 0) mkdirp(FS, path.slice(0, cut));
-    FS.writeFile(path, bytes);
+    FS.writeFile(path, bytes, own ? { canOwn: true } : undefined);
   }
   function modelRel(name) { return MODELS + '/' + name.toLowerCase(); }
   /* A loose .3do in the game folder's objects3d stands in for the
@@ -850,7 +931,7 @@
     onAbort: function (what) {
       if (reloadFresh(what)) return;
       count('error', what, true);
-      picker.hidden = false; say('The engine stopped: ' + what, true);
+      showPicker(); say('The engine stopped: ' + what, true);
     },
     okOfferLeaderboard: offerLeaderboard,
     /* A battle starting or ending, or an engine error (tak_web_stats.h). */
@@ -867,18 +948,88 @@
 
   /* An exception out of the engine's main loop ends the loop, and a
      canvas that has stopped says nothing on its own. */
+  function stopped(what) {
+    count('error', what, true);
+    releaseCounts();
+    /* On the boot plate when it is up, since the toast sits over it. */
+    if (!boot.hidden) bootSay('The engine stopped: ' + what, undefined, true);
+    else tell('The engine stopped: ' + what, true);
+  }
   window.addEventListener('error', function (e) {
     if (reloadFresh(e.message)) return;
-    count('error', e.message || 'error', true);
-    tell('The engine stopped: ' + (e.message || 'error'), true);
+    stopped(e.message || 'error');
   });
   window.addEventListener('unhandledrejection', function (e) {
     var r = e.reason;
     var what = r && r.message ? r.message : r;
     if (reloadFresh(what)) return;
-    count('error', what, true);
-    tell('The engine stopped: ' + what, true);
+    stopped(what);
   });
+
+  /* ---- the stored files, read as the page loads ------------------- */
+  /* Read from the start rather than once the engine is up, so the
+     reading overlaps the engine's download and compile. What comes in
+     before the filesystem exists waits in storedHeld until preRun. */
+  var storedFS = null, storedHeld = [], storedStop = false;
+  function placeStored(FS, item) {
+    if (item.clip) { lazyFile(FS, item.rel, item.file); return; }
+    var model = item.rel.indexOf(MODELS + '/') === 0;
+    writeGame(FS, (model ? DATA + '/' : '/game/') + item.rel, item.bytes, true);
+  }
+  function handStored(item) {
+    if (storedFS) placeStored(storedFS, item); else storedHeld.push(item);
+  }
+  function megabytes(n) { return Math.round(n / 1048576); }
+
+  /* Resolves to how many files came back, 0 when none are kept. */
+  function readStored() {
+    return opfsDir(false).then(function (dir) {
+      if (!dir) return 0;
+      return cacheEntries(dir).then(function (entries) {
+        /* The game's own archives, not a mod's, say the game is kept. */
+        if (!entries.some(function (e) { return isArchive(e.rel) && e.rel.indexOf('/') < 0; })) return 0;
+        return Promise.all(entries.map(function (e) { return e.handle.getFile(); })).then(function (files) {
+          var total = 0, done = 0, nclip = 0;
+          entries.forEach(function (e, k) {
+            e.file = files[k];
+            if (e.clip) nclip++; else total += e.file.size;
+          });
+          if (nclip) console.log('[openkingdoms] ' + nclip + ' clip(s) read in place from browser storage');
+          function progress() {
+            bootSay('Reading your game files from browser storage, ' + megabytes(done) +
+                    ' of ' + megabytes(total) + ' MB', total ? done / total : 1);
+          }
+          /* One at a time. Side by side was no faster on a spinning disk. */
+          var i = 0;
+          function next() {
+            if (storedStop) return 0;
+            if (i >= entries.length) return entries.length;
+            var e = entries[i++];
+            if (e.clip) {
+              handStored({ rel: e.rel, file: e.file, clip: true });
+              return next();
+            }
+            return e.file.arrayBuffer().then(function (buf) {
+              done += buf.byteLength;
+              handStored({ rel: e.rel, bytes: new Uint8Array(buf) });
+              progress();
+              return next();
+            });
+          }
+          progress();
+          return next();
+        });
+      });
+    }).then(function (n) {
+      if (n > 0 && !storedFS) bootSay('Loading the engine\u2026');
+      return n;
+    }, function (e) {
+      console.warn('[openkingdoms] cache read failed', e);
+      storedHeld = [];
+      return 0;
+    });
+  }
+  var storedRead = readStored();
 
   /* Reached once the engine script has defined FS and the run
    * dependency API. Decides where the files come from. */
@@ -898,14 +1049,21 @@
     restorePrefs(FS);
     askForStorage();
     findRelay();
-    if (Module.bundledData) return;   /* dev build: data preloaded by the packager */
+    if (Module.bundledData) {         /* dev build: data preloaded by the packager */
+      storedStop = true;
+      storedHeld = [];
+      boot.hidden = true;
+      return;
+    }
     Module.addRunDependency('gamefiles');
-    tryCache(FS).then(function (n) {
+    storedFS = FS;
+    storedHeld.splice(0).forEach(function (item) { placeStored(FS, item); });
+    storedRead.then(function (n) {
       if (n > 0) {
         console.log('[openkingdoms] loaded ' + n + ' file(s) from browser storage');
         showReady(n + ' game files loaded from browser storage.');
       } else {
-        picker.hidden = false;
+        showPicker();
         wireUi(FS);
       }
     });
@@ -979,7 +1137,7 @@
     ready.hidden = false;
     prog.hidden = true;
     say('');
-    picker.hidden = false;
+    showPicker();
     document.getElementById('btn-start').onclick = start;
   }
 
@@ -993,6 +1151,8 @@
       Module.arguments.push('--mods', sel.value);
     }
     picker.hidden = true;
+    /* Until the engine's first frame, which on a cold start is seconds. */
+    bootSay('Starting the game\u2026');
     placePlate();
     canvas.focus();
     Module.removeRunDependency('gamefiles');
@@ -1803,35 +1963,6 @@
       .then(function () { return out; });
   }
 
-  function tryCache(FS) {
-    return opfsDir(false).then(function (dir) {
-      if (!dir) return 0;
-      return cacheEntries(dir).then(function (entries) {
-        /* The game's own archives, not a mod's, say the game is kept. */
-        if (!entries.some(function (e) { return isArchive(e.rel) && e.rel.indexOf('/') < 0; })) return 0;
-        picker.hidden = false;
-        say('Loading your game files from browser storage...');
-        var nclip = entries.filter(function (e) { return e.clip; }).length;
-        if (nclip) console.log('[openkingdoms] ' + nclip + ' clip(s) read in place from browser storage');
-        var i = 0;
-        function next() {
-          if (i >= entries.length) return entries.length;
-          var e = entries[i++];
-          if (e.clip) {
-            return e.handle.getFile().then(function (f) { lazyFile(FS, e.rel, f); return next(); });
-          }
-          var model = e.rel.indexOf(MODELS + '/') === 0;
-          return e.handle.getFile().then(function (f) { return f.arrayBuffer(); })
-            .then(function (buf) {
-              writeGame(FS, (model ? DATA + '/' : '/game/') + e.rel, new Uint8Array(buf));
-              return next();
-            });
-        }
-        return next();
-      });
-    }).catch(function (e) { console.warn('[openkingdoms] cache read failed', e); return 0; });
-  }
-
   function collect(iter, fn) {
     return iter.next().then(function (r) {
       if (r.done) return;
@@ -2208,7 +2339,7 @@
       }
       say('Reading ' + p.rel + ' (' + (p.file.size / 1048576).toFixed(1) + ' MB)...');
       return p.file.arrayBuffer().then(function (buf) {
-        writeGame(FS, (p.model ? DATA + '/' : '/game/') + p.rel, new Uint8Array(buf));
+        writeGame(FS, (p.model ? DATA + '/' : '/game/') + p.rel, new Uint8Array(buf), true);
         prog.value = k;
         return next();
       });
@@ -2311,6 +2442,7 @@
   }
 
   Module.onScreen = function (id, x, y, w, h) {
+    boot.hidden = true;
     screenNow = id;
     screenRoom = w > 0 && h > 0 ? { x: x, y: y, w: w, h: h } : null;
     placePlate();

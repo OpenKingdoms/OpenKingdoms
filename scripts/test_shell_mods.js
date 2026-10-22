@@ -440,13 +440,13 @@ check('the page chooses the mod set a room needs, and says why it stays', async 
 check('mods kept in storage without the game files do not pass for them', async () => {
   async function kept(entries) {
     const isArchive = new Function(functionSource('isArchive') + 'return isArchive;')();
-    const tryCache = new Function('opfsDir', 'cacheEntries', 'picker', 'say', 'lazyFile', 'writeGame',
-      'MODELS', 'DATA', 'console', 'isArchive', functionSource('tryCache') + 'return tryCache;')(
-      () => Promise.resolve({}), () => Promise.resolve(entries), {}, () => {}, () => {}, () => {},
-      'models3d', '/data', { log() {}, warn() {} }, isArchive);
-    return tryCache({});
+    const readStored = new Function('opfsDir', 'cacheEntries', 'bootSay', 'megabytes', 'handStored',
+      'storedStop', 'storedFS', 'storedHeld', 'console', 'isArchive', functionSource('readStored') + 'return readStored;')(
+      () => Promise.resolve({}), () => Promise.resolve(entries), () => {}, (n) => n, () => {},
+      false, null, [], { log() {}, warn() {} }, isArchive);
+    return readStored();
   }
-  const file = { getFile: () => Promise.resolve({ arrayBuffer: () => Promise.resolve(new ArrayBuffer(1)) }) };
+  const file = { getFile: () => Promise.resolve({ size: 1, arrayBuffer: () => Promise.resolve(new ArrayBuffer(1)) }) };
   assert.strictEqual(await kept([{ rel: 'Mods/TAK Enhanced.hpi', handle: file },
                                  { rel: 'TAKEnhanced/Presets/te.preset.json', handle: file }]), 0);
   assert.strictEqual(await kept([{ rel: 'data.hpi', handle: file }, { rel: 'Mods/x.hpi', handle: file }]), 2);
