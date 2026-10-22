@@ -2173,7 +2173,7 @@ static int same_turns_w(void) {
  * that died without a word, and says so. Before that, and outside a
  * match, it is not. */
 TEST(a_match_that_hears_nothing_is_silent) {
-    TAK_NetClient c;
+    static TAK_NetClient c;   /* megabytes, too big for a thread's stack */
     memset(&c, 0, sizeof c);
     c.state = TAK_NC_PLAYING;
     ASSERT_EQ_INT(0, TAK_NetClient_Silent(&c, 50000));
