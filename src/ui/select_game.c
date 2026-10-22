@@ -979,7 +979,8 @@ static void take_events(TAK_Platform *platform) {
                 sg.join_waits = 0;
                 Settings_SetStr("RejoinMatch", "");
                 Settings_Save();
-                (void)TAK_NetClient_LeaveRoom(c);
+                if (c->state == TAK_NC_LOBBY) ask_for_rooms();
+                else (void)TAK_NetClient_LeaveRoom(c);
             }
             /* A link to a game that is gone or cannot be joined leaves
              * the player on the list of the games there are. Wanting a

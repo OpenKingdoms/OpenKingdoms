@@ -314,9 +314,9 @@ can skip it.
   seat. Pacing is timing only and never enters the hash.
 - SNAP_REQUEST, SNAP_DATA and SNAP_RESULT rebuild a world that parted
   (protocol 9). The relay asks a sound client for its world, which that
-  client saves in memory between two ticks on its next hashed tick, or
-  where it stands when it is waiting for its next turn, as in a paused
-  match, and sends up in pieces of 16 KB, no faster than its connection
+  client saves in memory between two ticks on its next hashed tick or
+  the turn's end where it waits for the next turn, whichever comes first,
+  and sends up in pieces of 16 KB, no faster than its connection
   empties. The
   relay passes the pieces on to the parted client, no faster than that
   connection takes them. The parted client answers whether it can read
@@ -367,7 +367,7 @@ has TAK_ROOMF_DROP_IN, and adds the seat takeover to the turn stream. It
 changes the layout of no message. The relay honours drop in only from a
 host and a joiner of 6, and an older client is refused a seat in a
 match under way and sees such a room greyed, byte for byte as before.
-The relay speaks 1 to 6 and writes every client the version its HELLO
+The relay speaks 1 to 10 and writes every client the version its HELLO
 named, so a relay deployed before the clients that use it still serves
 the older ones, and it must be deployed first. A room holds clients that
 read a room the same way. Versions 3 to 6 changed nothing a simulation
@@ -473,11 +473,13 @@ match. An outlier takes the world of a client that agreed, one keeping up
 before one that lags and a player's before a watcher's. Two worlds that a
 vote cannot tell apart take the world of whoever hosts, once a match: a
 second split is settled by the log as before, and so is one whose snapshot
-fails, by replaying both worlds. Since a host could rewrite a battle that
+fails, by replaying both worlds. Once the log no longer reaches turn 0,
+every such split is settled by the host's snapshot. Since a host could rewrite a battle that
 way, a game settled by a host's snapshot is kept in the ledger but left
 out of the standings. The snapshot is a save of the whole world held in
-memory, without the camera or the picture, taken at the end of the tick
-whose hash the donor reports and loaded the way a save is loaded. It is
+memory, without the camera or the picture, taken between two ticks at
+the donor's next hashed tick or turn's end it waits at, whichever comes
+first, and loaded the way a save is loaded. It is
 the donor's world, trusted because the donor agreed, not a state the
 relay checked. The parted client checks that the loaded world hashes as
 the snapshot says, forgets the donor's own verdict on its seat, begins
@@ -723,10 +725,11 @@ takes the lowest computer seat nobody holds, or the seat of a player who
 has gone and left it to the computer. The room shows the newcomer in
 that seat with its side, colour, team and start unchanged, because the
 world was built with them. START_GAME describes the seats as they were
-when the match went, not as they are now, so the newcomer builds the
-world everyone built at turn 0 with the computer in the seat, then
-replays the log. The relay keeps that copy of the seats for every late
-arrival, a rejoin or a watcher included.
+when the match went, not as they are now. From protocol 10 the newcomer
+takes a sound player's snapshot and the turns after it. An older one
+builds the world everyone built at turn 0 with the computer in the seat,
+then replays the log. The relay keeps that copy of the seats for every
+late arrival, a rejoin or a watcher included.
 
 While it catches up, the newcomer holds nothing: its orders are
 refused, it cannot pause, it pauses nobody by going quiet, and if it

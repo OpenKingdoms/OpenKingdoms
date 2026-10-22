@@ -1378,7 +1378,6 @@ TEST(a_match_past_its_log_window_takes_late_comers_by_snapshot) {
     run_for(40000);
     TAK_RelayRoom *rr = the_room();
     ASSERT_NOT_NULL(rr);
-    printf("(log from turn %u at head %u, next %u full %d, %u entries %zu bytes) ", rr->log.base_turn, rr->clock.head, rr->log.next_turn, rr->log.full, rr->log.entry_count, rr->log.arena_used);
     ASSERT(rr->log.base_turn > 0);
     ASSERT(!TAK_TurnClock_CanReplay(&rr->clock));
     ASSERT(TAK_TurnClock_CanReplayFrom(&rr->clock, rr->clock.head - 150));

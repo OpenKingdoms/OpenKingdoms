@@ -1819,6 +1819,17 @@ TEST(a_client_let_go_from_its_match_stops) {
     n = TAK_Msg_RejectEncode(&r, msg, sizeof msg);
     ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1400));
     ASSERT_EQ_INT(TAK_NC_REFUSED, g_c.state);
+    /* One still waiting for its snapshot has built nothing: the lobby. */
+    ASSERT_EQ_INT(0, welcome_client(7));
+    TAK_MsgStartGame sg;
+    memset(&sg, 0, sizeof sg);
+    sg.turn_ticks = 3;
+    sg.flags = TAK_STARTF_SNAPSHOT;
+    n = TAK_Msg_StartGameEncode(&sg, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1500));
+    n = TAK_Msg_RejectEncode(&r, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1600));
+    ASSERT_EQ_INT(TAK_NC_LOBBY, g_c.state);
 }
 
 /* A world joined from a snapshot drops the live turns that came before
