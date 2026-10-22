@@ -200,7 +200,7 @@ static const UiCaseTime g_ui_case_times[] = {
     { "hud_static_art_fits_its_cell", 568 },
     { "a_ship_that_dies_leaves_its_wreck", 567 },
     { "the_briefing_sits_like_the_original_at_1280x600", 562 },
-    { "a_priest_repairs_a_swordsman_in_its_build_time", 559 },
+    { "a_builder_repairs_a_swordsman_in_its_build_time", 559 },
     { "a_towers_crew_draws_the_same_beside_a_second_tower", 558 },
     { "self_heal_stops_at_maximum", 557 },
     { "tech_tree_all_builder_menus_resolve", 556 },
