@@ -721,6 +721,15 @@ TEST(an_impact_effect_is_drawn_in_the_3d_view) {
     shutdown_all(&platform);
 }
 
+static int smoke_art_for(int owner, const char *file, const char *seq);
+
+static int effects_owned_by(int owner) {
+    int n = 0, count = 0;
+    const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
+    for (int i = 0; i < n; i++) if (fx[i].alive && fx[i].owner == owner) count++;
+    return count;
+}
+
 static int damage_flames_for(int owner) {
     int n = 0, count = 0;
     const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
@@ -909,21 +918,62 @@ TEST(damaged_building_flames_are_bounded_visual_requests) {
             node = cob->piece_to_node[i];
     }
     ASSERT(node >= 0);
+    /* A second keep of the player's, and one of the enemy's beside the
+     * enemy's monarch. */
+    int h2 = Units_Spawn(def, units[0].player_id, units[0].team_color_idx,
+                         units[0].world_x + 320, units[0].world_y);
+    ASSERT(h2 >= 0);
+    int far = -1;
+    for (int i = 0; i < n && far < 0; i++)
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id != units[0].player_id)
+            far = i;
+    ASSERT(far >= 0);
+    int h3 = Units_Spawn(def, units[far].player_id, units[far].team_color_idx,
+                         units[far].world_x + 160, units[far].world_y);
+    ASSERT(h3 >= 0);
     uint32_t hash = TAK_SimHash(), random = World_RandState();
-    cob->host_emit_sfx(cob->host_user, node, 0x107); /* unsupported */
+    int before = effects_owned_by(h);
+    cob->host_emit_sfx(cob->host_user, node, 0x103); /* bubbles: nothing */
     cob->host_emit_sfx(cob->host_user, -1, 0x104);
     cob->host_emit_sfx(cob->host_user, 65536, 0x104);
+    ASSERT_EQ_INT(before, effects_owned_by(h));
     ASSERT_EQ_INT(0, damage_flames_for(h));
     ((Unit *)units)[h].under_construction = 1;
     cob->host_emit_sfx(cob->host_user, node, 0x104);
     ASSERT_EQ_INT(0, damage_flames_for(h));
     ((Unit *)units)[h].under_construction = 0;
+    /* Forty flames a unit (legacy:215116), and another unit keeps its own. */
     for (int i = 0; i < 300; i++)
         cob->host_emit_sfx(cob->host_user, node, 0x104 + i % 3);
-    ASSERT_EQ_INT(128, damage_flames_for(h));
+    ASSERT_EQ_INT(40, damage_flames_for(h));
+    CobEngine *cob2 = units[h2].cob;
+    ASSERT_NOT_NULL(cob2);
+    for (int i = 0; i < 300; i++)
+        cob2->host_emit_sfx(cob2->host_user, node, 0x104 + i % 3);
+    ASSERT_EQ_INT(40, damage_flames_for(h2));
+    ASSERT_EQ_INT(40, damage_flames_for(h));
+    /* A unit the local player cannot see burns unseen: the enemy's keep
+     * asks for nothing (legacy:223583). */
+    ASSERT_EQ_INT(0, Units_IsVisibleToLocalPlayer(&units[h3]));
+    CobEngine *cob3 = units[h3].cob;
+    ASSERT_NOT_NULL(cob3);
+    for (int t = 0x101; t <= 0x109; t++) cob3->host_emit_sfx(cob3->host_user, node, t);
+    ASSERT_EQ_INT(0, effects_owned_by(h3));
+    /* In sight, it asks for them like any other. */
+    Fog_SetSeeAll(1);
+    cob3->host_emit_sfx(cob3->host_user, node, 0x104);
+    Fog_SetSeeAll(0);
+    ASSERT_EQ_INT(1, damage_flames_for(h3));
+    /* 0x107 plays purpledeath and 0x108 the pillar of light. */
+    cob->host_emit_sfx(cob->host_user, node, 0x107);
+    cob->host_emit_sfx(cob->host_user, node, 0x108);
+    ASSERT(smoke_art_for(h, "deathmagic", "purpledeath"));
+    ASSERT(smoke_art_for(h, "pillaroflight", "pillaroflight"));
     ASSERT_EQ_INT(0, Units_DebugBuildSparkles(h));
     ASSERT(hash == TAK_SimHash());
     ASSERT(random == World_RandState());
+    ASSERT_EQ_INT(0, Units_DebugRemove(h2));
+    ASSERT_EQ_INT(0, Units_DebugRemove(h3));
     ASSERT_EQ_INT(0, Units_DebugRemove(h));
     int replacement = Units_Spawn(def, units[0].player_id, units[0].team_color_idx,
                                   units[0].world_x + 160, units[0].world_y);
@@ -939,7 +989,8 @@ static int smoke_effects_for(int owner) {
     for (int i = 0; i < n; i++) {
         const char *file = NULL;
         if (fx[i].owner == owner && Units_GetEffectInfo(i, &file, NULL, NULL) &&
-            (strcmp(file, "smoke") == 0 || strcmp(file, "bigsmoke") == 0)) count++;
+            (strcmp(file, "smoke") == 0 || strcmp(file, "bigsmoke") == 0 ||
+             strcmp(file, "steam") == 0)) count++;
     }
     return count;
 }
@@ -989,8 +1040,8 @@ TEST(damage_smoke_follows_the_retail_script) {
     ASSERT_EQ_INT(0, saw_smoke_66);
 
     /* At 65% the script crosses the threshold. Again sample every
-     * tick because puffs live only 64 ticks and the script sleeps
-     * a long time between emissions. */
+     * tick because a puff lives two seconds at most and the script
+     * sleeps a long time between emissions. */
     Units_SetHealthPercent(h, 65);
     int saw_smoke_65 = 0;
     for (int t = 0; t < 450; t++) {
@@ -1001,7 +1052,8 @@ TEST(damage_smoke_follows_the_retail_script) {
     printf("(smoke at 65%%: observed) ");
 
     /* Repair stops new emissions. Wait for the last puff to expire
-     * (64 ticks) plus a full script wake cycle so no new ones arrive. */
+     * (under 200 ticks) plus a full script wake cycle so no new ones
+     * arrive. */
     Units_SetHealthPercent(h, 100);
     for (int t = 0; t < 600; t++) Units_TickEngines();
     ASSERT_EQ_INT(0, smoke_effects_for(h));
@@ -1049,13 +1101,15 @@ TEST(damage_smoke_is_bounded_and_leaves_sim_unchanged) {
     ASSERT_EQ_INT(2, smoke_effects_for(h));
     ASSERT(smoke_art_for(h, "smoke", "Smoke01"));
 
-    /* Saturate the smoke budget (64 slots). */
-    for (int i = 2; i < 200; i++)
+    /* Steam is the steam TAF, and a unit keeps ten puffs
+     * (legacy:161416-161417, legacy:214686). */
+    cob->host_emit_sfx(cob->host_user, node, 0x109);
+    ASSERT(smoke_art_for(h, "steam", "steam"));
+    for (int i = 3; i < 200; i++)
         cob->host_emit_sfx(cob->host_user, node, 0x101 + (i & 1));
     int smoke = smoke_effects_for(h);
-    printf("(smoke budget: %d) ", smoke);
-    ASSERT(smoke <= 64);
-    ASSERT(smoke >= 60);
+    printf("(puffs kept: %d) ", smoke);
+    ASSERT_EQ_INT(10, smoke);
 
     /* Sim hash and RNG unchanged. */
     ASSERT(hash == TAK_SimHash());
@@ -1064,6 +1118,52 @@ TEST(damage_smoke_is_bounded_and_leaves_sim_unchanged) {
     /* Smoke enters neither the flame counter nor the ring sparkles. */
     ASSERT_EQ_INT(0, damage_flames_for(h));
     ASSERT_EQ_INT(0, Units_DebugBuildSparkles(h));
+
+    /* One puff in an east wind holds its first picture 8 frames and each
+     * after 4 to 7, drifts as it rises, and ends between the third and the
+     * second last picture (legacy:201854-201869, legacy:201956-201962). */
+    ASSERT_EQ_INT(0, Units_DebugRemove(h));
+    Units_TickEngines();
+    h = Units_Spawn(def, units[0].player_id, units[0].team_color_idx,
+                    units[0].world_x + 160, units[0].world_y);
+    ASSERT(h >= 0);
+    cob = units[h].cob;
+    Features_DebugSetWind(world, 2000, 0x4000);
+    cob->host_emit_sfx(cob->host_user, node, 0x101);
+    int ne = 0, slot = -1;
+    const ProjectileEffect *fx = Units_GetProjectileEffects(&ne);
+    for (int i = 0; i < ne; i++)
+        if (fx[i].alive && fx[i].owner == h && fx[i].puff_owner_id) slot = i;
+    ASSERT(slot >= 0);
+    int32_t x0 = fx[slot].world_x, h0 = fx[slot].height;
+    int pics = 0, end = fx[slot].pic_end, first = -1, last_change = 0, bad_hold = 0;
+    int prev = 0, life = 0;
+    int32_t x_end = x0, h_end = h0;
+    for (int t = 1; t < 600; t++) {
+        Units_TickEngines();
+        fx = Units_GetProjectileEffects(&ne);
+        if (slot >= ne || !fx[slot].alive) { life = t; break; }
+        int pic = Units_EffectPicture(&fx[slot]);
+        if (pic != prev) {
+            if (first < 0) first = t;
+            else if (t - last_change < 8 || t - last_change > 14) bad_hold++;
+            last_change = t;
+            prev = pic;
+            pics++;
+        }
+        x_end = fx[slot].world_x;
+        h_end = fx[slot].height;
+    }
+    printf("(puff: first picture %d ticks, %d pictures then gone at %d after "
+           "%d ticks, drifts %d px, rises %d px) ", first, pics, end, life,
+           x_end - x0, h_end - h0);
+    ASSERT(first >= 15 && first <= 16);
+    ASSERT_EQ_INT(0, bad_hold);
+    ASSERT(end >= 2 && end <= 8);
+    ASSERT_EQ_INT(end - 1, pics);
+    ASSERT(life > 0);
+    ASSERT(x_end - x0 > 0);
+    ASSERT(h_end - h0 > 0);
 
     shutdown_all(&platform);
 }

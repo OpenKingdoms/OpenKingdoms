@@ -410,7 +410,18 @@ typedef struct ProjectileEffect {
     int16_t  land_explosion;   /* explosionclass played where a faller lands, -1 none */
     uint32_t damage_owner_id;  /* damage flame: stable owner, 0 for other effects */
     int16_t  damage_node;      /* authored damage attachment in the owner's model */
+    /* A puff of smoke or steam: its unit's stable id, and the picture it
+     * shows, the ticks that picture has left and the one it ends on. */
+    uint32_t puff_owner_id;
+    uint8_t  pic, pic_end;
+    uint16_t pic_left;
 } ProjectileEffect;
+
+/* The picture an effect shows now, whatever has played it so far. */
+int Units_EffectPicture(const ProjectileEffect *e);
+/* 1 when the local player sees the effect: its ground is in sight, and a
+ * unit's flame or puff shows only while the unit does. */
+int Units_EffectShows(const struct GameWorld *world, const ProjectileEffect *e);
 
 typedef struct UnitDef {
     char     unitname[TAK_UNITDEF_NAME_MAX];   /* canonical id, e.g. "ARAKING" */

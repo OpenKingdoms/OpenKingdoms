@@ -17,6 +17,7 @@ void     TDF_Close(TDFFile *tdf);          /* Free tree + raw data + handle */
  * PopSection: return to the previous position (undo last Push/Enter) */
 int      TDF_PushSection(TDFFile *tdf, const char *section);
 int      TDF_OpenSection(TDFFile *tdf, int index);
+int      TDF_PushSectionAt(TDFFile *tdf, int index);  /* OpenSection, pushed */
 void     TDF_PopSection(TDFFile *tdf);
 
 /* Debug / test accessors */
