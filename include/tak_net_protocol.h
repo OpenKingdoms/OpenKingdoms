@@ -165,8 +165,10 @@
  * out of reach. 56: a mod's sight jammer puts the fog back over the
  * ground round it for its enemies. 57: the Sea Fort and the Floating
  * Tower float, and a sea yard clears its pad and launches ship after ship.
- * 58: any switched unit takes the on and off order, not a gate alone. */
-#define TAK_ENGINE_BUILD_ID           58
+ * 58: any switched unit takes the on and off order, not a gate alone.
+ * 59: healing, armour and attack auras work round the units that carry
+ * them. */
+#define TAK_ENGINE_BUILD_ID           59
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
