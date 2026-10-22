@@ -568,7 +568,7 @@ meteor, and earthen wave spells, plus mana costs, nimbus effects, etc.)
 | corpse | string | Feature name for dead unit (reference to features TDF) |
 | stone | string | Feature name when turned to stone |
 | bloodcolor1/2/3 | 3x int | RGB blood particle colors |
-| radardistance | int | Radar/minimap reveal radius |
+| radardistance | int | Radar radius: other players' units within it show as minimap blips, never in the main view |
 | sightdistance | int | Line of sight radius |
 
 ### Weapon Section Fields (`[WEAPON1]`, `[WEAPON2]`, `[WEAPON3]`)

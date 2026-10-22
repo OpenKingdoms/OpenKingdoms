@@ -534,6 +534,63 @@ int Units_IsVisibleToLocalPlayer(const Unit *u) {
     return unit_visible_to_local_player(World_Get(), u);
 }
 
+/* ── Radar ────────────────────────────────────────────────────────────
+ * Each tick the original marks, for the local viewer, every other
+ * player's unit within radardistance of a finished unit of the
+ * viewer's own, cloaked ones apart, and only the minimap draws the mark
+ * (legacy:208642-208655, legacy:208580-208590). The circle is flat, on
+ * world positions (legacy:220374-220455). */
+static uint8_t  g_radar_bits[(TAK_MAX_UNITS + 7) / 8];
+static int      g_radar_cand[TAK_MAX_UNITS];
+static uint32_t g_radar_tick;
+static int      g_radar_viewer;
+static int      g_radar_built;
+
+static int within_px(const Unit *a, const Unit *b, int64_t r) {
+    int64_t dx = (int64_t)a->world_x - b->world_x;
+    int64_t dy = (int64_t)a->world_y - b->world_y;
+    return dx * dx + dy * dy <= r * r;
+}
+
+static void radar_build(int viewer) {
+    memset(g_radar_bits, 0, sizeof g_radar_bits);
+    g_radar_tick = g_sim_tick;
+    g_radar_viewer = viewer;
+    g_radar_built = 1;
+    if (viewer < 1 || viewer > TAK_MAX_PLAYERS) return;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *s = &g_units[i];
+        if (s->player_id != viewer || s->alive != UNIT_ALIVE_ACTIVE ||
+            s->under_construction) continue;
+        const UnitDef *d = Units_GetDef(s->def_idx);
+        if (!d || d->radar_distance <= 0) continue;
+        int64_t r = d->radar_distance;
+        int n = ugrid_candidates((int32_t)(s->world_x - r), (int32_t)(s->world_y - r),
+                                 (int32_t)(s->world_x + r), (int32_t)(s->world_y + r),
+                                 g_radar_cand, TAK_MAX_UNITS);
+        int scan = n < 0;
+        int m = scan ? g_unit_count : n;
+        for (int k = 0; k < m; k++) {
+            int ti = scan ? k : g_radar_cand[k];
+            const Unit *t = &g_units[ti];
+            if (t->alive != UNIT_ALIVE_ACTIVE || t->player_id == viewer ||
+                t->cloaked || (g_radar_bits[ti >> 3] & (1u << (ti & 7))) ||
+                !within_px(s, t, r)) continue;
+            g_radar_bits[ti >> 3] |= (uint8_t)(1u << (ti & 7));
+        }
+    }
+}
+
+int Units_RadarShowsToLocalPlayer(const Unit *u) {
+    if (!u) return 0;
+    int h = (int)(u - g_units);
+    if (h < 0 || h >= g_unit_count) return 0;
+    int viewer = Fog_Viewer();
+    if (!g_radar_built || g_radar_tick != g_sim_tick || g_radar_viewer != viewer)
+        radar_build(viewer);
+    return (g_radar_bits[h >> 3] >> (h & 7)) & 1;
+}
+
 /* Shots take the same gate (legacy:246721-246738). */
 static int projectile_visible_to_local_player(const GameWorld *world,
                                               const Projectile *p) {
@@ -8953,6 +9010,7 @@ int Units_TrySetYardOpen(int handle, int open) {
 static uint32_t g_frames_lost[TAK_MAX_PLAYERS + 1];
 
 void Units_ClearInstances(void) {
+    g_radar_built = 0;
     g_damage_flames_loaded = 0;
     g_smoke_loaded = 0;
     memset(g_frames_lost, 0, sizeof(g_frames_lost));

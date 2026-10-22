@@ -1720,6 +1720,11 @@ uint32_t          Units_GetTeamColorRGBA(int idx);
  * (legacy:208633-208707). The world view, the selection code and the
  * minimap all gate on this one rule. */
 int               Units_IsVisibleToLocalPlayer(const Unit *u);
+/* The local viewer's radar shows this unit as a blip on the minimap
+ * and the full screen radar. Drawing only: the main view, picking and
+ * the simulation never read it (legacy:208470-208526). */
+int               Units_RadarShowsToLocalPlayer(const Unit *u);
+
 /* Does seat player_id see unit `handle`, by the test its units take
  * targets with and its screen draws by (legacy:206797)? */
 int               Units_SideSees(int player_id, int handle);
