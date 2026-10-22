@@ -671,10 +671,11 @@ stream reaches them.
 A battle whose connection drops does not wait for the player to notice.
 It goes back through Select Game, which connects again and is handed the
 match the same way, and the relay counts that connection's orders from 1
-again, as the client does. A browser tab in the background gets no
-animation frames, so while the page is hidden a worker's clock runs them
-instead. The player stays heard and keeps up rather than stopping the
-match for everyone after 5 seconds of silence.
+again, as the client does. A browser tab in the background, or a window
+covered or on another desktop, gets no animation frames, so whenever they
+stop a worker's clock runs the frames instead. The player stays heard and
+keeps up rather than stopping the match for everyone after 5 seconds of
+silence.
 
 The client keeps a run of empty turns as one entry and holds as much as
 the relay's own log, about an hour of an eight seat match, so even a log

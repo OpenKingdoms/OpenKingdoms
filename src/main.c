@@ -817,6 +817,7 @@ static void app_frame(AppState *app) {
 /* Browser frame callback: pump events, run one frame, cancel the loop
  * on quit (the tab reclaims resources; no explicit teardown). */
 static int g_web_loop_running;
+static double g_web_frame_end_ms;   /* when the last frame finished */
 
 static void em_frame(void *arg) {
     AppState *app = (AppState *)arg;
@@ -826,6 +827,7 @@ static void em_frame(void *arg) {
         return;
     }
     app_frame(app);
+    g_web_frame_end_ms = emscripten_get_now();
 }
 #endif
 
@@ -834,36 +836,23 @@ static void em_frame(void *arg) {
 static AppState g_app;
 
 #ifdef __EMSCRIPTEN__
-/* A hidden tab gets no animation frames, and a player silent for 5 s
- * stops the match for everyone. While hidden, a worker's clock, which
- * the browser does not hold back, runs the frames instead. */
+/* A hidden or covered window gets no animation frames, and a player
+ * silent for 5 s stops the match for everyone. A worker's clock, which
+ * the browser does not hold back, runs a frame whenever they stop. */
 EMSCRIPTEN_KEEPALIVE
-void TAK_WebHiddenFrame(void) {
-    if (g_web_loop_running) em_frame(&g_app);
+void TAK_WebFrameWatch(void) {
+    if (g_web_loop_running && emscripten_get_now() - g_web_frame_end_ms > 50.0)
+        em_frame(&g_app);
 }
 
-EM_JS(void, web_frames_when_hidden, (void), {
-    if (typeof document === 'undefined' || typeof Worker === 'undefined') return;
-    var clock = null, ticking = false;
-    var tick = function () {
-        if (!document.hidden) { ticking = false; return; }
-        _TAK_WebHiddenFrame();
-        clock.postMessage(25);
-    };
-    var follow = function () {
-        if (!document.hidden || ticking) return;
-        if (!clock) {
-            try {
-                var src = 'onmessage = function (e) { setTimeout(function () { postMessage(0); }, e.data); };';
-                clock = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
-                clock.onmessage = tick;
-            } catch (e) { clock = null; return; }
-        }
-        ticking = true;
-        clock.postMessage(25);
-    };
-    document.addEventListener('visibilitychange', follow);
-    follow();
+EM_JS(void, web_frame_watch, (void), {
+    if (typeof Worker === 'undefined') return;
+    try {
+        var src = 'onmessage = function () { setTimeout(function () { postMessage(0); }, 20); };';
+        var clock = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+        clock.onmessage = function () { _TAK_WebFrameWatch(); clock.postMessage(0); };
+        clock.postMessage(0);
+    } catch (e) {}
 });
 #endif
 
@@ -1102,7 +1091,8 @@ int main(int argc, char *argv[]) {
     /* fps=0 → drive from requestAnimationFrame; simulate_infinite_loop
      * so main() unwinds here and the browser owns the loop. */
     g_web_loop_running = 1;
-    web_frames_when_hidden();
+    g_web_frame_end_ms = emscripten_get_now();
+    web_frame_watch();
     emscripten_set_main_loop_arg(em_frame, &g_app, 0, 1);
 #else
     while (!g_app.quit_requested && TAK_Platform_PumpEvents(&g_app.platform)) {
