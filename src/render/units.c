@@ -15328,6 +15328,9 @@ static void Units_TickCombat(void) {
 
         int air_leg_on = def->can_fly
             ? flyer_air_tick(u, i, def, &desired, &goal_x, &goal_y) : 0;
+        /* An air leg is flown as a move of its own, so the walk alone
+         * turns the flyer, not the order it set aside. */
+        if (air_leg_on) u->heading = heading_at_entry;
 
         CMB_MARK(2);
         enter_state(u, desired);

@@ -2432,6 +2432,77 @@ TEST(a_hover_attacker_flies_round_a_target_its_shots_do_not_hurt) {
     ASSERT_EQ_INT(0, harmful);
 }
 
+
+/* The Dark Priest from units/tarpries.fbi, a flying builder, and a two
+ * tile frame for it that takes 30 s. */
+enum { MV_PRIEST = MV_DEF_COUNT, MV_PRIEST_COUNT };
+static int mv_add_priest(void) {
+    UnitDef defs[MV_PRIEST_COUNT];
+    for (int i = 0; i < MV_DEF_COUNT; i++) defs[i] = *Units_GetDef(i);
+    UnitDef *d = &defs[MV_PRIEST];
+    mv_fill_def(d, "TESTPRIES", "", 5.0f, 4000);
+    strncpy(d->category, "TEST BUILDER", sizeof(d->category) - 1);
+    d->acceleration = 0.15f;
+    d->brake_rate = 0.25f;
+    d->turn_rate = 500.0f;
+    d->turn_in_place_rate = 750.0f;
+    d->footprint_x = 3;
+    d->footprint_z = 3;
+    d->can_fly = 1;
+    d->cruise_alt = 50;
+    d->max_water_depth = 0;
+    d->min_water_depth = -10000;
+    d->cap_flags |= UNIT_CAP_BUILDER;
+    d->worker_time = 10.0f;
+    d->build_distance = 200;
+    defs[MV_DEF_HUT].buildtime = 300.0f;
+    if (Units_DebugSetDefs(defs, MV_PRIEST_COUNT) != MV_PRIEST_COUNT) return -1;
+    static const uint32_t ret[] = { 0x10065000u };
+    static const char *const names[] = { "BeginFlight", "BeginLanding" };
+    static const uint32_t offsets[] = { 0, 0 };
+    if (Units_DebugSetDefScript(MV_PRIEST, ret, 1, names, offsets, 2) != 0)
+        return -1;
+    GameWorld *w = World_Get();
+    Economy_AdjustCaps(&w->economy, 1, 1000000, 0.0f);
+    Economy_Earn(&w->economy, 1, 1000000);
+    return MV_PRIEST;
+}
+
+/* A flying builder crowded at its work steps out of the crowd and then
+ * goes on building (legacy:31765, legacy:31887-31914), so the frame is
+ * finished and the builder never flies onto it. */
+TEST(a_crowded_flying_builder_steps_out_and_builds_on) {
+    ASSERT_NOT_NULL(mv_world());
+    int priest = mv_add_priest();
+    ASSERT(priest >= 0);
+    int pr = Units_Spawn(priest, 1, 0, 1500, 1500);
+    ASSERT(pr >= 0);
+    Units_DebugSetAggro(pr, UNIT_AGGRO_PASSIVE);
+    int frame = Units_BeginBuildingForUnit(pr, MV_DEF_HUT, 1640, 1500);
+    ASSERT(frame >= 0);
+    int crowded = 0, stepped = 0, done_at = -1;
+    int64_t nearest2 = INT64_MAX;
+    for (int t = 0; t < 4800 && done_at < 0; t++) {
+        Unit *u = (Unit *)mv_unit(pr);   /* test-only mutation */
+        if (!crowded && t > 600 && u->anim_state == UNIT_ANIM_BUILDING) {
+            u->air_crowd = 10;
+            crowded = 1;
+        }
+        Units_TickEngines();
+        u = (Unit *)mv_unit(pr);
+        if (u->air_mode == UNIT_AIR_STEP) stepped = 1;
+        int64_t d2 = mv_dist2(u, 1640, 1500);
+        if (crowded && d2 < nearest2) nearest2 = d2;
+        if (!mv_unit(frame)->under_construction) done_at = t;
+    }
+    printf("(stepped out %d, came within %.0f px of the frame, frame done "
+           "at %d) ", stepped, sqrt((double)nearest2), done_at);
+    ASSERT_EQ_INT(1, stepped);
+    ASSERT(done_at > 0);
+    ASSERT(nearest2 > 48 * 48);
+    mv_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("Movement without game data");
@@ -2474,6 +2545,7 @@ int main(int argc, char **argv) {
     RUN(a_ship_is_drawn_at_its_waterline_not_on_the_sea_floor);
     RUN(a_unit_under_the_sea_tells_its_script_it_is_in_water);
     RUN(a_flyer_never_lands_on_sea_it_had_not_explored);
+    RUN(a_crowded_flying_builder_steps_out_and_builds_on);
     TEST_SUITE("Hover attack");
     RUN(a_hover_flock_spreads_round_a_still_target);
     RUN(a_hover_attacker_holds_its_bearing_off_a_ground_point);
