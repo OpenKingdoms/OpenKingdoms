@@ -27,6 +27,7 @@ typedef enum {
     AI_TASK_ESCORT,     /* a group covers a builder on its way to a pad */
     AI_TASK_HOLD_GROUND,/* a group stands on the ground it went out to */
     AI_TASK_DEFEND,     /* a group goes at what attacks the seat's own */
+    AI_TASK_FERRY,      /* a transport carries the wave over the water */
     AI_TASK_COUNT
 } AiTask;
 
@@ -53,6 +54,13 @@ typedef struct AiWaveState {
     int32_t field_threat;     /* seen enemy strength where they stand */
     int     raid_known;       /* a weak, valuable enemy cell is known */
     int     siege_due;        /* the long wait is up, go whatever waits */
+    /* The target lies over water some walker of the seat cannot cross,
+     * a transport of the seat is free to carry the wave there, and one is
+     * free or on its way (A-013). */
+    int     cut_off;
+    int     ferry_ready;
+    int     ferry_coming;
+    int     hold;             /* massed members a ferry waits for */
 } AiWaveState;
 
 #define AI_HTN_MAX_STEPS 4

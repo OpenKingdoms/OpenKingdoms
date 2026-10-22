@@ -833,6 +833,58 @@ Format per entry:
   note `docs/notes/2026-09-04-legacy-ai.md`, "Roles", "Attack waves"
   and the gap list.
 
+## A-013: A computer cut off by water carries its army over
+
+- Change: a seat whose wave target stands on ground some walker of its
+  could not walk to from home, one walker asked a movement class and
+  ships never asked, is cut off (`TAK_AI_TACTIC_NAVAL`). Home is what
+  is asked, so a unit shut in by rubble does not cut its seat off. Its
+  goal planner then wants a transport before more army: a producer that makes one trains
+  one, and with none a builder puts up a yard that does, on water near
+  home that reaches the target's water. Its army waits for the
+  transport instead of striking, and goes aboard on the strength a
+  strike needs once a full hold is gathered, or with a launch's worth
+  when the long wait of A-007 is up. A ship's riders walk to a shore it
+  can stand off first, a flyer picks them up where they are. The
+  transport holds its fire on the way, sets the wave down on ground
+  that walks to the target, the nearest past 448 px from it and dearer
+  where enemy strength is seen, and the wave attacks from there. A
+  landing that fails is tried elsewhere twice, then the wave goes back
+  ashore at home. One ferry a seat at a time. Fighters it cannot carry
+  stay behind, and a flyer among them goes at the target on its own
+  wings. A walker in a group marching at a target over water or out on
+  it, and a ship sent at one on land, go back to the gathering. The
+  code is the ferry section of `src/game/ai.c`, the crossing rows of
+  the army domain in `src/game/ai_htn.c` and the ferry goal and its two
+  actions in `src/game/ai_plan.c`.
+- Why: issue #454. On an island start the computer never attacked a
+  player on another landmass, and a player there was safe for good. The
+  original's skirmish AI never loads a transport. A candidate the
+  pathfinder cannot reach is never taken (legacy:15473) and a group
+  whose leader has no route does not march (legacy:18385), so an AI on
+  an island sits. All of this is ours, beyond the original, and the
+  owner agreed to it. The Dark Mason riding a Ghost Ship to a far
+  lodestone, and scouting rather than seeing the whole map, are left
+  for later.
+- Measured: in duels of 20 minutes, each seed played twice with the
+  seats swapped, a seat with A-013 against one with everything else.
+  Over 48 games on Varro Passage and Cairbray Coast Landing, the two
+  shipped maps whose two starts lie on separate land, every kingdom
+  against itself, the seat with it put a wave ashore in 22, in 16 of
+  them inside ten minutes, the first at 134 seconds and the median at
+  about 320. Taros did in 9 of 12, first between 134 and 283 seconds,
+  Aramon in 5 and Zhon in 5, between 317 and 971 seconds, and Veruna
+  in 3, all on Cairbray, between 625 and 822 seconds. On Varro none
+  of Veruna's ferries got ashore. With the computer of before on both
+  seats the same 48 games saw 70 kills, 64 of them in Zhon's games,
+  where its flyers cross. The seat with A-013 killed 285 and lost 879,
+  as its waves land a few at a time against a whole army at home. On
+  Two Castles and Tarosian
+  Plain, where every start walks to every other, 16 games played the
+  same to the unit with it and without.
+- Citation: the manual describes no AI rule at this level. Behaviour
+  note `docs/notes/2026-09-04-legacy-ai.md`, "Water and transports".
+
 ## T-001: Flying transports load and unload by the ground rules
 
 - Change: The Roc and the Ghost Ship pick up and set down units the way

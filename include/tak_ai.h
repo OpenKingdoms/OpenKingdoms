@@ -44,10 +44,15 @@ enum {
     TAK_AI_COUNT_HELD, TAK_AI_COUNT_STRAGGLERS, TAK_AI_COUNT_REINFORCED,
     TAK_AI_COUNT_SQUAD_WAITS, TAK_AI_COUNT_SWEEPS, TAK_AI_COUNT_FIRE_STEPS,
     TAK_AI_COUNT_ESCORTS, TAK_AI_COUNT_PRESSED, TAK_AI_COUNT_HOLDS,
-    TAK_AI_COUNT_REGROUPED,
+    TAK_AI_COUNT_REGROUPED, TAK_AI_COUNT_FERRIES, TAK_AI_COUNT_LANDINGS,
     TAK_AI_COUNT_KINDS
 };
 int  TAK_AI_DebugCount(int player_id, int kind);
+/* Where a seat's ferry stands: 0 none, 1 gathering at the shore, 2
+ * loading, 3 sailing, 4 setting down. And the tick the seat's first
+ * wave went ashore over water, -1 before it has. */
+int  TAK_AI_DebugFerryStage(int player_id);
+int  TAK_AI_DebugFirstLanding(int player_id);
 /* The method the seat's army was last planned by, "" before any. */
 const char *TAK_AI_DebugWaveReason(int player_id);
 /* Which of the army's behaviours of A-007 a seat uses, for measuring
@@ -62,7 +67,8 @@ const char *TAK_AI_DebugWaveReason(int player_id);
 #define TAK_AI_TACTIC_MIX       64  /* a varied build (A-012) */
 #define TAK_AI_TACTIC_EXPAND    128 /* settle every free pad, escorted (A-012) */
 #define TAK_AI_TACTIC_HOLD      256 /* press on or hold the ground (A-012) */
-#define TAK_AI_TACTIC_ALL       511
+#define TAK_AI_TACTIC_NAVAL     512 /* carry the army over water (A-013) */
+#define TAK_AI_TACTIC_ALL       1023
 void TAK_AI_DebugSetTactics(int player_id, int mask);
 /* Every computer seat thinks on the same tick of the second, as
  * before the seats were spread, for tests written against that. */

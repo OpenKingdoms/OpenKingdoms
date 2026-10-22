@@ -8136,11 +8136,14 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_SWEEPS),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_FIRE_STEPS));
         fprintf(stderr, "duel:   seat %d escorts %d pressed on %d held ground %d "
-                "regrouped %d\n", p,
+                "regrouped %d ferries %d landings %d first ashore at %d s\n", p,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_ESCORTS),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_PRESSED),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_HOLDS),
-                TAK_AI_DebugCount(p, TAK_AI_COUNT_REGROUPED));
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_REGROUPED),
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_FERRIES),
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_LANDINGS),
+                TAK_AI_DebugFirstLanding(p) >= 0 ? TAK_AI_DebugFirstLanding(p) / 60 : -1);
         int secs = world->skirmish_elapsed_ticks / 60;
         int64_t fs = tally->home_s[p] + tally->away_s[p];
         fprintf(stderr, "duel:   seat %d lodestones on average %d.%02d of %d pads, at "

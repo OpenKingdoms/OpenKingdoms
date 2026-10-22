@@ -27,18 +27,24 @@ enum {
     W_FIELD_VALUE,
     W_FIELD_THREAT,
     W_RAID_KNOWN,
+    W_CUT_OFF,
+    W_FERRY_READY,
+    W_FERRY_COMING,
+    W_HOLD,
     W_COUNT
 };
 
 enum {
     T_ARMY = 0,     /* the root */
     T_ATTACK,
+    T_CROSS,        /* an attack over water (A-013) */
     P_HOLD,
     P_MASS,
     P_SCOUT,
     P_STRIKE,
     P_FALL_BACK,
     P_RAID,
+    P_FERRY,
     T_COUNT
 };
 
@@ -56,10 +62,14 @@ enum {
  * that, a target nobody can see gets one member to look at it, a weak
  * and valuable corner of the enemy gets a raid while the wave
  * gathers, and otherwise the wave gathers. One march at a time: a
- * scout or a raid is not sent while another member is out. */
+ * scout or a raid is not sent while another member is out.
+ *
+ * A target over water is carried to while a transport is free or coming:
+ * a full hold goes aboard on a strike's strength, a launch's worth when
+ * the long wait is up, and otherwise the wave waits for it (A-013). */
 static const HtnTask k_tasks[T_COUNT] = {
     [T_ARMY] = {
-        .name = "army", .compound = 1, .method_count = 3,
+        .name = "army", .compound = 1, .method_count = 5,
         .methods = {
             { .name = "break off",
               .pre = { AI_COND(W_FIELD, AI_OP_GT, 0),
@@ -67,6 +77,10 @@ static const HtnTask k_tasks[T_COUNT] = {
                        AI_COND_SCALED(W_FIELD_THREAT, 1, AI_OP_GT,
                                       W_FIELD_VALUE, 2) },
               .subtasks = { P_FALL_BACK, P_MASS }, .subtask_count = 2 },
+            { .name = "over the water",
+              .pre = { AI_COND(W_CUT_OFF, AI_OP_NE, 0),
+                       AI_COND(W_FERRY_COMING, AI_OP_NE, 0) },
+              .subtasks = { T_CROSS }, .subtask_count = 1 },
             { .name = "attack",
               .pre = { AI_COND(W_TARGET_KNOWN, AI_OP_NE, 0) },
               .subtasks = { T_ATTACK }, .subtask_count = 1 },
@@ -100,6 +114,24 @@ static const HtnTask k_tasks[T_COUNT] = {
               .subtasks = { P_MASS }, .subtask_count = 1 },
         },
     },
+    [T_CROSS] = {
+        .name = "cross", .compound = 1, .method_count = 3,
+        .methods = {
+            { .name = "ferry a full hold",
+              .pre = { AI_COND(W_FERRY_READY, AI_OP_NE, 0),
+                       AI_COND_VAR(W_MASSED, AI_OP_GE, W_HOLD),
+                       AI_COND_SCALED(W_WAVE_VALUE, 5, AI_OP_GE,
+                                      W_ENEMY_AT_TARGET, 6) },
+              .subtasks = { P_FERRY }, .subtask_count = 1 },
+            { .name = "ferry after the long wait",
+              .pre = { AI_COND(W_FERRY_READY, AI_OP_NE, 0),
+                       AI_COND(W_SIEGE_DUE, AI_OP_NE, 0),
+                       AI_COND_VAR(W_MASSED, AI_OP_GE, W_LAUNCH) },
+              .subtasks = { P_FERRY }, .subtask_count = 1 },
+            { .name = "wait for a boat",
+              .subtasks = { P_MASS }, .subtask_count = 1 },
+        },
+    },
     [P_HOLD] = { .name = "hold" },
     [P_MASS] = { .name = "mass" },
     /* The scout is drawn only from a gathering of two or more, so a
@@ -121,6 +153,11 @@ static const HtnTask k_tasks[T_COUNT] = {
         .pre = { AI_COND(W_FIELD, AI_OP_GT, 0) },
         .eff = { AI_EFFECT(W_FIELD, AI_EFF_SET, 0) },
     },
+    [P_FERRY] = {
+        .name = "ferry",
+        .eff = { AI_EFFECT(W_MASSED, AI_EFF_SET, 0),
+                 AI_EFFECT(W_MARCHING, AI_EFF_SET, 1) },
+    },
     /* A raid leaves at least as many at home as it takes. */
     [P_RAID] = {
         .name = "raid",
@@ -141,6 +178,7 @@ static AiTask htn_task_of(int primitive) {
     case P_STRIKE:    return AI_TASK_STRIKE;
     case P_FALL_BACK: return AI_TASK_FALL_BACK;
     case P_RAID:      return AI_TASK_RAID;
+    case P_FERRY:     return AI_TASK_FERRY;
     default:          return AI_TASK_NONE;
     }
 }
@@ -157,6 +195,7 @@ const char *AI_Htn_TaskName(AiTask task) {
     case AI_TASK_ESCORT:    return "escort";
     case AI_TASK_HOLD_GROUND: return "hold the ground";
     case AI_TASK_DEFEND:    return "defend";
+    case AI_TASK_FERRY:     return "ferry";
     default:                return "none";
     }
 }
@@ -183,6 +222,10 @@ void AI_Htn_Plan(const AiWaveState *s, AiWavePlan *out) {
     w[W_FIELD_VALUE]     = s->field_value;
     w[W_FIELD_THREAT]    = s->field_threat;
     w[W_RAID_KNOWN]      = s->raid_known ? 1 : 0;
+    w[W_CUT_OFF]         = s->cut_off ? 1 : 0;
+    w[W_FERRY_READY]     = s->ferry_ready ? 1 : 0;
+    w[W_FERRY_COMING]    = s->ferry_coming ? 1 : 0;
+    w[W_HOLD]            = s->hold > s->launch ? s->hold : s->launch;
 
     HtnPlan plan;
     if (!Htn_Plan(&k_domain, T_ARMY, w, &plan) || plan.step_count <= 0) {

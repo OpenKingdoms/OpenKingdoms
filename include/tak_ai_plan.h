@@ -17,6 +17,7 @@ typedef enum {
     AI_GOAL_EXPAND,     /* secure a nearby sacred site */
     AI_GOAL_ATTACK,     /* send a wave at the weakest enemy */
     AI_GOAL_CLEAR,      /* sweep the rubble the seat's units are stuck at */
+    AI_GOAL_FERRY,      /* a transport to carry the army over water (A-013) */
     AI_GOAL_COUNT
 } AiGoal;
 
@@ -29,6 +30,8 @@ typedef enum {
     AI_ACT_HOLD,
     AI_ACT_WAVE,
     AI_ACT_SWEEP,
+    AI_ACT_BUILD_YARD,       /* a structure that makes a transport */
+    AI_ACT_TRAIN_TRANSPORT,
     AI_ACT_COUNT
 } AiAction;
 
@@ -72,6 +75,14 @@ typedef struct AiPlanState {
     /* Rubble that blocks until swept, under the remastered rules (D-036),
      * lying where one of the seat's units is stuck. */
     int     rubble;
+    /* The wave target lies over water some walker cannot cross, the
+     * transports built and building, the producers that can make one and
+     * those of them free to, and the yards going up (A-013). */
+    int     cut_off;
+    int     transports;
+    int     ferry_makers;
+    int     ferry_makers_idle;
+    int     yards_pending;
 } AiPlanState;
 
 typedef struct AiPlanCosts {

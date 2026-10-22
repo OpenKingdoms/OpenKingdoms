@@ -737,6 +737,12 @@ static int unit_can_carry_target(const Unit *carrier, const Unit *target) {
     return 1;
 }
 
+int Units_CanCarry(int carrier, int rider) {
+    if (carrier < 0 || carrier >= g_unit_count || rider < 0 || rider >= g_unit_count)
+        return 0;
+    return unit_can_carry_target(&g_units[carrier], &g_units[rider]);
+}
+
 /* 15 frames of hold before a pickup or a drop (legacy:14457, :14554). */
 #define TRANSPORT_HOLD_TICKS 30
 
