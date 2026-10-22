@@ -99,14 +99,20 @@ attacked this way at once. Since 2026-10-16 they take off like the rest.
 
 - Stage 1 drives the flyer at the target and, once it is within the hover
   distance plus 160 px, sets its weapons on and picks a point.
-- The point is kept as an offset from a unit target, so the flyer
-  follows it as the original's move does. It is reached within 8 px,
-  where the walk stops for it, not the original's 4 (D-039).
-  Between points the flyer is moving, and at its point it holds and
-  attacks.
-- With its weapons on a target in reach the flyer turns onto it at its
-  turnrate, and between points it moves straight at the next one
-  without turning away (legacy:249301-249306).
+- The point stays on the map where it was picked. The original's move
+  to it names the target unit only for the flyer to face, and keeps
+  the point where it was set (legacy:190458-190478,
+  legacy:190495-190496). It is reached within 8 px, where the walk
+  stops for it, not the original's 4 (D-039). Between points the flyer
+  is moving, and at its point it holds and attacks.
+- Within 320 px of its point the flyer turns onto its target at its
+  turnrate, and further out it faces the way it flies
+  (legacy:241346-241351). Turned onto its target it makes for its point
+  at full speed only along its heading. Any other way it moves at its
+  creep, (2 brakerate + acceleration) / (2 - acceleration / maxvelocity)
+  px a frame, where the original's flight settles (legacy:183961-184057,
+  D-039). That is 0.42 px a frame for a Sky Knight, so a walker that
+  comes at it passes beneath it rather than pushing it back.
 - The weapon in hand fires whenever it is ready, its aim is done, the
   target is in reach and the flyer faces it within the weapon's
   AimTolerance, never more than 0x200 off (legacy:249365-249377), on
@@ -145,15 +151,20 @@ Blast reaches 250 px, so one cast on the spot still takes a ring 200 px
 out, as it would in the original.
 
 The data free cases in `test_movement` give twelve Harpies on a still
-enemy 0.39 others within 50 px on average, 93% of the samples 170 to 240
+enemy 0.30 others within 50 px on average, 90% of the samples 170 to 240
 px from it, over five of the eight octants round it. A Harpy on a ground
 point from 600 px east holds 202 to 205 px east of it, and one following
-a walker fires 11 of its 20 shots on the move. A Harpy whose shots do a
-still post no harm flies round it 14 times in a minute of 24 shots, and
-one whose shots hurt it never does. These are the numbers since the
-flyer has to face what it shoots (2026-10-16). Before, it fired whichever
-way it faced and they were 0.11, 98%, six octants, 194 to 203 px, 16 of
-20 and 11 times in 29 shots.
+a walker fires 15 of its 19 shots on the move. A Harpy whose shots do a
+still post no harm flies round it 4 times in a minute of 28 shots, and
+one whose shots hurt it never does. A Sky Knight whose target walks at
+it and on under it backs off at no more than 0.21 px a tick and lets
+the walker come within 41 px. These are the numbers since the point
+stays put and the flyer creeps off its heading (2026-10-21). Before,
+the walker pushed the knight back at up to 1.37 px a tick and never came
+within 155 px, and the others were 0.39, 93%, five octants, 202 to 205
+px, 11 of 20 and 14 times in 24 shots. Before the flyer had to face
+what it shoots (2026-10-16) they were 0.11, 98%, six octants, 194 to 203
+px, 16 of 20 and 11 times in 29 shots.
 
 ## Left out
 

@@ -631,7 +631,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 18
+#define VER_UNIT 19
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 4
@@ -3461,9 +3461,9 @@ static int check_defs(TAK_SaveGame *sg, char *err, size_t err_cap) {
  * simulation holds pointing at the same thing it did. */
 static int apply_units(TAK_SaveGame *sg, char *err, size_t err_cap) {
     uint32_t count = 0;
-    uint16_t stored = 0;
+    uint16_t stored = 0, ver = 0;
     const uint8_t *recs = (const uint8_t *)Save_Records(sg->reader, TAK_SECT_UNIT,
-                                                        NULL, &count, &stored);
+                                                        &ver, &count, &stored);
     if (count != 0 && (!recs || stored == 0)) {
         set_err(err, err_cap, "This save is missing the units it was played with.");
         return -1;
@@ -3492,6 +3492,19 @@ static int apply_units(TAK_SaveGame *sg, char *err, size_t err_cap) {
                     "and this installation gives it none.",
                     d && d->unitname[0] ? d->unitname : "A unit");
             return -1;
+        }
+    }
+
+    /* Before 19 a hover attacker kept its point off its target unit. */
+    if (ver < 19) {
+        int n = 0;
+        Unit *all = (Unit *)Units_GetActive(&n);
+        for (int i = 0; i < n; i++) {
+            Unit *u = &all[i];
+            if (u->alive != UNIT_ALIVE_ACTIVE || u->hover_state == UNIT_HOVER_NONE ||
+                u->target < 0 || u->target >= n) continue;
+            u->hover_x += all[u->target].world_x;
+            u->hover_y += all[u->target].world_y;
         }
     }
 

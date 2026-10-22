@@ -1032,8 +1032,8 @@ typedef struct Unit {
     /* Hover attack (legacy:30139-30705): hover_state a UNIT_HOVER_*
      * stage, hover_wait the frames before it looks again, hover_steps
      * the step outs this attack, hover_events the UNIT_HOVER_EV_* bits
-     * raised since it last looked, and (hover_x, hover_y) its point, off
-     * the target unit or on the ground. */
+     * raised since it last looked, and (hover_x, hover_y) its point on
+     * the map, which stays where it was picked. */
     uint8_t    hover_state;
     uint8_t    hover_wait;
     uint8_t    hover_steps;

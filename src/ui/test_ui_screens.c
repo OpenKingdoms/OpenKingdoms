@@ -14129,13 +14129,13 @@ TEST(a_harpy_takes_a_swordsman_standing_or_walking_across) {
     ASSERT(set);
     /* Pinned. Every target is taken. A still one is taken by the first
      * of two or three shots, as the Harpy aims again while it reloads
-     * and the next is in the air before the first lands. A walking one is taken by the first shot, fired from the
-     * hover attack's 200 px once the Harpy faces it, in all but one
-     * seed, where the second shot takes it. */
+     * and the next is in the air before the first lands. A walking one
+     * is taken by the first shot, fired from the hover attack's 200 px
+     * once the Harpy faces it. */
     ASSERT_EQ_INT(4, still);
     ASSERT_EQ_INT(9, still_shots);
     ASSERT_EQ_INT(4, walking);
-    ASSERT_EQ_INT(5, walking_shots);
+    ASSERT_EQ_INT(4, walking_shots);
 }
 
 /* Use Crusades Units loads the Crusades balance set, unitscb/ in place

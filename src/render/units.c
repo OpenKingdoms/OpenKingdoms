@@ -11989,6 +11989,20 @@ double g_walk_calls;
  * turned onto its target. */
 static int   g_walk_face_on;
 static float g_walk_face;
+static int   g_walk_creep;   /* turned onto a unit, off the heading at a creep */
+
+/* A flyer's speed off its heading in px a tick. Each frame the original
+ * turns all but brakerate of it onto the heading, then thrusts by
+ * acceleration against a drag of acceleration over maxvelocity
+ * (legacy:183961-184004, legacy:184045-184057), which settles here. */
+static float flyer_creep_ppt(const UnitDef *def) {
+    float top = def->max_velocity;
+    if (top <= 0.0f) return 0.0f;
+    /* No acceleration is instant, as the walk takes it. */
+    float a = def->acceleration > 0.0f && def->acceleration < top ? def->acceleration : top;
+    float b = def->brake_rate > 0.0f ? def->brake_rate : 0.0f;
+    return (2.0f * b + a) / (2.0f - a / top) * 0.5f;
+}
 
 /* Turn toward a heading by a rate in 65536ths of a turn per 30 Hz frame,
  * at once when the rate is 0. */
@@ -12232,17 +12246,34 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     }
 
     /* Move along the heading (legacy:183366-183372). A flyer holding a
-     * heading moves straight at its point (legacy:183869-184070). */
+     * heading moves at its point, turned onto a unit at full speed only
+     * along that heading and at its creep any other way
+     * (legacy:183992-184004). */
     float dir_x = tak_sinf(u->heading);
     float dir_y = -tak_cosf(u->heading);
+    float step_x = dir_x * v, step_y = dir_y * v;
     if (g_walk_face_on) {
         float sx = (float)(ax - u->world_x), sy = (float)(ay - u->world_y);
         float len = sqrtf(sx * sx + sy * sy);
-        dir_x = len > 0.0f ? sx / len : 0.0f;
-        dir_y = len > 0.0f ? sy / len : 0.0f;
+        step_x = len > 0.0f ? sx / len * v : 0.0f;
+        step_y = len > 0.0f ? sy / len * v : 0.0f;
     }
-    float fx = u->subpixel_x + dir_x * v;
-    float fy = u->subpixel_y + dir_y * v;
+    if (g_walk_face_on && g_walk_creep) {
+        float fwd = step_x * dir_x + step_y * dir_y;
+        if (fwd < 0.0f) fwd = 0.0f;
+        float ox = step_x - dir_x * fwd, oy = step_y - dir_y * fwd;
+        float off = sqrtf(ox * ox + oy * oy);
+        float creep = flyer_creep_ppt(def);
+        if (off > creep) {
+            ox *= creep / off;
+            oy *= creep / off;
+        }
+        step_x = dir_x * fwd + ox;
+        step_y = dir_y * fwd + oy;
+        v = sqrtf(step_x * step_x + step_y * step_y);
+    }
+    float fx = u->subpixel_x + step_x;
+    float fy = u->subpixel_y + step_y;
     int32_t mx = (int32_t)floorf(fx);
     int32_t my = (int32_t)floorf(fy);
     int32_t nx = u->world_x + mx;
@@ -13648,6 +13679,8 @@ static int flyer_air_tick(Unit *u, int h, const UnitDef *def,
  * original's move stops within 4 (legacy:30362-30364), but a point the walk
  * calls reached and this did not would hold the flyer there for good. */
 #define HOVER_REACH_PX 8
+/* How near its point a hover attacker flies turned onto its target. */
+#define HOVER_FACE_PX 320
 
 static int hover_slot(const Unit *u, const UnitDef *def) {
     int slot = u->weapon_slot;
@@ -13689,12 +13722,12 @@ static void hover_reset(Unit *u) {
     u->hover_y = 0;
 }
 
-/* Its point on the map: off the target unit, which it follows, or on
- * the ground. */
-static void hover_point(const Unit *u, const Unit *t,
-                        int32_t *x, int32_t *y) {
-    *x = u->hover_x + (t ? t->world_x : 0);
-    *y = u->hover_y + (t ? t->world_y : 0);
+/* Its point on the map. It stays where it was picked, off a target
+ * unit as off the ground, and does not follow the target
+ * (legacy:190458-190478, legacy:190495-190496). */
+static void hover_point(const Unit *u, int32_t *x, int32_t *y) {
+    *x = u->hover_x;
+    *y = u->hover_y;
     const GameWorld *w = World_Get();
     if (w && w->map_pixels_w > 64 && w->map_pixels_h > 64) {
         if (*x < 32) *x = 32;
@@ -13704,12 +13737,12 @@ static void hover_point(const Unit *u, const Unit *t,
     }
 }
 
-static void hover_set_point(Unit *u, const Unit *t, int32_t tx, int32_t ty,
+static void hover_set_point(Unit *u, int32_t tx, int32_t ty,
                             uint16_t bearing, int r) {
     float ax, ay;
     air_dir(bearing, &ax, &ay);
-    u->hover_x = tx + (int32_t)(ax * (float)r) - (t ? t->world_x : 0);
-    u->hover_y = ty + (int32_t)(ay * (float)r) - (t ? t->world_y : 0);
+    u->hover_x = tx + (int32_t)(ax * (float)r);
+    u->hover_y = ty + (int32_t)(ay * (float)r);
     u->hover_events |= UNIT_HOVER_GOING;
     u->hover_events &= (uint8_t)~UNIT_HOVER_EV_ARRIVED;
 }
@@ -13719,8 +13752,7 @@ static void hover_set_point(Unit *u, const Unit *t, int32_t tx, int32_t ty,
  * within 16 px of the standoff, else the standoff plus rand(8) - 3,
  * one time in a hundred redrawn all the same (legacy:30254-30315). It
  * looks again in 15 + rand(15) frames (legacy:30364-30378). */
-static void hover_pick(Unit *u, const UnitDef *def, const Unit *t,
-                       int32_t tx, int32_t ty) {
+static void hover_pick(Unit *u, const UnitDef *def, int32_t tx, int32_t ty) {
     int hd = hover_attack_dist(u, def);
     float dx = (float)(u->world_x - tx), dy = (float)(u->world_y - ty);
     uint16_t bearing = Units_TurnFromHeading(tak_atan2f(dx, -dy));
@@ -13735,7 +13767,7 @@ static void hover_pick(Unit *u, const UnitDef *def, const Unit *t,
         r = (int)World_Rand(8) - 3 + hd;
         if (r < 0) r = -r;
     }
-    hover_set_point(u, t, tx, ty, bearing, r);
+    hover_set_point(u, tx, ty, bearing, r);
     u->hover_state = UNIT_HOVER_WAIT;
     u->hover_wait = (uint8_t)(15u + World_Rand(15));
 }
@@ -13788,7 +13820,7 @@ static void hover_frame(Unit *u, int h, const UnitDef *def, const Unit *t,
     int hd = hover_attack_dist(u, def);
     if (u->hover_events & UNIT_HOVER_GOING) {
         int32_t px, py;
-        hover_point(u, t, &px, &py);
+        hover_point(u, &px, &py);
         int64_t ex = (int64_t)px - u->world_x, ey = (int64_t)py - u->world_y;
         if (ex * ex + ey * ey < HOVER_REACH_PX * HOVER_REACH_PX)
             u->hover_events = (uint8_t)((u->hover_events & ~UNIT_HOVER_GOING) |
@@ -13812,10 +13844,10 @@ static void hover_frame(Unit *u, int h, const UnitDef *def, const Unit *t,
         }
         /* Stage 2 sets the weapons on the target (legacy:30223-30253). */
         u->hover_events |= UNIT_HOVER_ARMED;
-        hover_pick(u, def, t, tx, ty);
+        hover_pick(u, def, tx, ty);
     } break;
     case UNIT_HOVER_PICK:
-        if (!u->hover_wait) hover_pick(u, def, t, tx, ty);
+        if (!u->hover_wait) hover_pick(u, def, tx, ty);
         break;
     case UNIT_HOVER_WAIT: {
         uint8_t ev = u->hover_events & (UNIT_HOVER_EV_FIRED |
@@ -13845,14 +13877,14 @@ static void hover_frame(Unit *u, int h, const UnitDef *def, const Unit *t,
             int r = (int)World_Rand(8) - 3 + hd;
             if (r < 0) r = -r;
             uint16_t bearing = (uint16_t)World_Rand(0x10000);
-            hover_set_point(u, t, tx, ty, bearing, r);
+            hover_set_point(u, tx, ty, bearing, r);
             u->hover_state = UNIT_HOVER_ROUND;
         }
         break;
     case UNIT_HOVER_ROUND:
         if (u->hover_events & UNIT_HOVER_EV_ARRIVED) {
             u->hover_events &= (uint8_t)~UNIT_HOVER_EV_ARRIVED;
-            hover_pick(u, def, t, tx, ty);
+            hover_pick(u, def, tx, ty);
         }
         break;
     default:
@@ -13898,7 +13930,7 @@ static void hover_attack_tick(Unit *u, int h, const UnitDef *def,
         return;
     }
     int32_t px, py;
-    hover_point(u, t, &px, &py);
+    hover_point(u, &px, &py);
     int64_t ex = (int64_t)px - u->world_x, ey = (int64_t)py - u->world_y;
     if (ex * ex + ey * ey >= HOVER_REACH_PX * HOVER_REACH_PX) {
         *desired = UNIT_ANIM_MOVING;
@@ -15328,6 +15360,9 @@ static void Units_TickCombat(void) {
 
         int air_leg_on = def->can_fly
             ? flyer_air_tick(u, i, def, &desired, &goal_x, &goal_y) : 0;
+        /* An air leg is flown as a move of its own, so the walk alone
+         * turns the flyer, not the order it set aside. */
+        if (air_leg_on) u->heading = heading_at_entry;
 
         CMB_MARK(2);
         enter_state(u, desired);
@@ -15339,9 +15374,20 @@ static void Units_TickCombat(void) {
                  * RETURN; restart while still moving. */
                 ensure_thread(u, "walk", &u->walk_thread_slot, NULL, 0);
                 /* A hover attacker's weapons stay on its target as it
-                 * flies (legacy:30223-30253), and it holds itself turned
-                 * onto it while it moves (legacy:249301-249306). */
-                if (hovering && target_in_range && unit_faces_target(def)) {
+                 * flies (legacy:30223-30253). Within 320 px of its point
+                 * it holds itself turned onto a target unit, and further
+                 * out or on an air leg it faces its way
+                 * (legacy:241346-241351). On a point on the ground it turns
+                 * onto the point while in range and flies straight, ours
+                 * (D-039). */
+                int64_t gox = (int64_t)goal_x - u->world_x;
+                int64_t goy = (int64_t)goal_y - u->world_y;
+                int on_unit = u->target >= 0 && u->target < g_unit_count;
+                if (hovering && unit_faces_target(def) &&
+                    (on_unit ? (u->hover_events & UNIT_HOVER_ARMED) && !air_leg_on &&
+                               gox * gox + goy * goy <=
+                                   (int64_t)HOVER_FACE_PX * HOVER_FACE_PX
+                             : target_in_range)) {
                     int32_t fx = u->cmd_x, fy = u->cmd_y;
                     if (u->target >= 0 && u->target < g_unit_count) {
                         fx = g_units[u->target].world_x;
@@ -15349,12 +15395,14 @@ static void Units_TickCombat(void) {
                     }
                     if (fx != u->world_x || fy != u->world_y) {
                         g_walk_face_on = 1;
+                        g_walk_creep = on_unit;
                         g_walk_face = tak_atan2f((float)(fx - u->world_x),
                                                  -(float)(fy - u->world_y));
                     }
                 }
                 int arrived = walk_tick(u, def, goal_x, goal_y);
                 g_walk_face_on = 0;
+                g_walk_creep = 0;
                 if (hovering && target_in_range) unit_fire_tick(u, i, def);
                 if (arrived) {
                     u->velocity = 0; u->cur_speed_ppt = 0.0f;
