@@ -1143,6 +1143,11 @@ typedef struct AiFerryAim {
 static AiFerryAim g_ai_ferry_aim[TAK_MAX_PLAYERS + 1];
 /* Whether a transport is on its way for the seat that is thinking. */
 static int g_ai_ferry_coming[TAK_MAX_PLAYERS + 1];
+/* The water by each seat's target, by ship and target (A-013). */
+#define AI_SEA_CACHE 4
+typedef struct AiSeaCache { int def; int32_t tx, ty, x, y; int ok; } AiSeaCache;
+static AiSeaCache g_ai_sea[TAK_MAX_PLAYERS + 1][AI_SEA_CACHE];
+static int g_ai_sea_next[TAK_MAX_PLAYERS + 1];
 
 static void ai_reset_state(void) {
     memset(g_ai_players, 0, sizeof(g_ai_players));
@@ -1162,6 +1167,7 @@ static void ai_reset_state(void) {
     for (int p = 0; p <= TAK_MAX_PLAYERS; p++) g_ai_first_landing[p] = -1;
     memset(g_ai_ferry, 0, sizeof(g_ai_ferry));
     memset(g_ai_ferry_coming, 0, sizeof(g_ai_ferry_coming));
+    memset(g_ai_sea, 0, sizeof(g_ai_sea));
     for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
         g_ai_ferry[p].transport = -1;
         g_ai_ferry_aim[p].handle = -1;
@@ -2922,23 +2928,53 @@ static int ai_groups_update(const GameWorld *world, const Unit *units,
 #define AI_SHORE_CHECKS 12
 #define AI_SHORE_REACH  2048
 
-/* The water nearest the seat's target a ship of ship_def floats on. */
-static int ai_target_water(const AiPlayer *ap, int ship_def, int32_t *wx, int32_t *wy) {
-    for (int r = 0; r <= AI_SHORE_REACH; r += 64) {
-        for (int k = -r; k <= r; k += 64) {
-            const int32_t c[4][2] = {
+static int ai_floats_at(const GameWorld *world, const MoveClassDef *mc,
+                        int slope, int32_t x, int32_t y);
+
+/* The water nearest a seat's target that a ship floats on, by terrain
+ * alone, kept by ship and target. A loaded game finds the same, since
+ * nothing that moves can change it. */
+
+static int ai_target_water(const GameWorld *world, int p, int ship_def,
+                           int32_t *wx, int32_t *wy) {
+    const AiPlayer *ap = &g_ai_players[p];
+    AiSeaCache *c = g_ai_sea[p];
+    for (int i = 0; i < AI_SEA_CACHE; i++)
+        if (c[i].def == ship_def + 1 && c[i].tx == ap->target_x && c[i].ty == ap->target_y) {
+            *wx = c[i].x;
+            *wy = c[i].y;
+            return c[i].ok;
+        }
+    const UnitDef *d = Units_GetDef(ship_def);
+    const MoveClassDef *mc = d && d->movement_class[0]
+                           ? TAK_MoveInfo_Find(&world->moveinfo, d->movement_class) : NULL;
+    int slope = d ? (int)d->max_slope : 0;
+    int ok = 0;
+    int32_t x = 0, y = 0;
+    for (int r = 0; r <= AI_SHORE_REACH && !ok; r += 64) {
+        for (int k = -r; k <= r && !ok; k += 64) {
+            const int32_t s[4][2] = {
                 { ap->target_x + k, ap->target_y - r }, { ap->target_x + k, ap->target_y + r },
                 { ap->target_x - r, ap->target_y + k }, { ap->target_x + r, ap->target_y + k },
             };
-            for (int i = 0; i < 4; i++)
-                if (Units_IsBuildSiteFree(ship_def, c[i][0], c[i][1])) {
-                    *wx = c[i][0];
-                    *wy = c[i][1];
-                    return 1;
+            for (int i = 0; i < 4 && !ok; i++)
+                if (ai_floats_at(world, mc, slope, s[i][0], s[i][1])) {
+                    ok = 1;
+                    x = s[i][0];
+                    y = s[i][1];
                 }
         }
     }
-    return 0;
+    AiSeaCache *e = &c[g_ai_sea_next[p]++ % AI_SEA_CACHE];
+    e->def = ship_def + 1;
+    e->tx = ap->target_x;
+    e->ty = ap->target_y;
+    e->x = x;
+    e->y = y;
+    e->ok = ok;
+    *wx = x;
+    *wy = y;
+    return ok;
 }
 
 /* The target water of one ship type, looked for once a caller. */
@@ -2952,7 +2988,7 @@ static int ai_sails_to_target(const GameWorld *world, int p, int def_idx, int ya
     if (!d || !ai_def_is_ship(d)) return 1;
     if (memo->def != def_idx) {
         memo->def = def_idx;
-        memo->ok = ai_target_water(&g_ai_players[p], def_idx, &memo->x, &memo->y);
+        memo->ok = ai_target_water(world, p, def_idx, &memo->x, &memo->y);
     }
     if (!memo->ok) return 0;
     const MoveClassDef *mc = TAK_MoveInfo_Find(&world->moveinfo, d->movement_class);
@@ -3524,7 +3560,7 @@ static int ai_shore_site(const Unit *units, int actor_idx, int p, int def_idx,
                            ? TAK_MoveInfo_Find(&world->moveinfo, sd->movement_class)
                            : NULL;
     int32_t wx = -1, wy = -1;
-    if (!ai_target_water(ap, ship_def, &wx, &wy)) return 0;
+    if (!ai_target_water(world, p, ship_def, &wx, &wy)) return 0;
     int checks = AI_SHORE_CHECKS;
     for (int r = 64; r <= AI_SHORE_REACH && checks > 0; r += 64) {
         for (int k = -r; k <= r && checks > 0; k += 64) {
@@ -4240,10 +4276,9 @@ static int ai_transport_usable(int p, int i, const Unit *u) {
     return u->carried_by < 0 && u->cargo_count == 0 && !ai_unit_hurt(u);
 }
 
-/* What a seat cut off by water has toward a crossing: its transports,
- * the producers that can make one and of them those free to, the yards
- * going up, and the price of a yard and of a transport (A-013). A ship
- * or a yard on water that does not lead to the target's is none. */
+/* What a cut off seat has toward a crossing (A-013): transports and the
+ * producers free to make one, on water that leads to the target's, yards
+ * going up, and the price of a yard and of a transport. */
 static void ai_plan_read_naval(const GameWorld *world, const Unit *units, int unit_count,
                                int p, int now, AiPlanState *s, AiPlanCosts *c) {
     const AiPlayer *ap = &g_ai_players[p];
@@ -4705,7 +4740,10 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
             const UnitDef *d = Units_GetDef(u->def_idx);
             if (!ai_def_is_mobile_combat(d) || d->can_fly || ai_def_is_ship(d)) continue;
             walkers++;
-            home += ai_at_stage(ap, u);
+            /* At home, or walking back there from a crossing called off. */
+            home += ai_at_stage(ap, u) ||
+                    (u->cmd_kind == UNIT_CMD_MOVE && ap->base_known &&
+                     ai_within(u->cmd_x, u->cmd_y, ap->base_x, ap->base_y, AI_DEFEND_RADIUS));
         }
         if (home < 1) home = 1;
         if (walkers == 0) ws.ferry_coming = 0;

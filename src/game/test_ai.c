@@ -325,11 +325,12 @@ int Units_CanSetDownAt(int def_idx, int32_t world_x, int32_t world_y) {
     (void)def_idx; (void)world_x; (void)world_y;
     return 1;
 }
+/* Where a site is clear, a ship floats too. */
 int TAK_PathClearanceAt(const struct GameWorld *world,
                         const struct MoveClassDef *move_class,
                         int fallback_max_slope, int tile_x, int tile_y) {
-    (void)world; (void)move_class; (void)fallback_max_slope; (void)tile_x; (void)tile_y;
-    return 0;
+    (void)world; (void)fallback_max_slope; (void)tile_x; (void)tile_y;
+    return move_class == &g_boat_class && g_site_clear ? 64 : 0;
 }
 int Units_CanCarry(int carrier, int rider) { (void)carrier; (void)rider; return 0; }
 int Units_OrderLoadList(int carrier, const int *riders, int count, int queued) {
@@ -2866,7 +2867,7 @@ static int test_ai_no_boat_coming_strikes_once(void) {
     for (int k = 0; k < 12; k++) hf_run_ticks(&w, 60 + 60 * k, 1);
     int strikes = TAK_AI_DebugCount(2, TAK_AI_COUNT_STRIKES);
     printf("[%d strikes in 12 thinks] ", strikes);
-    ASSERT_TRUE(strikes <= 1);
+    ASSERT_EQ_INT(1, strikes);
     return 0;
 }
 
@@ -2904,6 +2905,43 @@ static int test_ai_the_hold_waits_for_walkers_at_home_only(void) {
     }
     printf("[%s] ", TAK_AI_DebugWaveReason(2));
     ASSERT_TRUE(ferried);
+    return 0;
+}
+
+/* A-013. Walkers on their way home from a crossing called off count for
+ * the hold, so two at home do not sail without the two coming back. */
+static int test_ai_the_hold_counts_walkers_coming_home(void) {
+    GameWorld w;
+    static const int loner[5] = { 0, 2, 0, 2, 2 };
+    setup_hostility_fixture(&w, loner);
+    g_visible = 0;
+    g_conn_split = 1;
+    g_conn_x = 3100;
+    g_conn_y = 2400;
+    int troop = hf_troop(2);
+    hf_add_unit(2, HF_TROOP, g_units[troop].world_x + 16, g_units[troop].world_y);
+    for (int k = 0; k < 2; k++) {
+        int back = hf_add_unit(2, HF_TROOP, 3900, 2300 - 40 * k);
+        g_units[back].cmd_kind = UNIT_CMD_MOVE;
+        g_units[back].cmd_x = g_units[troop].world_x;
+        g_units[back].cmd_y = g_units[troop].world_y;
+    }
+    strcpy(g_defs[HF_FERRY].unitname, "TARSHIP");
+    strcpy(g_defs[HF_FERRY].category, "TAR AIR TRANSPORT");
+    g_defs[HF_FERRY].max_velocity = 3.0f;
+    g_defs[HF_FERRY].can_fly = 1;
+    g_defs[HF_FERRY].cap_flags = UNIT_CAP_TRANSPORT;
+    g_defs[HF_FERRY].transport_capacity = 4;
+    int ferry = hf_add_unit(2, HF_FERRY, g_units[troop].world_x + 64, g_units[troop].world_y);
+    g_units[ferry].carried_by = -1;
+    TAK_AI_DebugSetWaveTarget(2, 0);
+    int ferried = 0;
+    for (int k = 0; k < 4 && !ferried; k++) {
+        hf_run_ticks(&w, 60 + 60 * k, 1);
+        ferried = strcmp("ferry a full hold", TAK_AI_DebugWaveReason(2)) == 0;
+    }
+    printf("[%s] ", TAK_AI_DebugWaveReason(2));
+    ASSERT_TRUE(!ferried);
     return 0;
 }
 
@@ -4032,6 +4070,7 @@ int main(void) {
     if (test_ai_a_transport_left_loaded_sets_its_riders_down() != 0) return 1;
     if (test_ai_no_boat_coming_strikes_once() != 0) return 1;
     if (test_ai_the_hold_waits_for_walkers_at_home_only() != 0) return 1;
+    if (test_ai_the_hold_counts_walkers_coming_home() != 0) return 1;
     if (test_ai_a_ship_on_other_water_is_no_boat() != 0) return 1;
     if (test_ai_a_seat_one_walker_class_walks_from_is_not_cut_off() != 0) return 1;
     if (test_plan_cut_off_builds_a_yard_then_a_transport() != 0) return 1;
