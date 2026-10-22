@@ -2291,7 +2291,11 @@ Format per entry:
   gets no radar blip. Within an enemy sight jammer's radius the ground
   goes back to explored for that player's sight, all but the nine cells
   round each of its own units, and its units cannot see or pick targets
-  there. A jammer works while it is finished and alive, and with
+  there. A builder walks up to a jammed site before it is judged, a site
+  there is not checked for hidden units, and the computer players read
+  the jammed fog too. Targets already held or ordered are still fired
+  on. Sight jamming does nothing with Line of Sight off, and it hides no
+  radar blips. A jammer works while it is finished and alive, and with
   `onoffable` only while it is on. It never jams its own side or its
   allies.
 - Why: a playtester asked for Total Annihilation's radar jamming and

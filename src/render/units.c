@@ -547,6 +547,9 @@ static int      g_radar_cand[TAK_MAX_UNITS];
 static uint32_t g_radar_tick;
 static int      g_radar_viewer;
 static int      g_radar_built;
+/* Marked five times a second, as the fog is, rather than every tick: a
+ * crowd under many radars is costly to mark and the mark only draws. */
+#define RADAR_EVERY_TICKS 12u
 
 static int within_px(const Unit *a, const Unit *b, int64_t r) {
     int64_t dx = (int64_t)a->world_x - b->world_x;
@@ -601,7 +604,8 @@ int Units_RadarShowsToLocalPlayer(const Unit *u) {
     int h = (int)(u - g_units);
     if (h < 0 || h >= g_unit_count) return 0;
     int viewer = Fog_Viewer();
-    if (!g_radar_built || g_radar_tick != g_sim_tick || g_radar_viewer != viewer)
+    if (!g_radar_built || g_radar_viewer != viewer || g_sim_tick < g_radar_tick ||
+        g_sim_tick - g_radar_tick >= RADAR_EVERY_TICKS)
         radar_build(viewer);
     return (g_radar_bits[h >> 3] >> (h & 7)) & 1;
 }

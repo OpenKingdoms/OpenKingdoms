@@ -2212,7 +2212,7 @@ TEST(an_enemy_radar_jammer_hides_blips_and_an_allys_does_not) {
     ASSERT_EQ_INT(1, Units_RadarShowsToLocalPlayer(lf_unit(near)));
     int jam = lf_spawn(LF_JAMMER, 2, LF_SX + 450, LF_ROW - 64);
     ASSERT(jam >= 0);
-    Units_TickEngines();
+    for (int i = 0; i < 12; i++) Units_TickEngines();   /* the next marking */
     ASSERT_EQ_INT(0, Units_RadarShowsToLocalPlayer(lf_unit(near)));
     lf_end();
 }

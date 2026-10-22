@@ -103,7 +103,11 @@ since sight never needed radar.
 for every enemy player, computer players included. Their units cannot
 see into it, so they cannot pick targets there, while the ground they
 have seen stays explored. Each of their units still sees the cells right
-round itself, so a unit that walks up to a jammer finds it.
+round itself, so a unit that walks up to a jammer finds it. Sight
+jamming needs Line of Sight on. With it off every player sees the whole
+explored map, so a sight jammer hides nothing. It does not hide radar
+blips either, and radar often reaches far past sight, so pair it with
+`radardistancejam` to hide a force from both.
 
 A jammer jams while it is finished and alive. Give it `onoffable = 1`
 and it jams only while it is switched on, so pair that with
