@@ -2226,7 +2226,8 @@ TEST(a_watcher_catches_up_on_a_long_match_a_window_at_a_time) {
     ASSERT_NOT_NULL(rr);
     ASSERT(rr->clock.head >= 2300);
 
-    hello_w(2, "watcher", TAK_NET_PROTOCOL_VERSION, 0, t);
+    /* Protocol 9 replays the log, which a later client also falls back on. */
+    hello_w(2, "watcher", 9, 0, t);
     settle_w(t);
     ASSERT_EQ_INT(TAK_NC_LOBBY, g_w[2].state);
     ASSERT_EQ_INT(0, TAK_NetClient_ListRooms(&g_w[2]));
@@ -2401,7 +2402,8 @@ TEST(a_catch_up_never_overfills_the_command_queue) {
     TAK_RelayRoom *rr = TAK_Relay_FindRoom(&g_relay, g_w[0].room.room_id);
     ASSERT_NOT_NULL(rr);
     ASSERT(TAK_TurnClock_CanReplay(&rr->clock));
-    hello_w(2, "watcher", TAK_NET_PROTOCOL_VERSION, 0, t);
+    /* Protocol 9 replays the log, which a later client also falls back on. */
+    hello_w(2, "watcher", 9, 0, t);
     settle_w(t);
     TAK_MsgJoinRoom jr;
     memset(&jr, 0, sizeof jr);

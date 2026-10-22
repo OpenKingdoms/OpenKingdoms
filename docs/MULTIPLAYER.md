@@ -149,8 +149,10 @@ the rest of this document is still design.
   another copy of the map, and says so when the hash leaves the
   recording. See docs/notes/2026-09-30-replays.md.
 - Watching a match under way. Select Game offers Watch on a running
-  game, the watcher replays the turn log a window at a time and then
-  follows live, sees the whole map and looks through each player's eyes
+  game, the watcher takes a snapshot of a player's world and the turns
+  after it, or replays the turn log a window at a time when it is older
+  than protocol 10 or no world can give a snapshot, and then follows
+  live, sees the whole map and looks through each player's eyes
   with Tab, and gives no order. Its world never counts when the players'
   worlds are compared, and its arrival moves no turn. The players see
   who is watching. A player beaten while the others fight on watches the
@@ -162,9 +164,9 @@ the rest of this document is still design.
   computer when the seat was a computer's at the start or a human of the
   leaver's team plays on, and is removed otherwise, as in the original.
   The host may start alone against computer players. A
-  player who joins the match later takes a computer seat, replays the
-  turn log from turn 0 like a rejoin, and is handed the seat through the
-  turn stream on the turn after they catch up. The client acts on every
+  player who joins the match later takes a computer seat, catches up
+  like a rejoin, and is handed the seat through the turn stream on the
+  turn after they catch up. The client acts on every
   seat entry the relay puts in a turn. See "Drop in" below.
 
 Two browsers have now played one match. One Edge page hosts a game on
@@ -367,7 +369,9 @@ The relay speaks 1 to 6 and writes every client the version its HELLO
 named, so a relay deployed before the clients that use it still serves
 the older ones, and it must be deployed first. A room holds clients that
 read a room the same way. Versions 3 to 6 changed nothing a simulation
-reads, so 2 to 6 share a room and 1 has rooms of its own. A player
+reads, so 2 to 6 share a room and 1 has rooms of its own. Versions 7 to
+10 are told where they are used: 7 and 9 with desyncs, 8 with the data
+fingerprint and 10 with rejoining. 2 to 10 share a room. A player
 returning to a match must come back on the
 build and class the match is playing, and on a protocol that reads its
 room, or it is a new session rather than a rejoin.
@@ -486,9 +490,12 @@ save leaves out can fool. The whole log from turn 0 is also the answer
 when the donor goes or sends nothing for 30 seconds, when the snapshot
 cannot be read, will not apply, loads as another world or stops arriving
 for 60 seconds, when the parted client has no room for it or drops before
-it arrives, or when a client is older than protocol 9. A world the log
-can no longer bring back, because the relay's log of the match is full,
-is left to watch as below. A watcher's world
+it arrives, or when a client is older than protocol 9. Once the relay's
+window of the log no longer holds turn 0, described below, a world that
+needs the log takes another snapshot instead, three in a row at most,
+and one that still cannot be brought in is let go with "the game is
+closed" while the computer plays a seat it held. A client older than
+protocol 9 that parts then is left to watch as below. A watcher's world
 never counts: its hash is checked against what the players agreed, and a
 watcher that differs is resynced alone. A rebuilt world keeps the
 player's camera and selection, and the others are never paused for it.
@@ -660,9 +667,30 @@ strength and a versus game that someone walks out of ends with the one
 who stayed as the winner.
 
 A dropped player can rejoin later. Select Game offers Rejoin for their device
-token, and they fast forward the whole turn log with no rendering behind the
-load screen's progress bar, without pausing anyone else, then reclaim their
-seat from the computer. From protocol 5 the relay sends that log, to a
+token. From protocol 10 the relay asks a sound client for a snapshot of its
+world, the same way a parted world is rebuilt, and START_GAME carries
+TAK_STARTF_SNAPSHOT so the returning client builds nothing until the
+snapshot has come and GO names its turn. The client loads the snapshot,
+checks its hash and replays the turns after it. With no world able to give
+one, or for an older client, they fast forward the turn log from turn 0
+instead, with no rendering behind the load screen's progress bar. Either
+way nobody else is paused, and they reclaim their seat from the computer
+once caught up. A watcher and a drop in arrive the same way.
+
+### The turn log window
+
+The relay keeps a window of each match's turn log rather than all of it,
+in 4 MB and 131,072 entries a room. When less than an eighth of either
+is left, the oldest turns go until a quarter is free, keeping at least
+the last 6,000 turns, five minutes at the normal pace, and every turn a
+catch up still has to stream. A log tight even so keeps only the last 64
+turns, and a catch up that needed what went takes a snapshot instead. A
+match therefore plays on, and can be rejoined and watched, however long
+it runs. Turn 0 stays in the log until the first trim, which an ordinary
+match never reaches, so a client older than protocol 10 can rejoin or
+watch by the log until then and is told the game is closed after. Such a
+client is also why the window waits for the log to fill rather than
+trimming as soon as the turns are older than five minutes. From protocol 5 the relay sends that log, to a
 returning player or a watcher, no faster than the client acknowledges it,
 at most 128 turns ahead, because a browser page holds 256 KB of messages
 between frames. Live turns wait in the log until the

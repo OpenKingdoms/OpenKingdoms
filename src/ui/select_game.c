@@ -90,6 +90,7 @@ static struct {
      * rather than showing an empty list that looks like no games. */
     int  listing;
     int  keep_status;   /* a refusal's words outlast the next list */
+    int  join_waits;    /* a match joined under way waits for its snapshot and GO */
     /* How many rooms the last list held. */
     int  rooms_shown;
 
@@ -891,6 +892,16 @@ static void take_events(TAK_Platform *platform) {
             WebStats_Starting("multiplayer", c->start.your_seat >= TAK_NET_SEATS ? "watch"
                                              : Settings_GetStr("RejoinMatch", "")[0] ? "rejoin"
                                              : "dropin");
+            /* Its world comes as a snapshot: nothing is built until GO
+             * says from which turn. */
+            if (c->start.flags & TAK_STARTF_SNAPSHOT) {
+                sg.join_waits = 1;
+                set_status(c->start.your_seat >= TAK_NET_SEATS
+                           ? "Catching up with the game..."
+                           : Settings_GetStr("RejoinMatch", "")[0]
+                           ? "Rejoining your game..." : "Joining the game under way...");
+                break;
+            }
             if (MP_BeginMatchWorld(platform, &c->start) == 0) {
                 set_status(c->start.your_seat >= TAK_NET_SEATS
                            ? "Catching up with the game..."
@@ -902,6 +913,19 @@ static void take_events(TAK_Platform *platform) {
                 set_status(c->start.your_seat < TAK_NET_SEATS
                            ? "Your game could not be rebuilt here."
                            : "That game could not be built here.");
+                Settings_SetStr("RejoinMatch", "");
+                Settings_Save();
+                (void)TAK_NetClient_LeaveRoom(c);
+            }
+            break;
+        case TAK_NC_EV_GO:
+            if (!sg.join_waits) break;
+            sg.join_waits = 0;
+            /* From the snapshot's turn, or from turn 0 when none came. */
+            if (MP_RebuildMatchWorld(platform) == 0) {
+                sg.next_state = GAMESTATE_GAME_LOADING;
+            } else {
+                set_status("That game could not be built here.");
                 Settings_SetStr("RejoinMatch", "");
                 Settings_Save();
                 (void)TAK_NetClient_LeaveRoom(c);
@@ -944,6 +968,13 @@ static void take_events(TAK_Platform *platform) {
         case TAK_NC_EV_REFUSED:
             say_refusal(&c->reject);
             sg.keep_status = 1;
+            /* A match that could not bring this world in lets it go. */
+            if (sg.join_waits) {
+                sg.join_waits = 0;
+                Settings_SetStr("RejoinMatch", "");
+                Settings_Save();
+                (void)TAK_NetClient_LeaveRoom(c);
+            }
             /* A link to a game that is gone or cannot be joined leaves
              * the player on the list of the games there are. Wanting a
              * name keeps the code for when one is typed. */

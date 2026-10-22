@@ -121,6 +121,13 @@ static int snaps(const TAK_RelayClient *cl) {
     return cl->hello.protocol_version >= 9;
 }
 
+/* From protocol 10 a client joining a match under way, to play, rejoin
+ * or watch, takes a snapshot and the turns after it, not the log from
+ * turn 0. */
+static int joins_by_snap(const TAK_RelayClient *cl) {
+    return cl->hello.protocol_version >= 10;
+}
+
 static int token_set(const uint8_t *t) {
     for (int i = 0; i < TAK_NET_TOKEN_BYTES; i++) if (t[i]) return 1;
     return 0;
@@ -195,12 +202,14 @@ static int relay_snap(void *user, int sim, int donor) {
 
 /* Every world still waiting replays the log from turn 0 instead. */
 static void snap_fail_all(TAK_Relay *r, TAK_RelayRoom *rr) {
+    /* Released first: a world the log cannot bring in asks again. */
+    uint32_t targets = rr->snap.targets;
+    snap_release(rr);
     for (int s = 0; s < TAK_TURN_SIMS_MAX; s++) {
-        if (!(rr->snap.targets & (1u << s))) continue;
+        if (!(targets & (1u << s))) continue;
         TAK_TurnClock_SnapshotDone(&rr->clock, s, 0, r->now);
         r->snaps_failed++;
     }
-    snap_release(rr);
 }
 
 static void on_snap_data(TAK_Relay *r, TAK_RelayRoom *rr, int sim,
@@ -240,11 +249,11 @@ static void on_snap_result(TAK_Relay *r, TAK_RelayRoom *rr, int sim,
         /* A yes before the whole of it went is a word too early. */
         if (m->ok && !(rr->snap.whole && rr->snap.sent[sim] >= rr->snap.total)) return;
         rr->snap.targets &= ~bit;
-        TAK_TurnClock_SnapshotDone(&rr->clock, sim,
-                                   m->ok ? rr->snap.tick / TAK_NET_TURN_TICKS : 0, r->now);
+        uint32_t from = m->ok ? rr->snap.tick / TAK_NET_TURN_TICKS : 0;
+        if (!rr->snap.targets) snap_release(rr);
+        TAK_TurnClock_SnapshotDone(&rr->clock, sim, from, r->now);
         if (m->ok) { r->snaps_delivered++; rr->snap_given[sim] = m->snap_id; }
         else r->snaps_failed++;
-        if (!rr->snap.targets) snap_release(rr);
         return;
     }
     /* Loaded and found wanting after its turns began: from the start,
@@ -379,6 +388,22 @@ static void leave_room(TAK_Relay *r, TAK_RelayClient *cl, int on_purpose) {
     send_room_state(r, rr);
 }
 
+/* Worlds the clock could bring in neither from the log nor from a
+ * snapshot: their clients are told the game is closed and leave it, and
+ * the device is not handed the match again. */
+static void refused_tick(TAK_Relay *r, TAK_RelayRoom *rr) {
+    uint32_t id;
+    while (TAK_TurnClock_TakeRefused(&rr->clock, &id)) {
+        r->joins_refused++;
+        int sim = TAK_TurnClock_SimOf(&rr->clock, id);
+        if (sim >= 0) memset(rr->sim_token[sim], 0, TAK_NET_TOKEN_BYTES);
+        TAK_RelayClient *cl = TAK_Relay_FindClient(r, id);
+        if (!cl || cl->room != room_index(r, rr)) continue;
+        send_reject(r, cl, TAK_REJECT_GAME_CLOSED, 0);
+        leave_room(r, cl, 0);
+    }
+}
+
 static void forget_client(TAK_Relay *r, TAK_RelayClient *cl) {
     if (cl->room >= 0) leave_room(r, cl, 0);
     memset(cl, 0, sizeof(*cl));
@@ -438,10 +463,12 @@ void TAK_Relay_OnClose(TAK_Relay *r, TAK_ConnId conn, uint64_t now_ms) {
 
 /* ── The match ────────────────────────────────────────────────────────── */
 
-static void send_start_game(TAK_Relay *r, TAK_RelayRoom *rr, TAK_RelayClient *cl) {
+static void send_start_game(TAK_Relay *r, TAK_RelayRoom *rr, TAK_RelayClient *cl,
+                            uint8_t flags) {
     TAK_MsgStartGame m;
     const TAK_Room *room = &rr->room;
     memset(&m, 0, sizeof(m));
+    m.flags = flags;
     m.match_id = rr->match_id;
     m.seed = rr->seed;
     m.your_seat = TAK_Room_SeatOf(room, cl->id);
@@ -509,6 +536,7 @@ static void begin_match(TAK_Relay *r, TAK_RelayRoom *rr) {
     snap_release(rr);
     memset(rr->snap_given, 0, sizeof rr->snap_given);
     TAK_TurnClock_SetSnapHook(&rr->clock, relay_snap);
+    TAK_TurnClock_SetLogKeep(&rr->clock, r->cfg.log_keep_turns);
 
     int idx = room_index(r, rr);
     for (int i = 0; i < TAK_RELAY_CLIENTS_MAX; i++) {
@@ -524,7 +552,7 @@ static void begin_match(TAK_Relay *r, TAK_RelayRoom *rr) {
         }
         if (seat < TAK_NET_SEATS)
             memcpy(rr->seat_token[seat], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
-        send_start_game(r, rr, cl);
+        send_start_game(r, rr, cl, 0);
     }
     /* The host's world settles a split two worlds cannot settle by vote. */
     TAK_TurnClock_SetReference(&rr->clock,
@@ -678,6 +706,22 @@ static void on_match_result(TAK_Relay *r, TAK_RelayClient *cl,
                                   TAK_Ledger_SameTallies(first, &rec));
 }
 
+/* How a client joining the match under way gets its world: 1 for a
+ * snapshot, when it can take one and a world can give one, 0 for the log
+ * from turn 0, -1 when neither can bring it in. */
+static int join_mode(TAK_RelayRoom *rr, const TAK_RelayClient *cl, int sim) {
+    uint32_t exclude = sim >= 0 ? 1u << sim : 0;
+    if (joins_by_snap(cl) && TAK_TurnClock_SnapDonor(&rr->clock, exclude) >= 0) return 1;
+    return TAK_TurnClock_CanReplay(&rr->clock) ? 0 : -1;
+}
+
+static int join_world(TAK_Relay *r, TAK_RelayRoom *rr, int sim, int mode) {
+    if (mode < 0) return -1;
+    if (mode == 0) return TAK_TurnClock_Reconnect(&rr->clock, sim, 0, r->now);
+    r->snap_joins++;
+    return TAK_TurnClock_JoinBySnapshot(&rr->clock, sim, r->now);
+}
+
 /* A returning player, recognised by the device token they joined with,
  * and only into a match its build, class and protocol can play. */
 static TAK_RelayRoom *find_rejoin(TAK_Relay *r, const TAK_MsgHello *h, int *out_sim) {
@@ -758,9 +802,10 @@ static void on_hello(TAK_Relay *r, TAK_RelayClient *cl, TAK_MsgHello *h) {
     send_frame(r, cl, r->out, TAK_Msg_WelcomeEncode(&w, r->out, sizeof(r->out)));
 
     if (back) {
-        send_start_game(r, back, cl);
+        int mode = join_mode(back, cl, sim);
+        send_start_game(r, back, cl, mode == 1 ? TAK_STARTF_SNAPSHOT : 0);
         TAK_Room_SetConnected(&back->room, cl->id, 1);
-        if (TAK_TurnClock_Reconnect(&back->clock, sim, 0, r->now) != 0) {
+        if (join_world(r, back, sim, mode) != 0) {
             cl->room = -1;
             send_reject(r, cl, TAK_REJECT_GAME_CLOSED, 0);
             return;
@@ -988,8 +1033,9 @@ static void join_dropin(TAK_Relay *r, TAK_RelayClient *cl, TAK_RelayRoom *rr,
     TAK_TurnClock_SetSnapshots(&rr->clock, sim, snaps(cl));
     cl->room = room_index(r, rr);
     send_room_state(r, rr);
-    send_start_game(r, rr, cl);
-    if (TAK_TurnClock_Reconnect(&rr->clock, sim, 0, r->now) != 0) {
+    int mode = join_mode(rr, cl, sim);
+    send_start_game(r, rr, cl, mode == 1 ? TAK_STARTF_SNAPSHOT : 0);
+    if (join_world(r, rr, sim, mode) != 0) {
         TAK_TurnClock_Forget(&rr->clock, sim, r->now);
         TAK_Room_RestoreSlot(&rr->room, (uint8_t)seat, &before);
         rr->dropin_client[seat] = 0;
@@ -1074,10 +1120,10 @@ static void on_join(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgJoinRoom *m)
         join_dropin(r, cl, rr, m);
         return;
     }
-    /* A watcher arriving mid game replays the whole match, so the log
-     * has to still hold it. */
+    /* A watcher arriving mid game takes a snapshot, or replays the whole
+     * match, which the log has to still hold. */
     int midgame = rr->room.status == TAK_ROOM_IN_PROGRESS && m->as_watcher;
-    if (midgame && !TAK_TurnClock_CanReplay(&rr->clock)) {
+    if (midgame && join_mode(rr, cl, -1) < 0) {
         send_reject(r, cl, TAK_REJECT_GAME_CLOSED, 0);
         return;
     }
@@ -1099,14 +1145,18 @@ static void on_join(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgJoinRoom *m)
     send_room_state(r, rr);
 
     if (sim >= 0) {
-        /* It builds the world and replays the log, without pausing
-         * anyone and without moving a turn. */
+        /* It builds the world and catches up, without pausing anyone
+         * and without moving a turn. */
         memcpy(rr->sim_token[sim], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
         TAK_TurnClock_SetPaced(&rr->clock, sim, reads_paced(cl));
         TAK_TurnClock_SetResyncs(&rr->clock, sim, resyncs(cl));
         TAK_TurnClock_SetSnapshots(&rr->clock, sim, snaps(cl));
-        send_start_game(r, rr, cl);
-        (void)TAK_TurnClock_Reconnect(&rr->clock, sim, 0, r->now);
+        int mode = join_mode(rr, cl, sim);
+        send_start_game(r, rr, cl, mode == 1 ? TAK_STARTF_SNAPSHOT : 0);
+        if (join_world(r, rr, sim, mode) != 0) {
+            send_reject(r, cl, TAK_REJECT_GAME_CLOSED, 0);
+            leave_room(r, cl, 1);
+        }
     }
 }
 
@@ -1423,6 +1473,7 @@ void TAK_Relay_Tick(TAK_Relay *r, uint64_t now_ms) {
                 live = 1;
         if (!live && member_count(r, rr) == 0) { rr->in_use = 0; snap_release(rr); continue; }
         snap_tick(r, rr);
+        refused_tick(r, rr);
     }
 
     if (now_ms >= r->next_ping_ms) {

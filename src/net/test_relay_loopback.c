@@ -713,6 +713,16 @@ static void setup(uint32_t latency, uint32_t jitter, uint32_t seed) {
     TAK_Relay_SetLedger(&relay, &ledger);
 }
 
+/* The relay again with a log of `bytes` and `entries` a room that keeps
+ * `keep` turns behind the head. */
+static void small_log(size_t bytes, uint32_t entries, uint32_t keep) {
+    TAK_RelayCfg rc = relay.cfg;
+    rc.log_keep_turns = keep;
+    TAK_Relay_Init(&relay, &rc, TAK_FakeNet_Server(&net), log_arena,
+                   bytes * TAK_RELAY_ROOMS_MAX, log_entries, entries * TAK_RELAY_ROOMS_MAX);
+    TAK_Relay_SetLedger(&relay, &ledger);
+}
+
 /* ── The lobby, as a player would go through it ───────────────────────── */
 
 static int create_room(Client *host, uint32_t flags, uint16_t timeout) {
@@ -1356,6 +1366,49 @@ TEST(a_spectator_joins_mid_game_and_catches_up_without_a_pause) {
     ASSERT(rr->clock.head >= head_before + 350);
     ASSERT(w->trace_len >= 35);
     ASSERT(traces_agree() >= 35);
+}
+
+/* A match keeps only a window of its log. Once turn 0 is gone a client
+ * that can take a snapshot still watches or rejoins from one, and one
+ * that cannot is told the game is closed. */
+TEST(a_match_past_its_log_window_takes_late_comers_by_snapshot) {
+    setup(20, 10, 47);
+    small_log(4096, 160, 200);
+    ASSERT(start_match(3, TAK_ROOMF_AI_TAKES_OVER | TAK_ROOMF_ALLOW_WATCHING, 60));
+    run_for(40000);
+    TAK_RelayRoom *rr = the_room();
+    ASSERT_NOT_NULL(rr);
+    printf("(log from turn %u at head %u, next %u full %d, %u entries %zu bytes) ", rr->log.base_turn, rr->clock.head, rr->log.next_turn, rr->log.full, rr->log.entry_count, rr->log.arena_used);
+    ASSERT(rr->log.base_turn > 0);
+    ASSERT(!TAK_TurnClock_CanReplay(&rr->clock));
+    ASSERT(TAK_TurnClock_CanReplayFrom(&rr->clock, rr->clock.head - 150));
+
+    g_hello_protocol = 9;
+    Client *old = new_client(1);
+    g_hello_protocol = 0;
+    join_code(old, cl[0].room.code, 1);
+    run_for(2000);
+    ASSERT_EQ_INT(TAK_REJECT_GAME_CLOSED, old->last_reject);
+    ASSERT(!old->started);
+
+    Client *w = new_client(1);
+    join_code(w, cl[0].room.code, 1);
+    run_for(20000);
+    ASSERT(w->started);
+    ASSERT_EQ_INT(1, w->snap_loads);
+    ASSERT_EQ_INT(0, w->stream_errors);
+
+    cl[2].close_at = g_now + 1000;
+    cl[2].rejoin_at = g_now + 3000;
+    run_for(20000);
+    ASSERT(cl[2].started);
+    ASSERT_EQ_INT(1, cl[2].snap_loads);
+    int s2 = TAK_TurnClock_SimOf(&rr->clock, cl[2].session);
+    ASSERT(s2 >= 0);
+    ASSERT_EQ_INT(cl[2].seat, rr->clock.sim[s2].seat);
+    ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, rr->clock.sim[s2].status);
+    ASSERT_EQ_INT(0, (int)rr->clock.desync.count);
+    ASSERT(traces_agree() >= 20);
 }
 
 TEST(a_resigning_player_leaves_the_game_and_keeps_watching) {
@@ -2120,6 +2173,7 @@ int main(void) {
     RUN(a_model_folder_that_differs_is_named_to_both_sides);
     RUN(a_rejoin_on_another_build_does_not_take_the_seat);
     RUN(a_spectator_joins_mid_game_and_catches_up_without_a_pause);
+    RUN(a_match_past_its_log_window_takes_late_comers_by_snapshot);
     RUN(a_watcher_changes_nothing_the_players_receive);
     RUN(a_watcher_is_named_to_the_players_and_comes_back_only_if_it_dropped);
     RUN(a_game_under_way_names_a_data_mismatch_to_a_newer_lobby);
