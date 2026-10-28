@@ -2655,8 +2655,11 @@ TEST(a_match_reports_the_verdict_to_the_server_once) {
     size_t sent;
     while (TAK_NetClient_TakeMessage(c, out, sizeof out) > 0) { }
     int offers = NetSession_LeaderboardOffers();
+    Settings_SetStr("RejoinMatch", "1");
     InGame_ReportMatchResult(world, present);
     ASSERT_EQ_INT(1, TAK_Match_Reported());
+    /* A decided match is nothing to go back to after a reload. */
+    ASSERT_EQ_STR("", Settings_GetStr("RejoinMatch", ""));
     /* The page is asked to link this device's leaderboard page, once. */
     ASSERT_EQ_INT(offers + 1, NetSession_LeaderboardOffers());
     ASSERT(NetSession_PlayerId() != 0);

@@ -356,6 +356,9 @@ static void InGame_ReadVerdict(GameWorld *world, const int *present) {
  * `present` is by player, 1 to TAK_MAX_PLAYERS, zero for a resigned one. */
 void InGame_ReportMatchResult(GameWorld *world, const int *present) {
     if (!world || !TAK_Match_IsLive() || TAK_Match_Reported()) return;
+    /* Decided: a reload goes to the lobby, not back into this battle. */
+    Settings_SetStr("RejoinMatch", "");
+    Settings_Save();
     TAK_MsgMatchResult m;
     memset(&m, 0, sizeof m);
     m.end_tick = (uint32_t)world->skirmish_end_tick;

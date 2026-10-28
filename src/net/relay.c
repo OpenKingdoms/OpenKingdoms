@@ -729,7 +729,8 @@ static TAK_RelayRoom *find_rejoin(TAK_Relay *r, const TAK_MsgHello *h, int *out_
     if (!token_set(token)) return NULL;
     for (int i = 0; i < TAK_RELAY_ROOMS_MAX; i++) {
         TAK_RelayRoom *rr = &r->room[i];
-        if (!rr->in_use || rr->room.status != TAK_ROOM_IN_PROGRESS) continue;
+        /* A decided match is handed back to nobody. */
+        if (!rr->in_use || rr->room.status != TAK_ROOM_IN_PROGRESS || rr->result_sims) continue;
         if (TAK_Room_Compatible(&rr->room, h->engine_build_id, h->determinism_class) ||
             room_wire(h->protocol_version) != room_wire(rr->protocol)) continue;
         for (int s = 0; s < TAK_TURN_SIMS_MAX; s++) {

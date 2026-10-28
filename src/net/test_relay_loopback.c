@@ -2082,6 +2082,11 @@ TEST(a_player_who_leaves_on_purpose_is_not_handed_the_match_back) {
     cl[0].rejoin_at = g_now + 1000;
     run_for(4000);
     ASSERT(!cl[0].started);
+    /* Nor is one whose tab closed once the match was decided. */
+    cl[1].close_at = g_now;
+    cl[1].rejoin_at = g_now + 1000;
+    run_for(4000);
+    ASSERT(!cl[1].started);
 }
 
 TEST(a_watcher_is_named_to_the_players_and_comes_back_only_if_it_dropped) {
