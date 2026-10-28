@@ -91,7 +91,6 @@ static struct {
     int  listing;
     int  keep_status;   /* a refusal's words outlast the next list */
     int  join_waits;    /* a match joined under way waits for its snapshot and GO */
-    int  join_asked;    /* this connection asked to join or watch a game */
     /* How many rooms the last list held. */
     int  rooms_shown;
 
@@ -293,7 +292,6 @@ static void join_by_code(void) {
         set_status("Could not ask to join that game.");
         return;
     }
-    sg.join_asked = 1;
     char line[64];
     snprintf(line, sizeof line, g_join_watch ? "Joining game %s to watch it."
                                              : "Joining game %s.", g_join_code);
@@ -349,7 +347,6 @@ void SelectGame_WatchRow(int index) {
         set_status("Could not ask to watch that game.");
         return;
     }
-    sg.join_asked = 1;
     set_status("Joining the game to watch it.");
 }
 
@@ -379,7 +376,6 @@ static void connect_to(const char *address) {
         return;
     }
     sg.join_waits = 0;   /* a new connection waits for its own GO */
-    sg.join_asked = 0;
     if (NetSession_Connect(address, SelectGame_PlayerName()) != 0) {
         set_status(NetSession_Why());
         return;
@@ -437,7 +433,6 @@ static void join_selected(void) {
         set_status("Could not ask to join that game.");
         return;
     }
-    sg.join_asked = 1;
     /* A game under way that the list offers has a computer seat to take
      * over, and the relay hands it to us once we have caught up. */
     set_status(r->status == TAK_ROOM_IN_PROGRESS ? "Joining the game under way..."
@@ -907,14 +902,6 @@ static void take_events(TAK_Platform *platform) {
             else ask_for_rooms();
             break;
         case TAK_NC_EV_START_GAME:
-            /* A match handed back that this machine left or saw out is
-             * not gone back into: only a tab that closed, or a join or
-             * watch asked for, takes one. */
-            if (!sg.join_asked && !Settings_GetStr("RejoinMatch", "")[0]) {
-                (void)TAK_NetClient_LeaveRoom(c);
-                ask_for_rooms();
-                break;
-            }
             /* A match of ours still running, or one we asked to watch:
              * the server hands it over, and the turns so far replay once
              * the world is up. */
@@ -980,7 +967,7 @@ static void take_events(TAK_Platform *platform) {
              * builds the world, before this snapshot or just after it.
              * The battle room is for a game that has not started. */
             if (c->state == TAK_NC_LOADING || c->state == TAK_NC_PLAYING ||
-                c->state == TAK_NC_LOBBY || c->room.status == TAK_ROOM_IN_PROGRESS) break;
+                c->room.status == TAK_ROOM_IN_PROGRESS) break;
             /* In a room, so the battle room takes over from here. */
             sg.next_state = GAMESTATE_MULTIPLAYER;
             break;
