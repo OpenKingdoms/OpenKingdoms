@@ -1261,7 +1261,10 @@ int Loading_Tick(TAK_Platform *platform, float frame_dt) {
              * waits here for the server to say go. */
             int ready = loading_match_ready();
             if (ready < 0) {
-                /* Select Game connects again and is handed the match. */
+                /* Select Game connects again and is handed the match,
+                 * which this machine never left. */
+                Settings_SetStr("RejoinMatch", "1");
+                Settings_Save();
                 World_End(platform);
                 return GAMESTATE_SELECT_GAME;
             }
