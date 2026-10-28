@@ -980,7 +980,7 @@ static void take_events(TAK_Platform *platform) {
              * builds the world, before this snapshot or just after it.
              * The battle room is for a game that has not started. */
             if (c->state == TAK_NC_LOADING || c->state == TAK_NC_PLAYING ||
-                c->room.status == TAK_ROOM_IN_PROGRESS) break;
+                c->state == TAK_NC_LOBBY || c->room.status == TAK_ROOM_IN_PROGRESS) break;
             /* In a room, so the battle room takes over from here. */
             sg.next_state = GAMESTATE_MULTIPLAYER;
             break;

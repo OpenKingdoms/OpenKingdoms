@@ -2474,6 +2474,15 @@ TEST(a_match_left_on_purpose_is_not_gone_back_into) {
     while (TAK_NetClient_TakeMessage(c, msg, sizeof msg) > 0) {}
     n = pl_encode_start(msg, sizeof msg, TAK_NET_SEAT_NONE);
     ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+    /* The room's state comes in the same breath, as the relay sends it. */
+    TAK_MsgRoomState rs;
+    memset(&rs, 0, sizeof rs);
+    rs.room_id = 4;
+    rs.revision = 1;
+    rs.status = TAK_ROOM_IN_PROGRESS;
+    n = TAK_Msg_RoomStateEncode(&rs, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
     ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
     int left = 0;
     size_t sent;
