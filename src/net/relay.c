@@ -363,11 +363,10 @@ static void leave_room(TAK_Relay *r, TAK_RelayClient *cl, int on_purpose) {
              * connection that dropped by accident. */
             if (on_purpose && seat != TAK_NET_SEAT_NONE)
                 (void)TAK_TurnClock_Reject(&rr->clock, seat, r->now);
-            /* A watcher who left on purpose is not handed the match back
-             * the next time its device says hello. One whose tab closed
-             * is, and watches again. */
-            if (on_purpose && seat == TAK_NET_SEAT_NONE)
-                memset(rr->sim_token[sim], 0, TAK_NET_TOKEN_BYTES);
+            /* Whoever left on purpose, a finished match included, is not
+             * handed it back the next time its device says hello. One
+             * whose tab closed is. */
+            if (on_purpose) memset(rr->sim_token[sim], 0, TAK_NET_TOKEN_BYTES);
         }
         if (TAK_Room_IsWatcher(&rr->room, id)) TAK_Room_Leave(&rr->room, id, NULL);
         else TAK_Room_SetConnected(&rr->room, id, 0);

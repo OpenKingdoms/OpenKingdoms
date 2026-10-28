@@ -2456,6 +2456,40 @@ TEST(a_match_world_whose_link_goes_while_loading_is_not_played_alone) {
     VFS_Shutdown();
 }
 
+/* A match this machine left on purpose or saw out, handed back by the
+ * relay all the same, is declined: Select Game leaves it and lists the
+ * games rather than replay a finished battle. */
+TEST(a_match_left_on_purpose_is_not_gone_back_into) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    Settings_SetStr("RejoinMatch", "");
+    NetSession_BeginWithoutLink("Player");
+    ASSERT_EQ_INT(0, SelectGame_Init(&platform));
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 21);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1000));
+    while (TAK_NetClient_TakeMessage(c, msg, sizeof msg) > 0) {}
+    n = pl_encode_start(msg, sizeof msg, TAK_NET_SEAT_NONE);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
+    int left = 0;
+    size_t sent;
+    while ((sent = TAK_NetClient_TakeMessage(c, msg, sizeof msg)) > 0) {
+        TAK_NetFrame f;
+        if (TAK_Net_Split(msg, sent, &f) == 0 && f.type == TAK_MSG_LEAVE_ROOM) left = 1;
+    }
+    ASSERT_EQ_INT(1, left);
+    ASSERT_EQ_INT(TAK_NC_LOBBY, c->state);
+    SelectGame_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* The hello this machine sends: the rejoin flag, and its token. */
 static int rj_hello(TAK_MsgHello *h) {
     TAK_NetClient *c = NetSession_Client();
@@ -2494,7 +2528,9 @@ TEST(a_player_whose_tab_closed_gets_back_into_the_match) {
     for (int i = 0; i < TAK_NET_TOKEN_BYTES; i++) if (h1.device_token[i]) blank = 0;
     ASSERT_EQ_INT(0, blank);
 
-    /* The lobby, welcomed, is handed the match back. */
+    /* The lobby of a tab that closed in a match, welcomed, is handed the
+     * match back. */
+    Settings_SetStr("RejoinMatch", "1");
     ASSERT_EQ_INT(0, SelectGame_Init(&platform));
     TAK_NetClient *c = NetSession_Client();
     uint8_t msg[TAK_NET_FRAME_MAX];
@@ -30761,6 +30797,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_match_does_not_start_until_the_server_says_go);
     RUN_UI_TEST(a_match_world_whose_link_goes_while_loading_is_not_played_alone);
     RUN_UI_TEST(a_player_whose_tab_closed_gets_back_into_the_match);
+    RUN_UI_TEST(a_match_left_on_purpose_is_not_gone_back_into);
     RUN_UI_TEST(a_match_reports_the_verdict_to_the_server_once);
     RUN_UI_TEST(a_seat_beaten_in_a_match_watches_the_rest_of_it);
     RUN_UI_TEST(a_beaten_seat_looking_around_keeps_the_battles_hash);

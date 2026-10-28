@@ -2067,6 +2067,23 @@ TEST(a_watcher_changes_nothing_the_players_receive) {
  * room reads every room state in its own bytes. A watcher who leaves is
  * not handed the match back. One whose connection went is, and watches
  * again from the start of the log. */
+/* A player who leaves a match on purpose, a won one included, is not
+ * handed it back the next time its device says hello. */
+TEST(a_player_who_leaves_on_purpose_is_not_handed_the_match_back) {
+    setup(20, 10, 71);
+    ASSERT(start_match(2, TAK_ROOMF_AI_TAKES_OVER, 60));
+    run_for(3000);
+    cl[0].report_at = g_now;
+    cl[1].report_at = g_now;
+    run_for(2000);
+    up(&cl[0], TAK_Msg_EmptyEncode(TAK_MSG_LEAVE_ROOM, tx, sizeof(tx)));
+    run_for(1000);
+    cl[0].close_at = g_now;
+    cl[0].rejoin_at = g_now + 1000;
+    run_for(4000);
+    ASSERT(!cl[0].started);
+}
+
 TEST(a_watcher_is_named_to_the_players_and_comes_back_only_if_it_dropped) {
     setup(20, 10, 67);
     Client *host = new_client(0);
@@ -2175,6 +2192,7 @@ int main(void) {
     RUN(a_match_past_its_log_window_takes_late_comers_by_snapshot);
     RUN(a_watcher_changes_nothing_the_players_receive);
     RUN(a_watcher_is_named_to_the_players_and_comes_back_only_if_it_dropped);
+    RUN(a_player_who_leaves_on_purpose_is_not_handed_the_match_back);
     RUN(a_game_under_way_names_a_data_mismatch_to_a_newer_lobby);
     RUN(a_resigning_player_leaves_the_game_and_keeps_watching);
     RUN(a_seat_that_left_before_the_verdict_is_recorded_where_it_fell);
