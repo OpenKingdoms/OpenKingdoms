@@ -605,6 +605,8 @@ static void copy_trimmed(char *dst, size_t cap, const char *src) {
     dst[n] = '\0';
 }
 
+static void tell_lobby(TAK_Relay *r);
+
 /* The verdict as one seated client saw it. The first report makes the
  * record, later ones are checked against it, and a seat the clock saw
  * leave is recorded where it left whatever any report says. */
@@ -626,7 +628,10 @@ static void on_match_result(TAK_Relay *r, TAK_RelayClient *cl,
         r->results_refused++;
         return;
     }
+    int decided_now = !rr->result_sims;
     rr->result_sims |= 1u << sim;
+    /* The first verdict takes the room off every games list. */
+    if (decided_now) tell_lobby(r);
     if (!r->ledger) return;
 
     TAK_LedgerMatch rec;
@@ -851,6 +856,8 @@ static void on_list(TAK_Relay *r, TAK_RelayClient *cl) {
     for (int i = 0; i < TAK_RELAY_ROOMS_MAX && m.count < TAK_NET_ROOMS_PER_LIST; i++) {
         TAK_RelayRoom *rr = &r->room[i];
         if (!rr->in_use || !(rr->room.cfg.flags & TAK_ROOMF_LISTED)) continue;
+        /* A decided match is closed, to watchers too. */
+        if (rr->room.status == TAK_ROOM_IN_PROGRESS && rr->result_sims) continue;
         TAK_Room_Summary(&rr->room, cl->hello.engine_build_id,
                          cl->hello.determinism_class, &m.room[m.count]);
         summary_mod(rr, &m.room[m.count]);
@@ -899,6 +906,7 @@ void TAK_Relay_Live(const TAK_Relay *r, TAK_HttpLive *out) {
         const TAK_RelayRoom *rr = &r->room[i];
         if (!rr->in_use || !(rr->room.cfg.flags & TAK_ROOMF_LISTED)) continue;
         if (rr->room.status == TAK_ROOM_ENDED) continue;
+        if (rr->room.status == TAK_ROOM_IN_PROGRESS && rr->result_sims) continue;
         TAK_HttpLiveRoom *x = &out->room[out->count++];
         TAK_Room_Summary(&rr->room, rr->room.engine_build_id,
                          rr->room.determinism_class, &x->room);
@@ -1122,6 +1130,11 @@ static void on_join(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgJoinRoom *m)
     }
     if (room_wire(cl->hello.protocol_version) != room_wire(rr->protocol)) {
         send_reject(r, cl, TAK_REJECT_PROTOCOL_VERSION, 0);
+        return;
+    }
+    /* A decided match takes nobody new, to play or to watch. */
+    if (rr->room.status == TAK_ROOM_IN_PROGRESS && rr->result_sims) {
+        send_reject(r, cl, TAK_REJECT_GAME_CLOSED, 0);
         return;
     }
     /* A seated join to a drop in room under way takes a computer's seat. */
