@@ -2063,19 +2063,28 @@ TEST(a_watcher_changes_nothing_the_players_receive) {
     }
 }
 
-/* The players see who watches, and a player of protocol 3 sharing the
- * room reads every room state in its own bytes. A watcher who leaves is
- * not handed the match back. One whose connection went is, and watches
- * again from the start of the log. */
 /* A player who leaves a match on purpose, a won one included, is not
- * handed it back the next time its device says hello. */
+ * handed it back the next time its device says hello, and a decided
+ * match leaves the games list and takes nobody new. */
 TEST(a_player_who_leaves_on_purpose_is_not_handed_the_match_back) {
     setup(20, 10, 71);
-    ASSERT(start_match(2, TAK_ROOMF_AI_TAKES_OVER, 60));
+    ASSERT(start_match(2, TAK_ROOMF_AI_TAKES_OVER | TAK_ROOMF_ALLOW_WATCHING |
+                          TAK_ROOMF_DROP_IN | TAK_ROOMF_LISTED, 60));
+    char code[TAK_NET_CODE_MAX];
+    strcpy(code, cl[0].room.code);
+    Client *lobby = new_client(0);
     run_for(3000);
+    ASSERT_EQ_INT(1, lobby->rooms.count);
+    run_for(1000);
     cl[0].report_at = g_now;
     cl[1].report_at = g_now;
-    run_for(2000);
+    run_for(300);
+    /* The verdict takes the game off the list at once, and off the live feed. */
+    ASSERT_EQ_INT(0, lobby->rooms.count);
+    TAK_HttpLive v;
+    TAK_Relay_Live(&relay, &v);
+    ASSERT_EQ_INT(0, (int)v.count);
+    run_for(1700);
     up(&cl[0], TAK_Msg_EmptyEncode(TAK_MSG_LEAVE_ROOM, tx, sizeof(tx)));
     run_for(1000);
     cl[0].close_at = g_now;
@@ -2087,8 +2096,21 @@ TEST(a_player_who_leaves_on_purpose_is_not_handed_the_match_back) {
     cl[1].rejoin_at = g_now + 1000;
     run_for(4000);
     ASSERT(!cl[1].started);
+    /* And nobody joins it by its code, to watch or to play. */
+    Client *watcher = new_client(1);
+    join_code(watcher, code, 1);
+    Client *late = new_client(0);
+    join_code(late, code, 0);
+    run_for(3000);
+    ASSERT(!watcher->started && !late->started);
+    ASSERT_EQ_INT(TAK_REJECT_GAME_CLOSED, watcher->last_reject);
+    ASSERT_EQ_INT(TAK_REJECT_GAME_CLOSED, late->last_reject);
 }
 
+/* The players see who watches, and a player of protocol 3 sharing the
+ * room reads every room state in its own bytes. A watcher who leaves is
+ * not handed the match back. One whose connection went is, and watches
+ * again from the start of the log. */
 TEST(a_watcher_is_named_to_the_players_and_comes_back_only_if_it_dropped) {
     setup(20, 10, 67);
     Client *host = new_client(0);
