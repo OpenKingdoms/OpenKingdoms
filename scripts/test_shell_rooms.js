@@ -179,7 +179,7 @@ function pressed(watch, before) {
 check('Watch hands the engine --watch in place of any earlier choice', () => {
   const got = pressed(true, ['--join', 'OLD', '--watch', 'OLDER']);
   assert.deepStrictEqual(got.args, ['--watch', 'WWW']);
-  assert.strictEqual(got.note, 'Choose your game files and you will watch Zach\u2019s game as it is played.');
+  assert.strictEqual(got.note, 'Pick your game files to watch Zach\u2019s game.');
   assert.deepStrictEqual(pressed(false, ['--watch', 'X']).args, ['--join', 'WWW']);
 });
 
