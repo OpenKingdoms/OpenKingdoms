@@ -238,6 +238,10 @@ int TAK_NetClient_LeaveRoom(TAK_NetClient *c);
  * and a screen should not have to know that. A host only field, a kick
  * or a block, keeps the seat the caller put in it. */
 int TAK_NetClient_EditRoom(TAK_NetClient *c, const TAK_MsgRoomEdit *m);
+/* The host's change to a computer seat's side, colour or team. The seat
+ * goes as named, since a computer belongs to the room (N-003). */
+int TAK_NetClient_EditComputer(TAK_NetClient *c, uint8_t seat,
+                               uint8_t field, uint32_t value);
 /* In a match: give up the seat and watch. The world stays and keeps
  * reporting its hash, which is checked against the players' and never
  * counted with them. */

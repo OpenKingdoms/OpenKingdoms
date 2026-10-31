@@ -408,7 +408,8 @@ typedef enum TAK_NetPaceReason {
 /* ── Fields a ROOM_EDIT may change ──────────────────────────────────── */
 typedef enum TAK_NetEditField {
     TAK_EDIT_NONE = 0,
-    /* Your own row. Each of these clears your ready. */
+    /* Your own row. Each of these clears your ready. The host may send
+     * side, colour or team for a computer seat, which clears everyone's. */
     TAK_EDIT_SIDE,
     TAK_EDIT_COLOUR,        /* a request, the server picks the next free */
     TAK_EDIT_TEAM,

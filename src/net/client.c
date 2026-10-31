@@ -463,6 +463,19 @@ int TAK_NetClient_EditRoom(TAK_NetClient *c, const TAK_MsgRoomEdit *m) {
     QUEUE_ENCODED(c, TAK_Msg_RoomEditEncode(&e, _f, sizeof _f));
 }
 
+int TAK_NetClient_EditComputer(TAK_NetClient *c, uint8_t seat,
+                               uint8_t field, uint32_t value) {
+    if (c->state != TAK_NC_ROOM || seat >= TAK_NET_SEATS) return -1;
+    if (field != TAK_EDIT_SIDE && field != TAK_EDIT_COLOUR &&
+        field != TAK_EDIT_TEAM) return -1;
+    TAK_MsgRoomEdit e;
+    memset(&e, 0, sizeof e);
+    e.field = field;
+    e.seat = seat;
+    e.value = value;
+    QUEUE_ENCODED(c, TAK_Msg_RoomEditEncode(&e, _f, sizeof _f));
+}
+
 int TAK_NetClient_Resign(TAK_NetClient *c) {
     if (c->state != TAK_NC_PLAYING || c->seat == TAK_NET_SEAT_NONE) return -1;
     if (c->resigned) return 0;
