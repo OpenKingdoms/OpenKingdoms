@@ -390,6 +390,17 @@ static int own_row_field(uint8_t field) {
     }
 }
 
+/* The original let the machine hosting a computer player set its side,
+ * colour and team (legacy:134904-134908, legacy:134850-134853,
+ * legacy:135290-135293). Here it belongs to the room, so the host does. */
+static int host_sets_computer(const TAK_Room *r, int host,
+                              const TAK_MsgRoomEdit *e) {
+    if (!host || e->seat >= TAK_NET_SEATS) return 0;
+    if (r->slot[e->seat].kind != TAK_NSLOT_COMPUTER) return 0;
+    return e->field == TAK_EDIT_SIDE || e->field == TAK_EDIT_COLOUR ||
+           e->field == TAK_EDIT_TEAM;
+}
+
 int TAK_Room_Edit(TAK_Room *r, uint32_t client_id,
                   const TAK_MsgRoomEdit *e, TAK_RoomEffect *fx) {
     TAK_RoomEffect scratch;
@@ -401,8 +412,14 @@ int TAK_Room_Edit(TAK_Room *r, uint32_t client_id,
 
     uint8_t mine = TAK_Room_SeatOf(r, client_id);
     int host = is_host(r, client_id);
+    /* The row a side, colour or team edit lands on. */
+    uint8_t row = mine;
+    int computer = 0;
 
-    if (own_row_field(e->field)) {
+    if (host_sets_computer(r, host, e)) {
+        row = e->seat;
+        computer = 1;
+    } else if (own_row_field(e->field)) {
         if (mine == TAK_NET_SEAT_NONE) return TAK_REJECT_NOT_ALLOWED;
         if (e->seat != mine) return TAK_REJECT_NOT_ALLOWED;
     } else if (e->field != TAK_EDIT_ADD_COMPUTER && !host) {
@@ -414,24 +431,24 @@ int TAK_Room_Edit(TAK_Room *r, uint32_t client_id,
     switch (e->field) {
     case TAK_EDIT_SIDE: {
         if (e->value >= TAK_ROOM_SIDES) return TAK_REJECT_NOT_ALLOWED;
-        r->slot[mine].side = (uint8_t)e->value;
-        r->slot[mine].ready = 0;
-        fx->seat = mine;
+        r->slot[row].side = (uint8_t)e->value;
+        if (!computer) r->slot[row].ready = 0;
+        fx->seat = row;
         break;
     }
     case TAK_EDIT_COLOUR: {
         if (e->value >= TAK_ROOM_COLOURS) return TAK_REJECT_NOT_ALLOWED;
         /* A colour is a request. The server hands back the next free one. */
-        r->slot[mine].colour = (uint8_t)next_free_colour(r, mine, (int)e->value);
-        r->slot[mine].ready = 0;
-        fx->seat = mine;
+        r->slot[row].colour = (uint8_t)next_free_colour(r, row, (int)e->value);
+        if (!computer) r->slot[row].ready = 0;
+        fx->seat = row;
         break;
     }
     case TAK_EDIT_TEAM: {
         if (e->value > TAK_ROOM_TEAMS) return TAK_REJECT_NOT_ALLOWED;
-        r->slot[mine].team = (uint8_t)e->value;
-        r->slot[mine].ready = 0;
-        fx->seat = mine;
+        r->slot[row].team = (uint8_t)e->value;
+        if (!computer) r->slot[row].ready = 0;
+        fx->seat = row;
         break;
     }
     case TAK_EDIT_NAME: {
@@ -594,7 +611,8 @@ int TAK_Room_Edit(TAK_Room *r, uint32_t client_id,
         return TAK_REJECT_NOT_ALLOWED;
     }
 
-    if (changes_the_rules(e->field)) clear_all_ready(r, fx);
+    /* A computer seat changed is the lineup changed, as when one is added. */
+    if (computer || changes_the_rules(e->field)) clear_all_ready(r, fx);
     touch(r);
     return 0;
 }

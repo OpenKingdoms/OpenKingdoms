@@ -555,24 +555,36 @@ static int mp_on_click(SimpleScreen *s, const char *name, int widget_index) {
             }
             return 1;
         }
-        /* Only your own row is yours to change, which is the server's
-         * rule as well as the screen's. */
-        if (row < 0 || (uint8_t)row != c->seat) return 0;
-        if (tak_stricmp(name, "PlayerSide") == 0) {
-            int next = Sides_Cycle(c->room.slot[row].side,
-                                   TAK_SIDES_MULTIPLAYER,
-                                   Multiplayer_CreonAllowed());
-            mp_edit_own_row(TAK_EDIT_SIDE, (uint32_t)next);
+        /* Your own row is yours to change, and the host sets a computer
+         * seat's side, colour and team, which is the server's rule as
+         * well as the screen's (legacy:135290-135293). */
+        if (row < 0) return 0;
+        int own = (uint8_t)row == c->seat;
+        int computer = !own && c->room.slot[row].kind == TAK_NSLOT_COMPUTER;
+        if (!own && !computer) return 0;
+        int field = tak_stricmp(name, "PlayerSide") == 0  ? TAK_EDIT_SIDE
+                  : tak_stricmp(name, "PlayerTeam") == 0  ? TAK_EDIT_TEAM
+                  : tak_stricmp(name, "PlayerColor") == 0 ? TAK_EDIT_COLOUR
+                  : TAK_EDIT_NONE;
+        if (computer && field == TAK_EDIT_NONE) return 0;
+        if (computer && !mp_is_host()) {
+            mp_say("Only the host changes a computer player.");
             return 1;
         }
-        if (tak_stricmp(name, "PlayerTeam") == 0) {
-            uint32_t team = c->room.slot[row].team;
-            mp_edit_own_row(TAK_EDIT_TEAM, (team + 1) % (TAK_ROOM_TEAMS + 1));
-            return 1;
+        uint32_t value = 0;
+        if (field == TAK_EDIT_SIDE) {
+            value = (uint32_t)Sides_Cycle(c->room.slot[row].side,
+                                          TAK_SIDES_MULTIPLAYER,
+                                          Multiplayer_CreonAllowed());
+        } else if (field == TAK_EDIT_TEAM) {
+            value = (c->room.slot[row].team + 1u) % (TAK_ROOM_TEAMS + 1);
+        } else if (field == TAK_EDIT_COLOUR) {
+            value = (c->room.slot[row].colour + 1u) % TAK_ROOM_COLOURS;
         }
-        if (tak_stricmp(name, "PlayerColor") == 0) {
-            uint32_t col = c->room.slot[row].colour;
-            mp_edit_own_row(TAK_EDIT_COLOUR, (col + 1) % TAK_ROOM_COLOURS);
+        if (field != TAK_EDIT_NONE) {
+            if (computer) (void)TAK_NetClient_EditComputer(c, (uint8_t)row,
+                                                           (uint8_t)field, value);
+            else mp_edit_own_row((uint8_t)field, value);
             return 1;
         }
         if (tak_stricmp(name, "PlayerReady") == 0) {

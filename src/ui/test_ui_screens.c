@@ -4138,6 +4138,31 @@ TEST(mp_room_host_cycles_a_slot_by_its_name) {
     ASSERT_EQ_INT(TAK_EDIT_BLOCK_SLOT, (int)e.field);
     ASSERT_EQ_INT(1, (int)e.seat);
 
+    /* The host sets a computer seat's team, side and colour, which the
+     * original left to the machine hosting it (legacy:135290-135293). */
+    (void)Multiplayer_HandleClick("PlayerTeam", mp_row_widget("PlayerTeam", 1));
+    ASSERT_EQ_INT(0, mp_take_edit(c, &e));
+    ASSERT_EQ_INT(TAK_EDIT_TEAM, (int)e.field);
+    ASSERT_EQ_INT(1, (int)e.seat);
+    ASSERT_EQ_INT(3, (int)e.value);
+    (void)Multiplayer_HandleClick("PlayerSide", mp_row_widget("PlayerSide", 1));
+    ASSERT_EQ_INT(0, mp_take_edit(c, &e));
+    ASSERT_EQ_INT(TAK_EDIT_SIDE, (int)e.field);
+    ASSERT_EQ_INT(1, (int)e.seat);
+    (void)Multiplayer_HandleClick("PlayerColor", mp_row_widget("PlayerColor", 1));
+    ASSERT_EQ_INT(0, mp_take_edit(c, &e));
+    ASSERT_EQ_INT(TAK_EDIT_COLOUR, (int)e.field);
+    ASSERT_EQ_INT(1, (int)e.seat);
+    ASSERT_EQ_INT(4, (int)e.value);
+    /* A guest may not, and nobody sets another human's row. */
+    MP_SEAT1(TAK_NSLOT_COMPUTER, 101);
+    (void)Multiplayer_HandleClick("PlayerTeam", mp_row_widget("PlayerTeam", 1));
+    ASSERT_EQ_INT(-1, mp_take_edit(c, &e));
+    ASSERT_EQ_STR("Only the host changes a computer player.", mp_help_text());
+    MP_SEAT1(TAK_NSLOT_HUMAN, 702);
+    (void)Multiplayer_HandleClick("PlayerTeam", mp_row_widget("PlayerTeam", 1));
+    ASSERT_EQ_INT(-1, mp_take_edit(c, &e));
+
     MP_SEAT1(TAK_NSLOT_BLOCKED, 702);
     ASSERT_EQ_STR("Closed", mp_seat_text("PlayerName", 1));
     (void)Multiplayer_HandleClick("PlayerName", mp_row_widget("PlayerName", 1));

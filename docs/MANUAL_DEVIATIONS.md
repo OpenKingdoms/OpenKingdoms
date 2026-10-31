@@ -122,7 +122,8 @@ Format per entry:
 ## N-003 (planned): Computer players outlive whoever added them
 
 - Change: A computer player added to an empty seat stays in the game
-  when the person who added it leaves.
+  when the person who added it leaves. The host sets its side, colour
+  and team, where the original left them to the machine that added it.
 - Why: In the original a computer player was a network player owned by
   one machine, so it left with its owner. Under lockstep every client
   simulates every seat from the same seed, so ownership of a computer

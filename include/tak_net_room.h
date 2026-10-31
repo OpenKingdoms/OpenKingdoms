@@ -21,7 +21,8 @@
  *     of them clears everyone's ready
  *   - a colour is a request, and the server hands back the next free one
  *   - the host may block a seat, unblock it and remove a player
- *   - a computer player belongs to the room, not to whoever added it
+ *   - a computer player belongs to the room, not to whoever added it,
+ *     and the host sets its side, colour and team
  *   - the host role moves to the lowest occupied human seat when the host
  *     leaves, instead of ending the room
  *   - watchers sit outside the eight seats

@@ -331,6 +331,44 @@ TEST(anyone_may_add_a_computer_player_and_it_outlives_its_adder) {
     ASSERT_EQ_INT(TAK_NSLOT_EMPTY, r.slot[4].kind);
 }
 
+TEST(the_host_sets_a_computer_players_side_colour_and_team) {
+    TAK_Room r;
+    TAK_RoomEffect fx;
+    uint8_t seat = 0;
+    open_room(&r, NULL);
+    ASSERT_EQ_INT(0, join(&r, 2, "Brother", &seat));
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_ADD_COMPUTER, 3, 0, "AI", NULL));
+    ASSERT_EQ_INT(0, edit(&r, 2, TAK_EDIT_READY, 1, 0, NULL, NULL));
+
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_TEAM, 3, 2, NULL, &fx));
+    ASSERT_EQ_INT(2, r.slot[3].team);
+    ASSERT_EQ_INT(3, fx.seat);
+    /* The lineup changed under everyone, and a computer stays ready. */
+    ASSERT_EQ_INT(1, fx.ready_cleared);
+    ASSERT_EQ_INT(0, r.slot[1].ready);
+    ASSERT_EQ_INT(1, r.slot[3].ready);
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_SIDE, 3, TAK_SIDE_ZHON, NULL, NULL));
+    ASSERT_EQ_INT(TAK_SIDE_ZHON, r.slot[3].side);
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_COLOUR, 3, r.slot[0].colour, NULL, NULL));
+    ASSERT(r.slot[3].colour != r.slot[0].colour);
+
+    /* Not for anyone but the host, and not another human's row or an
+     * empty seat. */
+    uint32_t rev = r.revision;
+    ASSERT_EQ_INT(TAK_REJECT_NOT_ALLOWED,
+                  edit(&r, 2, TAK_EDIT_TEAM, 3, 1, NULL, NULL));
+    ASSERT_EQ_INT(TAK_REJECT_NOT_ALLOWED,
+                  edit(&r, HOST_ID, TAK_EDIT_TEAM, 1, 1, NULL, NULL));
+    ASSERT_EQ_INT(TAK_REJECT_NOT_ALLOWED,
+                  edit(&r, HOST_ID, TAK_EDIT_TEAM, 5, 1, NULL, NULL));
+    ASSERT_EQ_INT(TAK_REJECT_NOT_ALLOWED,
+                  edit(&r, HOST_ID, TAK_EDIT_TEAM, 3, TAK_ROOM_TEAMS + 1, NULL, NULL));
+    ASSERT_EQ_INT(TAK_REJECT_NOT_ALLOWED,
+                  edit(&r, HOST_ID, TAK_EDIT_NAME, 3, 0, "Renamed", NULL));
+    ASSERT_EQ_INT((int)rev, (int)r.revision);
+    ASSERT_EQ_INT(2, r.slot[3].team);
+}
+
 TEST(a_blocked_seat_takes_no_player_until_it_is_opened) {
     TAK_Room r;
     uint8_t seat = 0;
@@ -890,6 +928,7 @@ int main(void) {
     RUN(out_of_range_values_are_refused_and_change_nothing);
     RUN(a_colour_request_comes_back_as_the_next_free_one);
     RUN(anyone_may_add_a_computer_player_and_it_outlives_its_adder);
+    RUN(the_host_sets_a_computer_players_side_colour_and_team);
     RUN(a_blocked_seat_takes_no_player_until_it_is_opened);
     RUN(the_host_removes_a_player_but_never_itself);
     RUN(the_host_role_moves_to_the_lowest_human_seat);
