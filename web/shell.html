@@ -244,6 +244,11 @@
 
   /* ---- ready pane ---------------------------------------------------- */
   #ready { align-items: center; }
+  /* With files loaded the picking help has nothing to say, and it would
+     grow up over the Start button. */
+  .scroll:has(#ready:not([hidden])) #where,
+  .scroll:has(#ready:not([hidden])) .fine { display: none; }
+  .fine.links .sep { margin: 0 .45em; }
   .mods { display: flex; gap: 8px; align-items: center; font-size: 15px; }
   .mods[hidden] { display: none; }
   .mods select { font: inherit; padding: 2px 6px; }
@@ -533,8 +538,8 @@
       <h1 class="sr-only">OpenKingdoms</h1>
       <p class="sub sr-only">An open-source engine for Total Annihilation: Kingdoms</p>
       <div id="pick">
-        <p class="lede">OpenKingdoms ships the engine only. To play, point it at a copy of the game you own. Pick your <em>Total Annihilation Kingdoms</em> folder, which brings the music and your maps along too, or the archives inside it.</p>
-        <div class="drop" id="drop">Drop your game folder or its archives here</div>
+        <p class="lede">To play, pick the folder where <em>Total Annihilation: Kingdoms</em> is installed.</p>
+        <div class="drop" id="drop">Drop your game folder here</div>
         <div class="row">
           <button id="btn-folder" class="btn" type="button">Choose game folder</button>
           <button id="btn-files" class="btn" type="button">Choose game files</button>
@@ -543,7 +548,7 @@
         <input type="file" id="hpi-input" multiple accept=".hpi,.ufo,.kmp">
         <input type="file" id="model-input" multiple accept=".glb,.3do">
         <input type="file" id="dir-input" webkitdirectory multiple>
-        <label class="remember"><input type="checkbox" id="remember" checked> Remember these files in this browser so you don't have to pick them again</label>
+        <label class="remember"><input type="checkbox" id="remember" checked> Remember my game files</label>
       </div>
       <div id="ready" hidden>
         <p id="ready-msg">Your game files are ready.</p>
@@ -556,16 +561,17 @@
         <details id="where">
           <summary>Where are my game files?</summary>
           <div class="where-body">
-            <p>Pick the folder that holds <code>data.hpi</code> and <code>terrain.hpi</code>. Picking the folder above it works too.</p>
+            <p>It is the folder with <code>data.hpi</code> in it.</p>
             <ul>
-              <li>Bought on GOG: <code>C:\GOG Games\Total Annihilation Kingdoms</code> unless you chose another place when you installed it.</li>
-              <li>On the original CD: copy the game folder off the disc to your drive and pick that.</li>
-              <li>On a Mac or Linux: copy the game folder from any Windows install, or from the disc, and pick it.</li>
+              <li>GOG: <code>C:\GOG Games\Total Annihilation Kingdoms</code> by default.</li>
+              <li>CD: copy the game folder to your drive first.</li>
+              <li>Mac or Linux: copy the folder from a Windows install or the CD.</li>
             </ul>
-            <p>Don't have the game? <a href="https://www.gog.com/en/games?query=total%20annihilation" target="_blank" rel="noopener">Find it on GOG</a>.</p>
+            <p>Don't have it? <a href="https://www.gog.com/en/games?query=total%20annihilation" target="_blank" rel="noopener">Get it on GOG</a>.</p>
           </div>
         </details>
-        <p class="fine">Your files never leave your machine. The page reads them locally and, if you tick the box, keeps a copy in this browser's private storage. Nothing is uploaded. <a href="https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/ASSETS.md" target="_blank" rel="noopener">More about game files</a>. See who is winning on the <a href="leaderboard.html">multiplayer leaderboard</a>, add <a href="mods.html">mods from the registry</a>, or look through the game&rsquo;s art beside its remaster in the <a href="atlas.html">Asset Atlas</a>. The site counts visits without cookies, as the <a href="privacy.html">privacy note</a> explains.</p>
+        <p class="fine">Your files stay on your computer. Nothing is uploaded.</p>
+        <p class="fine links"><a href="leaderboard.html">Leaderboard</a><span class="sep">&middot;</span><a href="mods.html">Mods</a><span class="sep">&middot;</span><a href="atlas.html">Asset Atlas</a><span class="sep">&middot;</span><a href="privacy.html">Privacy</a></p>
       </div>
     </div>
   </div>
@@ -574,16 +580,16 @@
     <ul id="live-list"></ul>
     <p id="live-note" aria-live="polite"></p>
     <label id="live-tell" class="tell" hidden><input type="checkbox" id="tell-me"> Tell me when someone hosts a game</label>
-    <p class="board"><a href="leaderboard.html">Leaderboard, and every game played</a></p>
+    <p class="board"><a href="leaderboard.html">Leaderboard</a></p>
   </aside>
 </div>
 <div id="forget" hidden>
-  <a href="leaderboard.html" id="board-link" target="_blank" rel="noopener">Leaderboard</a><span class="sep">&middot;</span><a href="mods.html" target="_blank" rel="noopener">Mods</a><span class="sep">&middot;</span><a href="#" id="saves-link">Saved games</a><span class="sep">&middot;</span><a href="#" id="forget-link">Forget my game files, and keep my settings</a>
+  <a href="leaderboard.html" id="board-link" target="_blank" rel="noopener">Leaderboard</a><span class="sep">&middot;</span><a href="mods.html" target="_blank" rel="noopener">Mods</a><span class="sep">&middot;</span><a href="#" id="saves-link">Saved games</a><span class="sep">&middot;</span><a href="#" id="forget-link">Forget my game files</a>
 </div>
 <div id="forget-ask" hidden>
   <div class="box" role="alertdialog" aria-modal="true" aria-labelledby="forget-ask-title" aria-describedby="forget-ask-text">
     <h2 id="forget-ask-title">Forget your game files?</h2>
-    <p id="forget-ask-text">This removes the stored game files from this browser. Your settings and saved games stay. To play again you pick your game folder again.</p>
+    <p id="forget-ask-text">Your settings and saved games stay. You pick your game folder again next time.</p>
     <div class="row">
       <button id="forget-keep" class="btn" type="button">Keep them</button>
       <button id="forget-go" class="btn danger" type="button">Forget them</button>
@@ -1117,7 +1123,7 @@
     storedRead.then(function (n) {
       if (n > 0) {
         console.log('[openkingdoms] loaded ' + n + ' file(s) from browser storage');
-        showReady(n + ' game files loaded from browser storage.');
+        showReady('Ready to play.');
       } else {
         showPicker();
         wireUi(FS);
@@ -1334,9 +1340,8 @@
     args.push(watch ? '--watch' : '--join', room.code);
     if (!ready.hidden) { start(); return; }
     var whose = room.host ? room.host + '\u2019s game' : 'that game';
-    liveNote.textContent = watch
-      ? 'Choose your game files and you will watch ' + whose + ' as it is played.'
-      : 'Choose your game files and you will go straight into ' + whose + '.';
+    liveNote.textContent = (watch ? 'Pick your game files to watch ' : 'Pick your game files to join ')
+      + whose + '.';
   }
 
   function drawLive(d) {
@@ -1346,7 +1351,7 @@
     if (livePing) {
       var p = document.createElement('span');
       p.className = 'ping';
-      p.textContent = ' \u00b7 ' + livePing + ' ms to the server';
+      p.textContent = ' \u00b7 ' + livePing + ' ms ping';
       liveSum.appendChild(p);
     }
     liveList.textContent = '';
@@ -1388,7 +1393,7 @@
     });
     if (!pendingJoin)
       liveNote.textContent = d.rooms.length ? '' :
-        'No games open right now. Host one from Multiplayer and send the invite link to a friend.';
+        'No open games. Host one from Multiplayer.';
     liveBox.hidden = false;
     /* A join link to a game that plays a mod gets the mod first. */
     var linked = !linkChecked && joinCode && d.rooms.filter(function (r) {
@@ -1854,8 +1859,6 @@
     }).then(function (ok) {
       if (!ok) {
         console.warn('[openkingdoms] storage is best effort; saved games may be evicted');
-        tell('Your browser has not promised to keep the storage this game '
-             + 'uses. Saved games can be cleared when the disk fills up.');
       }
     }).catch(function () {});
     checkRoom(true);
@@ -1886,7 +1889,7 @@
       if (!atBoot && now - roomWarnedAt < 60000) return;
       roomWarnedAt = now;
       tell('Browser storage is nearly full. Save a game to a file and '
-           + 'delete it here before making another one.', true);
+           + 'delete it here.', true);
     }).catch(function () {});
   }
 
@@ -2421,9 +2424,10 @@
       if (nclip) found.push(nclip + ' video clips');
       if (nobj) found.push(nobj + ' replacement models');
       if (nmods) found.push(nmods + ' mod files');
-      showReady('The game' + (ip ? ' with The Iron Plague' : '') +
-                (found.length ? ', ' + found.join(', ') : '') + ' loaded' +
-                (foundGameIn ? ' from ' + foundGameIn : '') + '.');
+      console.log('[openkingdoms] loaded the game' + (ip ? ' with The Iron Plague' : '') +
+                  (found.length ? ', ' + found.join(', ') : '') +
+                  (foundGameIn ? ' from ' + foundGameIn : ''));
+      showReady('Ready to play.');
     }).catch(function (e) {
       say('Could not load the files: ' + e.message, true);
       for (var i = 0; i < buttons.length; i++) buttons[i].disabled = false;
