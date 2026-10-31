@@ -4158,6 +4158,7 @@ TEST(mp_room_host_cycles_a_slot_by_its_name) {
     MP_SEAT1(TAK_NSLOT_COMPUTER, 101);
     (void)Multiplayer_HandleClick("PlayerTeam", mp_row_widget("PlayerTeam", 1));
     ASSERT_EQ_INT(-1, mp_take_edit(c, &e));
+    ASSERT_EQ_STR("Only the host changes a computer player.", mp_help_text());
     MP_SEAT1(TAK_NSLOT_HUMAN, 702);
     (void)Multiplayer_HandleClick("PlayerTeam", mp_row_widget("PlayerTeam", 1));
     ASSERT_EQ_INT(-1, mp_take_edit(c, &e));
