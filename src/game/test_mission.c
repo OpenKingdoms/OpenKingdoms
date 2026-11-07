@@ -361,6 +361,49 @@ TEST(campaign_corpus_placements_parse) {
     ASSERT_EQ_INT(0, bad);
 }
 
+/* What each condition makes of a unit aboard a transport: alive to all
+ * but the two that ask for it to stand on the map (legacy:240665-240686,
+ * legacy:240722-240736, legacy:240925-240934). */
+TEST(a_unit_aboard_is_alive_but_not_on_the_map) {
+    MissionUnitSnapshot units[1];
+    MissionObjective obj;
+    memset(units, 0, sizeof(units));
+    strcpy(units[0].unitname, "NPCJOR2");
+    units[0].player = 1;
+    units[0].x = 130;
+    units[0].z = 76;
+    units[0].alive = 1;
+    units[0].carried = 1;
+    units[0].mobile = 1;
+    units[0].commander = 1;
+
+    memset(&obj, 0, sizeof(obj));
+    obj.type = MISSION_OBJ_COMMANDER_KILLED;
+    ASSERT_EQ_INT(0, Mission_ObjectiveSatisfied(&obj, units, 1, 1, 0));
+    obj.type = MISSION_OBJ_ALL_UNITS_KILLED_OF_TYPE;
+    strcpy(obj.text, "NPCJOR2");
+    ASSERT_EQ_INT(0, Mission_ObjectiveSatisfied(&obj, units, 1, 1, 0));
+    obj.type = MISSION_OBJ_UNIT_TYPE_KILLED;
+    ASSERT_EQ_INT(0, Mission_ObjectiveSatisfied(&obj, units, 1, 1, 0));
+    obj.type = MISSION_OBJ_UNIT_TYPE_PASSES_X;
+    obj.a = 100;
+    ASSERT_EQ_INT(1, Mission_ObjectiveSatisfied(&obj, units, 1, 1, 0));
+
+    obj.type = MISSION_OBJ_MOVE_UNIT_TO_RADIUS;
+    obj.a = 130;
+    obj.b = 76;
+    obj.c = 15;
+    ASSERT_EQ_INT(0, Mission_ObjectiveSatisfied(&obj, units, 1, 1, 0));
+    units[0].carried = 0;
+    ASSERT_EQ_INT(1, Mission_ObjectiveSatisfied(&obj, units, 1, 1, 0));
+
+    memset(&obj, 0, sizeof(obj));
+    obj.type = MISSION_OBJ_ALL_UNITS_KILLED;
+    ASSERT_EQ_INT(0, Mission_ObjectiveSatisfied(&obj, units, 1, 1, 0));
+    units[0].carried = 1;
+    ASSERT_EQ_INT(1, Mission_ObjectiveSatisfied(&obj, units, 1, 1, 0));
+}
+
 TEST(evaluates_objective_vocabulary) {
     MissionUnitSnapshot units[4];
     MissionObjective obj;
@@ -748,6 +791,7 @@ int main(int argc, char **argv) {
     RUN(a_mission_carrying_all_units_killed_is_won_by_its_victory_conditions);
     RUN(a_mission_with_only_a_defeat_condition_can_still_be_lost);
     RUN(implicit_conditions_follow_the_original);
+    RUN(a_unit_aboard_is_alive_but_not_on_the_map);
     RUN(evaluates_the_conditions_no_shipped_mission_uses);
     RUN(campaign_corpus_splits_conditions_by_role);
 

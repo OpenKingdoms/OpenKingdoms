@@ -756,11 +756,10 @@ static void play_transport_sound(const char *wav, int32_t x, int32_t y) {
                            world->viewport_w, world->viewport_h);
 }
 
-static int unit_load_into_transport(Unit *carrier, int carrier_idx,
-                                    Unit *target, int target_idx) {
-    if (!unit_can_carry_target(carrier, target)) return 0;
-    const UnitDef *td = Units_GetDef(target->def_idx);
-    int size = unit_transport_size(td);
+/* The attach itself. */
+static void unit_put_aboard(Unit *carrier, int carrier_idx,
+                            Unit *target, int target_idx) {
+    int size = unit_transport_size(Units_GetDef(target->def_idx));
     target->alive = UNIT_ALIVE_TRANSPORTED;
     target->carried_by = (int16_t)carrier_idx;
     /* Boarding order: the chain is pushed at its head (legacy:234563). */
@@ -775,6 +774,26 @@ static int unit_load_into_transport(Unit *carrier, int carrier_idx,
     carrier->cargo_size_used += (int16_t)size;
     fprintf(stderr, "Transport: loaded unit %d into %d\n",
             target_idx, carrier_idx);
+}
+
+static int unit_load_into_transport(Unit *carrier, int carrier_idx,
+                                    Unit *target, int target_idx) {
+    if (!unit_can_carry_target(carrier, target)) return 0;
+    unit_put_aboard(carrier, carrier_idx, target, target_idx);
+    return 1;
+}
+
+/* legacy:234446-234449 asks only that both live, that neither is the
+ * other, that the rider carries nobody and that the transport is not
+ * itself aboard. */
+int Units_BoardAtOnce(int rider, int carrier) {
+    if (rider < 0 || rider >= g_unit_count || carrier < 0 ||
+        carrier >= g_unit_count || rider == carrier) return 0;
+    Unit *r = &g_units[rider];
+    Unit *c = &g_units[carrier];
+    if (r->alive != UNIT_ALIVE_ACTIVE || c->alive != UNIT_ALIVE_ACTIVE ||
+        r->cargo_count > 0) return 0;
+    unit_put_aboard(c, carrier, r, rider);
     return 1;
 }
 

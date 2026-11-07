@@ -1899,6 +1899,9 @@ int               Units_LoadCandidatesInRect(int32_t x0, int32_t y0,
 int               Units_OrderUnload(int handle, int32_t world_x, int32_t world_y);
 /* Whether carrier could take rider aboard now, with what it carries. */
 int               Units_CanCarry(int carrier, int rider);
+/* An order list's boarding: aboard now, whoever owns the transport and
+ * however full it is. 0 when either cannot. */
+int               Units_BoardAtOnce(int rider, int carrier);
 int               Units_OrderStop(int handle);
 int               Units_OrderSetAggro(int handle, int aggro_mode);
 int               Units_OrderSetWeaponSlot(int handle, int slot);

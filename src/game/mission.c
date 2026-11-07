@@ -149,6 +149,23 @@ static int no_matching_alive(const MissionUnitSnapshot *units,
     return seen;
 }
 
+/* Nothing of the player's left that stands on the map: a unit aboard a
+ * transport does not hold this off, its transport does
+ * (legacy:240925-240934). */
+static int no_own_unit_on_the_map(const MissionUnitSnapshot *units,
+                                  int unit_count,
+                                  int local_player) {
+    int seen = 0;
+    for (int i = 0; i < unit_count; i++) {
+        const MissionUnitSnapshot *u = &units[i];
+        if (u->player != local_player) continue;
+        seen = 1;
+        if (u->alive && !u->carried) return 0;
+    }
+    return seen;
+}
+
+/* A unit aboard a transport has not got there (legacy:240665-240686). */
 static int any_matching_inside_radius(const MissionUnitSnapshot *units,
                                       int unit_count,
                                       const char *unitname,
@@ -159,7 +176,8 @@ static int any_matching_inside_radius(const MissionUnitSnapshot *units,
     for (int i = 0; i < unit_count; i++) {
         const MissionUnitSnapshot *u = &units[i];
         int64_t dx, dz;
-        if (!u->alive || !mission_unit_matches_any(u, unitname)) continue;
+        if (!u->alive || u->carried || !mission_unit_matches_any(u, unitname))
+            continue;
         dx = (int64_t)u->x - (int64_t)x;
         dz = (int64_t)u->z - (int64_t)z;
         if (dx * dx + dz * dz <= rr) return 1;
@@ -345,8 +363,7 @@ int Mission_ObjectiveSatisfied(const MissionObjective *objective,
     switch (objective->type) {
     /* Defeat: the player has nothing left. Victory: the enemy has not. */
     case MISSION_OBJ_ALL_UNITS_KILLED:
-        return no_matching_alive(units, unit_count, NULL, local_player,
-                                 MISSION_OWNER_OWN, 0, 0);
+        return no_own_unit_on_the_map(units, unit_count, local_player);
     case MISSION_OBJ_DESTROY_ALL_UNITS:
         return no_matching_alive(units, unit_count, NULL, local_player,
                                  MISSION_OWNER_ENEMY, 0, 0);

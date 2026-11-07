@@ -98,7 +98,8 @@ typedef struct MissionUnitSnapshot {
     int  player;
     int  x;
     int  z;
-    int  alive;
+    int  alive;      /* on the map or aboard a transport */
+    int  carried;    /* aboard a transport */
     int  mobile;
     int  commander;
 } MissionUnitSnapshot;

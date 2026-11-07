@@ -112,16 +112,32 @@ static MissionScript_ManaFn  g_ms_mana;
 
 /* ── units ────────────────────────────────────────────────────────── */
 
+/* A unit still in the mission, on the map or aboard a transport: the
+ * events and ports read only its live flag (legacy:178218-178250,
+ * legacy:178769-178810). */
 static const Unit *ms_unit(int handle) {
     int n = 0;
     const Unit *units = Units_GetActive(&n);
     if (!units || handle < 0 || handle >= n) return NULL;
-    if (units[handle].alive != UNIT_ALIVE_ACTIVE) return NULL;
+    if (units[handle].alive != UNIT_ALIVE_ACTIVE &&
+        units[handle].alive != UNIT_ALIVE_TRANSPORTED) return NULL;
     return &units[handle];
 }
 
 static const Unit *ms_unit_of_script(int32_t id) {
     return id > 0 ? ms_unit((int)id - 1) : NULL;
+}
+
+/* The unit UnitDestroyed speaks of still answers the ports: the event
+ * runs before its record is freed (legacy:227287, legacy:178769-178775). */
+static int g_ms_going = -1;
+
+static const Unit *ms_unit_to_read(int32_t id) {
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    if (id > 0 && (int)id - 1 == g_ms_going && g_ms_going < n)
+        return &units[g_ms_going];
+    return ms_unit_of_script(id);
 }
 
 /* max + min / 4, the original's distance (legacy:254574). */
@@ -161,10 +177,12 @@ static int ms_ident_unit(int index) {
     return h;
 }
 
+/* Two units may share a name, and the first placed answers to it
+ * (legacy:228197-228238). */
 void MissionOrders_NameUnit(const char *ident, int handle) {
     const Unit *u = ms_unit(handle);
     int i = ms_ident_index(ident, 1);
-    if (i < 0 || !u) return;
+    if (i < 0 || !u || ms_ident_unit(i) >= 0) return;
     ms.ident_unit[i] = (int16_t)handle;
     ms.ident_id[i] = u->stable_id;
 }
@@ -444,8 +462,9 @@ static int ms_step_run(MsProgram *p, int handle, const Unit *u) {
     }
 
     case MS_STEP_BOARD: {
+        /* Aboard at once (legacy:228557-228561). */
         int carrier = ms_ident_unit(s->ref);
-        if (carrier >= 0) Units_OrderLoadList(carrier, &handle, 1, 1);
+        if (carrier >= 0) Units_BoardAtOnce(handle, carrier);
         return 1;
     }
 
@@ -477,6 +496,10 @@ static void ms_orders_tick(void) {
         const Unit *u = ms_unit(handle);
         if (!u || u->stable_id != p->stable_id) { ms_program_free(p); continue; }
         for (int k = 0; k < MS_STEPS_PER_TICK; k++) {
+            /* Aboard, a wait runs out and the rest holds until the unit
+             * is set down (legacy:182203-182225, legacy:184105-184124). */
+            if (u->alive == UNIT_ALIVE_TRANSPORTED &&
+                ms.step[p->first + p->pc].type != MS_STEP_WAIT) break;
             if (!ms_step_run(p, handle, u) || p->unit < 0) break;
             ms.done_orders++;
             p->pc++;
@@ -626,8 +649,7 @@ static int32_t ms_player_units(int player) {
     int n = 0, count = 0;
     const Unit *units = Units_GetActive(&n);
     for (int i = 0; i < n; i++) {
-        if (units[i].alive == UNIT_ALIVE_ACTIVE &&
-            units[i].player_id == player) count++;
+        if (ms_unit(i) && units[i].player_id == player) count++;
     }
     return count;
 }
@@ -641,10 +663,10 @@ static int32_t ms_get(void *user, int port, int n_args, const int32_t *args) {
     case 1:  return (int32_t)(ms.tick / MS_TICKS_PER_SEC);
     case 5:  return ms_player_units(ms_player_of_script(a));
     case 7:  return ms.unit_limit;
-    case 30: u = ms_unit_of_script(a); return u ? (int32_t)u->def_idx + 1 : 0;
-    case 31: u = ms_unit_of_script(a); return u ? (int32_t)u->player_id - 1 : 10;
-    case 35: u = ms_unit_of_script(a); return u ? u->world_x / MS_CELL : 0;
-    case 36: u = ms_unit_of_script(a); return u ? u->world_y / MS_CELL : 0;
+    case 30: u = ms_unit_to_read(a); return u ? (int32_t)u->def_idx + 1 : 0;
+    case 31: u = ms_unit_to_read(a); return u ? (int32_t)u->player_id - 1 : 10;
+    case 35: u = ms_unit_to_read(a); return u ? u->world_x / MS_CELL : 0;
+    case 36: u = ms_unit_to_read(a); return u ? u->world_y / MS_CELL : 0;
     case 40: {
         int player = ms_player_of_script(a);
         return (g_ms_mana && player > 0) ? g_ms_mana(player) : 0;
@@ -689,16 +711,17 @@ static void ms_call_now(const char *name, const int32_t *args, int n_args) {
  * (legacy:178218-178250, legacy:177932). */
 static void ms_events(void) {
     int n = 0;
-    const Unit *units = Units_GetActive(&n);
+    (void)Units_GetActive(&n);
     if (n > MS_MAX_UNITS) n = MS_MAX_UNITS;
     for (int i = 0; i < MS_MAX_UNITS; i++) {
-        const Unit *u = (i < n && units[i].alive == UNIT_ALIVE_ACTIVE)
-                            ? &units[i] : NULL;
+        const Unit *u = i < n ? ms_unit(i) : NULL;
         if (ms.unit_id[i] && (!u || u->stable_id != ms.unit_id[i])) {
             int32_t args[1] = { i + 1 };
             ms.unit_id[i] = 0;
             ms.unit_bits[i] = 0;
+            g_ms_going = i;
             ms_call_now("UnitDestroyed", args, 1);
+            g_ms_going = -1;
         }
         if (!u || Units_IsUnderConstruction(i)) continue;
         if (!ms.unit_id[i]) {

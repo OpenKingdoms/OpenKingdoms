@@ -617,7 +617,9 @@ static void InGame_EvaluateMissionObjectives(GameWorld *world) {
         snapshots[i].player = (int)u->player_id;
         snapshots[i].x = u->world_x / 16;
         snapshots[i].z = u->world_y / 16;
-        snapshots[i].alive = (u->alive == 1);
+        snapshots[i].alive = u->alive == UNIT_ALIVE_ACTIVE ||
+                             u->alive == UNIT_ALIVE_TRANSPORTED;
+        snapshots[i].carried = u->alive == UNIT_ALIVE_TRANSPORTED;
         snapshots[i].mobile = (def && def->max_velocity > 0.0f) ? 1 : 0;
         snapshots[i].commander = unit_is_commander_def(def);
     }
