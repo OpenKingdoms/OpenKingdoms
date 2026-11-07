@@ -2605,6 +2605,30 @@ TEST(a_walk_to_a_better_place_saved_and_loaded_runs_on_the_same) {
     lf_end();
 }
 
+/* A point its target has since left out of reach is given up, not walked
+ * to and back from for good. */
+TEST(a_point_its_target_has_left_is_given_up) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->moveinfo.classes[0].max_slope = 30;
+    lf_ridge(w, 150);
+    int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    int hid = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
+    ASSERT(a >= 0 && hid >= 0);
+    ASSERT(Units_OrderAttack(a, hid));
+    int ticks = 0;
+    while (((lf_unit(a)->blocked_shots >> 3) & 7) != 5 && ticks < 6000) {
+        Units_TickEngines();
+        ticks++;
+    }
+    ASSERT_EQ_INT(5, (lf_unit(a)->blocked_shots >> 3) & 7);
+    ASSERT(lf_unit(a)->blocked_shots & 0x40);
+    ((Unit *)lf_unit(a))->cmd_x = LF_SX - 1600;   /* test-only mutation */
+    lf_ticks(2);
+    ASSERT_EQ_INT(0, lf_unit(a)->blocked_shots & 0x40);
+    lf_end();
+}
+
 /* A walker on an order stands once its shots land, and stays there
  * while they go on landing. */
 TEST(a_walker_whose_shots_land_does_not_move) {
@@ -4502,6 +4526,7 @@ int main(int argc, char **argv) {
     RUN(a_walker_whose_shots_land_does_not_move);
     RUN(a_walker_that_can_find_no_place_gives_up_only_on_its_own_target);
     RUN(a_walk_to_a_better_place_saved_and_loaded_runs_on_the_same);
+    RUN(a_point_its_target_has_left_is_given_up);
     RUN(a_fixed_unit_stays_off_what_it_cannot_hit);
     RUN(a_search_passes_over_what_its_weapon_cannot_hurt);
     RUN(a_unit_tracking_a_walker_sends_no_turn_signal);

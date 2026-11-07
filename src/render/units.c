@@ -3012,13 +3012,22 @@ static int unit_relocating(Unit *u, const UnitDef *d, const Unit *t, int64_t d2,
         return 0;
     }
     int level = (int)CHASE_LEVEL(u);
+    int slot = u->weapon_slot;
+    if (slot < 0 || slot >= d->num_weapons) slot = 0;
     if (level == 5) {
+        /* A point its target has left out of reach is no place to shoot
+         * from, and the next short shot draws another. */
+        int64_t range = weapon_effective_range(&d->weapons[slot]);
+        int64_t dx = (int64_t)u->cmd_x - t->world_x;
+        int64_t dy = (int64_t)u->cmd_y - t->world_y;
+        if (dx * dx + dy * dy > range * range) {
+            chase_walk_ends(u);
+            return 0;
+        }
         *gx = u->cmd_x;
         *gy = u->cmd_y;
         return 1;
     }
-    int slot = u->weapon_slot;
-    if (slot < 0 || slot >= d->num_weapons) slot = 0;
     int64_t r = chase_radius(&d->weapons[slot], level);
     if ((level != 2 && level != 3) || d2 <= r * r) {
         chase_walk_ends(u);
