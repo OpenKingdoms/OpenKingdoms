@@ -169,3 +169,16 @@ the 37. Judging a ship on its yard by where it stands and not by the
 cell moved Sea Dragon Spine to 11 and Ladron's Tarn to 3. Taking any spot
 as a last resort moved them the same way and stopped Meredoc Keys
 (192,5056) at 10.
+
+Giving a ship on or against its own yard's pad the pinch allowance a
+blocked start has, through a query field, did little on its own. Ladron's
+Tarn stayed at 1 and Sea Dragon Spine reached 5, and searches from the
+pad at the two sites traced still died in under 20 cells. With that and
+the yard judged by position together, 34 of the 37 launched all
+twelve, Ladron's Tarn and Sea Dragon Spine both reached 12, and the larger
+runs finished 13 of 15 with no tick over 6 ms. Riparian Conflict stayed at
+2 against 4, since the lane test then passes a line straight through the
+fort, which the ship cannot sail with the yard open. Forgiving the fort's
+cells only for the ship's own width lost the other two sites again. That
+missed the bar set for the attempt, no site more than one ship below the
+code without these rules, so none of it is in here.
