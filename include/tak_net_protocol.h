@@ -177,8 +177,9 @@
  * pad can be hit. 63: units aboard a transport stay in the battle, pay
  * into the pool and die with it. 64: a ranged unit walks to where its
  * shots land, a blade takes what walks past, and water and roads set a
- * unit's speed. */
-#define TAK_ENGINE_BUILD_ID           64
+ * unit's speed. 65: the computer spaces its base by the original's grid,
+ * and a seat on an island keeps crossing. */
+#define TAK_ENGINE_BUILD_ID           65
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
