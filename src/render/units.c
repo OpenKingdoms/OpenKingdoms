@@ -384,7 +384,11 @@ static void credit_kill(int shooter_handle, int killer_player, const Unit *victi
 static float build_heading_for_def(const UnitDef *d);
 /* Forwards for the capture hand over, which sits with the shots. */
 static void unit_remove_now(int handle);
+static void unit_riders_die(Unit *t, int t_idx);
+static int unit_holds_commander(const Unit *t, int t_idx);
+static void unit_check_commander_death(const Unit *t, int t_idx);
 static void occ_lift(int handle);
+static void selection_forget(int handle);
 static void occ_refresh(int handle);
 static void occ_sync_mobile(int handle);
 static int  unit_spawn_facing(int def_idx, int player_id, int color_idx,
@@ -756,11 +760,11 @@ static void play_transport_sound(const char *wav, int32_t x, int32_t y) {
                            world->viewport_w, world->viewport_h);
 }
 
-static int unit_load_into_transport(Unit *carrier, int carrier_idx,
-                                    Unit *target, int target_idx) {
-    if (!unit_can_carry_target(carrier, target)) return 0;
-    const UnitDef *td = Units_GetDef(target->def_idx);
-    int size = unit_transport_size(td);
+/* The attach itself. A rider leaves the selection (legacy:234588) and
+ * keeps its place in any numbered group. */
+static void unit_put_aboard(Unit *carrier, int carrier_idx,
+                            Unit *target, int target_idx) {
+    int size = unit_transport_size(Units_GetDef(target->def_idx));
     target->alive = UNIT_ALIVE_TRANSPORTED;
     target->carried_by = (int16_t)carrier_idx;
     /* Boarding order: the chain is pushed at its head (legacy:234563). */
@@ -773,8 +777,29 @@ static int unit_load_into_transport(Unit *carrier, int carrier_idx,
     unit_clear_path(target);
     carrier->cargo_count++;
     carrier->cargo_size_used += (int16_t)size;
+    selection_forget(target_idx);
     fprintf(stderr, "Transport: loaded unit %d into %d\n",
             target_idx, carrier_idx);
+}
+
+static int unit_load_into_transport(Unit *carrier, int carrier_idx,
+                                    Unit *target, int target_idx) {
+    if (!unit_can_carry_target(carrier, target)) return 0;
+    unit_put_aboard(carrier, carrier_idx, target, target_idx);
+    return 1;
+}
+
+/* legacy:234446-234449 asks only that both live, that neither is the
+ * other, that the rider carries nobody and that the transport is not
+ * itself aboard. */
+int Units_BoardAtOnce(int rider, int carrier) {
+    if (rider < 0 || rider >= g_unit_count || carrier < 0 ||
+        carrier >= g_unit_count || rider == carrier) return 0;
+    Unit *r = &g_units[rider];
+    Unit *c = &g_units[carrier];
+    if (r->alive != UNIT_ALIVE_ACTIVE || c->alive != UNIT_ALIVE_ACTIVE ||
+        r->cargo_count > 0) return 0;
+    unit_put_aboard(c, carrier, r, rider);
     return 1;
 }
 
@@ -829,6 +854,7 @@ static int unit_queue_pickup(int carrier, int rider, int queued) {
     order_fresh(r);
     r->cmd_kind = UNIT_CMD_BOARD;
     r->target = (int16_t)carrier;
+    r->build_target = -1;   /* detach from any nanoframe */
     r->cmd_x = c->world_x;
     r->cmd_y = c->world_y;
     unit_clear_path(r);
@@ -1672,16 +1698,8 @@ static int projectile_base_damage_for_unit(const Projectile *p,
  * player recorded on the victim and the unit through its own pointer,
  * so a shot still in the air when its archer fell pays its player
  * (legacy:227300-227327). */
-static void credit_kill(int shooter_handle, int killer_player, const Unit *victim) {
-    if (!victim) return;
-    if (killer_player < 1 || killer_player > TAK_MAX_PLAYERS) return;
+static void credit_kill_tally(Unit *shooter, int killer_player, const Unit *victim) {
     if (victim->player_id == killer_player) return;
-    Unit *shooter = NULL;
-    if (shooter_handle >= 0 && shooter_handle < g_unit_count &&
-        g_units[shooter_handle].alive == 1 &&
-        g_units[shooter_handle].player_id == killer_player)
-        shooter = &g_units[shooter_handle];
-    if (shooter) TAK_AI_NotifyDamage((int)(victim - g_units), shooter_handle);
     const UnitDef *vdef = Units_GetDef(victim->def_idx);
     if (!vdef) return;
     /* An unfinished victim earns nothing: no rank, no tally, and no
@@ -1701,6 +1719,27 @@ static void credit_kill(int shooter_handle, int killer_player, const Unit *victi
     BattleRecord_Kill(killer_player, shooter, victim);
     if (vdef->mogrium_bounty > 0.0f)
         Economy_EarnBounty(&world->economy, killer_player, vdef->mogrium_bounty);
+}
+
+static void credit_kill(int shooter_handle, int killer_player, const Unit *victim) {
+    if (!victim) return;
+    if (killer_player < 1 || killer_player > TAK_MAX_PLAYERS) return;
+    if (victim->player_id == killer_player) return;
+    Unit *shooter = NULL;
+    if (shooter_handle >= 0 && shooter_handle < g_unit_count &&
+        g_units[shooter_handle].alive == 1 &&
+        g_units[shooter_handle].player_id == killer_player)
+        shooter = &g_units[shooter_handle];
+    if (shooter) TAK_AI_NotifyDamage((int)(victim - g_units), shooter_handle);
+    credit_kill_tally(shooter, killer_player, victim);
+    /* Whoever sinks a transport has killed what it carries, the death
+     * passing the killer on (legacy:227218-227224, legacy:227300-227327). */
+    int v = (int)(victim - g_units);
+    for (int i = 0; victim->cargo_count > 0 && i < g_unit_count; i++) {
+        const Unit *c = &g_units[i];
+        if (c->alive == UNIT_ALIVE_TRANSPORTED && c->carried_by == v)
+            credit_kill_tally(shooter, killer_player, c);
+    }
 }
 
 static void unit_post_take(Unit *u, const UnitDef *d);
@@ -1951,8 +1990,14 @@ int Units_Capture(int handle, int player_id) {
     nu->flight_alt = flight_alt;
     if (flying) occ_sync_mobile(made);
     /* The old unit leaves with no death script and no body: the
-     * original skips Killed for this removal (legacy:227130). */
+     * original skips Killed for this removal (legacy:227130). The
+     * removal is a kill, so its riders go with it and a monarch among
+     * them is the monarch's death (legacy:228992-228998,
+     * legacy:227100-227108). */
+    int commander = unit_holds_commander(old, handle);
+    unit_riders_die(&g_units[handle], handle);
     unit_remove_now(handle);
+    if (commander) unit_check_commander_death(old, handle);
     return made;
 }
 
@@ -3516,7 +3561,8 @@ uint32_t Units_PlayersWithUnits(void) {
     uint32_t mask = 0;
     for (int i = 0; i < g_unit_count; i++) {
         int p = g_units[i].player_id;
-        if (g_units[i].alive == UNIT_ALIVE_ACTIVE && p >= 1 && p < 32)
+        if ((g_units[i].alive == UNIT_ALIVE_ACTIVE ||
+             g_units[i].alive == UNIT_ALIVE_TRANSPORTED) && p >= 1 && p < 32)
             mask |= 1u << p;
     }
     return mask;
@@ -3964,7 +4010,14 @@ static int recall_group(int group, int add) {
     int kept = 0;
     for (int s = 0; s < g_ctrl_group_count[group]; s++) {
         int h = g_ctrl_group[group][s];
-        if (h < 0 || h >= g_unit_count || g_units[h].alive != 1) continue;
+        if (h < 0 || h >= g_unit_count) continue;
+        /* A rider stays in its group and waits to be set down: selecting
+         * skips it, nothing takes it out (legacy:239065-239070). */
+        if (g_units[h].alive == UNIT_ALIVE_TRANSPORTED) {
+            g_ctrl_group[group][kept++] = h;
+            continue;
+        }
+        if (g_units[h].alive != 1) continue;
         g_ctrl_group[group][kept++] = h;
         Units_SelectAdd(h);
     }
@@ -9332,6 +9385,10 @@ static int slot_list_drop(int *list, int count, int slot) {
     return kept;
 }
 
+static void selection_forget(int handle) {
+    g_selection_count = slot_list_drop(g_selection, g_selection_count, handle);
+}
+
 /* Everything that keeps a slot number forgets the dead unit before a new
  * one takes the slot. Otherwise the new unit inherits its attackers, its
  * transport, the shots aimed at it and its place in a selection. */
@@ -10940,7 +10997,10 @@ void Units_RecomputeEconomy(struct GameWorld *world) {
     memset(held, 0, sizeof(held));
     for (int i = 0; i < g_unit_count; i++) {
         const Unit *u = &g_units[i];
-        if (u->alive != UNIT_ALIVE_ACTIVE || u->under_construction) continue;
+        /* A rider pays in like any other: the loop asks only that the
+         * unit lives and is finished (legacy:235853-235946). */
+        if ((u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_TRANSPORTED) ||
+            u->under_construction) continue;
         int p = u->player_id;
         if (p < 1 || p > TAK_MAX_PLAYERS) continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
@@ -11019,6 +11079,18 @@ void Units_EliminatePlayer(int player_id, int keep_handle) {
  * whole army (legacy:227174-227181). A transport carrying the monarch
  * counts as the monarch (legacy:227100-227108). Campaign missions have
  * their own defeat conditions and skip this (legacy:227177). */
+static int unit_holds_commander(const Unit *t, int t_idx) {
+    const UnitDef *d = Units_GetDef(t->def_idx);
+    if (d && d->commander) return 1;
+    for (int i = 0; t->cargo_count > 0 && i < g_unit_count; i++) {
+        const Unit *c = &g_units[i];
+        if (c->alive != UNIT_ALIVE_TRANSPORTED || c->carried_by != t_idx) continue;
+        const UnitDef *cd = Units_GetDef(c->def_idx);
+        if (cd && cd->commander) return 1;
+    }
+    return 0;
+}
+
 static void unit_check_commander_death(const Unit *t, int t_idx) {
     GameWorld *w = World_Get();
     if (!w || w->cfg.monarch_expendable) return;
@@ -11026,16 +11098,24 @@ static void unit_check_commander_death(const Unit *t, int t_idx) {
     if (t->player_id < 1 || t->player_id > TAK_MAX_PLAYERS) return;
     const PlayerSlot *slot = &w->cfg.players[t->player_id - 1];
     if (slot->kind != TAK_SLOT_HUMAN && slot->kind != TAK_SLOT_AI) return;
-    const UnitDef *d = Units_GetDef(t->def_idx);
-    int commander = d && d->commander;
-    for (int i = 0; !commander && t->cargo_count > 0 && i < g_unit_count; i++) {
-        const Unit *c = &g_units[i];
-        if (c->alive != UNIT_ALIVE_TRANSPORTED || c->carried_by != t_idx) continue;
-        const UnitDef *cd = Units_GetDef(c->def_idx);
-        if (cd && cd->commander) commander = 1;
-    }
-    if (!commander) return;
     Units_EliminatePlayer(t->player_id, t_idx);
+}
+
+/* A transport's end is its riders' end: each is killed outright, with no
+ * Killed script and no body, and its owner counts the loss
+ * (legacy:227218-227234, legacy:227293-227296). */
+static void unit_riders_die(Unit *t, int t_idx) {
+    if (t->cargo_count <= 0) return;
+    GameWorld *w = World_Get();
+    for (int i = 0; i < g_unit_count; i++) {
+        Unit *c = &g_units[i];
+        if (c->alive != UNIT_ALIVE_TRANSPORTED || c->carried_by != t_idx) continue;
+        if (w && c->player_id >= 1 && c->player_id <= TAK_MAX_PLAYERS)
+            w->stats[c->player_id].losses++;
+        unit_remove_now(i);
+    }
+    t->cargo_count = 0;
+    t->cargo_size_used = 0;
 }
 
 uint32_t Units_DebugFramesLost(int player_id) {
@@ -11048,6 +11128,8 @@ uint32_t Units_DebugFramesLost(int player_id) {
  * (legacy:227119-227144, 227346). */
 static void apply_killed_as(Unit *t, int t_idx, int bursts) {
     if (t->alive != 1) return;
+    int commander = unit_holds_commander(t, t_idx);
+    unit_riders_die(t, t_idx);
     /* The orders panel is the selected units still standing, so a death
      * leaves the selection (legacy:153469-153474). */
     g_selection_count = slot_list_drop(g_selection, g_selection_count, t_idx);
@@ -11092,7 +11174,7 @@ static void apply_killed_as(Unit *t, int t_idx, int bursts) {
         unit_death_blast(t, t_idx);
     }
     fprintf(stderr, "Units: unit %d killed (HP=%d)\n", t_idx, t->health);
-    unit_check_commander_death(t, t_idx);
+    if (commander) unit_check_commander_death(t, t_idx);
 }
 
 static void apply_killed(Unit *t, int t_idx) { apply_killed_as(t, t_idx, 1); }
@@ -15168,11 +15250,14 @@ static void Units_TickCombat(void) {
                 ugrid_note(i);
                 u->carried_by = -1;
             }
-            /* A carried unit gets no free self repair here. Whether the
-             * original keeps mending a passenger is unestablished: the
-             * attach does not clear the flag the heal gate reads
-             * (legacy:234562-234566), but the update loop was not
-             * traced. */
+            /* The update loop passes over nobody aboard, so a rider's
+             * reserve fills and its wounds mend (legacy:236025,
+             * legacy:236276-236288, legacy:8706-8709). */
+            const UnitDef *rd = Units_GetDef(u->def_idx);
+            if (rd && u->alive == UNIT_ALIVE_TRANSPORTED) {
+                caster_mana_tick(u, rd);
+                self_heal_tick(u, rd);
+            }
             continue;
         }
         /* Combat, orders and the mover are for the living. A dying unit
@@ -16495,7 +16580,9 @@ static void tick_auras(void) {
     int joy_frame = (g_sim_tick % 60u) == 0u;
     for (int i = 0; i < g_unit_count; i++) {
         const Unit *s = &g_units[i];
-        if (s->alive != UNIT_ALIVE_ACTIVE || s->under_construction) continue;
+        /* A rider's aura works from aboard (legacy:235853-235876). */
+        if ((s->alive != UNIT_ALIVE_ACTIVE && s->alive != UNIT_ALIVE_TRANSPORTED) ||
+            s->under_construction) continue;
         const UnitDef *d = Units_GetDef(s->def_idx);
         if (!d) continue;
         for (int k = UNIT_AURA_ARMOR; k <= UNIT_AURA_ATTACK; k++) {

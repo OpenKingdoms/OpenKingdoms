@@ -1698,8 +1698,11 @@ Format per entry:
     damage would also raise.
   - `a TYPE` picks the nearest unit of the type. The original adds a
     random part to each distance first, up to half of it.
-  - `i NAME` asks the named transport to pick the unit up. The original
-    puts the unit aboard at once.
+  - `i NAME` puts the unit aboard at once, as the original does, and
+    the rest of its list waits until it is set down. A `w` still runs
+    out aboard. The original runs the rest of the list while the unit
+    rides and the unit goes where its transport goes
+    (legacy:182203-182225, legacy:184105-184124).
   - `c`, `s` and `v` are read and dropped. Nothing here makes a unit
     unselectable while its list runs, so there is nothing for `s` to
     undo, and the speed `v` sets has no field yet.

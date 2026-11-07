@@ -435,6 +435,31 @@ static int test_the_reveal_follows_the_unit_across_a_cell_boundary(void) {
     return 0;
 }
 
+/* A rider still sees from where its transport has taken it
+ * (legacy:206485-206491). */
+static int test_a_unit_aboard_still_sees(void) {
+    GameWorld w;
+    memset(&w, 0, sizeof(w));
+    memset(g_test_units, 0, sizeof(g_test_units));
+    memset(g_test_defs, 0, sizeof(g_test_defs));
+    w.map_pixels_w = 512;
+    w.map_pixels_h = 512;
+    w.cfg.line_of_sight = 1;
+    ASSERT_EQ_INT(0, Fog_Init(&w));
+    g_test_unit_count = 1;
+    g_test_defs[0].sight_distance = 96;
+    g_test_units[0].alive = UNIT_ALIVE_TRANSPORTED;
+    g_test_units[0].player_id = 1;
+    g_test_units[0].carried_by = 3;
+    g_test_units[0].world_x = 256;
+    g_test_units[0].world_y = 256;
+    Fog_Update(&w, 1);
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 256, 256));
+    Fog_Free(&w);
+    g_test_unit_count = 0;
+    return 0;
+}
+
 /* The block of nine cells around a unit is lit whatever its radius
  * buys (legacy:167401-167402). A wall's sightdistance is 45
  * (arawall.fbi), short of the 45.25 px to a diagonal neighbour's
@@ -578,6 +603,7 @@ int main(void) {
     failed |= test_an_ai_teammate_grants_no_sight();
     failed |= test_a_ridge_does_not_hide_the_ground_behind_it();
     failed |= test_the_nine_cells_around_a_unit_are_always_lit();
+    failed |= test_a_unit_aboard_still_sees();
     failed |= test_the_reveal_follows_the_unit_across_a_cell_boundary();
     failed |= test_a_watcher_sees_the_whole_map_and_no_seat_changes();
     failed |= test_a_sight_jammer_fogs_its_ground_for_the_enemy();

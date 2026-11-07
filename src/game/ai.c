@@ -240,14 +240,17 @@ static int ai_census_ready(const Unit *units, int unit_count, int p) {
         c->pending_econ = c->pending_prod = 0;
         for (int i = 0; i < c->base; i++) {
             const Unit *u = &units[i];
-            if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) continue;
+            if ((u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_TRANSPORTED) ||
+                u->player_id != p) continue;
             if ((int)u->def_idx < AI_MAX_DEFS) {
                 c->owned[u->def_idx]++;
                 if (!u->under_construction) c->finished[u->def_idx]++;
             }
             int way = ai_on_way_def(u);
             if (way >= 0 && way < AI_MAX_DEFS) c->owned[way]++;
-            if (way < 0 && !u->under_construction) continue;
+            /* What counts as under way stands on the map, as its scans read it. */
+            if (way < 0 && (!u->under_construction || u->alive != UNIT_ALIVE_ACTIVE))
+                continue;
             const UnitDef *d = Units_GetDef(way >= 0 ? way : u->def_idx);
             if (ai_def_is_mana_economy(d)) c->pending_econ = 1;
             if (ai_pending_is_production(d)) c->pending_prod = 1;
@@ -257,11 +260,14 @@ static int ai_census_ready(const Unit *units, int unit_count, int p) {
     return 1;
 }
 
-/* The scan every count was before the census, over units [from, n). */
+/* The scan every count was before the census, over units [from, n). A
+ * unit aboard a ferry still counts: the original tallies the instances
+ * that exist (docs/notes/2026-09-04-legacy-ai.md). */
 static void ai_scan_owned(const Unit *units, int from, int unit_count,
                           int player_id, int def_idx, int *owned, int *finished) {
     for (int i = from; i < unit_count; i++) {
-        if (units[i].alive != UNIT_ALIVE_ACTIVE) continue;
+        if (units[i].alive != UNIT_ALIVE_ACTIVE &&
+            units[i].alive != UNIT_ALIVE_TRANSPORTED) continue;
         if (units[i].player_id != player_id) continue;
         if (ai_on_way_def(&units[i]) == def_idx) (*owned)++;
         if ((int)units[i].def_idx != def_idx) continue;

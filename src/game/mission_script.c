@@ -94,6 +94,8 @@ static struct {
     MsTrigger  trigger[TAK_MS_TRIGGERS];
     uint32_t   unit_id[MS_MAX_UNITS];
     uint32_t   unit_bits[MS_MAX_UNITS];
+    int16_t    unit_def[MS_MAX_UNITS];     /* -1 when not known */
+    uint8_t    unit_owner[MS_MAX_UNITS];
 
     MsProgram  program[MS_PROGRAMS];
     int16_t    program_of[MS_MAX_UNITS];   /* slot + 1, 0 for none */
@@ -112,16 +114,38 @@ static MissionScript_ManaFn  g_ms_mana;
 
 /* ── units ────────────────────────────────────────────────────────── */
 
+/* A unit still in the mission, on the map or aboard a transport: the
+ * events and ports read only its live flag (legacy:178218-178250,
+ * legacy:178769-178810). */
 static const Unit *ms_unit(int handle) {
     int n = 0;
     const Unit *units = Units_GetActive(&n);
     if (!units || handle < 0 || handle >= n) return NULL;
-    if (units[handle].alive != UNIT_ALIVE_ACTIVE) return NULL;
+    if (units[handle].alive != UNIT_ALIVE_ACTIVE &&
+        units[handle].alive != UNIT_ALIVE_TRANSPORTED) return NULL;
     return &units[handle];
 }
 
 static const Unit *ms_unit_of_script(int32_t id) {
     return id > 0 ? ms_unit((int)id - 1) : NULL;
+}
+
+/* The unit UnitDestroyed speaks of still answers the ports: the event
+ * runs before its record is freed (legacy:227287, legacy:178769-178775).
+ * Its type and owner are kept here, since a save or a new unit in the
+ * slot may have wiped ours by the time the event runs. */
+static int g_ms_going = -1;
+static uint32_t g_ms_going_id;
+
+static int ms_is_going(int32_t id) {
+    return id > 0 && (int)id - 1 == g_ms_going;
+}
+
+static const Unit *ms_unit_to_read(int32_t id) {
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    if (ms_is_going(id) && g_ms_going < n) return &units[g_ms_going];
+    return ms_unit_of_script(id);
 }
 
 /* max + min / 4, the original's distance (legacy:254574). */
@@ -161,10 +185,12 @@ static int ms_ident_unit(int index) {
     return h;
 }
 
+/* Two units may share a name, and the first placed answers to it
+ * (legacy:228197-228238). */
 void MissionOrders_NameUnit(const char *ident, int handle) {
     const Unit *u = ms_unit(handle);
     int i = ms_ident_index(ident, 1);
-    if (i < 0 || !u) return;
+    if (i < 0 || !u || ms_ident_unit(i) >= 0) return;
     ms.ident_unit[i] = (int16_t)handle;
     ms.ident_id[i] = u->stable_id;
 }
@@ -444,8 +470,9 @@ static int ms_step_run(MsProgram *p, int handle, const Unit *u) {
     }
 
     case MS_STEP_BOARD: {
+        /* Aboard at once (legacy:228557-228561). */
         int carrier = ms_ident_unit(s->ref);
-        if (carrier >= 0) Units_OrderLoadList(carrier, &handle, 1, 1);
+        if (carrier >= 0) Units_BoardAtOnce(handle, carrier);
         return 1;
     }
 
@@ -477,6 +504,14 @@ static void ms_orders_tick(void) {
         const Unit *u = ms_unit(handle);
         if (!u || u->stable_id != p->stable_id) { ms_program_free(p); continue; }
         for (int k = 0; k < MS_STEPS_PER_TICK; k++) {
+            /* Aboard, a wait runs out and the rest holds, to start over
+             * once the unit is set down (legacy:182203-182225,
+             * legacy:184105-184124). */
+            if (u->alive == UNIT_ALIVE_TRANSPORTED &&
+                ms.step[p->first + p->pc].type != MS_STEP_WAIT) {
+                p->started = 0;
+                break;
+            }
             if (!ms_step_run(p, handle, u) || p->unit < 0) break;
             ms.done_orders++;
             p->pc++;
@@ -622,13 +657,18 @@ static int32_t ms_mission_command(void *user, const char *text,
     return 0;
 }
 
+/* A seat's count falls when a record is freed, so it holds the dying and
+ * the unit UnitDestroyed speaks of (legacy:226968-226970, legacy:227378). */
 static int32_t ms_player_units(int player) {
     int n = 0, count = 0;
     const Unit *units = Units_GetActive(&n);
     for (int i = 0; i < n; i++) {
-        if (units[i].alive == UNIT_ALIVE_ACTIVE &&
-            units[i].player_id == player) count++;
+        if (units[i].alive != UNIT_ALIVE_DEAD && units[i].player_id == player)
+            count++;
     }
+    if (g_ms_going >= 0 && g_ms_going < n && ms.unit_owner[g_ms_going] == player &&
+        (units[g_ms_going].alive == UNIT_ALIVE_DEAD ||
+         units[g_ms_going].stable_id != g_ms_going_id)) count++;
     return count;
 }
 
@@ -641,10 +681,17 @@ static int32_t ms_get(void *user, int port, int n_args, const int32_t *args) {
     case 1:  return (int32_t)(ms.tick / MS_TICKS_PER_SEC);
     case 5:  return ms_player_units(ms_player_of_script(a));
     case 7:  return ms.unit_limit;
-    case 30: u = ms_unit_of_script(a); return u ? (int32_t)u->def_idx + 1 : 0;
-    case 31: u = ms_unit_of_script(a); return u ? (int32_t)u->player_id - 1 : 10;
-    case 35: u = ms_unit_of_script(a); return u ? u->world_x / MS_CELL : 0;
-    case 36: u = ms_unit_of_script(a); return u ? u->world_y / MS_CELL : 0;
+    case 30:
+        if (ms_is_going(a)) return (int32_t)ms.unit_def[g_ms_going] + 1;
+        u = ms_unit_of_script(a);
+        return u ? (int32_t)u->def_idx + 1 : 0;
+    case 31:
+        if (ms_is_going(a) && ms.unit_owner[g_ms_going])
+            return (int32_t)ms.unit_owner[g_ms_going] - 1;
+        u = ms_unit_of_script(a);
+        return u ? (int32_t)u->player_id - 1 : 10;
+    case 35: u = ms_unit_to_read(a); return u ? u->world_x / MS_CELL : 0;
+    case 36: u = ms_unit_to_read(a); return u ? u->world_y / MS_CELL : 0;
     case 40: {
         int player = ms_player_of_script(a);
         return (g_ms_mana && player > 0) ? g_ms_mana(player) : 0;
@@ -689,18 +736,24 @@ static void ms_call_now(const char *name, const int32_t *args, int n_args) {
  * (legacy:178218-178250, legacy:177932). */
 static void ms_events(void) {
     int n = 0;
-    const Unit *units = Units_GetActive(&n);
+    (void)Units_GetActive(&n);
     if (n > MS_MAX_UNITS) n = MS_MAX_UNITS;
     for (int i = 0; i < MS_MAX_UNITS; i++) {
-        const Unit *u = (i < n && units[i].alive == UNIT_ALIVE_ACTIVE)
-                            ? &units[i] : NULL;
+        const Unit *u = i < n ? ms_unit(i) : NULL;
         if (ms.unit_id[i] && (!u || u->stable_id != ms.unit_id[i])) {
             int32_t args[1] = { i + 1 };
+            g_ms_going_id = ms.unit_id[i];
             ms.unit_id[i] = 0;
             ms.unit_bits[i] = 0;
+            g_ms_going = i;
             ms_call_now("UnitDestroyed", args, 1);
+            g_ms_going = -1;
+            ms.unit_def[i] = -1;
+            ms.unit_owner[i] = 0;
         }
         if (!u || Units_IsUnderConstruction(i)) continue;
+        ms.unit_def[i] = (int16_t)u->def_idx;
+        ms.unit_owner[i] = (uint8_t)u->player_id;
         if (!ms.unit_id[i]) {
             int32_t args[2] = { i + 1, (int32_t)u->player_id - 1 };
             ms.unit_id[i] = u->stable_id;
@@ -722,6 +775,7 @@ static void ms_events(void) {
 static void ms_reset(void) {
     memset(&ms, 0, sizeof(ms));
     for (int i = 0; i < MS_PROGRAMS; i++) ms.program[i].unit = -1;
+    for (int i = 0; i < MS_MAX_UNITS; i++) ms.unit_def[i] = -1;
 }
 
 static int ms_engine_start(CobScript *script, int owned, int start_index) {
@@ -821,7 +875,8 @@ int MissionScript_DebugStatic(int index, int32_t *out) {
 
 /* ── the save and the hash ────────────────────────────────────────── */
 
-#define MS_SAVE_MAGIC 0x3143534du   /* "MSC1" */
+#define MS_SAVE_MAGIC_V1 0x3143534du   /* "MSC1", no type or owner per unit */
+#define MS_SAVE_MAGIC    0x3243534du   /* "MSC2" */
 
 typedef struct MsOut { uint8_t *p; unsigned len; } MsOut;
 
@@ -863,6 +918,8 @@ static void ms_write(MsOut *o) {
     for (int i = 0; i < tracked; i++) {
         out_u32(o, ms.unit_id[i]);
         out_u32(o, ms.unit_bits[i]);
+        out_i16(o, ms.unit_def[i]);
+        out_u8(o, ms.unit_owner[i]);
     }
     uint16_t live = 0;
     for (int i = 0; i < MS_PROGRAMS; i++) if (ms.program[i].unit >= 0) live++;
@@ -942,7 +999,8 @@ static int32_t  in_i32(MsIn *in) { return (int32_t)in_u32(in); }
 int MissionScript_LoadState(const unsigned char *data, unsigned len) {
     MsIn in = { data, len, 0, 0 };
     if (!ms.active || !data) return -1;
-    if (in_u32(&in) != MS_SAVE_MAGIC) return -1;
+    uint32_t magic = in_u32(&in);
+    if (magic != MS_SAVE_MAGIC && magic != MS_SAVE_MAGIC_V1) return -1;
     ms.verdict = in_i32(&in);
     ms.tick = in_u32(&in);
     ms.done_orders = in_i32(&in);
@@ -969,9 +1027,15 @@ int MissionScript_LoadState(const unsigned char *data, unsigned len) {
     if (tracked > MS_MAX_UNITS) return -1;
     memset(ms.unit_id, 0, sizeof(ms.unit_id));
     memset(ms.unit_bits, 0, sizeof(ms.unit_bits));
+    memset(ms.unit_owner, 0, sizeof(ms.unit_owner));
+    for (int i = 0; i < MS_MAX_UNITS; i++) ms.unit_def[i] = -1;
     for (int i = 0; i < tracked; i++) {
         ms.unit_id[i] = in_u32(&in);
         ms.unit_bits[i] = in_u32(&in);
+        if (magic != MS_SAVE_MAGIC_V1) {
+            ms.unit_def[i] = in_i16(&in);
+            ms.unit_owner[i] = in_u8(&in);
+        }
     }
     for (int i = 0; i < MS_PROGRAMS; i++) ms.program[i].unit = -1;
     memset(ms.program_of, 0, sizeof(ms.program_of));

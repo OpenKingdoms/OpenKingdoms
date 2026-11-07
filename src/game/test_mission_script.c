@@ -136,8 +136,9 @@ int Units_OrderCloak(int handle, int on) {
     return 1;
 }
 
-int Units_OrderLoadList(int carrier, const int *riders, int count, int queued) {
-    (void)carrier; (void)riders; (void)count; (void)queued;
+int Units_BoardAtOnce(int rider, int carrier) {
+    g_units[rider].alive = UNIT_ALIVE_TRANSPORTED;
+    g_units[rider].carried_by = (int16_t)carrier;
     return 1;
 }
 
@@ -471,6 +472,135 @@ TEST(a_map_script_creates_triggers_orders_and_calls_the_mission) {
     ASSERT_EQ_INT(0, MissionScript_Active());
 }
 
+/* A hero aboard a transport has not died, and rides into a trigger like
+ * anyone else: the events read only the live flag (legacy:177932,
+ * legacy:178218-178250). */
+TEST(a_unit_aboard_a_transport_is_still_in_the_mission) {
+    mock_reset();
+    mock_def("NPCEMEN", 1.0f);
+    int zombie = mock_def("TARZOM", 1.0f);
+    int boat = mock_def("VERTRANS", 1.0f);
+    CobScript s;
+    fabricate(&s);
+    ASSERT_EQ_INT(0, MissionScript_BeginWith(&s, 1, 0));
+    ticks(1);
+    ASSERT_EQ_INT(1, g_unit_count);
+    int ship = Units_Spawn(boat, 1, 0, 800, 800);
+    int hero = 0;
+    g_units[hero].alive = UNIT_ALIVE_TRANSPORTED;
+    g_units[hero].carried_by = (int16_t)ship;
+    g_units[hero].world_x = 800;
+    g_units[hero].world_y = 800;
+    ticks(2);
+    ASSERT_EQ_INT(0, MissionScript_Verdict());
+
+    int before = g_unit_count;
+    g_units[hero].world_x = 15 * 16;
+    g_units[hero].world_y = 12 * 16;
+    ticks(2);
+    ASSERT_EQ_INT(before + 1, g_unit_count);
+    ASSERT_EQ_INT(zombie, (int)g_units[before].def_idx);
+
+    g_units[hero].alive = UNIT_ALIVE_DEAD;
+    ticks(2);
+    ASSERT_EQ_INT(-1, MissionScript_Verdict());
+    MissionScript_End();
+}
+
+/* `i` puts the unit aboard at once and the first unit of a name answers
+ * to it (legacy:228197-228238, legacy:228557-228561). A wait runs out
+ * aboard and the rest of the list holds until it is set down. */
+TEST(a_board_order_is_at_once_and_the_list_waits_to_be_set_down) {
+    mock_reset();
+    int sword = mock_def("ARASWORD", 1.0f);
+    int boat = mock_def("ARAWAR", 1.0f);
+    int tower = mock_def("ARAAT", 0.0f);
+    ASSERT_EQ_INT(0, MissionScript_Begin(NULL, 1, 0));
+    int ship = Units_Spawn(boat, 1, 0, 800, 800);
+    int rival = Units_Spawn(tower, 2, 1, 1600, 1600);
+    int rider = Units_Spawn(sword, 1, 0, 820, 800);
+    MissionOrders_NameUnit("han", ship);
+    MissionOrders_NameUnit("HAN", rival);
+    ASSERT_EQ_INT(3, MissionOrders_Give(rider, "i han, w 1, m 10 20,"));
+    ticks(1);
+    ASSERT_EQ_INT(UNIT_ALIVE_TRANSPORTED, (int)g_units[rider].alive);
+    ASSERT_EQ_INT(ship, (int)g_units[rider].carried_by);
+
+    ticks(200);
+    ASSERT_EQ_INT(0, g_move_calls);
+    ASSERT_EQ_INT(1, MissionOrders_Running(rider));
+
+    /* The list, paused, goes through a save. */
+    unsigned size = MissionScript_SaveSize();
+    unsigned char *blob = (unsigned char *)malloc(size);
+    ASSERT_NOT_NULL(blob);
+    MissionScript_SaveState(blob);
+    ASSERT_EQ_INT(0, MissionScript_LoadState(blob, size));
+    free(blob);
+    ticks(1);
+    ASSERT_EQ_INT(0, g_move_calls);
+
+    g_units[rider].alive = UNIT_ALIVE_ACTIVE;
+    g_units[rider].carried_by = -1;
+    ticks(2);
+    ASSERT_EQ_INT(1, g_move_calls);
+    ASSERT_EQ_INT(160, g_last_move_x);
+    MissionScript_End();
+}
+
+/* UnitDestroyed(unit): won when the first seat's count reads 2 and the
+ * unit's type number is 2, lost otherwise. */
+static uint32_t g_code_going[] = {
+    /*  0 */ OP_RET,
+    /*  1 */ OP_ALLOC,
+    /*  2 */ OP_PUSHC, 5, OP_PUSHC, 0, OP_PUSHC, 0, OP_PUSHC, 0, OP_PUSHC, 0,
+    /* 12 */ OP_GETARGS, OP_PUSHC, 2, OP_EQ, OP_JF, 40,
+    /* 18 */ OP_PUSHC, 30, OP_PUSHL, 0, OP_PUSHC, 0, OP_PUSHC, 0, OP_PUSHC, 0,
+    /* 28 */ OP_GETARGS, OP_PUSHC, 2, OP_EQ, OP_JF, 40,
+    /* 34 */ OP_PUSHC, 2, OP_PUSHC, 1, OP_SET,
+    /* 39 */ OP_RET,
+    /* 40 */ OP_PUSHC, 2, OP_PUSHC, 0, OP_SET,
+    /* 45 */ OP_RET,
+};
+
+/* The seat's count falls only when a record is freed, so it still holds
+ * the unit the event speaks of, and that unit's type outlives a save,
+ * which wipes a dead slot's record (legacy:227287, legacy:227378,
+ * legacy:178769-178775). */
+TEST(unit_destroyed_reads_the_unit_it_speaks_of_through_a_save) {
+    static char *names[] = { "Start", "UnitDestroyed" };
+    static uint32_t offsets[] = { 0, 1 };
+    mock_reset();
+    mock_def("ARASWORD", 1.0f);
+    int flag = mock_def("VERFLAG", 1.0f);
+    CobScript s;
+    memset(&s, 0, sizeof(s));
+    s.version = 6;
+    s.code = g_code_going;
+    s.num_code_words = (uint32_t)(sizeof(g_code_going) / sizeof(g_code_going[0]));
+    s.script_names = names;
+    s.script_offsets = offsets;
+    s.num_scripts = 2;
+    ASSERT_EQ_INT(0, MissionScript_BeginWith(&s, 1, 0));
+    int ship = Units_Spawn(flag, 1, 0, 100, 100);
+    int other = Units_Spawn(flag, 1, 0, 200, 200);
+    ASSERT(ship >= 0 && other >= 0);
+    ticks(2);
+    g_units[ship].alive = UNIT_ALIVE_DEAD;
+
+    unsigned size = MissionScript_SaveSize();
+    unsigned char *blob = (unsigned char *)malloc(size);
+    ASSERT_NOT_NULL(blob);
+    MissionScript_SaveState(blob);
+    g_units[ship].def_idx = 0;
+    g_units[ship].player_id = 0;
+    ASSERT_EQ_INT(0, MissionScript_LoadState(blob, size));
+    free(blob);
+    ticks(1);
+    ASSERT_EQ_INT(1, MissionScript_Verdict());
+    MissionScript_End();
+}
+
 /* Twenty of the player's units step into the box on one tick, and each
  * brings its zombie: the original runs every event call to its end as
  * it is made (legacy:178247, legacy:306094-306122), so sixteen thread
@@ -540,6 +670,76 @@ TEST(the_first_mission_makes_emen_and_loses_with_him) {
     VFS_Shutdown();
 }
 
+/* The third mission: Joreth reaches the spit, the ship comes in, he goes
+ * aboard and is sailed to the northeast box, and that is the win. */
+TEST(the_third_mission_is_won_with_joreth_aboard) {
+    tak_mem_init();
+    ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, TAK_DATA_DIR));
+    mock_reset();
+    int joreth = mock_def("NPCJOR2", 1.0f);
+    int boat = mock_def("VERTRANS", 1.0f);
+    mock_def("VERSCOUT", 1.0f);
+    mock_def("ARAAT", 0.0f);
+    mock_def("TARSPOUT", 1.0f);
+    mock_def("ARANULL", 0.0f);
+    ASSERT_EQ_INT(0, MissionScript_Begin("takmission03_mt", 1, 0));
+    ticks(2);
+    int hero = -1, ship = -1;
+    for (int i = 0; i < g_unit_count; i++) {
+        if ((int)g_units[i].def_idx == joreth) hero = i;
+        if ((int)g_units[i].def_idx == boat) ship = i;
+    }
+    ASSERT(hero >= 0 && ship >= 0);
+    g_units[hero].world_x = 113 * 16;
+    g_units[hero].world_y = 81 * 16;
+    ticks(2);
+    ASSERT_EQ_INT(122 * 16, g_last_move_x);
+    ASSERT_EQ_INT(ship, g_last_move_handle);
+
+    g_units[hero].alive = UNIT_ALIVE_TRANSPORTED;
+    g_units[hero].carried_by = (int16_t)ship;
+    ticks(2);
+    printf("(aboard: verdict %d) ", MissionScript_Verdict());
+    ASSERT_EQ_INT(0, MissionScript_Verdict());
+
+    g_units[hero].world_x = 150 * 16;
+    g_units[hero].world_y = 45 * 16;
+    ticks(2);
+    printf("(in the box: verdict %d) ", MissionScript_Verdict());
+    ASSERT_EQ_INT(1, MissionScript_Verdict());
+    MissionScript_End();
+    VFS_Shutdown();
+}
+
+/* The sixth mission's script has an order list longer than a short name
+ * and types it asks about by name. Whoever else falls, it is lost only
+ * with its flagship and priestesses, whose type the event still reads
+ * (legacy:227287, legacy:178769-178775). */
+TEST(the_sixth_mission_is_lost_with_its_flagship_alone) {
+    tak_mem_init();
+    ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, TAK_DATA_DIR));
+    mock_reset();
+    int flag = mock_def("VERFLAG", 1.0f);
+    mock_def("VERLIEGE", 1.0f);
+    mock_def("VERAT", 0.0f);
+    mock_def("VERKEEP", 0.0f);
+    int sword = mock_def("VERSWORD", 1.0f);
+    ASSERT_EQ_INT(0, MissionScript_Begin("takmission06_ph", 1, 0));
+    int ship = Units_Spawn(flag, 1, 0, 100, 100);
+    int bystander = Units_Spawn(sword, 10, 9, 200, 200);
+    ticks(3);
+    int x, z, x2, z2, r;
+    ASSERT_EQ_INT(1, MissionScript_DebugTrigger(0, &x, &z, &x2, &z2, &r));
+    g_units[bystander].alive = UNIT_ALIVE_DEAD;
+    ticks(2);
+    ASSERT_EQ_INT(0, MissionScript_Verdict());
+    g_units[ship].alive = UNIT_ALIVE_DEAD;
+    ticks(2);
+    ASSERT_EQ_INT(-1, MissionScript_Verdict());
+    MissionScript_End();
+    VFS_Shutdown();
+}
+
 /* Every mission script the install has, Iron Plague's with the rest
  * when it is there, says nothing the host does not know. A name in a
  * script's table is a command or a sound file. */
@@ -563,13 +763,21 @@ TEST(every_shipped_mission_script_speaks_the_hosts_language) {
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
     char **paths = NULL;
     int n = 0, scripts = 0, commands = 0, unknown = 0, expansion = 0;
-    int ports = 0, strange = 0;
+    int ports = 0, strange = 0, blind = 0;
     ASSERT_EQ_INT(0, VFS_ListFiles("missions/missions/*.cob", &paths, &n));
     for (int i = 0; i < n; i++) {
         CobScript *script = NULL;
         if (Cob_Load(&script, paths[i]) == 0 && script) {
             scripts++;
             if (strstr(paths[i], "takx") || strstr(paths[i], "TAKX")) expansion++;
+            /* A script whose name table failed to read runs blind. */
+            for (uint32_t w = 0; w < script->num_code_words; w++) {
+                if (script->code[w] == OP_CMD && script->num_sound_names == 0) {
+                    if (blind < 8) printf("[%s runs blind] ", paths[i]);
+                    blind++;
+                    break;
+                }
+            }
             for (int k = 0; k < script->num_sound_names; k++) {
                 commands++;
                 if (!known_command(script->sound_names[k])) {
@@ -606,6 +814,7 @@ TEST(every_shipped_mission_script_speaks_the_hosts_language) {
            scripts, expansion, commands, unknown);
     printf("(%d port reads, %d strange) ", ports, strange);
     ASSERT(scripts >= 39);
+    ASSERT_EQ_INT(0, blind);
     ASSERT_EQ_INT(0, unknown);
     ASSERT(ports > 0);
     ASSERT_EQ_INT(0, strange);
@@ -616,6 +825,8 @@ int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--data") == 0) {
         TEST_SUITE("Mission script, the shipped first mission");
         RUN(the_first_mission_makes_emen_and_loses_with_him);
+        RUN(the_third_mission_is_won_with_joreth_aboard);
+        RUN(the_sixth_mission_is_lost_with_its_flagship_alone);
         RUN(every_shipped_mission_script_speaks_the_hosts_language);
         TEST_REPORT();
     }
@@ -627,5 +838,8 @@ int main(int argc, char **argv) {
     RUN(a_patrol_of_several_points_goes_round_them);
     RUN(a_map_script_creates_triggers_orders_and_calls_the_mission);
     RUN(every_unit_that_steps_into_a_trigger_on_one_tick_is_heard);
+    RUN(a_unit_aboard_a_transport_is_still_in_the_mission);
+    RUN(a_board_order_is_at_once_and_the_list_waits_to_be_set_down);
+    RUN(unit_destroyed_reads_the_unit_it_speaks_of_through_a_save);
     TEST_REPORT();
 }

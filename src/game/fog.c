@@ -228,7 +228,9 @@ void Fog_Update(GameWorld *world, int player_id) {
     const Unit *units = Units_GetActive(&unit_count);
     for (int i = 0; i < unit_count; i++) {
         const Unit *u = &units[i];
-        if (u->alive != 1) continue;
+        /* A rider still sees, from where its transport is (legacy:206485-206491). */
+        if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_TRANSPORTED)
+            continue;
         if (!Fog_SharesSight(world, player_id, (int)u->player_id))
             continue;
         /* A nanoframe grants no vision — sight arrives with the

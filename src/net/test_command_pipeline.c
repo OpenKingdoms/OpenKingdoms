@@ -23,6 +23,7 @@
 #include "tak_ingame.h"
 #include "tak_memory.h"
 #include "tak_mission.h"
+#include "tak_mission_script.h"
 #include "tak_moveinfo.h"
 #include "tak_occupancy.h"
 #include "tak_pathing.h"
@@ -2054,6 +2055,11 @@ TEST(a_seat_stops_at_its_unit_limit) {
 
 /* ── capture ───────────────────────────────────────────────────────── */
 
+static int cp_world_stats_losses(int seat) {
+    GameWorld *w = World_Get();
+    return w ? w->stats[seat].losses : -1;
+}
+
 /* The live unit of one def that a seat owns, or -1. */
 static int cp_find_owned(int def_idx, int seat) {
     int count = 0;
@@ -2236,9 +2242,10 @@ TEST(a_seat_at_its_unit_limit_captures_nothing) {
 }
 
 /* A loaded transport can be taken (legacy:247782 asks only whether the
- * victim is a rider). Its riders step out where it stood, still their
- * own side's, and the unit that came over is empty. */
-TEST(a_captured_transport_sets_its_riders_down) {
+ * victim is a rider). The old unit's end is its riders' end
+ * (legacy:227218-227234, legacy:228992-228998), and what came over is
+ * empty. */
+TEST(a_captured_transports_riders_die_with_the_old_unit) {
     ASSERT_NOT_NULL(cp_world());
     int boat = Units_Spawn(CP_DEF_CARRIER, 2, 1, 900, 800);
     int rider = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 840);
@@ -2260,10 +2267,275 @@ TEST(a_captured_transport_sets_its_riders_down) {
     }
     ASSERT(mine >= 0);
     cp_tick();
-    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(rider)->alive);
-    ASSERT_EQ_INT(2, (int)cp_unit(rider)->player_id);
-    ASSERT_EQ_INT(-1, (int)cp_unit(rider)->carried_by);
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, (int)cp_unit(rider)->alive);
+    ASSERT_EQ_INT(1, cp_world_stats_losses(2));
     ASSERT_EQ_INT(0, (int)cp_unit(mine)->cargo_count);
+    cp_end();
+}
+
+/* And a monarch among them is the monarch's death, Expendable off
+ * (legacy:227100-227108). */
+TEST(a_captured_transport_takes_a_monarch_aboard_down) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    w->cfg.monarch_expendable = 0;
+    int boat = Units_Spawn(CP_DEF_CARRIER, 2, 1, 900, 800);
+    int king = Units_Spawn(CP_DEF_MONARCH, 2, 1, 900, 840);
+    int other = Units_Spawn(CP_DEF_WALKER, 2, 1, 1400, 1400);
+    int harpy = cp_harpy(1, 800, 800);
+    ASSERT(boat >= 0 && king >= 0 && other >= 0 && harpy >= 0);
+    Unit *bu = (Unit *)cp_unit(boat);    /* test-only mutation */
+    Unit *ku = (Unit *)cp_unit(king);    /* test-only mutation */
+    ku->alive = UNIT_ALIVE_TRANSPORTED;
+    ku->carried_by = (int16_t)boat;
+    ku->world_x = bu->world_x;
+    ku->world_y = bu->world_y;
+    bu->cargo_count = 1;
+    ASSERT_EQ_INT(1, cp_order_attack(harpy, boat));
+    int mine = -1;
+    for (int t = 0; t < 900 && mine < 0; t++) {
+        cp_tick();
+        mine = cp_find_owned(CP_DEF_CARRIER, 1);
+    }
+    ASSERT(mine >= 0);
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, (int)cp_unit(king)->alive);
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, (int)cp_unit(other)->alive);
+    ASSERT_EQ_INT(1, w->stats[2].eliminated);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(mine)->alive);
+    cp_end();
+}
+
+/* A rider set aboard by hand, the way the saved state holds one. */
+static void cp_aboard(int rider, int boat) {
+    Unit *bu = (Unit *)cp_unit(boat);    /* test-only mutation */
+    Unit *ru = (Unit *)cp_unit(rider);   /* test-only mutation */
+    ru->alive = UNIT_ALIVE_TRANSPORTED;
+    ru->carried_by = (int16_t)boat;
+    ru->world_x = bu->world_x;
+    ru->world_y = bu->world_y;
+    bu->cargo_count++;
+}
+
+/* The pool is every finished unit of the seat, aboard or not: the loop
+ * asks only that it lives and is finished (legacy:235853-235946). */
+TEST(a_unit_aboard_still_pays_into_the_pool) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    UnitDef *bd = (UnitDef *)Units_GetDef(CP_DEF_BUILDER);
+    bd->mogrium_storage = 500;
+    bd->mogrium_income_per_sec = 7.0f;
+    int boat = Units_Spawn(CP_DEF_CARRIER, 1, 0, 900, 800);
+    int builder = Units_Spawn(CP_DEF_BUILDER, 1, 0, 900, 840);
+    ASSERT(boat >= 0 && builder >= 0);
+    Units_RecomputeEconomy(w);
+    int cap = Economy_GetMaxMana(&w->economy, 1);
+    int rate = Economy_GetRegenRate(&w->economy, 1);
+    ASSERT_EQ_INT(500, cap);
+    ASSERT_EQ_INT(7, rate);
+    cp_aboard(builder, boat);
+    Units_RecomputeEconomy(w);
+    printf("(aboard: cap %d rate %d) ", Economy_GetMaxMana(&w->economy, 1),
+           Economy_GetRegenRate(&w->economy, 1));
+    ASSERT_EQ_INT(cap, Economy_GetMaxMana(&w->economy, 1));
+    ASSERT_EQ_INT(rate, Economy_GetRegenRate(&w->economy, 1));
+    cp_end();
+}
+
+/* Sunk with riders aboard: they die with it, each its owner's loss and
+ * its killer's kill, with no body (legacy:227218-227234,
+ * legacy:227293-227327). */
+TEST(a_sunk_transport_takes_its_riders_down) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    int boat = Units_Spawn(CP_DEF_CARRIER, 2, 1, 900, 800);
+    int rider = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 840);
+    int archer = Units_Spawn(CP_DEF_ARCHER, 1, 0, 800, 800);
+    ASSERT(boat >= 0 && rider >= 0 && archer >= 0);
+    cp_aboard(rider, boat);
+    ((Unit *)cp_unit(boat))->health = 1;      /* test-only mutation */
+    ASSERT_EQ_INT(1, cp_order_attack(archer, boat));
+    for (int t = 0; t < 400 && cp_unit(boat)->alive == UNIT_ALIVE_ACTIVE; t++) cp_tick();
+    ASSERT(cp_unit(boat)->alive != UNIT_ALIVE_ACTIVE);
+    for (int t = 0; t < 4; t++) cp_tick();
+    printf("(rider alive %d, losses %d, kills %d) ", cp_unit(rider)->alive,
+           w->stats[2].losses, w->stats[1].kills);
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, (int)cp_unit(rider)->alive);
+    ASSERT_EQ_INT(2, w->stats[2].losses);
+    ASSERT_EQ_INT(2, w->stats[1].kills);
+    cp_end();
+}
+
+/* A monarch aboard goes down with the ship. Expendable the rest fight
+ * on, otherwise the transport counts as the monarch
+ * (legacy:227100-227108, legacy:227174-227181). */
+TEST(a_monarch_aboard_goes_down_with_the_ship) {
+    for (int expendable = 0; expendable < 2; expendable++) {
+        GameWorld *w = cp_world();
+        ASSERT_NOT_NULL(w);
+        w->cfg.monarch_expendable = expendable;
+        int boat = Units_Spawn(CP_DEF_CARRIER, 2, 1, 900, 800);
+        int king = Units_Spawn(CP_DEF_MONARCH, 2, 1, 900, 840);
+        int other = Units_Spawn(CP_DEF_WALKER, 2, 1, 1400, 1400);
+        int archer = Units_Spawn(CP_DEF_ARCHER, 1, 0, 800, 800);
+        ASSERT(boat >= 0 && king >= 0 && other >= 0 && archer >= 0);
+        cp_aboard(king, boat);
+        ((Unit *)cp_unit(boat))->health = 1;  /* test-only mutation */
+        ASSERT_EQ_INT(1, cp_order_attack(archer, boat));
+        for (int t = 0; t < 400 && cp_unit(boat)->alive == UNIT_ALIVE_ACTIVE; t++) cp_tick();
+        for (int t = 0; t < 4; t++) cp_tick();
+        ASSERT_EQ_INT(UNIT_ALIVE_DEAD, (int)cp_unit(king)->alive);
+        ASSERT_EQ_INT(expendable ? UNIT_ALIVE_ACTIVE : UNIT_ALIVE_DEAD,
+                      (int)cp_unit(other)->alive);
+        ASSERT_EQ_INT(expendable ? 0 : 1, w->stats[2].eliminated);
+        cp_end();
+    }
+}
+
+/* Boarding takes a unit out of the selection (legacy:234588) and leaves
+ * it in its numbered group: selecting skips a rider and nothing removes
+ * it (legacy:239065-239070). */
+TEST(a_rider_leaves_the_selection_and_keeps_its_group) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    ((UnitDef *)Units_GetDef(CP_DEF_CARRIER))->transport_distance = 300;
+    int boat = Units_Spawn(CP_DEF_CARRIER, 1, 0, 900, 800);
+    int rider = Units_Spawn(CP_DEF_WALKER, 1, 0, 900, 840);
+    ASSERT(boat >= 0 && rider >= 0);
+    Units_SelectSingle(rider);
+    Units_AssignControlGroup(3);
+    Units_SelectSingle(rider);
+    int one[1] = { boat };
+    ASSERT_EQ_INT(1, Units_OrderLoadGroup(one, 1, rider, 0));
+    for (int t = 0; t < 300 && cp_unit(rider)->alive != UNIT_ALIVE_TRANSPORTED; t++)
+        cp_tick();
+    ASSERT_EQ_INT(UNIT_ALIVE_TRANSPORTED, (int)cp_unit(rider)->alive);
+    int n = -1;
+    Units_GetSelection(&n);
+    ASSERT_EQ_INT(0, n);
+
+    ASSERT_EQ_INT(0, Units_RecallControlGroup(3));
+    ASSERT_EQ_INT(1, Units_OrderUnload(boat, 900, 960));
+    for (int t = 0; t < 600 && cp_unit(rider)->alive != UNIT_ALIVE_ACTIVE; t++) cp_tick();
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(rider)->alive);
+    ASSERT_EQ_INT(1, Units_RecallControlGroup(3));
+    cp_end();
+}
+
+/* The update loop passes over nobody aboard: a rider's wounds mend and
+ * its reserve fills (legacy:236025, legacy:236276-236288,
+ * legacy:8706-8709). Its aura works from aboard too
+ * (legacy:235853-235876). */
+TEST(a_rider_mends_fills_and_keeps_its_aura) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    UnitDef *rd = (UnitDef *)Units_GetDef(CP_DEF_WALKER);
+    rd->heal_time = 30.0f;
+    rd->buildtime = 100.0f;
+    rd->max_mana = 100;
+    rd->mana_recharge_per_sec = 30.0f;
+    rd->auras[UNIT_AURA_ARMOR] = (UnitAura){ 1.5f, 400, 1.0f, 0 };
+    int boat = Units_Spawn(CP_DEF_CARRIER, 1, 0, 900, 800);
+    int rider = Units_Spawn(CP_DEF_WALKER, 1, 0, 900, 840);
+    int near_it = Units_Spawn(CP_DEF_ARCHER, 1, 0, 960, 800);
+    ASSERT(boat >= 0 && rider >= 0 && near_it >= 0);
+    cp_aboard(rider, boat);
+    Unit *ru = (Unit *)cp_unit(rider);        /* test-only mutation */
+    ru->health = 50;
+    ru->mana_max = 100.0f;
+    ru->mana = 0.0f;
+    for (int t = 0; t < 120; t++) cp_tick();
+    printf("(health %d mana %.0f armour x%.2f) ", ru->health, ru->mana,
+           cp_unit(near_it)->aura_armor);
+    ASSERT(ru->health > 50);
+    ASSERT(ru->mana > 50.0f);
+    ASSERT(cp_unit(near_it)->aura_armor > 1.4f);
+    cp_end();
+}
+
+/* The real thing from an order list: `i` puts the unit aboard at once
+ * whoever owns the ship and however full it is, the rest of its list
+ * waits, the ship carries it off and sets it down, and the list goes on
+ * from the shore (legacy:228557-228561, legacy:234446-234449). */
+TEST(an_order_list_rides_a_ship_and_walks_on_from_where_it_lands) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    UnitDef *cd = (UnitDef *)Units_GetDef(CP_DEF_CARRIER);
+    cd->transport_distance = 300;
+    cd->transport_capacity = 1;
+    int boat = Units_Spawn(CP_DEF_CARRIER, 2, 1, 900, 800);
+    int first = Units_Spawn(CP_DEF_WALKER, 2, 1, 840, 800);
+    int second = Units_Spawn(CP_DEF_WALKER, 3, 2, 960, 800);
+    ASSERT(boat >= 0 && first >= 0 && second >= 0);
+    ASSERT_EQ_INT(0, MissionScript_Begin(NULL, 1, 0));
+    MissionOrders_NameUnit("ferry", boat);
+    ASSERT_EQ_INT(2, MissionOrders_Give(first, "i ferry, m 50 40,"));
+    ASSERT_EQ_INT(1, MissionOrders_Give(second, "i ferry,"));
+    InGame_DebugRunSimTicks(2);
+    ASSERT_EQ_INT(UNIT_ALIVE_TRANSPORTED, (int)cp_unit(first)->alive);
+    ASSERT_EQ_INT(UNIT_ALIVE_TRANSPORTED, (int)cp_unit(second)->alive);
+    ASSERT_EQ_INT(2, (int)cp_unit(boat)->cargo_count);
+    ASSERT_EQ_INT(1, MissionOrders_Running(first));
+
+    /* The last aboard leaves first, so the one with orders is last off. */
+    ASSERT_EQ_INT(1, Units_OrderUnload(boat, 900, 1000));
+    for (int t = 0; t < 1200 && cp_unit(first)->alive != UNIT_ALIVE_ACTIVE; t++)
+        InGame_DebugRunSimTicks(1);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(second)->alive);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(first)->alive);
+    ASSERT_EQ_INT(0, (int)cp_unit(boat)->cargo_count);
+    for (int t = 0; t < 1200 && cp_unit(first)->cmd_x != 50 * 16; t++)
+        InGame_DebugRunSimTicks(1);
+    ASSERT_EQ_INT(50 * 16, cp_unit(first)->cmd_x);
+    ASSERT_EQ_INT(40 * 16, cp_unit(first)->cmd_y);
+    MissionScript_End();
+    cp_end();
+}
+
+/* A gift leaves out a transport with riders (legacy:155789). */
+TEST(a_loaded_transport_is_not_given_away) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    int boat = Units_Spawn(CP_DEF_CARRIER, 1, 0, 900, 800);
+    int empty = Units_Spawn(CP_DEF_CARRIER, 1, 0, 1200, 800);
+    int rider = Units_Spawn(CP_DEF_WALKER, 1, 0, 900, 840);
+    ASSERT(boat >= 0 && empty >= 0 && rider >= 0);
+    cp_aboard(rider, boat);
+    cp_cmd(TAK_CMD_GIVE_UNITS, 1);
+    g_cmd.arg = 2;
+    cp_cmd_unit(boat);
+    cp_cmd_unit(empty);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(1, (int)cp_unit(boat)->player_id);
+    ASSERT_EQ_INT(2, (int)cp_unit(empty)->player_id);
+    cp_end();
+}
+
+/* A mission that is lost with its monarch or with a type is not lost by
+ * sending them aboard: those conditions hear of a death
+ * (legacy:240880-240892, legacy:241040-241076). */
+TEST(a_mission_is_not_lost_by_going_aboard) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    w->mission.objectives = (MissionObjective *)tak_calloc(2, sizeof(MissionObjective));
+    ASSERT_NOT_NULL(w->mission.objectives);
+    w->mission.objectives[0].type = MISSION_OBJ_COMMANDER_KILLED;
+    w->mission.objectives[0].role = MISSION_ROLE_DEFEAT;
+    w->mission.objectives[1].type = MISSION_OBJ_ALL_UNITS_KILLED_OF_TYPE;
+    w->mission.objectives[1].role = MISSION_ROLE_DEFEAT;
+    strcpy(w->mission.objectives[1].text, "TESTSWORD");
+    w->mission.objective_count = 2;
+    w->mission.defeat_count = 2;
+    int boat = Units_Spawn(CP_DEF_CARRIER, 1, 0, 900, 800);
+    int king = Units_Spawn(CP_DEF_MONARCH, 1, 0, 900, 840);
+    int rider = Units_Spawn(CP_DEF_WALKER, 1, 0, 940, 840);
+    ASSERT(boat >= 0 && king >= 0 && rider >= 0);
+    InGame_DebugRunSimTicks(2);
+    ASSERT_EQ_INT(0, w->skirmish_game_over);
+    cp_aboard(king, boat);
+    cp_aboard(rider, boat);
+    InGame_DebugRunSimTicks(2);
+    printf("(over %d result %d) ", w->skirmish_game_over, w->skirmish_local_result);
+    ASSERT_EQ_INT(0, w->skirmish_game_over);
     cp_end();
 }
 
@@ -3577,7 +3849,16 @@ int main(int argc, char **argv) {
     RUN(a_unit_that_cannot_be_captured_is_never_fired_on);
     RUN(a_monarch_is_struck_and_stays_its_own);
     RUN(a_seat_at_its_unit_limit_captures_nothing);
-    RUN(a_captured_transport_sets_its_riders_down);
+    RUN(a_captured_transports_riders_die_with_the_old_unit);
+    RUN(a_captured_transport_takes_a_monarch_aboard_down);
+    RUN(an_order_list_rides_a_ship_and_walks_on_from_where_it_lands);
+    RUN(a_unit_aboard_still_pays_into_the_pool);
+    RUN(a_sunk_transport_takes_its_riders_down);
+    RUN(a_monarch_aboard_goes_down_with_the_ship);
+    RUN(a_rider_leaves_the_selection_and_keeps_its_group);
+    RUN(a_rider_mends_fills_and_keeps_its_aura);
+    RUN(a_loaded_transport_is_not_given_away);
+    RUN(a_mission_is_not_lost_by_going_aboard);
     RUN(a_mind_control_splash_rolls_for_each_unit_in_reach);
     RUN(the_capture_roll_rises_with_the_victims_rank);
     RUN(a_mind_control_shot_passes_a_unit_that_stepped_aside);

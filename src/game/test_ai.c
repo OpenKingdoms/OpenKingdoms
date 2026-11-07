@@ -581,6 +581,21 @@ static int test_ai_mobile_producer_trains_the_army(void) {
     ASSERT_EQ_INT(1, g_begin_calls);
     ASSERT_EQ_INT(2, g_last_builder);
     ASSERT_EQ_INT(3, g_last_build_def);
+
+    /* That handler aboard a ferry is still the one the limit allows, as
+     * the original tallies the instances that exist. */
+    g_units[0].cmd_kind = UNIT_CMD_NONE;
+    g_units[0].build_target = -1;
+    g_units[2].cmd_kind = UNIT_CMD_NONE;
+    g_units[2].alive = UNIT_ALIVE_TRANSPORTED;
+    g_units[2].carried_by = 1;
+    g_last_build_def = -1;
+    w.skirmish_elapsed_ticks = 240;
+    TAK_AI_TickSkirmish(&w);
+    if (g_last_build_def == 2) {
+        fprintf(stderr, "a handler aboard does not count toward its limit\n");
+        return 1;
+    }
     return 0;
 }
 
