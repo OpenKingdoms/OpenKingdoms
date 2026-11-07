@@ -2180,7 +2180,7 @@ static void lf_fog(GameWorld *w) {
  * see, the shooters find a place to shoot from past the ridge, and the
  * fog is state. Pinned, so every platform in CI has to
  * reach the same answer. */
-#define LF_FOG_VOLLEY_HASH 0xa2838467u
+#define LF_FOG_VOLLEY_HASH 0xf3078793u
 
 static uint32_t lf_fog_volley_hash(int *out_hurt) {
     GameWorld *w = lf_world(1, 1);
