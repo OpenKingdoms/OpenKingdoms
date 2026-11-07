@@ -473,10 +473,10 @@ Format per entry:
 - Change: Before it orders a build the AI asks the pathfinder for a way
   from the builder to the site, as the original does (legacy:17327). The
   original checks the one site its random placement gave it and builds
-  nothing that pass when there is no way. Our placement is a fixed ring,
-  so a site with no route is passed by and the ring goes on, for up to
-  twelve route checks a search, and a spot within 48 px of one that just
-  failed is passed by without a check. A seat also keeps up to sixteen
+  nothing that pass when there is no way. Our placement falls back on a
+  fixed ring (A-014), so a site with no route is passed by and the search
+  goes on, for up to twelve route checks in all, and a spot within 48 px
+  of one that just failed is passed by without a check. A seat also keeps up to sixteen
   sites for a minute each: the site of a build order its builder's mover
   gave up on, and a sacred pad its builder had no way to. Nothing is
   sited within 128 px of one, and a remembered pad is not counted as
@@ -867,7 +867,24 @@ Format per entry:
   crossing lost with its transport waits three times as long before
   the next. One ferry a seat at a time. A walker in a group marching at
   a target over water, and a ship sent at one on land, go back to the
-  gathering. The code is the ferry section of `src/game/ai.c`, the
+  gathering, and the wait between crossings is a wait for a boat, not a
+  march at the sea. A cut off seat keeps its transports for the next
+  crossing. They join no group, and when a crossing is over a flyer goes
+  home and a ship sails to a berth, the open water nearest home with no
+  other ship or yard close by. A ship sent home goes to a berth rather
+  than at the land, the seat's idle ships keep off narrow water and its
+  yards the same way, and a ship stalled on a crossing sends the idle
+  ships round it to a berth. A yard goes up where a square of open
+  water 320 px across lies past its pad, and on the nearest water
+  where the shore has no such spot. A transport too hurt to sail holds
+  no place under the profile's limit, so one Transport Ship or Roc
+  lost to damage is replaced. A landing is chosen for the hardest rider
+  aboard, the widest and then the one taking the least slope, because
+  an unload ends at the first rider its spot refuses
+  (legacy:14569-14574), and a type no landing suits stays behind. A
+  walker takes no ship or flyer as a target when no ground it can walk
+  puts it in reach, as the original takes no target it has no route to
+  (legacy:15461-15473). The code is the ferry section of `src/game/ai.c`, the
   crossing rows of the army domain in `src/game/ai_htn.c` and the ferry
   goal and its two actions in `src/game/ai_plan.c`.
 - Why: issue #454. On an island start the computer never attacked a
@@ -898,8 +915,64 @@ Format per entry:
   coming the other way and stop. On Two Castles, Tarosian Plain and
   Lake Lokken, where every start walks to every other, 24 games played
   the same to the unit with it and without.
+- Measured again for the stops played on Varro Passage and Meredoc Keys
+  (starts 1 and 3, and 1 and 5), 24 games of 20 minutes, every kingdom
+  against itself, two seeds, both seats with A-013, before and after the
+  later rules. Crossings launched went from 115 to 142 and landings from
+  38 to 58, Veruna's from 3 to 10, Taros's from 13 to 21, Aramon's from
+  11 to 15 and Zhon's from 11 to 12. The first landing came at 444
+  seconds on average against 563, Veruna's at 517 against 817.
 - Citation: the manual describes no AI rule at this level. Behaviour
   note `docs/notes/2026-09-04-legacy-ai.md`, "Water and transports".
+
+## A-014: The computer's base keeps the original's spacing, with a fallback for small ground
+
+- Change: a build's site comes from the original's placement
+  (`ai_grid_site` in `src/game/ai.c`, `TAK_AI_TACTIC_SPACING`). Thirty
+  draws round home, or round the builder when it is out past home,
+  each snapped to a square of the seat's grid and set inside it so the
+  footprint leaves six cells to the next square, nine on the wider grid
+  of a type with a water depth to keep. The grid comes from the match's
+  seed and the seat, so it is the same on every machine and after a
+  load, and adds nothing to a save. A site on a sacred pad is refused. A
+  unit sent home goes to a spot drawn round home, and an idle builder
+  with another of the seat's walkers within 48 px walks to one.
+- Why: issue #487. Our placement was a ring out from the builder that
+  took the first clear site, so a base stood wall to wall, troops could
+  not get through and builders stood on top of each other. The original
+  draws in a disc of 560 px, 400 for a monarch's second of a type, 800
+  for a type that walks and 560 for a monarch's (legacy:17300-17307,
+  legacy:17353, legacy:17409-17422), on squares of 14 to 23 cells by 14
+  to 16 (legacy:20283, legacy:20311). That is the two or three barracks
+  lengths the report asked for. Its idle units never stand still: each
+  roams round home, 560 px for a builder and 800 for a fighter
+  (legacy:17687-17708).
+- What is ours: where thirty draws find nothing, on a small map, on an
+  island or in a full base, the original builds nothing that pass. Ours
+  goes on to a ring round the builder, which takes the nearest site with
+  a 48 px lane to the next building, then the nearest there is, so a seat
+  never stops for want of room. The lane also holds within a square,
+  where the original lets two small types touch. Builders roam only when
+  crowded, and a walk like that leaves a builder free to take work. A
+  tower keeps its anchor from A-009, near which a ring finds its site.
+- Measured: duels of 20 minutes off the extracted data, every kingdom
+  against itself, two seeds, on the parent and with this. On Two Castles
+  and Tarosian Plain, 16 games a side, the mean gap from a building to its
+  nearest neighbour went from 44 px to 165 and the buildings closer than
+  16 px from 44 to none. A builder had 3.64 of the seat's walkers within
+  96 px and now has 0.26, Zhon's 7.57 and 0.33. Builders stuck with an
+  order stayed about level at 0.2 and 0.1 percent of their time. Units
+  killed went from 1,422 to 1,505, and the simulation took 1.25 s of a
+  processor a game minute against 1.14. On the three island pairings of
+  A-013 the same numbers were 91 px and 135, 64 close and 4, and 3.30
+  walkers and 0.53. The stuck figure there rose from 1.2 percent to 2.0,
+  because a builder boxed in now holds an order it cannot carry out where
+  it used to stand idle. In 16 games on the land maps with one seat
+  spaced and the other not, seats swapped, the spaced seat won 7 and was
+  ahead in 3 more against 5 and 1, and killed 729 for 794 lost against
+  784 for 752, so the spacing costs a seat nothing in a fight.
+- Citation: the manual describes no AI placement rule. Behaviour note
+  `docs/notes/2026-09-04-legacy-ai.md`, "Placement".
 
 ## T-001: Flying transports load and unload by the ground rules
 
