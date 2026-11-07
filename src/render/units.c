@@ -385,6 +385,8 @@ static float build_heading_for_def(const UnitDef *d);
 /* Forwards for the capture hand over, which sits with the shots. */
 static void unit_remove_now(int handle);
 static void unit_riders_die(Unit *t, int t_idx);
+static int unit_holds_commander(const Unit *t, int t_idx);
+static void unit_check_commander_death(const Unit *t, int t_idx);
 static void occ_lift(int handle);
 static void selection_forget(int handle);
 static void occ_refresh(int handle);
@@ -758,7 +760,7 @@ static void play_transport_sound(const char *wav, int32_t x, int32_t y) {
                            world->viewport_w, world->viewport_h);
 }
 
-/* The attach itself. A rider leaves the selection (legacy:234589) and
+/* The attach itself. A rider leaves the selection (legacy:234588) and
  * keeps its place in any numbered group. */
 static void unit_put_aboard(Unit *carrier, int carrier_idx,
                             Unit *target, int target_idx) {
@@ -852,7 +854,7 @@ static int unit_queue_pickup(int carrier, int rider, int queued) {
     order_fresh(r);
     r->cmd_kind = UNIT_CMD_BOARD;
     r->target = (int16_t)carrier;
-    r->build_target = -1;
+    r->build_target = -1;   /* detach from any nanoframe */
     r->cmd_x = c->world_x;
     r->cmd_y = c->world_y;
     unit_clear_path(r);
@@ -1988,10 +1990,14 @@ int Units_Capture(int handle, int player_id) {
     nu->flight_alt = flight_alt;
     if (flying) occ_sync_mobile(made);
     /* The old unit leaves with no death script and no body: the
-     * original skips Killed for this removal (legacy:227130). Its riders
-     * go with it, the removal being a death (legacy:228985). */
+     * original skips Killed for this removal (legacy:227130). The
+     * removal is a kill, so its riders go with it and a monarch among
+     * them is the monarch's death (legacy:228992-228998,
+     * legacy:227100-227108). */
+    int commander = unit_holds_commander(old, handle);
     unit_riders_die(&g_units[handle], handle);
     unit_remove_now(handle);
+    if (commander) unit_check_commander_death(old, handle);
     return made;
 }
 

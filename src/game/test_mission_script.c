@@ -530,11 +530,74 @@ TEST(a_board_order_is_at_once_and_the_list_waits_to_be_set_down) {
     ASSERT_EQ_INT(0, g_move_calls);
     ASSERT_EQ_INT(1, MissionOrders_Running(rider));
 
+    /* The list, paused, goes through a save. */
+    unsigned size = MissionScript_SaveSize();
+    unsigned char *blob = (unsigned char *)malloc(size);
+    ASSERT_NOT_NULL(blob);
+    MissionScript_SaveState(blob);
+    ASSERT_EQ_INT(0, MissionScript_LoadState(blob, size));
+    free(blob);
+    ticks(1);
+    ASSERT_EQ_INT(0, g_move_calls);
+
     g_units[rider].alive = UNIT_ALIVE_ACTIVE;
     g_units[rider].carried_by = -1;
     ticks(2);
     ASSERT_EQ_INT(1, g_move_calls);
     ASSERT_EQ_INT(160, g_last_move_x);
+    MissionScript_End();
+}
+
+/* UnitDestroyed(unit): won when the first seat's count reads 2 and the
+ * unit's type number is 2, lost otherwise. */
+static uint32_t g_code_going[] = {
+    /*  0 */ OP_RET,
+    /*  1 */ OP_ALLOC,
+    /*  2 */ OP_PUSHC, 5, OP_PUSHC, 0, OP_PUSHC, 0, OP_PUSHC, 0, OP_PUSHC, 0,
+    /* 12 */ OP_GETARGS, OP_PUSHC, 2, OP_EQ, OP_JF, 40,
+    /* 18 */ OP_PUSHC, 30, OP_PUSHL, 0, OP_PUSHC, 0, OP_PUSHC, 0, OP_PUSHC, 0,
+    /* 28 */ OP_GETARGS, OP_PUSHC, 2, OP_EQ, OP_JF, 40,
+    /* 34 */ OP_PUSHC, 2, OP_PUSHC, 1, OP_SET,
+    /* 39 */ OP_RET,
+    /* 40 */ OP_PUSHC, 2, OP_PUSHC, 0, OP_SET,
+    /* 45 */ OP_RET,
+};
+
+/* The seat's count falls only when a record is freed, so it still holds
+ * the unit the event speaks of, and that unit's type outlives a save,
+ * which wipes a dead slot's record (legacy:227287, legacy:227378,
+ * legacy:178769-178775). */
+TEST(unit_destroyed_reads_the_unit_it_speaks_of_through_a_save) {
+    static char *names[] = { "Start", "UnitDestroyed" };
+    static uint32_t offsets[] = { 0, 1 };
+    mock_reset();
+    mock_def("ARASWORD", 1.0f);
+    int flag = mock_def("VERFLAG", 1.0f);
+    CobScript s;
+    memset(&s, 0, sizeof(s));
+    s.version = 6;
+    s.code = g_code_going;
+    s.num_code_words = (uint32_t)(sizeof(g_code_going) / sizeof(g_code_going[0]));
+    s.script_names = names;
+    s.script_offsets = offsets;
+    s.num_scripts = 2;
+    ASSERT_EQ_INT(0, MissionScript_BeginWith(&s, 1, 0));
+    int ship = Units_Spawn(flag, 1, 0, 100, 100);
+    int other = Units_Spawn(flag, 1, 0, 200, 200);
+    ASSERT(ship >= 0 && other >= 0);
+    ticks(2);
+    g_units[ship].alive = UNIT_ALIVE_DEAD;
+
+    unsigned size = MissionScript_SaveSize();
+    unsigned char *blob = (unsigned char *)malloc(size);
+    ASSERT_NOT_NULL(blob);
+    MissionScript_SaveState(blob);
+    g_units[ship].def_idx = 0;
+    g_units[ship].player_id = 0;
+    ASSERT_EQ_INT(0, MissionScript_LoadState(blob, size));
+    free(blob);
+    ticks(1);
+    ASSERT_EQ_INT(1, MissionScript_Verdict());
     MissionScript_End();
 }
 
@@ -777,5 +840,6 @@ int main(int argc, char **argv) {
     RUN(every_unit_that_steps_into_a_trigger_on_one_tick_is_heard);
     RUN(a_unit_aboard_a_transport_is_still_in_the_mission);
     RUN(a_board_order_is_at_once_and_the_list_waits_to_be_set_down);
+    RUN(unit_destroyed_reads_the_unit_it_speaks_of_through_a_save);
     TEST_REPORT();
 }

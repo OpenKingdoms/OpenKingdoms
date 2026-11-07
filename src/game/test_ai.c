@@ -581,57 +581,21 @@ static int test_ai_mobile_producer_trains_the_army(void) {
     ASSERT_EQ_INT(1, g_begin_calls);
     ASSERT_EQ_INT(2, g_last_builder);
     ASSERT_EQ_INT(3, g_last_build_def);
-    return 0;
-}
 
-/* A unit aboard a ferry is one the seat has, so its type's limit holds. */
-static int test_ai_a_unit_aboard_counts_toward_its_limit(void) {
-    GameWorld w;
-    reset_mock(&w);
-    w.cfg.players[1].kind = TAK_SLOT_AI;
-    w.cfg.players[1].team = 2;
-    g_mock_mana = 500;
-    g_mock_max_mana = 1000;
-    g_mock_income = 10;
-    strcpy(g_defs[0].unitname, "ZONHUNT");
-    strcpy(g_defs[0].category, "ZON Monarch");
-    g_defs[0].cap_flags = UNIT_CAP_BUILDER;
-    g_defs[0].max_velocity = 1.5f;
-    g_defs[0].worker_time = 10.0f;
-    g_defs[0].commander = 1;
-    strcpy(g_defs[1].unitname, "ZONLODE");
-    strcpy(g_defs[1].category, "ZON");
-    g_defs[1].mogrium_storage = 1000;
-    g_defs[1].mogrium_income_per_sec = 10.0f;
-    strcpy(g_defs[2].unitname, "ZONHAND");
-    strcpy(g_defs[2].category, "ZON BUILDER");
-    g_defs[2].cap_flags = UNIT_CAP_BUILDER;
-    g_defs[2].max_velocity = 1.2f;
-    g_defs[2].worker_time = 10.0f;
-    g_buildable_counts[0] = 2;
-    g_buildables[0][0] = 1;
-    g_buildables[0][1] = 2;
-    for (int i = 0; i < 3; i++) {
-        g_units[i].alive = UNIT_ALIVE_ACTIVE;
-        g_units[i].player_id = 2;
-        g_units[i].def_idx = (uint16_t)i;
-        g_units[i].build_target = -1;
-        g_units[i].target = -1;
-    }
+    /* That handler aboard a ferry is still the one the limit allows, as
+     * the original tallies the instances that exist. */
+    g_units[0].cmd_kind = UNIT_CMD_NONE;
+    g_units[0].build_target = -1;
+    g_units[2].cmd_kind = UNIT_CMD_NONE;
     g_units[2].alive = UNIT_ALIVE_TRANSPORTED;
     g_units[2].carried_by = 1;
-    g_unit_count = 3;
-    g_mock_profile = "limit ZONHAND 1\n";
-    TAK_AI_ResetProfile();
     g_last_build_def = -1;
+    w.skirmish_elapsed_ticks = 240;
     TAK_AI_TickSkirmish(&w);
-    printf("(asked for def %d) ", g_last_build_def);
     if (g_last_build_def == 2) {
         fprintf(stderr, "a handler aboard does not count toward its limit\n");
         return 1;
     }
-    g_mock_profile = NULL;
-    TAK_AI_ResetProfile();
     return 0;
 }
 
@@ -4127,7 +4091,6 @@ int main(void) {
     ASSERT_EQ_INT(0, TAK_AI_PursuitRadius(0, 0, 3));
     if (test_ai_builds_economy_then_production_then_combat() != 0) return 1;
     if (test_ai_moves_to_the_next_factory_at_the_limit() != 0) return 1;
-    if (test_ai_a_unit_aboard_counts_toward_its_limit() != 0) return 1;
     if (test_ai_builds_lodestone_on_sacred_pad() != 0) return 1;
     if (test_ai_a_build_on_its_way_counts_as_a_frame() != 0) return 1;
     if (test_ai_wave_targets_follow_the_teams() != 0) return 1;

@@ -23,6 +23,7 @@
 #include "tak_ingame.h"
 #include "tak_memory.h"
 #include "tak_mission.h"
+#include "tak_mission_script.h"
 #include "tak_moveinfo.h"
 #include "tak_occupancy.h"
 #include "tak_pathing.h"
@@ -2054,12 +2055,12 @@ TEST(a_seat_stops_at_its_unit_limit) {
 
 /* ── capture ───────────────────────────────────────────────────────── */
 
-/* The live unit of one def that a seat owns, or -1. */
 static int cp_world_stats_losses(int seat) {
     GameWorld *w = World_Get();
     return w ? w->stats[seat].losses : -1;
 }
 
+/* The live unit of one def that a seat owns, or -1. */
 static int cp_find_owned(int def_idx, int seat) {
     int count = 0;
     const Unit *units = Units_GetActive(&count);
@@ -2242,7 +2243,8 @@ TEST(a_seat_at_its_unit_limit_captures_nothing) {
 
 /* A loaded transport can be taken (legacy:247782 asks only whether the
  * victim is a rider). The old unit's end is its riders' end
- * (legacy:227218-227234, legacy:228985), and what came over is empty. */
+ * (legacy:227218-227234, legacy:228992-228998), and what came over is
+ * empty. */
 TEST(a_captured_transports_riders_die_with_the_old_unit) {
     ASSERT_NOT_NULL(cp_world());
     int boat = Units_Spawn(CP_DEF_CARRIER, 2, 1, 900, 800);
@@ -2268,6 +2270,38 @@ TEST(a_captured_transports_riders_die_with_the_old_unit) {
     ASSERT_EQ_INT(UNIT_ALIVE_DEAD, (int)cp_unit(rider)->alive);
     ASSERT_EQ_INT(1, cp_world_stats_losses(2));
     ASSERT_EQ_INT(0, (int)cp_unit(mine)->cargo_count);
+    cp_end();
+}
+
+/* And a monarch among them is the monarch's death, Expendable off
+ * (legacy:227100-227108). */
+TEST(a_captured_transport_takes_a_monarch_aboard_down) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    w->cfg.monarch_expendable = 0;
+    int boat = Units_Spawn(CP_DEF_CARRIER, 2, 1, 900, 800);
+    int king = Units_Spawn(CP_DEF_MONARCH, 2, 1, 900, 840);
+    int other = Units_Spawn(CP_DEF_WALKER, 2, 1, 1400, 1400);
+    int harpy = cp_harpy(1, 800, 800);
+    ASSERT(boat >= 0 && king >= 0 && other >= 0 && harpy >= 0);
+    Unit *bu = (Unit *)cp_unit(boat);    /* test-only mutation */
+    Unit *ku = (Unit *)cp_unit(king);    /* test-only mutation */
+    ku->alive = UNIT_ALIVE_TRANSPORTED;
+    ku->carried_by = (int16_t)boat;
+    ku->world_x = bu->world_x;
+    ku->world_y = bu->world_y;
+    bu->cargo_count = 1;
+    ASSERT_EQ_INT(1, cp_order_attack(harpy, boat));
+    int mine = -1;
+    for (int t = 0; t < 900 && mine < 0; t++) {
+        cp_tick();
+        mine = cp_find_owned(CP_DEF_CARRIER, 1);
+    }
+    ASSERT(mine >= 0);
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, (int)cp_unit(king)->alive);
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, (int)cp_unit(other)->alive);
+    ASSERT_EQ_INT(1, w->stats[2].eliminated);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(mine)->alive);
     cp_end();
 }
 
@@ -2357,7 +2391,7 @@ TEST(a_monarch_aboard_goes_down_with_the_ship) {
     }
 }
 
-/* Boarding takes a unit out of the selection (legacy:234589) and leaves
+/* Boarding takes a unit out of the selection (legacy:234588) and leaves
  * it in its numbered group: selecting skips a rider and nothing removes
  * it (legacy:239065-239070). */
 TEST(a_rider_leaves_the_selection_and_keeps_its_group) {
@@ -2415,6 +2449,45 @@ TEST(a_rider_mends_fills_and_keeps_its_aura) {
     ASSERT(ru->health > 50);
     ASSERT(ru->mana > 50.0f);
     ASSERT(cp_unit(near_it)->aura_armor > 1.4f);
+    cp_end();
+}
+
+/* The real thing from an order list: `i` puts the unit aboard at once
+ * whoever owns the ship and however full it is, the rest of its list
+ * waits, the ship carries it off and sets it down, and the list goes on
+ * from the shore (legacy:228557-228561, legacy:234446-234449). */
+TEST(an_order_list_rides_a_ship_and_walks_on_from_where_it_lands) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    UnitDef *cd = (UnitDef *)Units_GetDef(CP_DEF_CARRIER);
+    cd->transport_distance = 300;
+    cd->transport_capacity = 1;
+    int boat = Units_Spawn(CP_DEF_CARRIER, 2, 1, 900, 800);
+    int first = Units_Spawn(CP_DEF_WALKER, 2, 1, 840, 800);
+    int second = Units_Spawn(CP_DEF_WALKER, 3, 2, 960, 800);
+    ASSERT(boat >= 0 && first >= 0 && second >= 0);
+    ASSERT_EQ_INT(0, MissionScript_Begin(NULL, 1, 0));
+    MissionOrders_NameUnit("ferry", boat);
+    ASSERT_EQ_INT(2, MissionOrders_Give(first, "i ferry, m 50 40,"));
+    ASSERT_EQ_INT(1, MissionOrders_Give(second, "i ferry,"));
+    InGame_DebugRunSimTicks(2);
+    ASSERT_EQ_INT(UNIT_ALIVE_TRANSPORTED, (int)cp_unit(first)->alive);
+    ASSERT_EQ_INT(UNIT_ALIVE_TRANSPORTED, (int)cp_unit(second)->alive);
+    ASSERT_EQ_INT(2, (int)cp_unit(boat)->cargo_count);
+    ASSERT_EQ_INT(1, MissionOrders_Running(first));
+
+    /* The last aboard leaves first, so the one with orders is last off. */
+    ASSERT_EQ_INT(1, Units_OrderUnload(boat, 900, 1000));
+    for (int t = 0; t < 1200 && cp_unit(first)->alive != UNIT_ALIVE_ACTIVE; t++)
+        InGame_DebugRunSimTicks(1);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(second)->alive);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(first)->alive);
+    ASSERT_EQ_INT(0, (int)cp_unit(boat)->cargo_count);
+    for (int t = 0; t < 1200 && cp_unit(first)->cmd_x != 50 * 16; t++)
+        InGame_DebugRunSimTicks(1);
+    ASSERT_EQ_INT(50 * 16, cp_unit(first)->cmd_x);
+    ASSERT_EQ_INT(40 * 16, cp_unit(first)->cmd_y);
+    MissionScript_End();
     cp_end();
 }
 
@@ -3777,6 +3850,8 @@ int main(int argc, char **argv) {
     RUN(a_monarch_is_struck_and_stays_its_own);
     RUN(a_seat_at_its_unit_limit_captures_nothing);
     RUN(a_captured_transports_riders_die_with_the_old_unit);
+    RUN(a_captured_transport_takes_a_monarch_aboard_down);
+    RUN(an_order_list_rides_a_ship_and_walks_on_from_where_it_lands);
     RUN(a_unit_aboard_still_pays_into_the_pool);
     RUN(a_sunk_transport_takes_its_riders_down);
     RUN(a_monarch_aboard_goes_down_with_the_ship);

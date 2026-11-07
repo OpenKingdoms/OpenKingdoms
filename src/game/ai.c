@@ -260,7 +260,7 @@ static int ai_census_ready(const Unit *units, int unit_count, int p) {
 
 /* The scan every count was before the census, over units [from, n). A
  * unit aboard a ferry still counts: the original tallies the instances
- * that exist. */
+ * that exist (docs/notes/2026-09-04-legacy-ai.md). */
 static void ai_scan_owned(const Unit *units, int from, int unit_count,
                           int player_id, int def_idx, int *owned, int *finished) {
     for (int i = from; i < unit_count; i++) {

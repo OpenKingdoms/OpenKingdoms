@@ -47,8 +47,7 @@ static int read_u32(const uint8_t *buf, uint32_t buf_size,
 
 /* Copy a null-terminated string starting at `off` into a fresh
  * tak_malloc'd buffer. Caller frees. Returns NULL if the string runs
- * past buf_size or exceeds 64 bytes (defensive cap; piece/script
- * names in shipped TAK are all ≤17 chars). */
+ * past buf_size or exceeds the cap below. */
 static char *strdup_at(const uint8_t *buf, uint32_t buf_size, uint32_t off) {
     if (off >= buf_size) return NULL;
     uint32_t end = off;

@@ -435,10 +435,6 @@ static int test_the_reveal_follows_the_unit_across_a_cell_boundary(void) {
     return 0;
 }
 
-/* The block of nine cells around a unit is lit whatever its radius
- * buys (legacy:167401-167402). A wall's sightdistance is 45
- * (arawall.fbi), short of the 45.25 px to a diagonal neighbour's
- * centre, and the original lights that neighbour anyway. */
 /* A rider still sees from where its transport has taken it
  * (legacy:206485-206491). */
 static int test_a_unit_aboard_still_sees(void) {
@@ -464,6 +460,10 @@ static int test_a_unit_aboard_still_sees(void) {
     return 0;
 }
 
+/* The block of nine cells around a unit is lit whatever its radius
+ * buys (legacy:167401-167402). A wall's sightdistance is 45
+ * (arawall.fbi), short of the 45.25 px to a diagonal neighbour's
+ * centre, and the original lights that neighbour anyway. */
 static int test_the_nine_cells_around_a_unit_are_always_lit(void) {
     GameWorld w;
     memset(&w, 0, sizeof(w));
