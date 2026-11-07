@@ -1922,9 +1922,9 @@ Format per entry:
 ## D-027: A factory still being built can take a queue
 
 - Change: a front end may send units to train in a factory of yours
-  that is still going up. They wait on its queue and training starts the
-  moment it is finished. Every other order to a building still going up
-  is refused, its rally included, and the classic view sends none of
+  that is still going up. They wait on its queue and training starts as
+  soon as it is finished and its yard is open. Every other order to a
+  building still going up is refused, its rally included, and the classic view sends none of
   these, since there a frame cannot be selected. The command says so
   itself, so every machine in a match treats it the same.
 - Why: the owner's call, for the remaster, which lets a frame be

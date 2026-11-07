@@ -2182,8 +2182,8 @@ float             Units_DebugHullOverlap(int handle_a, int handle_b);
 
 /* ── Factory production queue + rally (manual §Summoning Units) ────
  *
- * Enqueue a unit for factory production. Starts immediately when the
- * factory is idle, otherwise appends to the FIFO (cap
+ * Enqueue a unit for factory production. Starts at once when the factory
+ * is idle with its yard open, otherwise appends to the FIFO (cap
  * UNIT_PROD_QUEUE_MAX). Returns 0 on success, -1 on bad args/full
  * queue. Queue advances automatically as each unit completes. */
 int               Units_FactoryEnqueue(int factory_handle, int product_def_idx);

@@ -109,6 +109,7 @@ ui = [
   ["a_caster_starts_with_no_mana_of_its_own", 1],
   ["a_shot_still_in_the_air_when_its_shooter_falls_scores_its_player", 1],
   ["factory_", 3],
+  ["a_unit_standing_on_a_build_pad_takes_the_shots_aimed_at_it", 1],
   ["hud_idle_frames_selection_and_queue_badges", 1],
   ["ctrl_on_a_zhon_builders_button_summons_without_end", 1],
   ["nanoframe_decay_refunds_mana", 1],
@@ -220,6 +221,7 @@ ui = [
   ["a_campaign_save_loaded_from_the_book_takes_orders", 1],
   ["escape_closes_the_console_before_the_battle_sees_it", 1],
   ["factory_product_spawns_on_build_pad", 1],
+  ["a_unit_standing_on_a_build_pad_takes_the_shots_aimed_at_it", 1],
   ["ctrl_on_a_zhon_builders_button_summons_without_end", 1],
   ["the_briefing_sits_like_the_original_at_1280x600", 1],
 ]
