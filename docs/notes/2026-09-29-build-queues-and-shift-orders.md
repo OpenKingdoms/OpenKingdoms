@@ -148,9 +148,8 @@ they were.
 
 When the order in hand goes the builder stops and takes its next order,
 if it has one. Its frame stays on the map as it stands. Nothing is
-refunded and nothing is taken off, as in the original. Here a builder's
-frame goes up as soon as the building becomes its order, so the one in
-hand always leaves a frame. Before this change the same right click
+refunded and nothing is taken off, as in the original. A builder still
+on its way has no frame yet and leaves none. Before this change the same right click
 reached the factory's cancel and took the builder's frame off the map
 with its mana. A builder helping another's frame holds the same order
 here as one that placed it, so the right click drops that help too.

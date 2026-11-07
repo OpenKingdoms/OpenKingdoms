@@ -105,9 +105,10 @@ from that tick or the one before.
 ## Left for later
 
 - When several builders are selected and a building is placed, the
-  original sends every one that may build it (legacy:39194-39256), and a
-  builder that finds the frame already standing joins it
-  (legacy:12040-12052). The engine gives the site to the first.
+  original sends every one that may build it (legacy:39194-39256). The
+  engine gives the site to the first. A builder given the same order
+  before the frame is up joins it when it gets there, since 2026-11-06,
+  which is ours (docs/notes/2026-11-06-a-frame-waits-for-its-builder.md).
 - When a guard cannot attack what hit the unit it guards, the original
   turns its weapons on it from where it stands (legacy:14053-14098).
 - Allies for the armed heal. The default cursor and click over a

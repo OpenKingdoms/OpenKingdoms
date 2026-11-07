@@ -219,6 +219,21 @@ static int oq_command(int type, int unit, int32_t x, int32_t y, int target,
     return TAK_CommandExec_Apply(&cmd);
 }
 
+static int oq_dist(int a, int32_t x, int32_t y) {
+    int64_t dx = (int64_t)oq_unit(a)->world_x - x;
+    int64_t dy = (int64_t)oq_unit(a)->world_y - y;
+    return (int)SDL_sqrt((double)(dx * dx + dy * dy));
+}
+
+/* Ticks until the builder's frame is up, which it is once the builder
+ * reaches the site. */
+static int oq_frame_up(int builder) {
+    for (int t = 0; t < 900 && oq_unit(builder)->build_target < 0 &&
+                    oq_unit(builder)->cmd_kind == UNIT_CMD_BUILD; t++)
+        oq_ticks(1);
+    return oq_unit(builder)->build_target;
+}
+
 #define OQ_CX (60 * 16)
 #define OQ_CY (60 * 16)
 
@@ -473,6 +488,7 @@ TEST(a_shift_build_starts_when_the_one_before_is_done) {
     ASSERT_EQ_INT(OQ_HALL, v[1].def);
     ASSERT_EQ_INT(1, v[1].facing);
     ASSERT_EQ_INT(0, oq_count(OQ_HALL));
+    ASSERT(oq_frame_up(bd) >= 0);
     int count = 0, frames = 0;
     const Unit *units = Units_GetActive(&count);
     for (int i = 0; i < count; i++) frames += units[i].def_idx == OQ_HALL;
@@ -781,6 +797,7 @@ TEST(a_cancelled_frame_frees_its_site) {
     ASSERT_NOT_NULL(oq_world());
     int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
     ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1, OQ_HALL, 0));
+    ASSERT(oq_frame_up(bd) >= 0);
     int tx = (OQ_CX + 8) / 16, ty = (OQ_CY + 8) / 16;
     ASSERT(Occ_QueryTileStatic(World_Get(), tx, ty, 2) != 0);
     ASSERT_EQ_INT(1, oq_command(TAK_CMD_FACTORY_CANCEL, bd, 0, 0, -1, -1, 0));
@@ -1386,7 +1403,7 @@ static int oq_legs_of(int unit, int kind, int def) {
 static int oq_busy_builder(int *frame) {
     int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
     oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1, OQ_HALL, 0);
-    *frame = oq_unit(bd)->build_target;
+    *frame = oq_frame_up(bd);
     const int q = TAK_CMD_ARG_QUEUE;
     oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 72, -1, OQ_HALL, q);
     oq_command(TAK_CMD_BUILD, bd, OQ_CX + 300, OQ_CY + 8, -1, OQ_BARRACKS, q);
@@ -1466,7 +1483,7 @@ TEST(a_right_click_drops_the_hall_in_hand_and_leaves_its_frame) {
     int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
     ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1,
                                 OQ_HALL, 0));
-    int frame = oq_unit(bd)->build_target;
+    int frame = oq_frame_up(bd);
     ASSERT(frame >= 0);
     ASSERT_EQ_INT(0, (int)oq_unit(bd)->leg_count);
     oq_ticks(30);
@@ -2054,7 +2071,7 @@ TEST(ctrl_on_a_builders_unit_button_summons_without_end) {
     InGame_WorldClickOn(OQ_CX + 8, OQ_CY + 8, -1, 0);
     ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
     oq_ticks(1);
-    int first = oq_unit(bd)->build_target;
+    int first = oq_frame_up(bd);
     ASSERT(first >= 0);
     int32_t sx = oq_unit(first)->world_x, sy = oq_unit(first)->world_y;
     char label[8];
@@ -2139,7 +2156,7 @@ TEST(a_right_click_ends_a_summons_without_end) {
     int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
     ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1,
                                 OQ_SOLDIER, TAK_CMD_ARG_ENDLESS));
-    oq_until_done(oq_unit(bd)->build_target, 300);
+    oq_until_done(oq_frame_up(bd), 300);
     for (int t = 0; t < 600 && oq_unit(bd)->build_target < 0; t++) oq_ticks(1);
     int frame = oq_unit(bd)->build_target;
     ASSERT(frame >= 0);
@@ -2165,7 +2182,7 @@ TEST(a_summons_waits_for_a_unit_on_its_spot_and_ends_on_a_building) {
     int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
     ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1,
                                 OQ_SOLDIER, TAK_CMD_ARG_ENDLESS));
-    int first = oq_unit(bd)->build_target;
+    int first = oq_frame_up(bd);
     int32_t sx = oq_unit(first)->world_x, sy = oq_unit(first)->world_y;
     oq_until_done(first, 300);
     int blocker = Units_Spawn(OQ_ARCHER, 1, 0, sx, sy);
@@ -2193,7 +2210,7 @@ TEST(a_summons_gives_up_on_a_spot_a_unit_keeps) {
     int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
     ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1,
                                 OQ_SOLDIER, TAK_CMD_ARG_ENDLESS));
-    int first = oq_unit(bd)->build_target;
+    int first = oq_frame_up(bd);
     int32_t sx = oq_unit(first)->world_x, sy = oq_unit(first)->world_y;
     oq_until_done(first, 300);
     ASSERT(Units_Spawn(OQ_ARCHER, 1, 0, sx, sy) >= 0);
@@ -2331,7 +2348,7 @@ TEST(a_shift_summons_on_the_frame_in_hand_waits_for_it) {
     HUD_BeginBuildPlacement(OQ_SOLDIER);
     InGame_WorldClickOn(sx, py, -1, 0);
     oq_ticks(1);
-    int first = oq_unit(bd)->build_target;
+    int first = oq_frame_up(bd);
     ASSERT(first >= 0);
     ASSERT_EQ_INT(1, oq_frames_of_at(OQ_SOLDIER, sx, sy));
     HUD_BeginBuildPlacement(OQ_SOLDIER);
@@ -2367,7 +2384,7 @@ TEST(a_summons_on_a_spot_its_last_one_keeps_gives_up) {
     ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_SOLDIER, 0));
     ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_SOLDIER,
                                 TAK_CMD_ARG_QUEUE));
-    int first = oq_unit(bd)->build_target;
+    int first = oq_frame_up(bd);
     ASSERT(first >= 0);
     oq_until_done(first, 300);
     oq_ticks(2);
@@ -2428,7 +2445,7 @@ TEST(a_summons_from_far_off_counts_its_looks_from_reach) {
     ASSERT_EQ_INT(0, oq_frames_of_at(OQ_SOLDIER, sx, sy));
     ASSERT_EQ_INT(1, Units_OrderMove(s, sx + 200, sy));
     int framed = 0;
-    for (int t = 0; t < 200 && !framed; t++) {
+    for (int t = 0; t < 2000 && !framed; t++) {
         oq_ticks(1);
         framed = oq_frames_of_at(OQ_SOLDIER, sx, sy);
     }
@@ -2563,8 +2580,206 @@ TEST(a_summons_under_a_flyer_in_the_air_goes_up_at_once) {
     ASSERT(f >= 0 && bd >= 0);
     oq_lift(f, 1);
     ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_SOLDIER, 0));
+    ASSERT(oq_frame_up(bd) >= 0);
     ASSERT_EQ_INT(1, oq_frames_of_at(OQ_SOLDIER, sx, sy));
     ASSERT_EQ_INT(0, (int)oq_unit(bd)->build_held);
+    oq_end();
+}
+
+/* ── a frame waits for its builder ────────────────────────────────── */
+
+/* Frames of def on the map, whoever's they are. */
+static int oq_frames_of(int def) {
+    int count = 0, n = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count; i++)
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].def_idx == def &&
+            units[i].under_construction) n++;
+    return n;
+}
+
+/* The original has no frame on the ground until the builder stands at
+ * the site (legacy:12063-12147), so another builder has nothing to help
+ * and the order leaves nothing behind when it is cancelled. */
+TEST(a_build_order_puts_up_no_frame_until_its_builder_arrives) {
+    ASSERT_NOT_NULL(oq_world());
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx - 800, sy);
+    int near = Units_Spawn(OQ_HELPER, 1, 0, sx, sy + 60);
+    ASSERT(bd >= 0 && near >= 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_HALL, 0));
+    ASSERT_EQ_INT(0, oq_frames_of(OQ_HALL));
+    oq_ticks(60);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(0, oq_frames_of(OQ_HALL));
+    ASSERT_EQ_INT(1, Units_IsBuildSiteFree(OQ_HALL, sx, sy));
+    /* Called off on the way, the site is as it was. */
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_STOP, bd, 0, 0, -1, -1, 0));
+    oq_ticks(5);
+    ASSERT_EQ_INT(0, oq_frames_of(OQ_HALL));
+    /* Sent again, the frame goes up only once it is in reach: stand back
+     * of a 3 by 1 footprint and 32 of its own builddistance. */
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_HALL, 0));
+    int t = 0;
+    while (t < 2000 && oq_frames_of(OQ_HALL) == 0) { oq_ticks(1); t++; }
+    ASSERT_EQ_INT(1, oq_frames_of(OQ_HALL));
+    ASSERT(oq_dist(bd, sx, sy) <= 25 + 12 + 32 + 3);
+    /* From here anyone may help it, as the original lets them. */
+    ASSERT_EQ_INT(bd, Units_FindByStableId(Units_GetStableId(bd)));
+    ASSERT(oq_unit(bd)->build_target >= 0);
+    ASSERT_EQ_INT(1, Units_OrderRepair(near, oq_unit(bd)->build_target));
+    oq_end();
+}
+
+/* A site nobody has begun holds nothing. Whoever gets there first raises
+ * it, and the other's order ends on the taken site when it arrives. */
+TEST(a_site_nobody_has_begun_blocks_nobody) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    Economy_AdjustCaps(&w->economy, 2, 1000000, 0.0f);
+    Economy_Earn(&w->economy, 2, 1000000);
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int theirs = Units_Spawn(OQ_BUILDER, 2, 1, sx - 500, sy);
+    int mine = Units_Spawn(OQ_BUILDER, 1, 0, sx + 90, sy);
+    ASSERT(theirs >= 0 && mine >= 0);
+    ASSERT_EQ_INT(1, Units_OrderBuild(theirs, OQ_HALL, sx, sy, 0, 0));
+    oq_ticks(10);
+    ASSERT_EQ_INT(1, Units_IsBuildSiteFree(OQ_HALL, sx, sy));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, mine, sx, sy, -1, OQ_HALL, 0));
+    int t = 0;
+    while (t < 200 && oq_frames_of(OQ_HALL) == 0) { oq_ticks(1); t++; }
+    ASSERT_EQ_INT(1, oq_frames_of(OQ_HALL));
+    int frame = oq_unit(mine)->build_target;
+    ASSERT(frame >= 0);
+    ASSERT_EQ_INT(1, (int)oq_unit(frame)->player_id);
+    for (t = 0; t < 2000 && oq_unit(theirs)->cmd_kind == UNIT_CMD_BUILD; t++)
+        oq_ticks(1);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)oq_unit(theirs)->cmd_kind);
+    ASSERT_EQ_INT(1, (int)oq_unit(frame)->player_id);
+    oq_end();
+}
+
+/* Two builders of one player sent to one site raise one frame between
+ * them: the later one finds it standing and joins it, which is ours. */
+TEST(a_second_builder_sent_to_a_site_joins_the_first) {
+    ASSERT_NOT_NULL(oq_world());
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int first = Units_Spawn(OQ_BUILDER, 1, 0, sx - 90, sy);
+    int second = Units_Spawn(OQ_BUILDER, 1, 0, sx + 130, sy);
+    ASSERT(first >= 0 && second >= 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, first, sx, sy, -1, OQ_HALL, 0));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, second, sx, sy, -1, OQ_HALL, 0));
+    int t = 0;
+    while (t < 2000 && oq_unit(second)->build_target < 0 &&
+           oq_unit(second)->cmd_kind == UNIT_CMD_BUILD) { oq_ticks(1); t++; }
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(second)->cmd_kind);
+    ASSERT_EQ_INT(oq_unit(first)->build_target, oq_unit(second)->build_target);
+    ASSERT_EQ_INT(1, oq_frames_of(OQ_HALL));
+    oq_end();
+}
+
+/* A builder told to build on its own feet steps off first, since the
+ * frame goes up only where no unit stands (legacy:12088). */
+TEST(a_builder_standing_on_its_site_steps_off_to_raise_it) {
+    ASSERT_NOT_NULL(oq_world());
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx, sy);
+    ASSERT(bd >= 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_HALL, 0));
+    int t = 0;
+    while (t < 600 && oq_frames_of(OQ_HALL) == 0) { oq_ticks(1); t++; }
+    ASSERT_EQ_INT(1, oq_frames_of(OQ_HALL));
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    oq_end();
+}
+
+/* A builder wider than the site steps clear of it too. */
+TEST(a_wide_builder_standing_on_a_small_site_steps_off_to_raise_it) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    w->moveinfo.count = 2;
+    strncpy(w->moveinfo.classes[1].name, "TESTBIG", TAK_MOVEINFO_NAME_MAX - 1);
+    w->moveinfo.classes[1].footprint_x = 3;
+    w->moveinfo.classes[1].footprint_z = 3;
+    w->moveinfo.classes[1].max_slope = 30;
+    UnitDef *d = (UnitDef *)Units_GetDef(OQ_BUILDER);
+    ASSERT_NOT_NULL(d);
+    strncpy(d->movement_class, "TESTBIG", sizeof(d->movement_class) - 1);
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx + 4, sy);
+    ASSERT(bd >= 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_SOLDIER, 0));
+    int t = 0;
+    while (t < 600 && oq_frames_of(OQ_SOLDIER) == 0) { oq_ticks(1); t++; }
+    ASSERT_EQ_INT(1, oq_frames_of(OQ_SOLDIER));
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    oq_end();
+}
+
+/* A soldier on the site is waited for from reach, and the frame goes up
+ * when it leaves. One that never leaves ends the order after 30 looks
+ * (legacy:12097-12124). */
+TEST(a_building_waits_for_a_soldier_on_its_site) {
+    ASSERT_NOT_NULL(oq_world());
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int s = Units_Spawn(OQ_ARCHER, 1, 0, sx, sy);
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx - 100, sy);
+    ASSERT(s >= 0 && bd >= 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_HALL, 0));
+    oq_ticks(120);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(0, oq_frames_of(OQ_HALL));
+    ASSERT_EQ_INT(1, Units_OrderMove(s, sx + 200, sy));
+    int t = 0;
+    while (t < 200 && oq_frames_of(OQ_HALL) == 0) { oq_ticks(1); t++; }
+    ASSERT_EQ_INT(1, oq_frames_of(OQ_HALL));
+    oq_end();
+
+    ASSERT_NOT_NULL(oq_world());
+    s = Units_Spawn(OQ_ARCHER, 1, 0, sx, sy);
+    bd = Units_Spawn(OQ_BUILDER, 1, 0, sx - 100, sy);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_HALL, 0));
+    oq_ticks(33 * 20 + 60);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(0, oq_frames_of(OQ_HALL));
+    oq_end();
+}
+
+/* A walk that ends out of reach of the site drops the order rather than
+ * holding it for ever (legacy:12063-12070). */
+TEST(a_builder_whose_walk_ends_out_of_reach_drops_the_order) {
+    ASSERT_NOT_NULL(oq_world());
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx - 300, sy);
+    ASSERT(bd >= 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_HALL, 0));
+    Unit *u = (Unit *)oq_unit(bd);
+    u->build_gx = sx - 200;
+    u->build_gy = sy;
+    int t = 0;
+    while (t < 900 && oq_unit(bd)->cmd_kind == UNIT_CMD_BUILD) { oq_ticks(1); t++; }
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(0, oq_frames_of(OQ_HALL));
+    oq_end();
+}
+
+/* A summons whose spot clears while its builder walks waits for the
+ * builder too (legacy:12063-12088). */
+TEST(a_summons_is_not_started_from_afar_when_its_spot_clears) {
+    ASSERT_NOT_NULL(oq_world());
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int s = Units_Spawn(OQ_ARCHER, 1, 0, sx, sy);
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx + 1000, sy + 900);
+    ASSERT(s >= 0 && bd >= 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_SOLDIER, 0));
+    ASSERT_EQ_INT(1, Units_OrderMove(s, sx + 200, sy));
+    oq_ticks(120);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(0, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    int t = 0;
+    while (t < 3000 && !oq_frames_of_at(OQ_SOLDIER, sx, sy)) { oq_ticks(1); t++; }
+    ASSERT_EQ_INT(1, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    ASSERT(oq_dist(bd, sx, sy) <= 200);
     oq_end();
 }
 
@@ -2656,5 +2871,13 @@ int main(int argc, char **argv) {
     RUN(the_computers_summons_site_is_one_no_unit_stands_on);
     RUN(a_flyer_in_the_air_stands_on_no_site);
     RUN(a_summons_under_a_flyer_in_the_air_goes_up_at_once);
+    RUN(a_build_order_puts_up_no_frame_until_its_builder_arrives);
+    RUN(a_site_nobody_has_begun_blocks_nobody);
+    RUN(a_second_builder_sent_to_a_site_joins_the_first);
+    RUN(a_builder_standing_on_its_site_steps_off_to_raise_it);
+    RUN(a_wide_builder_standing_on_a_small_site_steps_off_to_raise_it);
+    RUN(a_building_waits_for_a_soldier_on_its_site);
+    RUN(a_builder_whose_walk_ends_out_of_reach_drops_the_order);
+    RUN(a_summons_is_not_started_from_afar_when_its_spot_clears);
     TEST_REPORT();
 }

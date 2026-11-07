@@ -222,6 +222,14 @@ static AiCensus g_ai_census = { .on = 1, .n = -1 };
 static int ai_def_is_mana_economy(const UnitDef *def);
 static int ai_pending_is_production(const UnitDef *def);
 
+/* The def a builder of the seat is on its way to raise, or -1. Its frame
+ * goes up when it gets there (legacy:12063-12147), so until then the
+ * seat counts the order as the frame. */
+static int ai_on_way_def(const Unit *u) {
+    return u->alive == UNIT_ALIVE_ACTIVE && u->cmd_kind == UNIT_CMD_BUILD &&
+           u->build_held && u->build_target < 0 ? u->build_def : -1;
+}
+
 static int ai_census_ready(const Unit *units, int unit_count, int p) {
     AiCensus *c = &g_ai_census;
     if (!c->on || !c->live || units != c->units || p != c->p) return 0;
@@ -237,8 +245,10 @@ static int ai_census_ready(const Unit *units, int unit_count, int p) {
                 c->owned[u->def_idx]++;
                 if (!u->under_construction) c->finished[u->def_idx]++;
             }
-            if (!u->under_construction) continue;
-            const UnitDef *d = Units_GetDef(u->def_idx);
+            int way = ai_on_way_def(u);
+            if (way >= 0 && way < AI_MAX_DEFS) c->owned[way]++;
+            if (way < 0 && !u->under_construction) continue;
+            const UnitDef *d = Units_GetDef(way >= 0 ? way : u->def_idx);
             if (ai_def_is_mana_economy(d)) c->pending_econ = 1;
             if (ai_pending_is_production(d)) c->pending_prod = 1;
         }
@@ -253,6 +263,7 @@ static void ai_scan_owned(const Unit *units, int from, int unit_count,
     for (int i = from; i < unit_count; i++) {
         if (units[i].alive != UNIT_ALIVE_ACTIVE) continue;
         if (units[i].player_id != player_id) continue;
+        if (ai_on_way_def(&units[i]) == def_idx) (*owned)++;
         if ((int)units[i].def_idx != def_idx) continue;
         (*owned)++;
         if (!units[i].under_construction) (*finished)++;
@@ -407,6 +418,8 @@ static int ai_scan_pending_econ(const Unit *units, int from, int unit_count,
     for (int i = from; i < unit_count; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != player_id) continue;
+        int way = ai_on_way_def(u);
+        if (way >= 0 && ai_def_is_mana_economy(Units_GetDef(way))) return 1;
         if (!u->under_construction) continue;
         if (ai_def_is_mana_economy(Units_GetDef(u->def_idx))) return 1;
     }
@@ -448,6 +461,8 @@ static int ai_scan_pending_prod(const Unit *units, int from, int unit_count,
     for (int i = from; i < unit_count; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != player_id) continue;
+        int way = ai_on_way_def(u);
+        if (way >= 0 && ai_pending_is_production(Units_GetDef(way))) return 1;
         if (!u->under_construction) continue;
         if (ai_pending_is_production(Units_GetDef(u->def_idx))) return 1;
     }
@@ -550,6 +565,47 @@ static int ai_site_reachable(const Unit *units, int actor_idx,
                      (fx + fz) * 8 + 12 + reach);
 }
 
+/* The sites the seat's builders are on their way to. Nothing stands on
+ * them yet, so a search reads them to keep a second builder off (ours,
+ * the frame used to reserve the site). */
+#define AI_ON_WAY_MAX 32
+typedef struct AiOnWay {
+    int      n;
+    int      def[AI_ON_WAY_MAX];
+    int32_t  x[AI_ON_WAY_MAX];
+    int32_t  y[AI_ON_WAY_MAX];
+} AiOnWay;
+
+static void ai_on_way_read(const Unit *units, int unit_count, int p, AiOnWay *w) {
+    w->n = 0;
+    for (int i = 0; i < unit_count && w->n < AI_ON_WAY_MAX; i++) {
+        if (units[i].player_id != p) continue;
+        int def = ai_on_way_def(&units[i]);
+        if (def < 0) continue;
+        w->def[w->n] = def;
+        w->x[w->n] = units[i].cmd_x;
+        w->y[w->n] = units[i].cmd_y;
+        w->n++;
+    }
+}
+
+/* A building of def at (x, y) would overlap one the seat has on its way. */
+static int ai_on_way_overlaps(const AiOnWay *w, int def, int32_t x, int32_t y) {
+    const UnitDef *d = Units_GetDef(def);
+    int32_t hw = (d && d->footprint_x > 0 ? d->footprint_x : 1) * 8;
+    int32_t hh = (d && d->footprint_z > 0 ? d->footprint_z : 1) * 8;
+    for (int k = 0; k < w->n; k++) {
+        const UnitDef *o = Units_GetDef(w->def[k]);
+        int32_t ow = (o && o->footprint_x > 0 ? o->footprint_x : 1) * 8;
+        int32_t oh = (o && o->footprint_z > 0 ? o->footprint_z : 1) * 8;
+        int32_t dx = x - w->x[k], dy = y - w->y[k];
+        if (dx < 0) dx = -dx;
+        if (dy < 0) dy = -dy;
+        if (dx < hw + ow && dy < hh + oh) return 1;
+    }
+    return 0;
+}
+
 /* Where a tower's site search starts and how far it keeps from the
  * seat's other towers, set for the length of one tower build. The
  * original keeps a list of its own defences and a query for the ones
@@ -580,10 +636,16 @@ static void ai_list_own_towers(const Unit *units, int p) {
     }
 }
 
-static int ai_near_own_tower(const Unit *units, int32_t x, int32_t y) {
+static int ai_near_own_tower(const Unit *units, const AiOnWay *on_way,
+                             int32_t x, int32_t y) {
     for (int k = 0; k < g_ai_tower_n; k++) {
         const Unit *t = &units[g_ai_towers[k]];
         if (ai_within(x, y, t->world_x, t->world_y, AI_TOWER_SPACING_PX))
+            return 1;
+    }
+    for (int k = 0; k < on_way->n; k++) {
+        if (ai_def_is_tower(Units_GetDef(on_way->def[k])) &&
+            ai_within(x, y, on_way->x[k], on_way->y[k], AI_TOWER_SPACING_PX))
             return 1;
     }
     return 0;
@@ -598,6 +660,7 @@ typedef struct AiSiteSearch {
     int      bad_n;
     int32_t  bad_x[AI_SITE_REACH_CHECKS];
     int32_t  bad_y[AI_SITE_REACH_CHECKS];
+    AiOnWay  on_way;
 } AiSiteSearch;
 
 /* One candidate: 1 taken, 0 passed by, -1 the search is spent. */
@@ -606,9 +669,10 @@ static int ai_site_try(AiSiteSearch *s, int32_t x, int32_t y,
     if (s->checks <= 0) return -1;
     /* A site no unit stands on, so a summons never waits on the army. */
     if (!Units_IsBuildSiteFree(s->build_def, x, y)) return 0;
+    if (ai_on_way_overlaps(&s->on_way, s->build_def, x, y)) return 0;
     if (ai_site_failed(s->units[s->actor_idx].player_id, x, y, s->now))
         return 0;
-    if (g_ai_site_for_tower && ai_near_own_tower(s->units, x, y))
+    if (g_ai_site_for_tower && ai_near_own_tower(s->units, &s->on_way, x, y))
         return 0;
     for (int i = 0; i < s->bad_n; i++) {
         if (ai_within(x, y, s->bad_x[i], s->bad_y[i], AI_SITE_SKIP_PX))
@@ -653,6 +717,9 @@ static int ai_find_clear_site(const Unit *units, int actor_idx, int build_def,
     s.build_def = build_def;
     s.now = world ? world->skirmish_elapsed_ticks : 0;
     s.checks = AI_SITE_REACH_CHECKS;
+    int unit_count = 0;
+    (void)Units_GetActive(&unit_count);
+    ai_on_way_read(units, unit_count, units[actor_idx].player_id, &s.on_way);
     if (g_ai_site_for_tower)
         ai_list_own_towers(units, units[actor_idx].player_id);
     /* Every footprint the rings can test, with a tile to spare for the
@@ -678,14 +745,15 @@ static int ai_find_clear_site(const Unit *units, int actor_idx, int build_def,
 
 static int ai_trace(void);
 
-/* Every build the AI starts: the new frame makes the census stale. */
+/* Every build the AI starts: the order makes the census stale. 1 when
+ * the builder took it. */
 static int g_ai_last_begun_def = -1;
 static int ai_begin_building(int actor_idx, int build_def,
                              int32_t x, int32_t y) {
-    int h = Units_BeginBuildingForUnit(actor_idx, build_def, x, y);
+    int took = Units_OrderBuild(actor_idx, build_def, x, y, 0, 0);
     g_ai_census.n = -1;
     g_ai_last_begun_def = build_def;
-    return h;
+    return took;
 }
 
 static int ai_try_start_build_def(int actor_idx, int build_def) {
@@ -723,11 +791,11 @@ static int ai_try_start_build_def(int actor_idx, int build_def) {
     }
     if (bd && ad && bd->max_velocity > 0.0f && ad->max_velocity <= 0.0f) {
         return ai_begin_building(actor_idx, build_def,
-                                 actor->world_x, actor->world_y) >= 0;
+                                 actor->world_x, actor->world_y);
     }
     int32_t bx, by;
     if (!ai_find_clear_site(units, actor_idx, build_def, &bx, &by)) return 0;
-    return ai_begin_building(actor_idx, build_def, bx, by) >= 0;
+    return ai_begin_building(actor_idx, build_def, bx, by);
 }
 
 /* Weighted-random pick over qualifying entries, the original's
@@ -879,7 +947,8 @@ static int ai_try_start_combat_production(const Unit *units,
  * and not one the seat remembers a builder failing to get to.
  * Only sacredsite features count, not the henge decor (legacy:20483). */
 static int ai_pad_site(const GameWorld *world, const Unit *units,
-                       int unit_count, int p, int feature_idx, int lode_def,
+                       int unit_count, int p, const AiOnWay *on_way,
+                       int feature_idx, int lode_def,
                        int32_t *out_x, int32_t *out_y) {
     const FeatureDef *fd =
         Features_GetByIndex(world->features[feature_idx].global_idx);
@@ -899,6 +968,11 @@ static int ai_pad_site(const GameWorld *world, const Unit *units,
         int64_t dx = (int64_t)units[u].world_x - wx;
         int64_t dy = (int64_t)units[u].world_y - wy;
         if (dx * dx + dy * dy < 128 * 128) return 0;
+    }
+    for (int k = 0; k < on_way->n; k++) {
+        if (ai_def_is_mana_economy(Units_GetDef(on_way->def[k])) &&
+            ai_within(wx, wy, on_way->x[k], on_way->y[k], 128))
+            return 0;
     }
     if (ai_site_failed(p, wx, wy, world->skirmish_elapsed_ticks)) return 0;
     /* A site the enemy is standing on in more strength than we are is
@@ -939,6 +1013,8 @@ static int ai_try_expand_to_sacred_site(const GameWorld *world,
     }
     if (lode < 0) return 0;
     if (!ai_limit_allows(units, unit_count, actor->player_id, lode)) return 0;
+    AiOnWay on_way;
+    ai_on_way_read(units, unit_count, actor->player_id, &on_way);
 
     /* The nearest pad the builder can walk to (legacy:17327). One it
      * cannot is remembered as failed, which takes it off the plan's
@@ -948,8 +1024,8 @@ static int ai_try_expand_to_sacred_site(const GameWorld *world,
         int32_t best_x = 0, best_y = 0;
         for (int i = 0; i < world->feature_count; i++) {
             int32_t wx, wy;
-            if (!ai_pad_site(world, units, unit_count, actor->player_id, i,
-                             lode, &wx, &wy)) continue;
+            if (!ai_pad_site(world, units, unit_count, actor->player_id, &on_way,
+                             i, lode, &wx, &wy)) continue;
             int64_t dx = (int64_t)actor->world_x - wx;
             int64_t dy = (int64_t)actor->world_y - wy;
             int64_t d2 = dx * dx + dy * dy;
@@ -957,7 +1033,7 @@ static int ai_try_expand_to_sacred_site(const GameWorld *world,
         }
         if (best_d2 == INT64_MAX) return 0;
         if (ai_site_reachable(units, actor_idx, lode, best_x, best_y)) {
-            return ai_begin_building(actor_idx, lode, best_x, best_y) >= 0;
+            return ai_begin_building(actor_idx, lode, best_x, best_y);
         }
         ai_remember_failed_site(actor->player_id, best_x, best_y,
                                 world->skirmish_elapsed_ticks);
@@ -3562,6 +3638,10 @@ static int ai_shore_site(const Unit *units, int actor_idx, int p, int def_idx,
     int32_t wx = -1, wy = -1;
     if (!ai_target_water(world, p, ship_def, &wx, &wy)) return 0;
     int checks = AI_SHORE_CHECKS;
+    int unit_count = 0;
+    AiOnWay on_way;
+    (void)Units_GetActive(&unit_count);
+    ai_on_way_read(units, unit_count, p, &on_way);
     for (int r = 64; r <= AI_SHORE_REACH && checks > 0; r += 64) {
         for (int k = -r; k <= r && checks > 0; k += 64) {
             const int32_t c[4][2] = {
@@ -3571,6 +3651,7 @@ static int ai_shore_site(const Unit *units, int actor_idx, int p, int def_idx,
             for (int i = 0; i < 4 && checks > 0; i++) {
                 int32_t x = c[i][0] & ~15, y = c[i][1] & ~15;
                 if (!Units_IsBuildSiteFree(def_idx, x, y)) continue;
+                if (ai_on_way_overlaps(&on_way, def_idx, x, y)) continue;
                 if (!TAK_PathGroundConnected(world, mc, sd->max_slope, x, y, wx, wy))
                     continue;
                 checks--;
@@ -3614,7 +3695,7 @@ static int ai_try_start_on_shore(int actor_idx, int def_idx, int p) {
                                     AI_FERRY_RETRY;
         return 0;
     }
-    return ai_begin_building(actor_idx, def_idx, x, y) >= 0;
+    return ai_begin_building(actor_idx, def_idx, x, y);
 }
 
 /* Read the wave state for the group that is forming and pick the
@@ -3790,7 +3871,10 @@ static int ai_builder_retreats(const Unit *units, int actor_idx, int p,
     if (u->cmd_kind == UNIT_CMD_MOVE &&
         ai_within(u->cmd_x, u->cmd_y, ap->base_x, ap->base_y,
                   AI_BUILDER_HOME_PX)) return 1;
-    if (u->cmd_kind == UNIT_CMD_BUILD) Units_StopUnit(actor_idx);
+    if (u->cmd_kind == UNIT_CMD_BUILD) {
+        if (ai_on_way_def(u) >= 0) g_ai_census.n = -1;
+        Units_StopUnit(actor_idx);
+    }
     g_ai_counts[p][TAK_AI_COUNT_BUILDER_RETREATS]++;
     int32_t dx = (int32_t)ai_rand(2 * AI_BUILDER_HOME_PX + 1) - AI_BUILDER_HOME_PX;
     int32_t dy = (int32_t)ai_rand(2 * AI_BUILDER_HOME_PX + 1) - AI_BUILDER_HOME_PX;
@@ -3985,6 +4069,7 @@ static int ai_step_out_of_fire(const GameWorld *world, const Unit *units, int un
         }
     }
     if (best < 0) return 0;
+    if (ai_on_way_def(u) >= 0) g_ai_census.n = -1;
     Units_CommandMoveUnit(i, bx, by);
     g_ai_counts[p][TAK_AI_COUNT_FIRE_STEPS]++;
     return 1;
@@ -4290,6 +4375,11 @@ static void ai_plan_read_naval(const GameWorld *world, const Unit *units, int un
         int di = (int)u->def_idx;
         const UnitDef *d = Units_GetDef(di);
         if (!d) continue;
+        int way = ai_on_way_def(u);
+        if (way >= 0 && ai_naval_is(way, AI_NAVAL_YARD)) s->yards_pending++;
+        if (way >= 0 && ai_naval_is(way, AI_NAVAL_TRANSPORT) &&
+            ai_sails_to_target(world, p, way, 0, u->cmd_x, u->cmd_y, &memo))
+            s->transports++;
         if (ai_naval_is(di, AI_NAVAL_TRANSPORT) && ai_transport_usable(p, i, u) &&
             ai_sails_to_target(world, p, di, 0, u->world_x, u->world_y, &memo))
             s->transports++;
@@ -4333,6 +4423,21 @@ static void ai_plan_read_naval(const GameWorld *world, const Unit *units, int un
         fprintf(stderr, "AI %d: cut off, transports %d makers %d/%d yards %d yard def %d "
                 "transport def %d\n", p, s->transports, s->ferry_makers_idle,
                 s->ferry_makers, s->yards_pending, yard_def, transport_def);
+}
+
+/* A build on its way counts where its frame will. */
+static void ai_plan_note_on_way(int def_idx, AiPlanState *s) {
+    const UnitDef *d = def_idx >= 0 ? Units_GetDef(def_idx) : NULL;
+    if (!d) return;
+    if (ai_def_is_mana_economy(d)) {
+        s->lodestones_pending++;
+        return;
+    }
+    if (!(d->cap_flags & UNIT_CAP_BUILDER)) return;
+    if (d->max_velocity > 0.0f && !d->commander && !ai_unit_is_monarch(d))
+        s->builders_pending++;
+    if (ai_def_is_factory(def_idx) || ai_def_is_mobile_producer(def_idx))
+        s->factories_pending++;
 }
 
 static void ai_plan_read(const GameWorld *world, const Unit *units,
@@ -4383,6 +4488,7 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
         if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (!d) continue;
+        ai_plan_note_on_way(ai_on_way_def(u), s);
         if (ai_def_is_mana_economy(d)) {
             if (u->under_construction) s->lodestones_pending++;
             else s->lodestones++;
@@ -4533,11 +4639,14 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
 
     /* A pad is free when some builder could put its own lodestone on
      * it now, which is the def the expansion would place there. */
+    AiOnWay on_way;
+    ai_on_way_read(units, unit_count, p, &on_way);
     for (int i = 0; pad_def_count > 0 && i < world->feature_count; i++) {
         int32_t wx = 0, wy = 0;
         int fits = 0;
         for (int k = 0; k < pad_def_count && !fits; k++)
-            fits = ai_pad_site(world, units, unit_count, p, i, pad_defs[k], &wx, &wy);
+            fits = ai_pad_site(world, units, unit_count, p, &on_way, i,
+                               pad_defs[k], &wx, &wy);
         if (!fits) continue;
         s->free_sites++;
         if (ap->base_known && ai_within(wx, wy, ap->base_x, ap->base_y, 2048))

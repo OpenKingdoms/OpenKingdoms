@@ -1204,36 +1204,25 @@ Format per entry:
 
 ---
 
-## M-009: A nanoframe stands on its site before its builder gets there
+## M-009: A frame is held while a helper walks to it
 
-- Change: a build order puts the frame on the ground at once, and the
-  site is taken from that moment. The frame is held for as long as a
-  builder keeps getting nearer to it, or is walking a planned route the
-  mover's ladder (M-006) sees it gaining ground on, and is taken off the
-  ground when neither has happened for ten seconds.
-  The order that placed it ends with it, the way the mover's give up
-  ends one, so the builder is free and a computer player hears which
-  site failed. A frame that was never worked on is removed rather than
-  killed, so no side is counted as having lost a unit.
-- What the original does: it has no frame on the ground at all until
-  the builder is standing at the site. The builder walks first. The
-  build mission then measures the site against the builder's own
-  builddistance and says UNITCHATTER_CANNOTREACHCONSTRUCT and drops the
-  order when it is further (legacy:12063-12070). Only past that check
-  does it look for a placement (legacy:12088) and create the frame
-  (legacy:12142) and start feeding it (legacy:12171). Once a frame
-  exists it decays on any tick nobody feeds it: its own mission step
-  runs Unit_UpdateAnimation on it (legacy:9640-9644), which is
-  Building_TickConstruction at a negative half rate (legacy:39531-
-  39534), and the flag that stops that is set only by a builder really
-  feeding it (legacy:39470). There is no exemption for a builder on its
-  way, because there is never a frame to exempt.
-- Why we differ: placing the frame at order time is what reserves the
-  site, shows the player what was ordered and lets a build be queued
-  at a spot the builder has not reached. Deferring creation to arrival
-  is the parity fix and is worth doing, but it changes what
-  `Units_BeginBuildingForUnit` hands back to twenty callers and is a
-  piece of work of its own.
+- Change: a frame nobody feeds is held for as long as a builder sent to
+  help it keeps getting nearer to it, or is walking a planned route the
+  mover's ladder (M-006) sees it gaining ground on, and it starts to
+  decay when neither has happened for ten seconds. A frame that was
+  never worked on is removed rather than killed, so no side is counted
+  as having lost a unit.
+- What the original does: once a frame exists it decays on any tick
+  nobody feeds it: its own mission step runs Unit_UpdateAnimation on it
+  (legacy:9640-9644), which is Building_TickConstruction at a negative
+  half rate (legacy:39531-39534), and the flag that stops that is set
+  only by a builder really feeding it (legacy:39470).
+- Why we differ: a helper on a long walk would otherwise find its frame
+  gone. Until 2026-11-06 this entry also put every frame on the ground
+  when the order was given. That part is gone, since it let a build be
+  started far from its builder. The frame now goes up once the builder
+  stands at the site, as in the original
+  (docs/notes/2026-11-06-a-frame-waits-for-its-builder.md).
 - Why the route counts only while there is one: the ladder (M-006)
   judges a unit on the way left to walk along its route, and a fresh
   search from the same spot can hand back a shorter way at any time,
@@ -1245,10 +1234,6 @@ Format per entry:
   goes at tick 742. One walking a planned route round an obstacle,
   which can lead away from the site for longer than ten seconds, keeps
   its frame while the ladder sees it gain.
-- Consequence: the reservation is held for a builder on its way round
-  something. The original would have had no frame there for that whole
-  walk, so holding the site is our rule, as is the order ending when
-  the frame goes.
 - Citation: Issue #229. The manual describes no decay rule.
 
 ## M-010: Units give way to each other
@@ -1385,10 +1370,11 @@ Format per entry:
   site. The others keep what they were doing.
 - Why: the original gives the order to every builder selected that can
   build the def (legacy:39200-39248), and the latecomers help the first
-  frame up. Here a frame goes up as soon as a builder takes the order
-  (M-009), so a second builder given the same order finds its site taken
-  and refuses it. A player sends more builders to help with a click on
-  the frame.
+  frame up. Here the first takes the order, and a player sends more
+  builders with a click on the frame once it is up. A builder given the
+  same order before the frame is up joins it when it gets there, which
+  is ours. The original's builder reports the target blocked
+  (legacy:12096-12116).
 - Citation: the manual's walkthrough in section III sends a second
   builder to assist with a click on the frame, which still works. The
   original's rule is in docs/notes/2026-10-04-a-summons-without-end.md.
@@ -1412,19 +1398,18 @@ Format per entry:
 - Citation: the manual describes no rule for it. The original's rules
   are in docs/notes/2026-10-04-air-traffic.md.
 
-## M-015: A summons waits for units on its spot in silence
+## M-015: A builder waits for units on its site in silence
 
-- Change: a summons ordered onto a spot that only units hold is taken
-  and held with no frame. The builder walks to the site and looks again
-  every 20 ticks. The frame goes up as soon as no unit stands on the
-  spot, wherever the builder is, and the order ends after 30 looks made
-  within reach. The waiting and the giving up are silent.
-- Why: the original looks only once the builder is in reach, and it
-  says it is waiting at the sixth look and that the target is blocked
-  when it gives up (legacy:12088-12116). Here a frame goes up before
-  its builder gets there (M-009), so a spot that clears while the
-  builder walks gets its frame at once. The chatter has no counterpart
-  in the engine yet.
+- Change: a builder that finds only units on its site when it gets there
+  looks again every 20 ticks. The frame goes up as soon as no unit stands
+  on the site, and the order ends after 30 looks. The waiting and the
+  giving up are silent. The cursor still refuses a building over a unit
+  the player can see, so a player meets this when the unit walks on after
+  the click, or the site was out of sight. A summons is placed over units
+  and always can.
+- Why: the original says it is waiting at the sixth look and that the
+  target is blocked when it gives up (legacy:12088-12116). The chatter
+  has no counterpart in the engine yet.
 - Citation: the manual describes no rule for this. The original's rule
   is in docs/notes/2026-10-04-summons-placement.md.
 
