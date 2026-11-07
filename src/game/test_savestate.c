@@ -1080,6 +1080,14 @@ static int is_on_its_way(const Unit *u) {
            u->build_held && u->build_target < 0;
 }
 
+static int units_of_def(int def) {
+    int n = 0, hits = 0;
+    const Unit *u = Units_GetActive(&n);
+    for (int i = 0; i < n && u; i++)
+        if (u[i].alive == UNIT_ALIVE_ACTIVE && u[i].def_idx == def) hits++;
+    return hits;
+}
+
 /* A build order on its way has no frame yet, only the order: what goes up,
  * where, turned how, and the looks made so far all have to come back. */
 TEST(a_save_with_a_builder_on_its_way_still_raises_its_frame) {
@@ -1110,6 +1118,7 @@ TEST(a_save_with_a_builder_on_its_way_still_raises_its_frame) {
         if (d && d->max_velocity <= 0.0f && !d->yardmap_sacred) def = menu[m];
     }
     ASSERT(def >= 0);
+    int before = units_of_def(def);
     for (int a = 0; a < 16 && !ordered; a++) {
         static const int dir[8][2] = { {1,0},{1,1},{0,1},{-1,1},{-1,0},{-1,-1},{0,-1},{1,-1} };
         int r = a < 8 ? 240 : 180;
@@ -1125,8 +1134,10 @@ TEST(a_save_with_a_builder_on_its_way_still_raises_its_frame) {
     int rc = save_then_replay(&plat, STATE_TICKS, err, sizeof(err));
     if (rc != 0) { report(rc); printf("%s ", err); }
     ASSERT_EQ_INT(0, rc);
-    /* It got there on the loaded side, inside the window the hashes cover. */
+    /* It got there on the loaded side, inside the window the hashes cover,
+     * and put the frame up rather than dropping the order. */
     ASSERT_EQ_INT(0, units_with(is_on_its_way));
+    ASSERT_EQ_INT(before + 1, units_of_def(def));
 
     end_battle(&plat);
     UI_Shutdown();
