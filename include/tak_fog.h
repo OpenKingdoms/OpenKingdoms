@@ -51,5 +51,19 @@ void Fog_RenderOverlay(const struct GameWorld *world, struct TAK_Platform *plat)
 uint8_t Fog_OverlayAlphaAt(const struct GameWorld *world, int32_t world_x, int32_t world_y);
 /* Draws the overlay has taken since the process began, for a test. */
 uint32_t Fog_DebugOverlayDraws(void);
+/* The haze a sight jammer lays on its ground, for every viewer it does
+ * not jam (D-045). Fog_JamHazes lists those the seat the screen shows
+ * sees, none with Line of Sight off. Fog_HazeAlpha is how thick it lies
+ * at a fraction of its radius, 0 to 1. */
+typedef struct FogHaze { int32_t x, y, radius; } FogHaze;
+#define FOG_HAZE_MAX 256
+#define FOG_HAZE_R 196
+#define FOG_HAZE_G 208
+#define FOG_HAZE_B 240
+#define FOG_HAZE_RIM_IN 0.84f
+#define FOG_HAZE_RIM_PEAK 0.94f
+int   Fog_JamHazes(const struct GameWorld *world, FogHaze *out, int max);
+float Fog_HazeAlpha(float t);
+void  Fog_RenderJamHaze(const struct GameWorld *world, struct TAK_Platform *plat);
 
 #endif

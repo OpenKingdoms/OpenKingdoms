@@ -3,6 +3,7 @@
 #include "tak_unit.h"
 #include "tak_memory.h"
 #include <SDL.h>
+#include "tak_trig.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -471,6 +472,102 @@ void Fog_RenderOverlay(const GameWorld *world, TAK_Platform *plat) {
     if (quads > 0) {
         SDL_RenderGeometry(r, NULL, g_ov_v, quads * 4, g_ov_i, quads * 6);
         g_ov_draws++;
+    }
+    SDL_SetRenderDrawBlendMode(r, prev);
+}
+
+/* Ours, for mods (D-045): whoever a sight jammer does not jam sees a haze
+ * on its ground, so it reads as a mechanic and not as a fog bug. Whoever
+ * it jams sees the fog alone. */
+int Fog_JamHazes(const GameWorld *world, FogHaze *out, int max) {
+    if (!world || !world->cfg.line_of_sight) return 0;
+    int viewer = Fog_Viewer(), n = 0, count = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count && n < max; i++) {
+        const Unit *j = &units[i];
+        const UnitDef *d = Units_GetDef((int)j->def_idx);
+        if (!d || d->sight_jam_distance <= 0 || !Unit_JamsNow(j, d)) continue;
+        if (viewer > 0 && Units_PlayersAreEnemies(viewer, (int)j->player_id))
+            continue;
+        out[n].x = j->world_x;
+        out[n].y = j->world_y;
+        out[n].radius = d->sight_jam_distance;
+        n++;
+    }
+    return n;
+}
+
+/* Thin over the ground, thicker at the rim so the edge reads. */
+float Fog_HazeAlpha(float t) {
+    if (t >= 1.0f) return 0.0f;
+    if (t >= FOG_HAZE_RIM_PEAK)
+        return 0.34f * (1.0f - t) / (1.0f - FOG_HAZE_RIM_PEAK);
+    if (t >= FOG_HAZE_RIM_IN)
+        return 0.16f + 0.18f * (t - FOG_HAZE_RIM_IN) / (FOG_HAZE_RIM_PEAK - FOG_HAZE_RIM_IN);
+    return 0.16f;
+}
+
+#define FOG_HAZE_SEGS 64
+#define FOG_HAZE_RINGS 3
+
+void Fog_RenderJamHaze(const GameWorld *world, TAK_Platform *plat) {
+    if (!world || !plat || !plat->renderer) return;
+    FogHaze hz[FOG_HAZE_MAX];
+    int n = Fog_JamHazes(world, hz, FOG_HAZE_MAX);
+    if (n <= 0) return;
+    static const float rings[FOG_HAZE_RINGS] = { FOG_HAZE_RIM_IN, FOG_HAZE_RIM_PEAK, 1.0f };
+    /* A centre and the rings. The overlay's buffers count in quads, four
+     * verts and six indices each. */
+    int verts = 1 + FOG_HAZE_SEGS * FOG_HAZE_RINGS;
+    int tris = FOG_HAZE_SEGS * (2 * FOG_HAZE_RINGS - 1);
+    if (!overlay_room(verts / 4 + tris / 2 + 1)) return;
+    SDL_Renderer *r = plat->renderer;
+    SDL_BlendMode prev;
+    SDL_GetRenderDrawBlendMode(r, &prev);
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+    const SDL_Color tint = { FOG_HAZE_R, FOG_HAZE_G, FOG_HAZE_B, 0 };
+    for (int h = 0; h < n; h++) {
+        float cx = (float)(hz[h].x - world->cam_x);
+        float cy = (float)(hz[h].y - world->cam_y);
+        float rad = (float)hz[h].radius;
+        if (cx + rad < 0.0f || cy + rad < 0.0f ||
+            cx - rad > (float)world->viewport_w ||
+            cy - rad > (float)world->viewport_h) continue;
+        SDL_Vertex *c = &g_ov_v[0];
+        c->position.x = cx;
+        c->position.y = cy;
+        c->color = tint;
+        c->color.a = (Uint8)(Fog_HazeAlpha(0.0f) * 255.0f);
+        c->tex_coord.x = 0.0f;
+        c->tex_coord.y = 0.0f;
+        for (int k = 0; k < FOG_HAZE_RINGS; k++) {
+            for (int s = 0; s < FOG_HAZE_SEGS; s++) {
+                float ang = (float)s / (float)FOG_HAZE_SEGS * 6.2831853f;
+                SDL_Vertex *v = &g_ov_v[1 + k * FOG_HAZE_SEGS + s];
+                v->position.x = cx + tak_cosf(ang) * rad * rings[k];
+                v->position.y = cy + tak_sinf(ang) * rad * rings[k];
+                v->color = tint;
+                v->color.a = (Uint8)(Fog_HazeAlpha(rings[k]) * 255.0f);
+                v->tex_coord.x = 0.0f;
+                v->tex_coord.y = 0.0f;
+            }
+        }
+        int ni = 0;
+        for (int s = 0; s < FOG_HAZE_SEGS; s++) {
+            g_ov_i[ni++] = 0;
+            g_ov_i[ni++] = 1 + s;
+            g_ov_i[ni++] = 1 + (s + 1) % FOG_HAZE_SEGS;
+        }
+        for (int k = 0; k + 1 < FOG_HAZE_RINGS; k++) {
+            for (int s = 0; s < FOG_HAZE_SEGS; s++) {
+                int s1 = (s + 1) % FOG_HAZE_SEGS;
+                int a0 = 1 + k * FOG_HAZE_SEGS + s, a1 = 1 + k * FOG_HAZE_SEGS + s1;
+                int b0 = a0 + FOG_HAZE_SEGS, b1 = a1 + FOG_HAZE_SEGS;
+                g_ov_i[ni++] = a0; g_ov_i[ni++] = b0; g_ov_i[ni++] = b1;
+                g_ov_i[ni++] = a0; g_ov_i[ni++] = b1; g_ov_i[ni++] = a1;
+            }
+        }
+        SDL_RenderGeometry(r, NULL, g_ov_v, verts, g_ov_i, ni);
     }
     SDL_SetRenderDrawBlendMode(r, prev);
 }

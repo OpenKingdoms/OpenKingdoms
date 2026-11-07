@@ -180,8 +180,10 @@
  * unit's speed. 65: the computer spaces its base by the original's grid,
  * and a seat on an island keeps crossing. 66: a computer cut off by water
  * fights at sea, sends more boats for a large army, lets a builder ride,
- * and sends no walker at a target it cannot reach by ground. */
-#define TAK_ENGINE_BUILD_ID           66
+ * and sends no walker at a target it cannot reach by ground. 67: a mod's
+ * sight jammer lays a haze on its ground, and one with no script comes on
+ * when built. */
+#define TAK_ENGINE_BUILD_ID           67
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
