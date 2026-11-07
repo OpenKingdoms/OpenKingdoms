@@ -3138,6 +3138,14 @@ static int test_ai_a_walker_leaves_a_boat_it_cannot_reach(void) {
     g_walkers_fit = 0;
     ASSERT_EQ_INT(UNIT_CMD_ATTACK, g_units[troop].cmd_kind);
     ASSERT_EQ_INT(boat, g_units[troop].target);
+    /* One that reaches it from where it stands has its fight, whatever the
+     * ground round the boat. */
+    g_units[troop].cmd_kind = UNIT_CMD_NONE;
+    g_units[troop].target = -1;
+    g_defs[g_units[troop].def_idx].weapons[0].range = 150;
+    hf_run_ticks(&w, 120, 1);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, g_units[troop].cmd_kind);
+    ASSERT_EQ_INT(boat, g_units[troop].target);
     return 0;
 }
 
@@ -3255,7 +3263,7 @@ static int test_ai_buildings_keep_apart_by_the_grid(void) {
         int32_t sx = 0, sy = 0;
         if (!TAK_AI_DebugFindSite(0, 2, &sx, &sy)) break;
         for (int j = 0; j < placed; j++) {
-            int32_t gx = abs(sx - x[j]) - 64, gy = abs(sy - y[j]) - 64;
+            int32_t gx = abs(sx - x[j]) - 128, gy = abs(sy - y[j]) - 128;
             int32_t gap = gx > gy ? gx : gy;
             if (gap < 48) printf("[sites %d,%d and %d,%d leave %d px] ", sx, sy, x[j], y[j], gap);
             ASSERT_TRUE(gap >= 48);

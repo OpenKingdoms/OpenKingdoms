@@ -2513,6 +2513,8 @@ static int ai_walker_reaches(const GameWorld *world, const Unit *units, int i,
     int32_t range = 32;
     for (int k = 0; k < def->num_weapons; k++)
         if (def->weapons[k].range > range) range = def->weapons[k].range;
+    /* It already reaches from where it stands. */
+    if (ai_within(u->world_x, u->world_y, t->world_x, t->world_y, range)) return 1;
     static const int8_t dirs[8][2] = { { 1, 0 }, { 1, 1 }, { 0, 1 }, { -1, 1 },
                                        { -1, 0 }, { -1, -1 }, { 0, -1 }, { 1, -1 } };
     for (int ring = 0; ring < 2; ring++) {
