@@ -317,6 +317,7 @@ int Units_OrderUnload(int handle, int32_t world_x, int32_t world_y) {
     return 0;
 }
 
+int Units_WeaponIsMelee(int def_idx, int slot) { (void)def_idx; (void)slot; return 0; }
 int Units_CanStandAt(int handle, int32_t world_x, int32_t world_y) {
     (void)handle; (void)world_x; (void)world_y;
     return 1;

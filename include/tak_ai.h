@@ -45,6 +45,7 @@ enum {
     TAK_AI_COUNT_SQUAD_WAITS, TAK_AI_COUNT_SWEEPS, TAK_AI_COUNT_FIRE_STEPS,
     TAK_AI_COUNT_ESCORTS, TAK_AI_COUNT_PRESSED, TAK_AI_COUNT_HOLDS,
     TAK_AI_COUNT_REGROUPED, TAK_AI_COUNT_FERRIES, TAK_AI_COUNT_LANDINGS,
+    TAK_AI_COUNT_RIDES, TAK_AI_COUNT_ASHORE,
     TAK_AI_COUNT_KINDS
 };
 int  TAK_AI_DebugCount(int player_id, int kind);
@@ -71,8 +72,15 @@ const char *TAK_AI_DebugWaveReason(int player_id);
 #define TAK_AI_TACTIC_HOLD      256 /* press on or hold the ground (A-012) */
 #define TAK_AI_TACTIC_NAVAL     512 /* carry the army over water (A-013) */
 #define TAK_AI_TACTIC_SPACING   1024 /* the original's build grid (A-014) */
-#define TAK_AI_TACTIC_ALL       2047
+#define TAK_AI_TACTIC_CONVOY    2048 /* more than one ferry at a time (A-013) */
+#define TAK_AI_TACTIC_FLEET     4096 /* warships a cut off seat needs, at sea (A-015) */
+#define TAK_AI_TACTIC_RIDE      8192 /* a builder rides to a hard pad (A-016) */
+#define TAK_AI_TACTIC_ALL       16383
 void TAK_AI_DebugSetTactics(int player_id, int mask);
+/* Ferries under way for a seat, and the bytes of the state before the
+ * part a build with one ferry a seat never wrote. */
+int  TAK_AI_DebugFerries(int player_id);
+unsigned int TAK_AI_DebugStateBytesBeforeSea(void);
 /* A seat's build grid in cells, or a floating type's (A-014). */
 void TAK_AI_DebugBuildGrid(int player_id, int floats, int *pitch_x, int *pitch_y,
                            int *shift_x, int *shift_y, int *margin);

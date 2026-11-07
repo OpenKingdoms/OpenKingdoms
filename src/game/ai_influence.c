@@ -94,6 +94,13 @@ static int inf_def_is_lodestone(const UnitDef *def) {
     return def->mogrium_income_per_sec > 0.0f || def->mogrium_storage > 0;
 }
 
+/* A mover with no weapons that builds nothing, a scout or a transport, has
+ * no stake in the ground it crosses. */
+static int inf_def_has_stake(const UnitDef *def) {
+    return def->max_velocity <= 0.0f || def->num_weapons > 0 ||
+           (def->cap_flags & UNIT_CAP_BUILDER);
+}
+
 /* Stamp value on a cell with a two-ring falloff (half, quarter). */
 static void inf_stamp(int p, AiInfluenceLayer layer, int cx, int cy,
                       int32_t value) {
@@ -175,7 +182,7 @@ void AI_Influence_Refresh(const GameWorld *world) {
             if (!ai_slot[p]) continue;
             if (inf_players_allied(p, q)) {
                 inf_stamp(p, AI_INF_PRESENCE, cx, cy, combat);
-                inf_stamp(p, AI_INF_OWN_VALUE, cx, cy, asset);
+                if (inf_def_has_stake(def)) inf_stamp(p, AI_INF_OWN_VALUE, cx, cy, asset);
                 if (lode) inf_stamp(p, AI_INF_WEALTH, cx, cy, asset);
                 continue;
             }

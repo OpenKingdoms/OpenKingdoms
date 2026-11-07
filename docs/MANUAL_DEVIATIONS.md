@@ -427,7 +427,10 @@ Format per entry:
   by how weak and valuable the enemy is in the candidate's cell. A cell
   where seen enemy strength outweighs the AI's presence and something
   of the AI's stands is treated like a hit on the base: the home units
-  are sent at the first seen enemy in it before a shot lands.
+  are sent at the first seen enemy in it before a shot lands. A mover
+  with no weapons that builds nothing, a scout or a transport, is not
+  something of the AI's in this sense, so one passing over enemies calls
+  nobody out.
 - Why: The original scores by distance and chance alone and only reacts
   once a unit is hit. Reading strength and value over the map lets the
   AI go for exposed lodestones instead of a fortified front and meet a
@@ -865,7 +868,10 @@ Format per entry:
   arms stand, and the wave attacks from there. A landing that fails is
   tried elsewhere twice, then the wave goes back ashore at home. A
   crossing lost with its transport waits three times as long before
-  the next. One ferry a seat at a time. A walker in a group marching at
+  the next. A seat runs one ferry, and one more for each 30 walkers
+  waiting at home, three at most (`TAK_AI_TACTIC_CONVOY`), and it may
+  keep up to eight groups where a seat that walks to its enemy keeps
+  four. It wants a further transport for each, after its army. A walker in a group marching at
   a target over water, and a ship sent at one on land, go back to the
   gathering, and the wait between crossings is a wait for a boat, not a
   march at the sea. A cut off seat keeps its transports for the next
@@ -876,15 +882,20 @@ Format per entry:
   yards the same way, and a ship stalled on a crossing sends the idle
   ships round it to a berth. A yard goes up where a square of open
   water 320 px across lies past its pad, and on the nearest water
-  where the shore has no such spot. A transport too hurt to sail holds
-  no place under the profile's limit, so one Transport Ship or Roc
-  lost to damage is replaced. A landing is chosen for the hardest rider
+  where the shore has no such spot. A transport too hurt to sail, or a
+  ship on water that does not lead to the target's, holds no place
+  under the profile's limit, so one Transport Ship or Roc lost to
+  damage or left on a lake is replaced. A landing is chosen for the hardest rider
   aboard, the widest and then the one taking the least slope, because
   an unload ends at the first rider its spot refuses
   (legacy:14569-14574), and a type no landing suits stays behind. A
-  walker takes no ship or flyer as a target when no ground it can walk
-  puts it in reach, as the original takes no target it has no route to
-  (legacy:15461-15473). The code is the ferry section of `src/game/ai.c`, the
+  walker takes no target when no ground it can walk puts it in reach,
+  as the original takes no target it has no route to
+  (legacy:15461-15473), and that goes for a home answering a threat over
+  the water and for a mage or a yard on it. A melee weapon counts at the
+  40 px it lands at. One whose target has gone where it cannot be got at
+  gives it up, and a group that walks to its enemy moves on from such a
+  target. The code is the ferry section of `src/game/ai.c`, the
   crossing rows of the army domain in `src/game/ai_htn.c` and the ferry
   goal and its two actions in `src/game/ai_plan.c`.
 - Why: issue #454. On an island start the computer never attacked a
@@ -893,10 +904,15 @@ Format per entry:
   pathfinder cannot reach is never taken (legacy:15473) and a group
   whose leader has no route does not march (legacy:18385), so an AI on
   an island sits. All of this is ours, beyond the original, and the
-  owner agreed to it. The Dark Mason riding a Ghost Ship to a far
-  lodestone, scouting rather than seeing the whole map, a build that
-  leans on warships, going back to land play after losing at sea, and
-  fighting at sea are left for later.
+  owner agreed to it. The Dark Mason riding a Ghost Ship is A-016, and
+  warships and fighting at sea are A-015. The issue's birds sent out in
+  place of seeing the whole map are not done. The target choice still
+  takes every enemy unit, seen or not, as the original does
+  (legacy:21137-21168). A seat that kept one scout up, which only added
+  sight, did worse in duels against one without, because what it saw fed
+  the strength tests and it held back more. Choosing only from what was
+  seen would want a memory of the enemy per seat in the save and a new
+  balance for those tests.
 - Measured: in duels of 20 minutes, each seed played twice with the
   seats swapped, a seat with A-013 against one with everything else.
   Over 48 games on Varro Passage and Cairbray Coast Landing, the two
@@ -922,6 +938,16 @@ Format per entry:
   38 to 58, Veruna's from 3 to 10, Taros's from 13 to 21, Aramon's from
   11 to 15 and Zhon's from 11 to 12. The first landing came at 444
   seconds on average against 563, Veruna's at 517 against 817.
+- Measured for the reach rule and the further ferries on the same 24
+  games. With the walker's reach rule and the stake rule of A-002 and no
+  other change, seconds that movers stood stuck went from 133,117 to
+  92,060. On Two Castles and Tarosian Plain, 16 games, they went from
+  18,376 to 20,852, units killed from 1,903 to 1,809 and fighters raised
+  from 2,335 to 2,312, which is noise, and games stayed 16.7 minutes
+  against 16.6. Further ferries gain nothing measured by themselves. In
+  48 games with seats swapped, a seat with one per 12 walkers set 291
+  ashore against 350, and at one per 30, as they stand, 311 against 335,
+  inside the noise. They stay for an army too large for one hold.
 - Citation: the manual describes no AI rule at this level. Behaviour
   note `docs/notes/2026-09-04-legacy-ai.md`, "Water and transports".
 
@@ -973,6 +999,67 @@ Format per entry:
   784 for 752, so the spacing costs a seat nothing in a fight.
 - Citation: the manual describes no AI placement rule. Behaviour note
   `docs/notes/2026-09-04-legacy-ai.md`, "Placement".
+
+## A-015: A computer cut off by water trains the warships it needs and fights at sea
+
+- Change: under `TAK_AI_TACTIC_FLEET` a cut off seat with a boat wants
+  two armed ships past those it sees of the enemy's, eight at most, and
+  a yard that makes only ships trains for that goal and for the ferry
+  and otherwise stands idle, so the mana goes to the army. The largest
+  holds are kept for crossings, as many as the walkers at home call for.
+  Every other armed ship is the fleet, which a table in `src/game/ai_htn.c` runs.
+  Enemy ships off home are answered whatever they weigh, two ships or
+  more a fifth stronger than the enemy ships seen go at the nearest, two
+  or more with no enemy ships seen stand off the nearest enemy building
+  with water in gun range and shell it, and otherwise the fleet waits at
+  its berths. A seat that loses every armed ship leaves the sea alone
+  for five minutes, and one with four walkers ashore on ground that
+  walks to its target trains no more warships while they last. Both go
+  back to land play.
+- Why: issue #454 asks for a build that prioritises ships on a map that
+  is mostly water and a return to land play once the sea is lost. It
+  reads the map by the view from its birds. Ours reads it by whether the
+  seat can walk to its target, which A-013 already asks. Before this a
+  Veruna seat's yard drew ships without end while a hundred troops
+  waited at home, and those ships never left it. All of this is ours,
+  since the original's skirmish AI draws ships by weight like anything
+  else and has no rule for the sea (legacy:20033-20041).
+- Measured: duels of 20 minutes on Varro Passage and Meredoc Keys (starts
+  1 and 3, and 1 and 5), every kingdom against itself, two seeds, seats
+  swapped, 48 games. A seat with warships alone against one without won
+  or was ahead at the end in 32 against 16, lost 1,585 against 1,839 and
+  set 387 walkers ashore against 310. With A-015, A-016 and the further
+  ferries of A-013 together against none, the seat with them won 9
+  against 5 and set 497 ashore against 356 in 79 landings against 69,
+  but was ahead at the end in 11 against 23 and killed 1,611 for 1,988
+  lost against 1,959 for 1,731, since more of its army goes where the
+  enemy stands. Both seats with them in 24 games, against both without,
+  raised units killed from 1,435 to 1,779, walkers ashore from 303 to
+  419 and seats that landed from 33 of 48 to 37. On Two Castles and
+  Tarosian Plain none of the three ever fires, and 16 games played the
+  same to the unit with them and without.
+- Citation: the manual describes no AI rule at this level.
+
+## A-016: A builder rides a free transport to a pad it cannot reach quickly
+
+- Change: under `TAK_AI_TACTIC_RIDE` a builder bound for a free sacred
+  pad, and not the monarch, rides when it cannot walk there or when the
+  pad is more than 1536 px off, if a transport of the seat is free. A
+  ride to a pad it could walk to has to save 512 px of walking. The
+  transport carries it to the nearest ground that walks to the pad and
+  it builds as it would have. One ride a seat at a time, none to a pad
+  with enemy arms near, and without a free transport the builder walks
+  or passes the pad by as before. The ride takes one of the seat's
+  ferry slots.
+- Why: issue #454 names the trick of a Dark Mason on a Ghost Ship, which
+  flies at 2 where the mason walks at 1.45 and crosses water. All of it
+  is ours, as the original's AI never loads a transport (see A-013).
+- Measured: on the 48 games of A-015, a seat with rides alone against one
+  without took 8 rides, held 5.21 lodestones on average against 5.06,
+  raised 2,982 fighters against 2,892 and killed 1,512 against 1,510.
+  Won or ahead at the end it was 25 against 23, so it costs nothing and
+  is rare. Rides are not taken on the land maps.
+- Citation: the manual describes no AI rule at this level.
 
 ## T-001: Flying transports load and unload by the ground rules
 

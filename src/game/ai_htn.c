@@ -199,6 +199,9 @@ const char *AI_Htn_TaskName(AiTask task) {
     case AI_TASK_HOLD_GROUND: return "hold the ground";
     case AI_TASK_DEFEND:    return "defend";
     case AI_TASK_FERRY:     return "ferry";
+    case AI_TASK_HUNT:      return "hunt";
+    case AI_TASK_SHELL:     return "shell";
+    case AI_TASK_STAND:     return "stand";
     default:                return "none";
     }
 }
@@ -344,6 +347,63 @@ AiTask AI_Htn_GroupTask(const AiGroupState *s, const char **reason) {
     case P_PRESS_ON: return AI_TASK_STRIKE;
     case P_DEFEND:   return AI_TASK_DEFEND;
     default:         return AI_TASK_HOLD_GROUND;
+    }
+}
+
+/* A seat's warships: a domain of their own. Enemy ships off home are
+ * answered whatever they weigh, a fleet a fifth stronger goes out to the
+ * enemy's, and with no ships to fight it stands off a shore and shells it.
+ * Otherwise it waits (A-015). */
+enum { S_SHIPS = 0, S_VALUE, S_ENEMY_SHIPS, S_ENEMY_VALUE, S_NEAR_HOME, S_MARK_KNOWN, S_COUNT };
+enum { T_FLEET = 0, P_HUNT, P_SHELL, P_STAND, ST_COUNT };
+
+static const HtnTask k_fleet_tasks[ST_COUNT] = {
+    [T_FLEET] = {
+        .name = "fleet", .compound = 1, .method_count = 4,
+        .methods = {
+            { .name = "answer ships off home",
+              .pre = { AI_COND(S_SHIPS, AI_OP_GT, 0),
+                       AI_COND(S_NEAR_HOME, AI_OP_NE, 0) },
+              .subtasks = { P_HUNT }, .subtask_count = 1 },
+            { .name = "hunt the enemy's ships",
+              .pre = { AI_COND(S_SHIPS, AI_OP_GE, AI_FLEET_SORTIE),
+                       AI_COND(S_ENEMY_SHIPS, AI_OP_GT, 0),
+                       AI_COND_SCALED(S_VALUE, 5, AI_OP_GE, S_ENEMY_VALUE, 6) },
+              .subtasks = { P_HUNT }, .subtask_count = 1 },
+            { .name = "shell the shore",
+              .pre = { AI_COND(S_SHIPS, AI_OP_GE, AI_FLEET_SORTIE),
+                       AI_COND(S_ENEMY_SHIPS, AI_OP_EQ, 0),
+                       AI_COND(S_MARK_KNOWN, AI_OP_NE, 0) },
+              .subtasks = { P_SHELL }, .subtask_count = 1 },
+            { .name = "stand by",
+              .subtasks = { P_STAND }, .subtask_count = 1 },
+        },
+    },
+    [P_HUNT]  = { .name = "hunt" },
+    [P_SHELL] = { .name = "shell" },
+    [P_STAND] = { .name = "stand" },
+};
+
+static const HtnDomain k_fleet = { k_fleet_tasks, ST_COUNT, S_COUNT };
+
+AiTask AI_Htn_FleetTask(const AiFleetState *s, const char **reason) {
+    if (reason) *reason = "no state";
+    if (!s) return AI_TASK_STAND;
+    int32_t w[S_COUNT];
+    w[S_SHIPS]       = s->ships;
+    w[S_VALUE]       = s->value;
+    w[S_ENEMY_SHIPS] = s->enemy_ships;
+    w[S_ENEMY_VALUE] = s->enemy_value;
+    w[S_NEAR_HOME]   = s->near_home ? 1 : 0;
+    w[S_MARK_KNOWN]  = s->mark_known ? 1 : 0;
+    HtnPlan plan;
+    if (!Htn_Plan(&k_fleet, T_FLEET, w, &plan) || plan.step_count <= 0) return AI_TASK_STAND;
+    if (reason && plan.via_count > 0)
+        *reason = k_fleet_tasks[T_FLEET].methods[plan.via_method[0]].name;
+    switch (plan.steps[0]) {
+    case P_HUNT:  return AI_TASK_HUNT;
+    case P_SHELL: return AI_TASK_SHELL;
+    default:      return AI_TASK_STAND;
     }
 }
 
