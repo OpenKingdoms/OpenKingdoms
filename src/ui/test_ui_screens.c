@@ -8415,7 +8415,8 @@ TEST(the_computer_sweeps_its_way_out_of_rubble) {
            ringed_on, on, sweeps_on, off);
     ASSERT_EQ_INT(8, ringed_on);
     ASSERT_EQ_INT(8, ringed_off);
-    ASSERT(on > 0 && on <= 150);
+    /* Any time in the two minutes it watches: the builder's walk decides it. */
+    ASSERT(on > 0 && on <= 120);
     ASSERT(sweeps_on >= 1);
     ASSERT_EQ_INT(-1, off);
     ASSERT_EQ_INT(0, sweeps_off);
