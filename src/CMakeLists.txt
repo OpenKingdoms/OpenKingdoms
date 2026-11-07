@@ -2021,6 +2021,7 @@ target_compile_definitions(test_moveinfo PRIVATE
 add_executable(test_ai
     game/test_ai.c
     game/ai.c
+    core/trig.c
     game/ai_influence.c
     game/ai_htn.c
     game/ai_squad.c
@@ -2041,6 +2042,7 @@ target_link_libraries(test_ai PRIVATE SDL2::SDL2)
 add_executable(test_ai_census
     game/test_ai_census.c
     game/ai.c
+    core/trig.c
     game/ai_influence.c
     game/ai_htn.c
     game/ai_squad.c

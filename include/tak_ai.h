@@ -70,8 +70,12 @@ const char *TAK_AI_DebugWaveReason(int player_id);
 #define TAK_AI_TACTIC_EXPAND    128 /* settle every free pad, escorted (A-012) */
 #define TAK_AI_TACTIC_HOLD      256 /* press on or hold the ground (A-012) */
 #define TAK_AI_TACTIC_NAVAL     512 /* carry the army over water (A-013) */
-#define TAK_AI_TACTIC_ALL       1023
+#define TAK_AI_TACTIC_SPACING   1024 /* the original's build grid (A-014) */
+#define TAK_AI_TACTIC_ALL       2047
 void TAK_AI_DebugSetTactics(int player_id, int mask);
+/* A seat's build grid in cells, or a floating type's (A-014). */
+void TAK_AI_DebugBuildGrid(int player_id, int floats, int *pitch_x, int *pitch_y,
+                           int *shift_x, int *shift_y, int *margin);
 /* Every computer seat thinks on the same tick of the second, as
  * before the seats were spread, for tests written against that. */
 void TAK_AI_DebugSetStagger(int on);

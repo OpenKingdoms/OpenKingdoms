@@ -264,8 +264,8 @@ int AI_Plan_GoalPriority(const AiPlanState *s, AiGoal goal) {
         return s->rubble > 0 ? 80 : 0;
     case AI_GOAL_FERRY:
         /* An army that cannot reach the enemy wants one transport before
-         * more of itself (A-013). */
-        return s->cut_off && s->transports <= 0 ? 65 : 0;
+         * more of itself (A-013). A seat with no army yet raises that first. */
+        return s->cut_off && s->transports <= 0 && s->army > 0 ? 65 : 0;
     default:
         return 0;
     }

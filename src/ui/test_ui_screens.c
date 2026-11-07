@@ -8000,8 +8000,9 @@ TEST(a_dead_monarch_leaves_no_mana_in_the_pool) {
  * battlefield rules when TAK_AI_DUEL_REMASTERED is 1, and prints what
  * each side killed and lost, the lodestones it held, the fighters it
  * raised and what it had standing at the end. TAK_AI_DUEL_FIRST is the
- * first seed's number and TAK_AI_DUEL_PLAIN=1 or 2 plays only the games
- * with the plain seat there. It is registered only when asked for. */
+ * first seed's number, TAK_AI_DUEL_PLAIN=1 or 2 plays only the games
+ * with the plain seat there, and TAK_AI_DUEL_STARTS=a,b claims the map's
+ * starts a and b for the seats. It is registered only when asked for. */
 #define DUEL_DEFS 512
 typedef struct DuelTally {
     int     lode_seconds[3];
@@ -8011,12 +8012,30 @@ typedef struct DuelTally {
     int64_t home_s[3], away_s[3];    /* fighter seconds near the start and away */
     int     pads;                    /* sacred pads on the map */
     uint32_t counted[TAK_MAX_UNITS]; /* the stable id a slot was counted at */
+    /* Builder seconds, the own movers within 96 px over them, stuck
+     * seconds of builders and of all movers, transports and yards raised,
+     * and the buildings and the gaps to their nearest neighbour at the end. */
+    int64_t builder_s[3], crowd[3], builder_stuck_s[3], mover_stuck_s[3];
+    int     transports[3], yards[3];
+    int     buildings[3], touching[3];
+    int64_t gap_sum[3];
 } DuelTally;
 static char g_duel_names[DUEL_DEFS][16];
 
 static int duel_is_lodestone(const UnitDef *d) {
     return d && d->max_velocity <= 0.0f && !(d->cap_flags & UNIT_CAP_BUILDER) &&
            (d->yardmap_sacred || d->mogrium_income_per_sec > 0.0f);
+}
+
+static int duel_makes_transport(int def_idx) {
+    int kids[32];
+    int n = Units_GetBuildables(def_idx, kids, 32);
+    for (int k = 0; k < n; k++) {
+        const UnitDef *d = Units_GetDef(kids[k]);
+        if (d && d->max_velocity > 0.0f && (d->cap_flags & UNIT_CAP_TRANSPORT) &&
+            d->transport_capacity > 0) return 1;
+    }
+    return 0;
 }
 
 static void duel_sample(DuelTally *t, int second) {
@@ -8054,12 +8073,89 @@ static void duel_sample(DuelTally *t, int second) {
             t->counted[i] = u->stable_id;
             snprintf(g_duel_names[u->def_idx], sizeof(g_duel_names[0]), "%s",
                      d->unitname);
+            if ((d->cap_flags & UNIT_CAP_TRANSPORT) && d->transport_capacity > 0)
+                t->transports[u->player_id]++;
+        } else if (t->counted[i] != u->stable_id && d->max_velocity > 0.0f &&
+                   (d->cap_flags & UNIT_CAP_TRANSPORT) && d->transport_capacity > 0 &&
+                   !d->commander) {
+            t->transports[u->player_id]++;
+            t->counted[i] = u->stable_id;
+        } else if (t->counted[i] != u->stable_id && d->max_velocity <= 0.0f &&
+                   duel_makes_transport(u->def_idx)) {
+            t->yards[u->player_id]++;
+            t->counted[i] = u->stable_id;
         }
     }
     for (int p = 1; p <= 2; p++) {
         t->lode_seconds[p] += lodes[p];
         if (second > 0 && second % 300 == 0 && second / 300 <= 4)
             t->lodes_at[p][second / 300 - 1] = lodes[p];
+    }
+}
+
+static int duel_stuck(const Unit *u) {
+    return u->cmd_kind != UNIT_CMD_NONE && (u->path_failed || u->stall_esc > 0);
+}
+
+/* Crowding and stalls among a seat's movers, one reading a second. */
+static void duel_sample_crowd(DuelTally *t) {
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count && i < TAK_MAX_UNITS; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id < 1 || u->player_id > 2) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || u->under_construction || d->max_velocity <= 0.0f || d->can_fly) continue;
+        int p = u->player_id;
+        if (duel_stuck(u)) t->mover_stuck_s[p]++;
+        if (!(d->cap_flags & UNIT_CAP_BUILDER)) continue;
+        t->builder_s[p]++;
+        if (duel_stuck(u)) t->builder_stuck_s[p]++;
+        for (int k = 0; k < count && k < TAK_MAX_UNITS; k++) {
+            const Unit *v = &units[k];
+            if (k == i || v->alive != UNIT_ALIVE_ACTIVE || v->player_id != p) continue;
+            const UnitDef *vd = Units_GetDef(v->def_idx);
+            if (!vd || vd->max_velocity <= 0.0f || vd->can_fly) continue;
+            int64_t dx = v->world_x - u->world_x, dy = v->world_y - u->world_y;
+            if (dx * dx + dy * dy <= 96 * 96) t->crowd[p]++;
+        }
+    }
+}
+
+/* The gap from each standing building to its seat's nearest other. */
+static void duel_read_base(DuelTally *t) {
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int buildings[3] = { 0, 0, 0 }, touching[3] = { 0, 0, 0 };
+    int64_t gaps[3] = { 0, 0, 0 };
+    for (int i = 0; i < count; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id < 1 || u->player_id > 2) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || d->max_velocity > 0.0f || duel_is_lodestone(d)) continue;
+        int32_t best = -1;
+        for (int k = 0; k < count; k++) {
+            const Unit *v = &units[k];
+            if (k == i || v->alive != UNIT_ALIVE_ACTIVE || v->player_id != u->player_id) continue;
+            const UnitDef *vd = Units_GetDef(v->def_idx);
+            if (!vd || vd->max_velocity > 0.0f || duel_is_lodestone(vd)) continue;
+            int32_t gx = abs(u->world_x - v->world_x) - (d->footprint_x + vd->footprint_x) * 8;
+            int32_t gy = abs(u->world_y - v->world_y) - (d->footprint_z + vd->footprint_z) * 8;
+            int32_t gap = gx > gy ? gx : gy;
+            if (gap < 0) gap = 0;
+            if (best < 0 || gap < best) best = gap;
+        }
+        if (best < 0) continue;
+        buildings[u->player_id]++;
+        gaps[u->player_id] += best;
+        if (best < 16) touching[u->player_id]++;
+    }
+    /* A base is read at its fullest, not after the enemy has been at it. */
+    for (int p = 1; p <= 2; p++) {
+        if (buildings[p] < t->buildings[p]) continue;
+        t->buildings[p] = buildings[p];
+        t->touching[p] = touching[p];
+        t->gap_sum[p] = gaps[p];
     }
 }
 
@@ -8092,6 +8188,8 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
     cfg.seed = seed;
     cfg.remastered = remastered;
     if (sides) sscanf(sides, "%d,%d", &cfg.players[0].side, &cfg.players[1].side);
+    if (getenv("TAK_AI_DUEL_STARTS"))
+        sscanf(getenv("TAK_AI_DUEL_STARTS"), "%d,%d", &cfg.players[0].start_pos, &cfg.players[1].start_pos);
     cfg.players[0].kind = TAK_SLOT_AI;
     cfg.players[0].ai_difficulty = 2;
     cfg.players[1].kind = TAK_SLOT_AI;
@@ -8120,7 +8218,10 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
         for (int i = 0; i < world->feature_count; i++)
             fire_seconds += world->features[i].fx == FEATURE_FX_BURNING;
         duel_sample(tally, t / 60 + 1);
+        duel_sample_crowd(tally);
+        if (t % 3600 == 0) duel_read_base(tally);
     }
+    duel_read_base(tally);
     {
         int count = 0;
         const Unit *units = Units_GetActive(&count);
@@ -8191,6 +8292,17 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                 fs > 0 ? (int)(tally->home_s[p] * 100 / fs) : 0,
                 (long long)tally->standing[p]);
         duel_print_mix(p == plain_seat ? "plain" : "with", tally->raised[p]);
+        fprintf(stderr, "duel:   seat %d transports raised %d yards %d, builder seconds "
+                "%lld with %d.%02d movers within 96 px, builders stuck %d.%d%%, movers "
+                "stuck %lld s, %d buildings mean gap %d px and %d touching\n", p,
+                tally->transports[p], tally->yards[p], (long long)tally->builder_s[p],
+                tally->builder_s[p] ? (int)(tally->crowd[p] / tally->builder_s[p]) : 0,
+                tally->builder_s[p] ? (int)(tally->crowd[p] * 100 / tally->builder_s[p] % 100) : 0,
+                tally->builder_s[p] ? (int)(tally->builder_stuck_s[p] * 100 / tally->builder_s[p]) : 0,
+                tally->builder_s[p] ? (int)(tally->builder_stuck_s[p] * 1000 / tally->builder_s[p] % 10) : 0,
+                (long long)tally->mover_stuck_s[p], tally->buildings[p],
+                tally->buildings[p] ? (int)(tally->gap_sum[p] / tally->buildings[p]) : 0,
+                tally->touching[p]);
     }
     InGame_DebugPlayWithoutHumans(0);
     InGame_Shutdown();
@@ -8303,7 +8415,8 @@ TEST(the_computer_sweeps_its_way_out_of_rubble) {
            ringed_on, on, sweeps_on, off);
     ASSERT_EQ_INT(8, ringed_on);
     ASSERT_EQ_INT(8, ringed_off);
-    ASSERT(on > 0 && on <= 90);
+    /* Any time in the two minutes it watches: the builder's walk decides it. */
+    ASSERT(on > 0 && on <= 120);
     ASSERT(sweeps_on >= 1);
     ASSERT_EQ_INT(-1, off);
     ASSERT_EQ_INT(0, sweeps_off);
