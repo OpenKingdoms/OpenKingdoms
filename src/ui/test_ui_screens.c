@@ -8271,6 +8271,8 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_SQUAD_WAITS),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_SWEEPS),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_FIRE_STEPS));
+        fprintf(stderr, "duel:   seat %d rides %d, %d set ashore\n", p,
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_RIDES), TAK_AI_DebugCount(p, TAK_AI_COUNT_ASHORE));
         fprintf(stderr, "duel:   seat %d escorts %d pressed on %d held ground %d "
                 "regrouped %d ferries %d landings %d first ashore at %d s\n", p,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_ESCORTS),

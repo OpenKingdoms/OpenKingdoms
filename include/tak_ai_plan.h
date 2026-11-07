@@ -18,6 +18,7 @@ typedef enum {
     AI_GOAL_ATTACK,     /* send a wave at the weakest enemy */
     AI_GOAL_CLEAR,      /* sweep the rubble the seat's units are stuck at */
     AI_GOAL_FERRY,      /* a transport to carry the army over water (A-013) */
+    AI_GOAL_FLEET,      /* warships for a seat cut off by water (A-015) */
     AI_GOAL_COUNT
 } AiGoal;
 
@@ -32,6 +33,7 @@ typedef enum {
     AI_ACT_SWEEP,
     AI_ACT_BUILD_YARD,       /* a structure that makes a transport */
     AI_ACT_TRAIN_TRANSPORT,
+    AI_ACT_TRAIN_WARSHIP,
     AI_ACT_COUNT
 } AiAction;
 
@@ -83,6 +85,15 @@ typedef struct AiPlanState {
     int     ferry_makers;
     int     ferry_makers_idle;
     int     yards_pending;
+    int     ferry_want;         /* transports the walkers at home call for */
+    /* Armed ships the seat has and wants, the producers free to make one,
+     * and that it has lost the sea or got ashore, either of which sends it
+     * back to land play (A-015). */
+    int     fleet;
+    int     fleet_want;
+    int     fleet_makers_idle;
+    int     sea_lost;
+    int     foothold;
 } AiPlanState;
 
 typedef struct AiPlanCosts {

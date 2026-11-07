@@ -28,8 +28,23 @@ typedef enum {
     AI_TASK_HOLD_GROUND,/* a group stands on the ground it went out to */
     AI_TASK_DEFEND,     /* a group goes at what attacks the seat's own */
     AI_TASK_FERRY,      /* a transport carries the wave over the water */
+    AI_TASK_HUNT,       /* warships go at the enemy's ships */
+    AI_TASK_SHELL,      /* warships stand off the enemy's shore and fire */
+    AI_TASK_STAND,      /* warships wait at their berths */
     AI_TASK_COUNT
 } AiTask;
+
+/* A cut off seat's warships, read once a think (A-015). */
+#define AI_FLEET_SORTIE 2       /* ships that go out together */
+typedef struct AiFleetState {
+    int     ships;              /* free armed ships */
+    int32_t value;              /* their strength */
+    int     enemy_ships;        /* enemy ships seen on water they can sail */
+    int32_t enemy_value;        /* their strength */
+    int     near_home;          /* one of those is off the seat's home */
+    int     mark_known;         /* an enemy building can be shelled from water */
+} AiFleetState;
+AiTask AI_Htn_FleetTask(const AiFleetState *s, const char **reason);
 
 typedef enum {
     AI_ROLE_MEMBER = 0,

@@ -11,7 +11,7 @@
 /* Goals in the order ties are broken. */
 static const AiGoal k_goal_order[] = {
     AI_GOAL_ECONOMY, AI_GOAL_DEFEND, AI_GOAL_CLEAR, AI_GOAL_ATTACK, AI_GOAL_FERRY,
-    AI_GOAL_ARMY, AI_GOAL_EXPAND
+    AI_GOAL_ARMY, AI_GOAL_FLEET, AI_GOAL_EXPAND
 };
 
 /* The planner's world, one integer each. */
@@ -38,6 +38,8 @@ enum {
     V_FERRY_MAKERS,
     V_FERRY_MAKERS_IDLE,
     V_YARDS_PENDING,
+    V_FLEET,                /* armed ships */
+    V_FLEET_MAKERS_IDLE,
     V_COUNT
 };
 
@@ -146,6 +148,16 @@ static const GoapAction k_actions[AI_ACT_COUNT - 1] = {
                  AI_EFFECT(V_TRANSPORTS, AI_EFF_ADD, 1) },
         .tag = AI_ACTOR_FACTORY,
     },
+    /* And a warship, for the seat's own water (A-015). */
+    [ACT(AI_ACT_TRAIN_WARSHIP)] = {
+        .name = "train warship",
+        .pre = { AI_COND(V_FLEET_MAKERS_IDLE, AI_OP_GT, 0),
+                 AI_COND(V_BUILD_EFF, AI_OP_GE, 23),
+                 AI_COND(V_CUT_OFF, AI_OP_NE, 0) },
+        .eff = { AI_EFFECT(V_FLEET_MAKERS_IDLE, AI_EFF_SUB, 1),
+                 AI_EFFECT(V_FLEET, AI_EFF_ADD, 1) },
+        .tag = AI_ACTOR_FACTORY,
+    },
 };
 
 static const GoapDomain k_domain = {
@@ -181,6 +193,9 @@ static const GoapGoal k_goals[AI_GOAL_COUNT] = {
     [AI_GOAL_FERRY] = {
         .want = { AI_COND_START(V_TRANSPORTS, AI_OP_GT, V_TRANSPORTS) },
     },
+    [AI_GOAL_FLEET] = {
+        .want = { AI_COND_START(V_FLEET, AI_OP_GT, V_FLEET) },
+    },
 };
 
 static void plan_world(const AiPlanState *s, const AiPlanCosts *c,
@@ -207,6 +222,8 @@ static void plan_world(const AiPlanState *s, const AiPlanCosts *c,
     w[V_FERRY_MAKERS]      = s->ferry_makers;
     w[V_FERRY_MAKERS_IDLE] = s->ferry_makers_idle;
     w[V_YARDS_PENDING]     = s->yards_pending;
+    w[V_FLEET]             = s->fleet;
+    w[V_FLEET_MAKERS_IDLE] = s->fleet_makers_idle;
 }
 
 AiActorClass AI_Plan_ActorOf(AiAction action) {
@@ -264,8 +281,15 @@ int AI_Plan_GoalPriority(const AiPlanState *s, AiGoal goal) {
         return s->rubble > 0 ? 80 : 0;
     case AI_GOAL_FERRY:
         /* An army that cannot reach the enemy wants one transport before
-         * more of itself (A-013). A seat with no army yet raises that first. */
-        return s->cut_off && s->transports <= 0 && s->army > 0 ? 65 : 0;
+         * more of itself (A-013), and a seat with no army yet raises that
+         * first. One waiting on more than a hold wants more, after its army. */
+        if (!s->cut_off || s->army <= 0) return 0;
+        return s->transports <= 0 ? 65 : s->transports < s->ferry_want ? 45 : 0;
+    case AI_GOAL_FLEET:
+        /* After the first boat and short of an army in need, and not once
+         * the sea is lost or a wave is ashore (A-015). */
+        if (!s->cut_off || s->transports <= 0 || s->sea_lost || s->foothold) return 0;
+        return s->fleet < s->fleet_want && s->fleet_makers_idle > 0 ? 50 : 0;
     default:
         return 0;
     }
@@ -313,6 +337,9 @@ AiAction AI_Plan_NextAction(const AiPlanState *s, const AiPlanCosts *c,
     AiAction best_action = AI_ACT_NONE;
     int best_priority = 0;
     for (size_t i = 0; i < sizeof(k_goal_order) / sizeof(k_goal_order[0]); i++) {
+        /* What only a producer can answer gives the army no posture. */
+        if (actor == AI_ACTOR_ARMY &&
+            k_goal_order[i] == AI_GOAL_FLEET) continue;
         /* A goal that cannot outrank the one in hand is not searched. */
         if (AI_Plan_GoalPriority(s, k_goal_order[i]) <= best_priority) continue;
         AiPlan plan;
