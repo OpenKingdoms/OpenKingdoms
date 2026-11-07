@@ -1874,13 +1874,19 @@ Format per entry:
 - Change: when three shots in a row from a unit stop short of a target
   it picked for itself, on the ground, a tree or a rock, the sea, or a
   unit or wall of a player who is not its enemy, the unit lets that
-  target go and passes it over for ten seconds. It takes the nearest
+  target go and passes it over for ten seconds. A walker that can go
+  and find a place to shoot from, as the original's does, tries that
+  first and lets go only after six. It takes the nearest
   other enemy it can see, or stands, and a computer's unit goes
   looking. A shot that strikes an enemy, the target or another, starts
   the count again, and a shot that flies past its aim point, as a miss
   at a moving target does, does not count. The skip ends early when
   the target it passed over hits the unit, which then answers it, or
-  when either has moved more than 32 px from where it stood. A beam
+  when either has moved more than 32 px from where it stood, though a
+  walker's own moves do not end it, since it walks home after. A unit
+  that cannot move passes the target over for a minute rather than ten
+  seconds, so a trebuchet does not spend three shots on a stationary
+  target behind a wall every ten seconds. A beam
   fired with the shot pool full counts the same as one that is drawn.
   A player's own attack order is never let go, and neither is a
   mission script's, whoever owns the unit. The computer's own orders
@@ -1899,7 +1905,8 @@ Format per entry:
   facing and nothing else (legacy:249328-249420). A unit with no mover
   has no leash to answer a shooter with (legacy:15125). The manual is
   silent. docs/notes/2026-09-27-shots-meet-what-they-fly-into.md has the
-  detail.
+  detail, and docs/notes/2026-11-06-where-a-unit-shoots-from.md what the
+  original's walker does instead of letting go.
 
 ## D-026: A flyer holds its fire while it climbs
 

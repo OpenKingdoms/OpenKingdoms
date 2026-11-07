@@ -48,6 +48,11 @@ taken for a thrown shot. The type alone decides now.
 
 ## A fight a unit took on for itself looks again
 
+This section had the two attack handlers the wrong way round. The rule
+below is the blade's, and only while its target is out of reach.
+docs/notes/2026-11-06-where-a-unit-shoots-from.md has both as they are
+now.
+
 The attack handler waits between its checks. With the target more than a
 footprint and a half away, which is every ranged fight, the wait is
 rand(5) + rand(5) + 4 of the original's frames, 4 to 12

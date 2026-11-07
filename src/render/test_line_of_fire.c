@@ -27,6 +27,7 @@
 #include "tak_economy.h"
 
 #include <SDL.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -42,7 +43,8 @@ enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_FLYPICK, LF_BLADEPICK, LF_BROAD, LF_SWIRL, LF_CANNON, LF_TORCH,
        LF_SWEEPER, LF_BOMBER, LF_STURDY, LF_TWISTER, LF_TORNADO,
        LF_ROVEROAM, LF_HAWK, LF_MASON, LF_FREEZER, LF_ICEMAN, LF_BREATHER,
-       LF_TURRET, LF_STUNNER, LF_RADAR, LF_JAMMER, LF_PRIEST, LF_PATIENT, LF_SHAMAN, LF_FIRE, LF_DEF_COUNT };
+       LF_TURRET, LF_STUNNER, LF_RADAR, LF_JAMMER, LF_PRIEST, LF_PATIENT, LF_SHAMAN, LF_FIRE,
+       LF_SLOWBLADE, LF_BLADEROAM, LF_PICKY, LF_STONE, LF_TRACKER, LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
 #define LF_SX   800
@@ -286,6 +288,27 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     defs[LF_BLADEPICK].fire_at_will_random = 1;
     wp = lf_weapon(&defs[LF_BLADEPICK], "TESTBLADEPW", "Melee", 0, 40, 1);
     wp->reload_ticks = 30;
+    /* The same with no leash, and one too slow to reach anything soon. */
+    lf_fill(&defs[LF_BLADEROAM], "TESTBLADEROAM", 1.2f, 1000);
+    defs[LF_BLADEROAM].fire_at_will_random = 1;
+    defs[LF_BLADEROAM].roams = 1;
+    lf_weapon(&defs[LF_BLADEROAM], "TESTBLADERW", "Melee", 0, 40, 1);
+    defs[LF_SLOWBLADE] = defs[LF_BLADEROAM];
+    strncpy(defs[LF_SLOWBLADE].unitname, "TESTSLOWBLADE", sizeof(defs[LF_SLOWBLADE].unitname) - 1);
+    defs[LF_SLOWBLADE].max_velocity = 0.005f;
+    defs[LF_SLOWBLADE].acceleration = 0.005f;
+    /* A weapon that does nothing to one kind of body, and that body. */
+    lf_fill(&defs[LF_PICKY], "TESTPICKY", 1.2f, 1000);
+    wp = lf_weapon(&defs[LF_PICKY], "TESTPICKYW", "Line of Sight", 500, 400, 10);
+    strncpy(wp->damage_scales[0].category, "STONE", sizeof(wp->damage_scales[0].category) - 1);
+    wp->damage_scale_count = 1;
+    lf_fill(&defs[LF_STONE], "TESTSTONE", 0.0f, 1000);
+    strncpy(defs[LF_STONE].damage_category, "STONE", sizeof(defs[LF_STONE].damage_category) - 1);
+    /* A bolt on a unit that turns its body onto what it shoots. */
+    lf_fill(&defs[LF_TRACKER], "TESTTRACK", 1.2f, 1000);
+    defs[LF_TRACKER].turn_in_place_rate = 2300.0f;
+    wp = lf_weapon(&defs[LF_TRACKER], "TESTTRACKW", "Line of Sight", 500, 400, 1);
+    wp->aim_tolerance = 1024;
     /* Maneuvering archers that take the nearest, one on a short leash,
      * one on a long one, and one that roams. They creep, so the dummy
      * behind stays the nearer for the whole run. */
@@ -973,8 +996,8 @@ TEST(lightning_with_the_pool_full_still_meets_the_rock) {
 }
 
 /* With the pool full a beam still stops on the first thing in its way:
- * an enemy wall there takes the hit, and a rock there counts toward
- * letting the target go (D-025). */
+ * an enemy wall there takes the hit, and a rock there counts as a shot
+ * stopped short. */
 TEST(a_beam_with_the_pool_full_strikes_what_is_in_its_way) {
     GameWorld *w = lf_world(0, 0);
     ASSERT_NOT_NULL(w);
@@ -1000,10 +1023,9 @@ TEST(a_beam_with_the_pool_full_strikes_what_is_in_its_way) {
     ASSERT_EQ_INT(1000, lf_unit(t2)->health);
     Units_CommandAttackUnit(s, t);
     ASSERT_EQ_INT(t, lf_unit(s)->target);
-    for (int i = 0; i < 3; i++) ASSERT(Units_DebugFireAt(s, 0, t));
+    ASSERT(Units_DebugFireAt(s, 0, t));
     ASSERT_EQ_INT(1000, lf_unit(t)->health);
-    ASSERT_EQ_INT(-1, lf_unit(s)->target);
-    ASSERT_EQ_INT(0, Units_CanAttackTarget(s, t));
+    ASSERT(lf_unit(s)->blocked_shots != 0);
     lf_end();
 }
 
@@ -2155,10 +2177,10 @@ static void lf_fog(GameWorld *w) {
 
 /* The volley again with Line of Sight on, a computer's shooters and
  * armed targets that see only 256: return fire answers what it cannot
- * see, the shooters let go of targets behind the ridge and go looking,
- * and the fog is state. Pinned, so every platform in CI has to
+ * see, the shooters find a place to shoot from past the ridge, and the
+ * fog is state. Pinned, so every platform in CI has to
  * reach the same answer. */
-#define LF_FOG_VOLLEY_HASH 0xc74170ceu
+#define LF_FOG_VOLLEY_HASH 0xa2838467u
 
 static uint32_t lf_fog_volley_hash(int *out_hurt) {
     GameWorld *w = lf_world(1, 1);
@@ -2402,7 +2424,7 @@ TEST(a_unit_lets_go_of_a_target_its_shots_cannot_reach) {
     int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
     int hid = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
     ASSERT(a >= 0 && hid >= 0);
-    Units_DebugSetAggro(a, UNIT_AGGRO_OFFENSIVE);
+    Units_DebugSetAggro(a, UNIT_AGGRO_DEFENSIVE);
     for (int i = 0; i < 4; i++) Units_TickEngines();
     ASSERT_EQ_INT(hid, lf_unit(a)->target);
     int open = lf_spawn(LF_TARGET, 2, LF_SX - 450, LF_ROW);
@@ -2421,35 +2443,308 @@ TEST(a_unit_lets_go_of_a_target_its_shots_cannot_reach) {
     ASSERT(lf_unit(open)->health < 1000);
     lf_end();
 
-    w = lf_world(0, 0);
-    ASSERT_NOT_NULL(w);
-    lf_ridge(w, 40);
-    a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
-    hid = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
-    ASSERT(a >= 0 && hid >= 0);
-    ASSERT(Units_OrderAttack(a, hid));
-    for (int i = 0; i < 600; i++) Units_TickEngines();
-    ASSERT_EQ_INT(hid, lf_unit(a)->target);
-    ASSERT_EQ_INT(1000, lf_unit(hid)->health);
-    lf_end();
-
+    /* A computer's order at a target a tower cannot hit is let go too. */
     w = lf_world(0, 0);
     ASSERT_NOT_NULL(w);
     w->cfg.players[0].kind = TAK_SLOT_AI;
     lf_ridge(w, 40);
-    a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    a = lf_spawn(LF_TOWER, 1, LF_SX, LF_ROW);
     hid = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
     ASSERT(a >= 0 && hid >= 0);
     Units_CommandAttackUnit(a, hid);
     ASSERT_EQ_INT(hid, lf_unit(a)->target);
     ticks = 0;
-    while (lf_unit(a)->target == hid && ticks < 600) {
+    while (lf_unit(a)->target == hid && ticks < 6000) {
         Units_TickEngines();
         ticks++;
     }
     ASSERT(lf_unit(a)->target != hid);
     ASSERT_EQ_INT(0, Units_CanAttackTarget(a, hid));
     lf_end();
+}
+
+/* A shot that stops short sends a walker up to its target and round it
+ * until one lands (legacy:11103-11131, legacy:11198-11311). It stays on
+ * an order, never goes further from the target than it stood, and stops
+ * walking once a shot lands. */
+static int lf_relocate_run(int order, int stance, int *out_hurt, int32_t *out_far,
+                           int32_t *out_x, uint32_t *out_hash) {
+    GameWorld *w = lf_world(0, 0);
+    if (!w) return -1;
+    /* A rock on the line, a cell wide and taller than any shot. */
+    if (Features_AddInstance(w, 0, 62, 99, 1008, 1600, 0, -1) < 0) return -1;
+    int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
+    if (a < 0 || t < 0) return -1;
+    Units_DebugSetAggro(a, stance);
+    if (order && !Units_OrderAttack(a, t)) return -1;
+    int32_t far = 0;
+    int kept = 1;
+    for (int i = 0; i < 3000; i++) {
+        Units_TickEngines();
+        int64_t dx = (int64_t)lf_unit(a)->world_x - LF_SX - 400;
+        int64_t dy = (int64_t)lf_unit(a)->world_y - LF_ROW;
+        int32_t d = (int32_t)sqrt((double)(dx * dx + dy * dy));
+        if (i > 4 && d > far) far = d;
+        if (i > 4 && lf_unit(a)->target != t && lf_unit(t)->alive == UNIT_ALIVE_ACTIVE) kept = 0;
+        if (lf_unit(t)->health < 1000) break;
+    }
+    *out_hurt = lf_unit(t)->alive == UNIT_ALIVE_ACTIVE ? 1000 - lf_unit(t)->health : 1000;
+    *out_far = far;
+    *out_x = lf_unit(a)->world_x;
+    *out_hash = TAK_SimHash();
+    lf_end();
+    return kept;
+}
+
+TEST(a_walker_whose_shots_stop_short_finds_a_place_to_shoot_from) {
+    int hurt = 0, hurt2 = 0;
+    int32_t far = 0, x = 0, far2 = 0, x2 = 0;
+    uint32_t h = 0, h2 = 0;
+    int kept = lf_relocate_run(1, UNIT_AGGRO_DEFENSIVE, &hurt, &far, &x, &h);
+    int kept2 = lf_relocate_run(1, UNIT_AGGRO_DEFENSIVE, &hurt2, &far2, &x2, &h2);
+    printf("(hurt %d, standing at x %d, never further than %d) ", hurt, x, far);
+    ASSERT_EQ_INT(1, kept);
+    ASSERT(hurt > 0);
+    /* It walks no further from the target than where it stood, give or
+     * take the steps a route round the rock takes. */
+    ASSERT(far <= 400 + 48);
+    ASSERT_EQ_INT((int)h, (int)h2);
+    ASSERT_EQ_INT(hurt, hurt2);
+    ASSERT_EQ_INT(x, x2);
+    ASSERT_EQ_INT(kept, kept2);
+
+    /* One on maneuver that took the target for itself does the same. */
+    kept = lf_relocate_run(0, UNIT_AGGRO_OFFENSIVE, &hurt, &far, &x, &h);
+    printf("(on its own hurt %d) ", hurt);
+    ASSERT(hurt > 0);
+
+    /* One holding position stands, and lets go. */
+    kept = lf_relocate_run(0, UNIT_AGGRO_DEFENSIVE, &hurt, &far, &x, &h);
+    ASSERT_EQ_INT(0, hurt);
+    ASSERT_EQ_INT(LF_SX, x);
+    ASSERT_EQ_INT(0, kept);
+}
+
+/* A wall of a ridge no shot passes and no walker climbs, the whole way
+ * across. A player's order and a mission script's hold on however long,
+ * and a walker that took the target for itself gives up on it and does
+ * not take it again on its way home (D-025). */
+TEST(a_walker_that_can_find_no_place_gives_up_only_on_its_own_target) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->moveinfo.classes[0].max_slope = 30;
+    lf_ridge(w, 150);
+    int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    int hid = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
+    ASSERT(a >= 0 && hid >= 0);
+    ASSERT(Units_OrderAttack(a, hid));
+    for (int i = 0; i < 3000; i++) Units_TickEngines();
+    ASSERT_EQ_INT(hid, lf_unit(a)->target);
+    ASSERT_EQ_INT(0, (int)lf_unit(a)->skip_id);
+    ASSERT_EQ_INT(1000, lf_unit(hid)->health);
+    lf_end();
+
+    w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->moveinfo.classes[0].max_slope = 30;
+    lf_ridge(w, 150);
+    a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    hid = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
+    ASSERT(a >= 0 && hid >= 0);
+    Units_DebugSetAggro(a, UNIT_AGGRO_OFFENSIVE);
+    int ticks = 0;
+    while (lf_unit(a)->skip_id == 0 && ticks < 12000) {
+        Units_TickEngines();
+        ticks++;
+    }
+    ASSERT(lf_unit(a)->skip_id != 0);
+    int again = 0;
+    for (int i = 0; i < 590; i++) {
+        Units_TickEngines();
+        if (lf_unit(a)->target == hid) again = 1;
+    }
+    printf("(let go after %d ticks) ", ticks);
+    lf_end();
+    ASSERT_EQ_INT(0, again);
+}
+
+/* Saved on its way to a point round the target, a walker goes on as it
+ * would have. */
+TEST(a_walk_to_a_better_place_saved_and_loaded_runs_on_the_same) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->moveinfo.classes[0].max_slope = 30;
+    lf_ridge(w, 150);
+    int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    int hid = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
+    ASSERT(a >= 0 && hid >= 0);
+    ASSERT(Units_OrderAttack(a, hid));
+    int ticks = 0;
+    while (((lf_unit(a)->blocked_shots >> 3) & 7) != 5 && ticks < 6000) {
+        Units_TickEngines();
+        ticks++;
+    }
+    ASSERT_EQ_INT(5, (lf_unit(a)->blocked_shots >> 3) & 7);
+    ASSERT(lf_unit(a)->blocked_shots & 0x40);
+    char err[256] = { 0 };
+    const char *path = "lf_walk_save.oksave";
+    remove(path);
+    ASSERT_EQ_INT(0, Save_Write(path, err, sizeof err));
+    uint32_t at_save = TAK_SimHash();
+    lf_ticks(600);
+    uint32_t want = TAK_SimHash();
+    TAK_SaveGame *sg = Save_Read(path, err, sizeof err);
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(0, Save_Apply(sg, err, sizeof err));
+    Save_ReadClose(sg);
+    ASSERT_EQ_INT((int)at_save, (int)TAK_SimHash());
+    lf_ticks(600);
+    ASSERT_EQ_INT((int)want, (int)TAK_SimHash());
+    remove(path);
+    lf_end();
+}
+
+/* A point its target has since left out of reach is given up, not walked
+ * to and back from for good. */
+TEST(a_point_its_target_has_left_is_given_up) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->moveinfo.classes[0].max_slope = 30;
+    lf_ridge(w, 150);
+    int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    int hid = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
+    ASSERT(a >= 0 && hid >= 0);
+    ASSERT(Units_OrderAttack(a, hid));
+    int ticks = 0;
+    while (((lf_unit(a)->blocked_shots >> 3) & 7) != 5 && ticks < 6000) {
+        Units_TickEngines();
+        ticks++;
+    }
+    ASSERT_EQ_INT(5, (lf_unit(a)->blocked_shots >> 3) & 7);
+    ASSERT(lf_unit(a)->blocked_shots & 0x40);
+    ((Unit *)lf_unit(a))->cmd_x = LF_SX - 1600;   /* test-only mutation */
+    lf_ticks(2);
+    ASSERT_EQ_INT(0, lf_unit(a)->blocked_shots & 0x40);
+    lf_end();
+}
+
+/* A walker on an order stands once its shots land, and stays there
+ * while they go on landing. */
+TEST(a_walker_whose_shots_land_does_not_move) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_STURDY, 2, LF_SX + 400, LF_ROW);
+    ASSERT(a >= 0 && t >= 0);
+    ASSERT(Units_OrderAttack(a, t));
+    int moved = 0, hurt = 0;
+    for (int i = 0; i < 1200; i++) {
+        Units_TickEngines();
+        if (lf_unit(a)->world_x != LF_SX || lf_unit(a)->world_y != LF_ROW) moved = 1;
+    }
+    hurt = lf_unit(t)->health < lf_unit(t)->max_health;
+    lf_end();
+    ASSERT_EQ_INT(0, moved);
+    ASSERT(hurt);
+}
+
+/* A unit that cannot move stays off what it could not hit for a minute
+ * unless that moves or hits back, rather than ten seconds (our addition
+ * to D-025). */
+TEST(a_fixed_unit_stays_off_what_it_cannot_hit) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    lf_ridge(w, 40);
+    int a = lf_spawn(LF_TOWER, 1, LF_SX, LF_ROW);
+    int hid = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
+    ASSERT(a >= 0 && hid >= 0);
+    Units_DebugSetAggro(a, UNIT_AGGRO_OFFENSIVE);
+    int ticks = 0;
+    while (lf_unit(a)->skip_id == 0 && ticks < 12000) {
+        Units_TickEngines();
+        ticks++;
+    }
+    ASSERT(lf_unit(a)->skip_id != 0);
+    ASSERT_EQ_INT(-1, lf_unit(a)->target);
+    int taken = 0;
+    for (int i = 0; i < 2400; i++) {
+        Units_TickEngines();
+        if (lf_unit(a)->target == hid) taken = 1;
+    }
+    printf("(let go after %d ticks) ", ticks);
+    ASSERT_EQ_INT(0, taken);
+    ASSERT_EQ_INT(0, Units_CanAttackTarget(a, hid));
+    /* What stood in the way may have gone: it tries again in a minute. */
+    for (int i = 0; i < 1300 && !taken; i++) {
+        Units_TickEngines();
+        if (lf_unit(a)->target == hid) taken = 1;
+    }
+    ASSERT_EQ_INT(1, taken);
+    ticks = 0;
+    while (lf_unit(a)->target == hid && ticks < 12000) {
+        Units_TickEngines();
+        ticks++;
+    }
+    ASSERT_EQ_INT(0, Units_CanAttackTarget(a, hid));
+    ASSERT(Units_OrderMove(hid, LF_SX + 400, LF_ROW + 200));
+    while (lf_unit(hid)->world_y < LF_ROW + 40 && ticks < 12000) {
+        Units_TickEngines();
+        ticks++;
+    }
+    ASSERT_EQ_INT(1, Units_CanAttackTarget(a, hid));
+    lf_end();
+}
+
+/* A search takes nothing its weapon cannot hurt (legacy:21165-21167), so
+ * a lodestone next door does not keep a wolf from what walks past. */
+TEST(a_search_passes_over_what_its_weapon_cannot_hurt) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int a = lf_spawn(LF_PICKY, 1, LF_SX, LF_ROW);
+    int stone = lf_spawn(LF_STONE, 2, LF_SX + 60, LF_ROW);
+    int walker = lf_spawn(LF_TARGET, 2, LF_SX + 200, LF_ROW);
+    ASSERT(a >= 0 && stone >= 0 && walker >= 0);
+    Units_DebugSetAggro(a, UNIT_AGGRO_OFFENSIVE);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    int took = lf_unit(a)->target;
+    lf_end();
+    ASSERT_EQ_INT(walker, took);
+}
+
+/* Tracking a walker is no turn to a script: under a degree a frame the
+ * original sends no TurnDirection, and scripts walk the legs while one
+ * is set (legacy:183163-183172). */
+static int lf_tracking_signals(int gap, int *turned) {
+    if (!lf_world(0, 0)) return -1;
+    int a = lf_spawn(LF_TRACKER, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_SX + gap, LF_ROW - 260);
+    if (a < 0 || t < 0) return -1;
+    Units_DebugSetAggro(t, UNIT_AGGRO_PASSIVE);
+    if (!Units_OrderAttack(a, t)) return -1;
+    for (int i = 0; i < 60; i++) Units_TickEngines();
+    if (!Units_OrderMove(t, LF_SX + gap, LF_ROW + 260)) return -1;
+    int changes = 0, was = lf_unit(a)->turn_dir_sign;
+    float h0 = lf_unit(a)->heading;
+    for (int i = 0; i < 840; i++) {
+        Units_TickEngines();
+        int now = lf_unit(a)->turn_dir_sign;
+        if (now != was) changes++;
+        was = now;
+    }
+    *turned = lf_unit(a)->heading != h0;
+    lf_end();
+    return changes;
+}
+
+TEST(a_unit_tracking_a_walker_sends_no_turn_signal) {
+    int turned = 0, close_turned = 0;
+    int far = lf_tracking_signals(300, &turned);
+    int close = lf_tracking_signals(90, &close_turned);
+    printf("(%d turn signals at 300 px, %d at 90 px) ", far, close);
+    ASSERT(turned);
+    ASSERT(close_turned);
+    ASSERT_EQ_INT(0, far);
+    ASSERT_EQ_INT(0, close);
 }
 
 /* D-025 never keeps a unit from answering what it passed over: a hit
@@ -2462,7 +2757,7 @@ TEST(a_skip_ends_when_the_skipped_unit_strikes_or_either_moves) {
     int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
     int mage = lf_spawn(LF_SPELL, 2, LF_SX + 400, LF_ROW);
     ASSERT(a >= 0 && mage >= 0);
-    Units_DebugSetAggro(a, UNIT_AGGRO_OFFENSIVE);
+    Units_DebugSetAggro(a, UNIT_AGGRO_DEFENSIVE);
     for (int i = 0; i < 600 && lf_unit(a)->skip_id == 0; i++)
         Units_TickEngines();
     ASSERT_EQ_INT(0, Units_CanAttackTarget(a, mage));
@@ -2480,7 +2775,7 @@ TEST(a_skip_ends_when_the_skipped_unit_strikes_or_either_moves) {
     a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
     int hid = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
     ASSERT(a >= 0 && hid >= 0);
-    Units_DebugSetAggro(a, UNIT_AGGRO_OFFENSIVE);
+    Units_DebugSetAggro(a, UNIT_AGGRO_DEFENSIVE);
     for (int i = 0; i < 600 && lf_unit(a)->skip_id == 0; i++)
         Units_TickEngines();
     ASSERT_EQ_INT(0, Units_CanAttackTarget(a, hid));
@@ -2514,7 +2809,6 @@ TEST(a_mission_scripts_attack_order_is_never_let_go) {
     for (int i = 0; i < 600; i++) Units_TickEngines();
     ASSERT_EQ_INT(hid, lf_unit(a)->target);
     ASSERT_EQ_INT(0, (int)lf_unit(a)->skip_id);
-    ASSERT_EQ_INT(1000, lf_unit(hid)->health);
     lf_end();
 }
 
@@ -3292,7 +3586,7 @@ static int lf_picker_run(int def, int stance, int ordered, int ticks,
         int next = lf_unit(a)->research_wait;
         if (wait == 1) {
             checks++;
-            if (next < 8 || next > 24 || (next & 1)) bad = 1;
+            if (next < 6 || next > 24 || (next & 1)) bad = 1;
         } else if (next != 0 && wait != 0 && next != wait - 1) {
             bad = 1;
         }
@@ -3310,16 +3604,16 @@ static int lf_picker_run(int def, int stance, int ordered, int ticks,
     return bad ? -2 : switches;
 }
 
-/* A draw of 2 before the search and one of 10 after it
- * (legacy:11517, legacy:11519): about 1 check in 20 takes what the
- * search finds, and a random picker among three finds another two
- * times in three, so about 1 in 30 switches. */
+/* A blade on its way to its target: a draw of 2 before the search and
+ * one of 10 after it (legacy:11517, legacy:11519), so about 1 check in
+ * 20 takes what the search finds, and a random picker among three finds
+ * another two times in three, so about 1 in 30 switches. */
 TEST(a_fight_of_its_own_looks_again_once_a_wait) {
     int first = -1, first2 = -1, checks = 0, checks2 = 0;
     uint32_t trace = 0, trace2 = 0;
-    int switches = lf_picker_run(LF_PICKER, UNIT_AGGRO_OFFENSIVE, 0, 36000,
+    int switches = lf_picker_run(LF_SLOWBLADE, UNIT_AGGRO_OFFENSIVE, 0, 36000,
                                  &first, &trace, &checks);
-    int again = lf_picker_run(LF_PICKER, UNIT_AGGRO_OFFENSIVE, 0, 36000,
+    int again = lf_picker_run(LF_SLOWBLADE, UNIT_AGGRO_OFFENSIVE, 0, 36000,
                               &first2, &trace2, &checks2);
     printf("(%d switches in %d checks, first %d) ", switches, checks, first);
     ASSERT(first >= 0);
@@ -3331,6 +3625,19 @@ TEST(a_fight_of_its_own_looks_again_once_a_wait) {
     ASSERT_EQ_INT(checks, checks2);
     ASSERT_EQ_INT(first, first2);
     ASSERT_EQ_INT((int)trace, (int)trace2);
+}
+
+/* A ranged unit with its target in reach and its shots landing has no
+ * reason to look (legacy:11103-11131). */
+TEST(a_ranged_unit_with_its_target_in_reach_keeps_it) {
+    int first = -1, checks = 0;
+    uint32_t trace = 0;
+    int switches = lf_picker_run(LF_PICKER, UNIT_AGGRO_OFFENSIVE, 0, 6000,
+                                 &first, &trace, &checks);
+    printf("(first %d, %d switches in %d checks) ", first, switches, checks);
+    ASSERT(first >= 0);
+    ASSERT(checks > 0);
+    ASSERT_EQ_INT(0, switches);
 }
 
 /* Holding position, not on fire at will, or on an attack order, it
@@ -3352,8 +3659,7 @@ TEST(a_unit_holding_position_or_ordered_never_looks_again) {
 
 /* The handler returns at once for a unit with no mover or with canfly
  * (legacy:11351-11355), so a tower and a flyer on offensive never look
- * again this way. A melee chase has its own search (legacy:11189-11195),
- * so neither does a melee unit here. */
+ * again this way. */
 static int lf_never_looks_again(int def) {
     int first = -1, checks = -1;
     uint32_t trace = 0;
@@ -3371,8 +3677,52 @@ TEST(a_flyer_never_looks_again_this_way) {
     ASSERT(lf_never_looks_again(LF_FLYPICK));
 }
 
-TEST(a_melee_unit_never_looks_again_this_way) {
-    ASSERT(lf_never_looks_again(LF_BLADEPICK));
+/* A blade with its target in reach looks at nothing else
+ * (legacy:11512-11517). */
+TEST(a_blade_with_its_target_in_reach_keeps_it) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int a = Units_Spawn(LF_BLADEROAM, 1, 0, LF_SX, LF_ROW);
+    int near = lf_spawn(LF_STURDY, 2, LF_SX + 32, LF_ROW);
+    ASSERT(a >= 0 && near >= 0);
+    Units_DebugSetAggro(a, UNIT_AGGRO_OFFENSIVE);
+    for (int i = 0; i < 10; i++) Units_TickEngines();
+    ASSERT_EQ_INT(near, lf_unit(a)->target);
+    int other = lf_spawn(LF_STURDY, 2, LF_SX + 150, LF_ROW);
+    ASSERT(other >= 0);
+    int kept = 1;
+    for (int i = 0; i < 6000; i++) {
+        Units_TickEngines();
+        if (lf_unit(near)->alive == UNIT_ALIVE_ACTIVE && lf_unit(a)->target != near) kept = 0;
+    }
+    lf_end();
+    ASSERT(kept);
+}
+
+/* The one a walker passes is taken before long, when it is out of reach
+ * of what it was after. */
+TEST(a_blade_on_its_way_takes_what_walks_past) {
+    int kept = 0;
+    for (int seed = 0; seed < 4; seed++) {
+        ASSERT_NOT_NULL(lf_world(0, 0));
+        for (int k = 0; k < seed * 3; k++) (void)World_Rand(7);
+        int a = Units_Spawn(LF_SLOWBLADE, 1, 0, LF_SX, LF_ROW);
+        int far = lf_spawn(LF_STURDY, 2, LF_SX + 240, LF_ROW);
+        ASSERT(a >= 0 && far >= 0);
+        Units_DebugSetAggro(a, UNIT_AGGRO_OFFENSIVE);
+        for (int i = 0; i < 4; i++) Units_TickEngines();
+        ASSERT_EQ_INT(far, lf_unit(a)->target);
+        int past = lf_spawn(LF_STURDY, 2, LF_SX + 100, LF_ROW + 40);
+        ASSERT(past >= 0);
+        int took = 0;
+        for (int i = 0; i < 3600 && !took; i++) {
+            Units_TickEngines();
+            took = lf_unit(a)->target == past;
+        }
+        kept += !took;
+        lf_end();
+    }
+    printf("(%d of 4 still ignored it after a minute) ", kept);
+    ASSERT_EQ_INT(0, kept);
 }
 
 /* A maneuvering unit that takes the nearest looks again too, not only a
@@ -4169,7 +4519,17 @@ int main(int argc, char **argv) {
     RUN(a_unit_holding_position_or_ordered_never_looks_again);
     RUN(a_tower_never_looks_again_this_way);
     RUN(a_flyer_never_looks_again_this_way);
-    RUN(a_melee_unit_never_looks_again_this_way);
+    RUN(a_ranged_unit_with_its_target_in_reach_keeps_it);
+    RUN(a_blade_with_its_target_in_reach_keeps_it);
+    RUN(a_blade_on_its_way_takes_what_walks_past);
+    RUN(a_walker_whose_shots_stop_short_finds_a_place_to_shoot_from);
+    RUN(a_walker_whose_shots_land_does_not_move);
+    RUN(a_walker_that_can_find_no_place_gives_up_only_on_its_own_target);
+    RUN(a_walk_to_a_better_place_saved_and_loaded_runs_on_the_same);
+    RUN(a_point_its_target_has_left_is_given_up);
+    RUN(a_fixed_unit_stays_off_what_it_cannot_hit);
+    RUN(a_search_passes_over_what_its_weapon_cannot_hurt);
+    RUN(a_unit_tracking_a_walker_sends_no_turn_signal);
     RUN(a_unit_looks_again_only_inside_its_leash);
     RUN(a_unit_gives_up_a_chase_at_its_leash_and_walks_back);
     RUN(a_unit_that_answered_a_hit_walks_back_to_its_post);

@@ -114,6 +114,8 @@ int TNT_DebugTile(TNTFile *tnt, int k);
 /* Feature layer mark for ground the map closes to every unit
  * (legacy:225023). */
 #define TNT_CELL_IMPASSABLE 0xFFFCu
+/* A road cell, which a mover with a roadmultiplier takes faster. */
+#define TNT_CELL_ROAD 0xFFFBu
 
 /* Load a .tnt file through VFS (`maps/Maps/<name>.tnt`). Requires a
  * 256-color palette for the minimap conversion — pass the shared game

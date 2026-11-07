@@ -225,10 +225,15 @@ static int unit_stayed(int32_t x, int32_t y, int32_t x0, int32_t y0) {
     return dx * dx + dy * dy <= (int64_t)UNIT_SKIP_STAY_PX * UNIT_SKIP_STAY_PX;
 }
 
+/* In skip_x: a walker's own moves do not end its skip, it has somewhere
+ * to walk back to. */
+#define UNIT_SKIP_ANYWHERE INT32_MIN
+
 /* D-025: u passes t over for now, its shots having stopped short. */
 static int unit_skips(const Unit *u, const Unit *t) {
     return g_sim_tick < u->skip_until && t->stable_id == u->skip_id &&
-           unit_stayed(u->world_x, u->world_y, u->skip_x, u->skip_y) &&
+           (u->skip_x == UNIT_SKIP_ANYWHERE ||
+            unit_stayed(u->world_x, u->world_y, u->skip_x, u->skip_y)) &&
            unit_stayed(t->world_x, t->world_y, u->skip_tx, u->skip_ty);
 }
 
@@ -239,6 +244,8 @@ static int weapon_scan_skips(const UnitWeapon *wp, const Unit *t) {
     const UnitDef *td = Units_GetDef(t->def_idx);
     return t->paralyzed_ticks != 0 || (td && td->immune_to_paralyzer);
 }
+
+static int weapon_damage_for_category(const UnitWeapon *wp, const char *category);
 
 /* Nearest visible enemy of u within radius, or -1. wp non-NULL makes it
  * a target search: what the weapon can take, not set aside (D-025), and
@@ -275,6 +282,13 @@ static int ugrid_nearest_enemy(const Unit *u, int self_idx, int64_t radius,
                 if (wp && (unit_skips(u, t) ||
                            (holds && !unit_reach_ok(u, wp, t))))
                     continue;
+                /* What the weapon cannot hurt is no target at all
+                 * (legacy:21165-21167). */
+                if (wp) {
+                    const UnitDef *dd = Units_GetDef(t->def_idx);
+                    if (weapon_damage_for_category(wp, dd ? dd->damage_category : "") <= 0)
+                        continue;
+                }
                 int64_t dx = (int64_t)(t->world_x - u->world_x);
                 int64_t dy = (int64_t)(t->world_y - u->world_y);
                 int64_t d2 = dx * dx + dy * dy;
@@ -288,8 +302,6 @@ static int ugrid_nearest_enemy(const Unit *u, int self_idx, int64_t radius,
     }
     return best;
 }
-
-static int weapon_damage_for_category(const UnitWeapon *wp, const char *category);
 
 /* The same search for a unit with fireatwillrandom (legacy:21060-21251):
  * up to fifty of the candidates are drawn from the simulation's
@@ -1364,6 +1376,42 @@ float Units_DrawnAlt(const GameWorld *w, const Unit *u) {
            def_float_lift(w, Units_GetDef(u->def_idx), u->world_x, u->world_y);
 }
 
+static void unit_occ_fp(const Unit *u, int *fx, int *fz);
+
+/* A unit on the ground with every cell of its footprint on a road, the
+ * map's mark in the feature layer (legacy:220207-220234, legacy:225027). */
+static int unit_on_road(const GameWorld *w, const Unit *u) {
+    const TNTFile *t = w ? &w->tnt : NULL;
+    if (!t || !t->feature_layer || u->flying) return 0;
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    int x0 = Occ_TileOf(u->world_x - fx * 8), z0 = Occ_TileOf(u->world_y - fz * 8);
+    if (x0 < 0 || z0 < 0 || x0 + fx > t->width_tiles || z0 + fz > t->height_tiles)
+        return 0;
+    for (int z = z0; z < z0 + fz; z++)
+        for (int x = x0; x < x0 + fx; x++)
+            if (t->feature_layer[z * t->width_tiles + x] != TNT_CELL_ROAD) return 0;
+    return 1;
+}
+
+/* A unit standing lower than the sea (legacy:185197-185206). */
+static int unit_below_sea(const GameWorld *w, const Unit *u) {
+    if (!w || w->water_height <= 0) return 0;
+    float y = (float)Terrain_SampleHeight(w, u->world_x, u->world_y) +
+              Units_DrawnAlt(w, u);
+    return y < (float)w->water_height;
+}
+
+/* What the ground does to a walker's speed, acceleration, braking and
+ * turning: roadmultiplier on a road, else watermultiplier below the sea
+ * (legacy:183206-183224, legacy:183053-183160). */
+static float unit_ground_scale(const GameWorld *w, const Unit *u, const UnitDef *d) {
+    if (!w || !d || d->can_fly) return 1.0f;
+    float m = unit_on_road(w, u) ? d->road_multiplier
+            : unit_below_sea(w, u) ? d->water_multiplier : 1.0f;
+    return m > 0.0f ? m : 1.0f;
+}
+
 float Units_SiteHeight(const GameWorld *w, int def_idx, int32_t x, int32_t y) {
     if (!w) return 0.0f;
     const UnitDef *d = Units_GetDef(def_idx);
@@ -2278,8 +2326,18 @@ static void projectile_impact_fx(const Projectile *p, const Unit *victim,
     projectile_note_blast(p, victim);
     play_projectile_hit_sound(p, victim);
     projectile_impact_shake(p);
-    spawn_impact_effect(p->explosion_idx, p->world_x, p->world_y,
-                        (int32_t)p->height, seed);
+    /* On open water it bursts with the weapon's waterexplosionclass, or
+     * with nothing when that names none (legacy:244984-245012). */
+    int expl = p->explosion_idx;
+    const GameWorld *iw = World_Get();
+    if (!victim && impact_in_water(iw, p->world_x, p->world_y)) {
+        int slot = slot_of_projectile(p);
+        const UnitDef *sd = Units_GetDef(g_proj_def[slot]);
+        int ws = g_proj_wslot[slot];
+        expl = sd && ws >= 0 && ws < sd->num_weapons
+             ? sd->weapons[ws].water_explosion_idx : -1;
+    }
+    spawn_impact_effect(expl, p->world_x, p->world_y, (int32_t)p->height, seed);
 }
 
 static int projectile_height_inside_flyer(const Unit *v, float height);
@@ -2791,12 +2849,203 @@ static int shot_walk(const Projectile *p, int32_t x0, int32_t y0, float h0,
     return TAK_SHOT_FLY;
 }
 
+/* The state a ranged attacker keeps on the target blocked_id, packed in
+ * blocked_shots: the shots in a row stopped short of it (D-025), how far
+ * it has got in looking for a better place to shoot from (0 to 5, the
+ * original's mission counter, legacy:11103-11131), and whether it is
+ * walking there now. */
+#define CHASE_COUNT(u)  ((u)->blocked_shots & 7u)
+#define CHASE_LEVEL(u)  (((u)->blocked_shots >> 3) & 7u)
+#define CHASE_WALK      0x40u
+
+static void chase_set_level(Unit *u, int level) {
+    u->blocked_shots = (uint8_t)((u->blocked_shots & ~0x38u) | ((unsigned)level << 3));
+}
+
+static void chase_for_target(Unit *u, const Unit *t) {
+    if (u->blocked_id == t->stable_id) return;
+    u->blocked_id = t->stable_id;
+    u->blocked_shots = 0;
+}
+
+/* An attack the unit took on for itself. The computer's own orders count:
+ * the original's computer sends its groups by move orders and they take
+ * their targets by search (legacy:18487-18530). */
+static int unit_attack_own(const Unit *u) {
+    return !u->attack_explicit ||
+           (u->attack_explicit == UNIT_ATTACK_ORDER && !unit_seat_is_human(u->player_id));
+}
+
+/* A walker with a ranged weapon in an attack, and not holding position
+ * for one it took on for itself, goes and finds a place to shoot from
+ * (legacy:10999-11075). */
+static int unit_may_relocate(const Unit *u, const UnitDef *d) {
+    if (!d || d->num_weapons <= 0 || !(d->max_velocity > 0.0f) || d->can_fly) return 0;
+    if (u->cmd_kind != UNIT_CMD_ATTACK && u->cmd_kind != UNIT_CMD_PATROL) return 0;
+    int slot = u->weapon_slot;
+    if (slot < 0 || slot >= d->num_weapons) slot = 0;
+    if (weapon_is_melee(&d->weapons[slot])) return 0;
+    return u->attack_explicit || !unit_holds(u, d);
+}
+
+/* How near its target a unit at this level walks, the middle of the
+ * original's draws (legacy:11217-11224, legacy:11243-11248), and never
+ * nearer than 40 px, where it would only push at the target. */
+static int chase_radius(const UnitWeapon *wp, int level) {
+    int range = weapon_effective_range(wp), min_r = weapon_min_range(wp);
+    int span = range - min_r;
+    int r = level == 2 ? range - span / 3 : min_r + span / 8;
+    return r < 40 ? 40 : r;
+}
+
+/* A point round the target inside the weapon's reach, within a sixth of
+ * a turn of the side the unit stands on (legacy:11262-11307). */
+static void chase_ring_point(Unit *u, const UnitWeapon *wp, const Unit *t) {
+    int range = weapon_effective_range(wp), min_r = weapon_min_range(wp);
+    uint32_t span = (uint32_t)(range - min_r);
+    float a = tak_atan2f((float)(u->world_x - t->world_x),
+                         -(float)(u->world_y - t->world_y));
+    a += ((float)World_Rand(0x5555u) - (float)0x2aaa) * (6.2831853f / 65536.0f);
+    uint32_t r;
+    if (World_Rand(2) == 0) r = World_Rand(span / 2);
+    else if (World_Rand(2) == 0) r = World_Rand(span);
+    else r = World_Rand(span / 2) + span / 2;
+    float dist = (float)r + (float)min_r;
+    int32_t x = t->world_x + (int32_t)floorf(tak_sinf(a) * dist);
+    int32_t y = t->world_y - (int32_t)floorf(tak_cosf(a) * dist);
+    const GameWorld *w = World_Get();
+    if (w) {
+        if (x < 16) x = 16;
+        if (y < 16) y = 16;
+        if (x > w->map_pixels_w - 16) x = w->map_pixels_w - 16;
+        if (y > w->map_pixels_h - 16) y = w->map_pixels_h - 16;
+    }
+    u->cmd_x = x;
+    u->cmd_y = y;
+}
+
+static int64_t unit_search_radius(const Unit *u, const UnitDef *def);
+
+/* A ranged unit at this level in a fight of its own looks for something
+ * else to shoot, the likelier the higher the level
+ * (legacy:11189-11195). Returns 1 when it took what it found. */
+static int chase_look_again(Unit *u, const UnitDef *d, int level) {
+    if (!unit_attack_own(u) || u->aggro_mode != UNIT_AGGRO_OFFENSIVE ||
+        d->sight_distance <= 0) return 0;
+    if (World_Rand((uint32_t)level + 1u) == 0u) return 0;
+    int self = (int)(u - g_units);
+    int64_t radius = unit_search_radius(u, d);
+    if (radius <= 0) return 0;
+    int pick = d->fire_at_will_random
+        ? ugrid_random_enemy(u, self, radius, &d->weapons[0])
+        : ugrid_nearest_enemy(u, self, radius, &d->weapons[0]);
+    if (pick < 0 || pick == u->target || !unit_can_answer(u, d, &g_units[pick]))
+        return 0;
+    u->target = (int16_t)pick;
+    u->attack_explicit = 0;
+    unit_clear_path(u);
+    return 1;
+}
+
+/* A shot stopped short of what the unit shoots at: up to four draws raise
+ * its level, it may look for something else, and if it stays the level
+ * says what it does about it (legacy:11113-11127, legacy:11189-11195,
+ * legacy:11198-11311). Returns 1 when it took another target. */
+static int chase_shot_wasted(Unit *s, const UnitDef *d, const Unit *t) {
+    int level = (int)CHASE_LEVEL(s);
+    if (World_Rand(2) != 0 && level < 4) level++;
+    if (World_Rand(3) != 0 && level < 4) level++;
+    if (World_Rand(3) != 0 && level < 4) level++;
+    if (World_Rand(2) != 0 && level < 4) level++;
+    chase_set_level(s, level);
+    if (chase_look_again(s, d, level)) return 1;
+    int slot = s->weapon_slot;
+    if (slot < 0 || slot >= d->num_weapons) slot = 0;
+    const UnitWeapon *wp = &d->weapons[slot];
+    int walk = 0;
+    if (level == 2 || level == 3) {
+        int64_t r = chase_radius(wp, level);
+        if (unit_reach_d2(s, t) <= r * r) {
+            if (World_Rand(3) != 0) level++;
+        } else {
+            walk = 1;
+        }
+    } else if (level == 4 && s->cmd_kind == UNIT_CMD_ATTACK) {
+        /* A patrol's cmd_x is its route, so it stays where it got to. */
+        chase_ring_point(s, wp, t);
+        level = 5;
+        walk = 1;
+    }
+    chase_set_level(s, level);
+    if (walk) {
+        s->blocked_shots |= CHASE_WALK;
+        unit_clear_path(s);
+    }
+    return 0;
+}
+
+/* The walk ended, on its point, stuck on the way or with a shot landed. */
+static void chase_walk_ends(Unit *u) {
+    if (!(u->blocked_shots & CHASE_WALK)) return;
+    u->blocked_shots &= (uint8_t)~CHASE_WALK;
+    if (CHASE_LEVEL(u) == 5) chase_set_level(u, 4);
+}
+
+/* One that hurt an enemy may bring the level back down, and the unit has
+ * no more walking to do (legacy:11105-11109). */
+static void chase_shot_struck(Unit *s, const Unit *t) {
+    chase_walk_ends(s);
+    s->blocked_shots &= (uint8_t)~7u;
+    if (s->blocked_id != t->stable_id) return;
+    int level = (int)CHASE_LEVEL(s);
+    if (level > 0 && World_Rand(2) == 0)
+        chase_set_level(s, level - (int)World_Rand((uint32_t)level + 1u));
+}
+
+/* The unit is walking for a better place while its target is in reach:
+ * where to, or 0 when it has got there. */
+static int unit_relocating(Unit *u, const UnitDef *d, const Unit *t, int64_t d2,
+                           int32_t *gx, int32_t *gy) {
+    if (!(u->blocked_shots & CHASE_WALK)) return 0;
+    if (u->blocked_id != t->stable_id || !unit_may_relocate(u, d)) {
+        chase_walk_ends(u);
+        return 0;
+    }
+    int level = (int)CHASE_LEVEL(u);
+    int slot = u->weapon_slot;
+    if (slot < 0 || slot >= d->num_weapons) slot = 0;
+    if (level == 5) {
+        /* A point its target has left out of reach is no place to shoot
+         * from, and the next short shot draws another. */
+        int64_t range = weapon_effective_range(&d->weapons[slot]);
+        int64_t dx = (int64_t)u->cmd_x - t->world_x;
+        int64_t dy = (int64_t)u->cmd_y - t->world_y;
+        if (dx * dx + dy * dy > range * range) {
+            chase_walk_ends(u);
+            return 0;
+        }
+        *gx = u->cmd_x;
+        *gy = u->cmd_y;
+        return 1;
+    }
+    int64_t r = chase_radius(&d->weapons[slot], level);
+    if ((level != 2 && level != 3) || d2 <= r * r) {
+        chase_walk_ends(u);
+        return 0;
+    }
+    *gx = t->world_x;
+    *gy = t->world_y;
+    return 1;
+}
+
 /* D-025: after this many shots in a row stop short of a target it
  * picked, a unit lets it go and passes it over for this long. An
  * attack a player or a mission script ordered keeps firing, as the
  * original's does. */
 #define SHOT_BLOCKED_GIVE_UP 3
+#define SHOT_BLOCKED_GIVE_UP_WALKER 6
 #define SHOT_SKIP_TICKS      600
+#define SHOT_SKIP_TICKS_FIXED 3600
 
 /* A shot from (sx, sy) at (ax, ay) that ended at (ex, ey) stopped
  * short of its aim, rather than passing it the way a miss does. */
@@ -2818,25 +3067,33 @@ static void shot_note_end(int shooter, int target, int kind, int struck,
     Unit *s = &g_units[shooter];
     const Unit *t = &g_units[target];
     if (s->alive != UNIT_ALIVE_ACTIVE || s->target != target) return;
-    if (s->attack_explicit == UNIT_ATTACK_HELD ||
-        (s->attack_explicit && unit_seat_is_human(s->player_id))) return;
     if (kind == TAK_SHOT_UNIT && struck >= 0 && struck < g_unit_count &&
         unit_players_are_enemies(s->player_id, g_units[struck].player_id)) {
-        s->blocked_shots = 0;
+        chase_shot_struck(s, t);
         return;
     }
     if (kind != TAK_SHOT_UNIT && kind != TAK_SHOT_FEATURE &&
         kind != TAK_SHOT_WATER && kind != TAK_SHOT_GROUND) return;
     if (!shot_fell_short(sx, sy, ax, ay, ex, ey)) return;
-    if (s->blocked_id != t->stable_id) {
-        s->blocked_id = t->stable_id;
-        s->blocked_shots = 0;
+    chase_for_target(s, t);
+    /* A walk under way is not judged till it ends (legacy:11214). */
+    if (s->blocked_shots & CHASE_WALK) return;
+    const UnitDef *sd = Units_GetDef(s->def_idx);
+    int walker = unit_may_relocate(s, sd);
+    if (walker && chase_shot_wasted(s, sd, t)) return;
+    /* A player's own attack order or a mission script's is never let go. */
+    if (!unit_attack_own(s)) return;
+    unsigned count = CHASE_COUNT(s) + 1u;
+    if (count < (walker ? SHOT_BLOCKED_GIVE_UP_WALKER : SHOT_BLOCKED_GIVE_UP)) {
+        s->blocked_shots = (uint8_t)((s->blocked_shots & ~7u) | count);
+        return;
     }
-    if (++s->blocked_shots < SHOT_BLOCKED_GIVE_UP) return;
     s->blocked_shots = 0;
     s->skip_id = t->stable_id;
-    s->skip_until = g_sim_tick + SHOT_SKIP_TICKS;
-    s->skip_x = s->world_x;
+    /* One that cannot move tries again far less often. */
+    s->skip_until = g_sim_tick + (sd && !(sd->max_velocity > 0.0f) ? SHOT_SKIP_TICKS_FIXED
+                                                                   : SHOT_SKIP_TICKS);
+    s->skip_x = walker ? UNIT_SKIP_ANYWHERE : s->world_x;
     s->skip_y = s->world_y;
     s->skip_tx = t->world_x;
     s->skip_ty = t->world_y;
@@ -4135,6 +4392,8 @@ static int g_leg_taking;
  * formation and the heading it was to take or hold all go. */
 static void order_fresh(Unit *u) {
     if (!g_leg_taking) u->leg_count = 0;
+    /* A new mission starts its level over (legacy:11091-11093). */
+    u->blocked_shots &= 7u;
     u->post_set = UNIT_POST_NONE;
     u->air_mode = UNIT_AIR_NONE;
     u->air_circles = 0;
@@ -7775,6 +8034,9 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->bad_water_slope = TDF_ReadInt(tdf, "badwaterslope",
                                        out->max_water_slope >> 1);
     out->max_velocity   = TDF_ReadFloat(tdf, "maxvelocity", 0.0f);
+    out->water_multiplier = TDF_ReadFloat(tdf, "watermultiplier", 1.0f);
+    /* 0x13333 when the file does not say (legacy:162829-162832). */
+    out->road_multiplier = TDF_ReadFloat(tdf, "roadmultiplier", 78643.0f / 65536.0f);
     out->activate_when_built = TDF_ReadInt(tdf, "activatewhenbuilt", 0);
     /* Movement law fields — authored per 30 Hz frame (see tak_unit.h). */
     out->acceleration   = TDF_ReadFloat(tdf, "acceleration", 0.0f);
@@ -8059,6 +8321,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         w->veteran_level = TDF_ReadInt(tdf, "veteranlevel", 10);
         /* Bind explosionclass to its effect entry once (legacy:250135). */
         w->explosion_idx = (int16_t)explosion_class_index(w->explosion_class);
+        w->water_explosion_idx = (int16_t)explosion_class_index(w->water_explosion_class);
         w->shake_magnitude = (int16_t)TDF_ReadInt(tdf, "shakemagnitude", 0);
         w->shake_duration  = TDF_ReadFloat(tdf, "shakeduration", 0.0f);
         /* The ground shadow, which legacy loads only when the weapon
@@ -9747,6 +10010,14 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
                  * etc.) is set before the first frame renders. */
                 Cob_StartThreadByName(u->cob, "Create", NULL, 0);
                 Cob_RunAllThreads(u->cob);
+                /* The script hears its longest reload in ms, how long a
+                 * pose holds after an aim (legacy:245659-245687). */
+                int reload_frames = 0;
+                for (int wi = 0; wi < def->num_weapons && wi < 3; wi++)
+                    if (def->weapons[wi].reload_ticks / 2 > reload_frames)
+                        reload_frames = def->weapons[wi].reload_ticks / 2;
+                int32_t reload_ms[1] = { reload_frames * 1000 / 30 };
+                Cob_StartThreadByName(u->cob, "SetMaxReloadTime", reload_ms, 1);
             }
         }
     }
@@ -10397,12 +10668,8 @@ static int32_t cob_host_call_function(void *user, int fn_id,
                 return (int32_t)(Units_BuildHeading(u->def_idx) * 65536.0f / 6.2831853f);
             return (int32_t)(u->heading * 65536.0f / 6.2831853f);
         case 28: { /* IN_WATER: a mover below the sea (legacy:185197-185206) */
-            const GameWorld *ww = World_Get();
-            if (!ww || ww->water_height <= 0 || !def || !(def->max_velocity > 0.0f))
-                return 0;
-            float y = (float)Terrain_SampleHeight(ww, u->world_x, u->world_y) +
-                      Units_DrawnAlt(ww, u);
-            return y < (float)ww->water_height;
+            if (!def || !(def->max_velocity > 0.0f)) return 0;
+            return unit_below_sea(World_Get(), u);
         }
         case 29: /* CURRENT_SPEED */
             return u->velocity >= 0 ? u->velocity : -u->velocity;
@@ -10420,8 +10687,8 @@ static int32_t cob_host_call_function(void *user, int fn_id,
                 if (max_pps > 0) return (u->velocity * 40) / max_pps;
             }
             return 0;
-        case 34: /* ON_ROAD */
-            return 0;
+        case 34: /* ON_ROAD: a mover on a road (legacy:223322-223325) */
+            return def && def->max_velocity > 0.0f && unit_on_road(World_Get(), u);
         case 46:
             /* Holster state: non-zero when not actively attacking. */
             return (u->anim_state == UNIT_ANIM_ATTACKING) ? 0 : 1;
@@ -10813,6 +11080,10 @@ static void enter_state(Unit *u, UnitAnimState new_state) {
     }
 }
 
+/* The turn this tick's unit still had to go when it last turned, in
+ * radians, 0 when it did not. */
+static float g_turn_left;
+
 /* Legacy caches the movement rate tier and invokes MoveRate only when
  * it changes (legacy:184448). Kingdoms has no StartMoving/StopMoving:
  * scripts branch on rate > 0 to swap between the moving and idle pose,
@@ -10835,16 +11106,20 @@ static void update_move_rate(Unit *u, const UnitDef *def, int turning) {
     invoke_script_once(u, "MoveRate", args, 1);
 }
 
-/* TurnDirection(sign) fires only when the sign of the turn changes
- * (legacy:183171). Scripts stash the sign and lean the walk cycle. */
+/* TurnDirection(degrees still to turn) fires when a turn starts, ends or
+ * changes sides, and under a degree a 30 Hz frame is no turn, half that
+ * a tick here (legacy:183163-183172). Scripts walk the legs while it is
+ * not 0, so tracking a walker must leave it at 0. */
 static void update_turn_direction(Unit *u, float prev_heading) {
     float d = u->heading - prev_heading;
     while (d >  3.14159265f) d -= 6.2831853f;
     while (d < -3.14159265f) d += 6.2831853f;
-    int sign = (d > 0.0005f) ? 1 : (d < -0.0005f) ? -1 : 0;
+    if (fabsf(g_turn_left) > fabsf(d)) d = g_turn_left;
+    int units = (int)(d * 65536.0f / 6.2831853f);
+    int sign = units >= 91 ? 1 : units <= -91 ? -1 : 0;
     if (sign == u->turn_dir_sign) return;
     u->turn_dir_sign = (int8_t)sign;
-    int32_t args[1] = { sign };
+    int32_t args[1] = { units / 182 ? units / 182 : sign };
     invoke_script_once(u, "TurnDirection", args, 1);
 }
 
@@ -12110,7 +12385,7 @@ static int unit_neighbour_blocks(const GameWorld *w, const Unit *u,
     unit_occ_fp(u, &fx, &fz);
     int tx0 = Occ_TileOf(nx - fx * 8);
     int ty0 = Occ_TileOf(ny - fz * 8);
-    float pace = def->max_velocity * 0.5f * 0.75f;
+    float pace = def->max_velocity * unit_ground_scale(w, u, def) * 0.5f * 0.75f;
     for (int row = 0; row < fz; row++) {
         for (int col = 0; col < fx; col++) {
             int tx = tx0 + col, ty = ty0 + row;
@@ -12438,6 +12713,7 @@ static void unit_turn_at(Unit *u, float rate, float want) {
     float delta = want - u->heading;
     while (delta >  3.14159265f) delta -= 6.2831853f;
     while (delta < -3.14159265f) delta += 6.2831853f;
+    g_turn_left = delta;
     if (rate > 0.0f) {
         float step = rate * (6.2831853f / 65536.0f) * 0.5f;
         if (delta >  step) delta =  step;
@@ -12450,7 +12726,7 @@ static void unit_turn_at(Unit *u, float rate, float want) {
 
 /* Turn toward a heading at turnrate, as a walk turns (legacy:183472). */
 static void unit_turn_toward(Unit *u, const UnitDef *def, float want) {
-    unit_turn_at(u, def->turn_rate, want);
+    unit_turn_at(u, def->turn_rate * unit_ground_scale(World_Get(), u, def), want);
 }
 
 /* A unit that turns its body onto what it shoots: a walker with a
@@ -12465,11 +12741,24 @@ static int unit_faces_target(const UnitDef *def) {
 /* One tick of that turn toward the bearing (dx, dy): in place at
  * turninplacerate on the ground (legacy:183434-183436), at turnrate in
  * the air (legacy:184017). */
+static void unit_face_bearing(Unit *u, const UnitDef *def, float dx, float dy) {
+    if ((dx == 0.0f && dy == 0.0f) || !unit_faces_target(def)) return;
+    unit_turn_at(u, (def->can_fly ? def->turn_rate : def->turn_in_place_rate) *
+                        unit_ground_scale(World_Get(), u, def),
+                 tak_atan2f(dx, -dy));
+}
+
 static void unit_face_toward(Unit *u, const UnitDef *def,
                              int64_t dx, int64_t dy) {
-    if ((dx == 0 && dy == 0) || !unit_faces_target(def)) return;
-    unit_turn_at(u, def->can_fly ? def->turn_rate : def->turn_in_place_rate,
-                 tak_atan2f((float)dx, -(float)dy));
+    unit_face_bearing(u, def, (float)dx, (float)dy);
+}
+
+/* Onto a unit, from where both truly are: a walker's drift is then the
+ * small turn it is, not a whole pixel's worth every other tick. */
+static void unit_face_unit(Unit *u, const UnitDef *def, const Unit *t) {
+    unit_face_bearing(u, def,
+                      (float)(t->world_x - u->world_x) + t->subpixel_x - u->subpixel_x,
+                      (float)(t->world_y - u->world_y) + t->subpixel_y - u->subpixel_y);
 }
 
 /* Such a unit fires only with its body within the weapon's AimTolerance
@@ -12520,6 +12809,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     }
     if (nav == NAV_GIVE_UP && u->target >= 0 &&
         (u->cmd_kind == UNIT_CMD_ATTACK || u->cmd_kind == UNIT_CMD_PATROL)) {
+        chase_walk_ends(u);
         /* An attack keeps closing, as the original's does
          * (legacy:246390-246428): the ladder starts over from a fresh
          * route rather than leaving the unit standing short. */
@@ -12572,12 +12862,15 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     }
     /* FBI maxvelocity is 16.16 world-pixels per 30Hz frame (legacy
      * stores it raw at def+0x162, :162833): halve for our ticks. */
-    float max_ppt = def->max_velocity * 0.5f;
+    const float ground = unit_ground_scale(w, u, def);
+    const float top_pf = def->max_velocity * ground;
+    const float turn_rate = def->turn_rate * ground;
+    float max_ppt = top_pf * 0.5f;
     if (max_ppt <= 0.0f) return 0;
     /* A formation walks at the pace of its slowest unit still walking. */
     if (u->cmd_kind == UNIT_CMD_MOVE && u->move_group && u->move_paced) {
         float pace = Units_GroupPace(u->move_group);
-        if (pace > 0.0f && pace < def->max_velocity) max_ppt = pace * 0.5f;
+        if (pace > 0.0f && pace * 0.5f < max_ppt) max_ppt = pace * 0.5f;
     }
 
     WALK_MARK(0);
@@ -12618,13 +12911,14 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         float dx = (float)(ax - u->world_x);
         float dy = (float)(ay - u->world_y);
         if (g_walk_face_on) {
-            unit_turn_at(u, def->turn_rate, g_walk_face);
+            unit_turn_at(u, turn_rate, g_walk_face);
         } else if (dx != 0.0f || dy != 0.0f) {
             float delta = tak_atan2f(dx, -dy) - u->heading;
             while (delta >  3.14159265f) delta -= 6.2831853f;
             while (delta < -3.14159265f) delta += 6.2831853f;
-            if (def->turn_rate > 0.0f) {
-                float step = def->turn_rate * (6.2831853f / 65536.0f) * 0.5f;
+            g_turn_left = delta;
+            if (turn_rate > 0.0f) {
+                float step = turn_rate * (6.2831853f / 65536.0f) * 0.5f;
                 if (delta >  step) delta =  step;
                 if (delta < -step) delta = -step;
             }
@@ -12652,15 +12946,13 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         int32_t sx, sy;
         unit_aim_point(u, p[0], p[1], p[2], p[3], 80, &sx, &sy);
         float v_pf = v * 2.0f;
-        float brake_pf = def->brake_rate > 0.0f ? def->brake_rate
-                                                : def->max_velocity;
-        if (brake_pf > def->max_velocity) brake_pf = def->max_velocity;
-        float accel_ppt = def->acceleration > 0.0f ? def->acceleration * 0.25f
-                                                   : max_ppt;
+        float brake_pf = def->brake_rate > 0.0f ? def->brake_rate * ground : top_pf;
+        if (brake_pf > top_pf) brake_pf = top_pf;
+        float accel_ppt = def->acceleration > 0.0f
+                        ? def->acceleration * ground * 0.25f : max_ppt;
         float brake_ppt = brake_pf * 0.25f;
         int he = g_walk_face_on ? 0 : unit_heading_err_units(u, sx, sy);
-        float turn_dist = def->turn_rate > 0.0f
-                        ? v_pf * (float)he / def->turn_rate : 0.0f;
+        float turn_dist = turn_rate > 0.0f ? v_pf * (float)he / turn_rate : 0.0f;
         float stop_dist = brake_pf > 0.0f
                         ? (v_pf * v_pf) / (2.0f * brake_pf) : 0.0f;
         float adx = (float)(sx - u->world_x), ady = (float)(sy - u->world_y);
@@ -15306,6 +15598,8 @@ static void Units_TickCombat(void) {
         }
 
         CMB_MARK(0);
+        if (u->cmd_kind != UNIT_CMD_ATTACK && u->cmd_kind != UNIT_CMD_PATROL)
+            chase_walk_ends(u);
         /* An order from outside ends the walk back and a patrol's repairs. */
         if ((u->post_set == UNIT_POST_FIGHT && u->cmd_kind != UNIT_CMD_NONE &&
              u->cmd_kind != UNIT_CMD_PATROL &&
@@ -15407,40 +15701,55 @@ static void Units_TickCombat(void) {
 
         /* A fight it took on for itself, maneuvering or answering fire,
          * may run the standard search again at the end of each wait of
-         * the attack handler and take what it finds inside its leash
-         * (legacy:11485-11520). Holding position or not on fire at will
-         * it never does, nor on an attack order, nor without a mover or
-         * with canfly (legacy:11351-11355). Melee chases search on their
-         * own rule (legacy:11189-11195), not this one. */
-        if (u->target >= 0 && !u->attack_explicit &&
+         * the attack handler, but only while its target is out of reach.
+         * Holding position or not on fire at will it never does, nor on
+         * a player's order, nor without a mover or with canfly
+         * (legacy:11351-11355). */
+        if (u->target >= 0 && u->target < g_unit_count && unit_attack_own(u) &&
             (u->cmd_kind == UNIT_CMD_ATTACK ||
              u->cmd_kind == UNIT_CMD_PATROL) &&
             def->num_weapons > 0 &&
             def->max_velocity > 0.0f && !def->can_fly &&
-            !weapon_is_melee(&def->weapons[0]) &&
             u->aggro_mode == UNIT_AGGRO_OFFENSIVE &&
             def->sight_distance > 0) {
+            int look_slot = u->weapon_slot;
+            if (look_slot < 0 || look_slot >= def->num_weapons) look_slot = 0;
+            int melee = weapon_is_melee(&def->weapons[look_slot]);
             if (u->research_wait > 1) {
                 u->research_wait--;
             } else {
-                /* One draw of 2 before the search, and one of 10 only
-                 * for a different target inside the leash, so about 1
-                 * wait in 20 switches (legacy:11517-11520). */
-                if (u->research_wait == 1 && World_Rand(2) == 0u) {
-                    int64_t scan_radius = unit_search_radius(u, def);
-                    int pick = -1;
-                    if (scan_radius > 0)
-                        pick = def->fire_at_will_random
-                            ? ugrid_random_enemy(u, i, scan_radius, &def->weapons[0])
-                            : ugrid_nearest_enemy(u, i, scan_radius, &def->weapons[0]);
-                    if (pick >= 0 && pick != u->target &&
-                        unit_can_answer(u, def, &g_units[pick]) &&
-                        World_Rand(10) == 0u) {
-                        u->target = (int16_t)pick;
-                        unit_clear_path(u);
+                if (u->research_wait == 1 &&
+                    !unit_weapon_reaches(u, def, look_slot, &g_units[u->target])) {
+                    /* A blade: one draw of 2 before the search, and one
+                     * of 10 only for a different target inside the leash,
+                     * so about 1 wait in 20 switches (legacy:11517-11520).
+                     * Anything else: a target out of reach gets it off level
+                     * 0 (legacy:11109-11113), and it may look. */
+                    if (melee) {
+                        if (World_Rand(2) == 0u) {
+                            int64_t scan_radius = unit_search_radius(u, def);
+                            int pick = -1;
+                            if (scan_radius > 0)
+                                pick = def->fire_at_will_random
+                                    ? ugrid_random_enemy(u, i, scan_radius, &def->weapons[0])
+                                    : ugrid_nearest_enemy(u, i, scan_radius, &def->weapons[0]);
+                            if (pick >= 0 && pick != u->target &&
+                                unit_can_answer(u, def, &g_units[pick]) &&
+                                World_Rand(10) == 0u) {
+                                u->target = (int16_t)pick;
+                                u->attack_explicit = 0;
+                                unit_clear_path(u);
+                            }
+                        }
+                    } else {
+                        chase_for_target(u, &g_units[u->target]);
+                        int level = (int)CHASE_LEVEL(u);
+                        if (level == 0 && World_Rand(2) != 0u) chase_set_level(u, ++level);
+                        (void)chase_look_again(u, def, level);
                     }
                 }
-                u->research_wait = unit_attack_wait();
+                u->research_wait = melee ? unit_attack_wait()
+                                         : (uint8_t)((World_Rand(6) + 3u) * 2u);
             }
         } else {
             u->research_wait = 0;
@@ -15527,6 +15836,8 @@ static void Units_TickCombat(void) {
         int      hovering = 0;
         int64_t  target_d2 = 0;
         float    heading_at_entry = u->heading;
+        int      relocating = 0;
+        g_turn_left = 0.0f;
         /* A summons without end or one held belongs to the build order
          * in hand. */
         if (u->cmd_kind != UNIT_CMD_BUILD) {
@@ -15688,6 +15999,8 @@ static void Units_TickCombat(void) {
                 (min_range <= 0 || target_d2 >= min_range_d2)) {
                 target_in_range = 1;
                 desired = UNIT_ANIM_ATTACKING;
+                relocating = unit_relocating(u, def, t, target_d2, &goal_x, &goal_y);
+                if (relocating) desired = UNIT_ANIM_MOVING;
             } else {
                 desired = UNIT_ANIM_MOVING;
                 goal_x = t->world_x;
@@ -15696,7 +16009,7 @@ static void Units_TickCombat(void) {
             /* Turn onto the target only once in reach: on the approach
              * the walker owns the heading. A unit with no turn in place
              * leaves the aim to its pieces, as a structure does. */
-            if (target_in_range) unit_face_toward(u, def, dx, dy);
+            if (target_in_range && !relocating) unit_face_unit(u, def, t);
         } else if (u->cmd_kind == UNIT_CMD_ATTACK_GROUND &&
                    def->num_weapons > 0 && hover_attacks(u, def, NULL)) {
             hovering = 1;
@@ -15890,8 +16203,15 @@ static void Units_TickCombat(void) {
                 int arrived = walk_tick(u, def, goal_x, goal_y);
                 g_walk_face_on = 0;
                 g_walk_creep = 0;
-                if (hovering && target_in_range) unit_fire_tick(u, i, def);
-                if (arrived) {
+                /* The weapon stays on its target through the walk, and
+                 * fires when the walk happens to face it
+                 * (legacy:249255-249310, legacy:249328-249338). */
+                if ((hovering || relocating) && target_in_range)
+                    unit_fire_tick(u, i, def);
+                if (arrived && relocating) {
+                    chase_walk_ends(u);
+                    unit_clear_path(u);
+                } else if (arrived) {
                     u->velocity = 0; u->cur_speed_ppt = 0.0f;
                     if (air_leg_on) {
                         /* An air leg is no part of the order. */
