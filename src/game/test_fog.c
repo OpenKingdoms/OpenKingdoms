@@ -592,6 +592,91 @@ static int test_a_sight_jammer_fogs_its_ground_for_the_enemy(void) {
     return 0;
 }
 
+/* Ours, for mods (D-045): whoever a sight jammer does not jam sees a haze
+ * on its ground, the seat it jams sees none. With no jammer, or one
+ * switched off, the screen is not touched at all. */
+static int test_a_sight_jammers_haze_shows_only_to_those_it_does_not_jam(void) {
+    GameWorld w;
+    memset(&w, 0, sizeof(w));
+    memset(g_test_units, 0, sizeof(g_test_units));
+    memset(g_test_defs, 0, sizeof(g_test_defs));
+    w.map_pixels_w = 1024;
+    w.map_pixels_h = 512;
+    w.viewport_w = 64;
+    w.viewport_h = 64;
+    w.cam_x = 300;
+    w.cam_y = 240;
+    w.cfg.line_of_sight = 1;
+    g_test_unit_count = 2;
+    g_test_defs[1].sight_jam_distance = 128;
+    g_test_units[0].alive = UNIT_ALIVE_ACTIVE;
+    g_test_units[0].player_id = 1;
+    g_test_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_test_units[1].player_id = 2;
+    g_test_units[1].def_idx = 1;
+    g_test_units[1].world_x = 336;
+    g_test_units[1].world_y = 272;
+
+    FogHaze hz[4];
+    Fog_SetViewer(2);
+    ASSERT_EQ_INT(1, Fog_JamHazes(&w, hz, 4));
+    ASSERT_EQ_INT(336, hz[0].x);
+    ASSERT_EQ_INT(272, hz[0].y);
+    ASSERT_EQ_INT(128, hz[0].radius);
+    Fog_SetViewer(1);
+    ASSERT_EQ_INT(0, Fog_JamHazes(&w, hz, 4));
+    Fog_SetSeeAll(1);
+    ASSERT_EQ_INT(1, Fog_JamHazes(&w, hz, 4));
+    Fog_SetSeeAll(0);
+
+    /* Pixels: the owner's screen takes the haze, the enemy's nothing. */
+    SDL_Surface *surf = SDL_CreateRGBSurfaceWithFormat(0, 64, 64, 32,
+                                                       SDL_PIXELFORMAT_RGBA32);
+    ASSERT_EQ_INT(1, surf != NULL);
+    TAK_Platform plat;
+    memset(&plat, 0, sizeof(plat));
+    plat.renderer = SDL_CreateSoftwareRenderer(surf);
+    ASSERT_EQ_INT(1, plat.renderer != NULL);
+    const uint32_t *px = (const uint32_t *)surf->pixels;
+    SDL_FillRect(surf, NULL, 0);
+    Fog_RenderJamHaze(&w, &plat);
+    SDL_RenderFlush(plat.renderer);
+    ASSERT_EQ_INT(0, (int)px[32 * 64 + 32]);
+    Fog_SetViewer(2);
+    Fog_RenderJamHaze(&w, &plat);
+    SDL_RenderFlush(plat.renderer);
+    ASSERT_EQ_INT(1, px[32 * 64 + 32] != 0);
+
+    /* Switched off or under construction it lays nothing. */
+    SDL_FillRect(surf, NULL, 0);
+    g_test_defs[1].onoffable = 1;
+    ASSERT_EQ_INT(0, Fog_JamHazes(&w, hz, 4));
+    Fog_RenderJamHaze(&w, &plat);
+    SDL_RenderFlush(plat.renderer);
+    ASSERT_EQ_INT(0, (int)px[32 * 64 + 32]);
+    g_test_units[1].cob_activation = 1;
+    ASSERT_EQ_INT(1, Fog_JamHazes(&w, hz, 4));
+    g_test_units[1].under_construction = 1;
+    ASSERT_EQ_INT(0, Fog_JamHazes(&w, hz, 4));
+    g_test_units[1].under_construction = 0;
+
+    /* Sight jamming needs Line of Sight on, and so does its haze. */
+    w.cfg.line_of_sight = 0;
+    ASSERT_EQ_INT(0, Fog_JamHazes(&w, hz, 4));
+    w.cfg.line_of_sight = 1;
+
+    /* A radar jammer has no haze. */
+    g_test_defs[1].sight_jam_distance = 0;
+    g_test_defs[1].radar_jam_distance = 128;
+    ASSERT_EQ_INT(0, Fog_JamHazes(&w, hz, 4));
+
+    SDL_DestroyRenderer(plat.renderer);
+    SDL_FreeSurface(surf);
+    Fog_SetViewer(1);
+    g_test_unit_count = 0;
+    return 0;
+}
+
 int main(void) {
     int failed = 0;
     failed |= test_map_revealed_initializes_explored();
@@ -607,6 +692,7 @@ int main(void) {
     failed |= test_the_reveal_follows_the_unit_across_a_cell_boundary();
     failed |= test_a_watcher_sees_the_whole_map_and_no_seat_changes();
     failed |= test_a_sight_jammer_fogs_its_ground_for_the_enemy();
+    failed |= test_a_sight_jammers_haze_shows_only_to_those_it_does_not_jam();
     if (failed) return 1;
     puts("test_fog: ok");
     return 0;

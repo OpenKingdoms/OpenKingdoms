@@ -1184,6 +1184,61 @@ static void draw_cloak_rings(const GameWorld *world) {
     if (nv > 0) GL3D_DrawSprites(v.stream_v, nv, v.stream_i, ni, NULL, 0, 0);
 }
 
+/* A sight jammer's haze on the ground or the water, a mesh that follows
+ * the surface and goes under the fog as the ground does (D-045). */
+static void draw_jam_haze(const GameWorld *world, const float planes[6][4]) {
+    FogHaze hz[FOG_HAZE_MAX];
+    int n = Fog_JamHazes(world, hz, FOG_HAZE_MAX);
+    if (n <= 0) return;
+    const float cr = (float)FOG_HAZE_R / 255.0f, cg = (float)FOG_HAZE_G / 255.0f,
+                cb = (float)FOG_HAZE_B / 255.0f;
+    for (int h = 0; h < n; h++) {
+        float rad = (float)hz[h].radius;
+        const float centre[3] = { (float)hz[h].x, (float)world->water_height,
+                                  (float)hz[h].y };
+        if (!Camera3D_SphereInFrustum(planes, centre, rad + 256.0f)) continue;
+        /* Rings every 24 px or so up to the rim, and the rim's own two. */
+        int inner = hz[h].radius / 28;
+        if (inner < 2) inner = 2;
+        if (inner > 62) inner = 62;
+        int rings = inner + 2;
+        int segs = hz[h].radius / 4;
+        if (segs < 48) segs = 48;
+        if (segs > 256) segs = 256;
+        if (ensure_stream(segs * rings, segs * (rings - 1) * 6) != 0) return;
+        for (int k = 0; k < rings; k++) {
+            float t = k < inner ? FOG_HAZE_RIM_IN * (float)k / (float)(inner - 1)
+                                : (k == inner ? FOG_HAZE_RIM_PEAK : 1.0f);
+            float a = Fog_HazeAlpha(t);
+            for (int s = 0; s < segs; s++) {
+                float ang = (float)s / (float)segs * 2.0f * V3_PI;
+                float x = (float)hz[h].x + cosf(ang) * rad * t;
+                float z = (float)hz[h].y + sinf(ang) * rad * t;
+                /* It stops at the map's edge. */
+                if (x < 0.0f) x = 0.0f;
+                if (z < 0.0f) z = 0.0f;
+                if (x > v.map_w) x = v.map_w;
+                if (z > v.map_h) z = v.map_h;
+                put_vert(v.stream_v + (size_t)(k * segs + s) * 9, x,
+                         surface_height(world, x, z) + 4.0f, z, 0, 0, cr, cg, cb, a);
+            }
+        }
+        int ni = 0;
+        for (int k = 0; k + 1 < rings; k++) {
+            for (int s = 0; s < segs; s++) {
+                int s1 = (s + 1) % segs;
+                uint16_t a0 = (uint16_t)(k * segs + s), a1 = (uint16_t)(k * segs + s1);
+                uint16_t b0 = (uint16_t)(a0 + segs), b1 = (uint16_t)(a1 + segs);
+                uint16_t *q = v.stream_i + ni;
+                q[0] = a0; q[1] = b0; q[2] = b1;
+                q[3] = a0; q[4] = b1; q[5] = a1;
+                ni += 6;
+            }
+        }
+        GL3D_DrawSprites(v.stream_v, segs * rings, v.stream_i, ni, NULL, 0, 1);
+    }
+}
+
 /* A ring of twelve chords on the ground or the water around each
  * selected unit, turning as the classic view's does (legacy:211001-211030). */
 static void draw_selection_rings(const GameWorld *world) {
@@ -1623,6 +1678,7 @@ static void v3_render(const GameWorld *world, TAK_Platform *plat,
     draw_wakes(world, planes);
     draw_beams(world);
     draw_water(world);
+    draw_jam_haze(world, planes);
     draw_units(world, planes, 1);
     GL3D_EndFrame();
 

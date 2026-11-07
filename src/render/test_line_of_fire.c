@@ -2278,6 +2278,18 @@ TEST(an_enemy_radar_jammer_hides_blips_and_an_allys_does_not) {
     ASSERT(jam >= 0);
     for (int i = 0; i < 12; i++) Units_TickEngines();   /* the next marking */
     ASSERT_EQ_INT(0, Units_RadarShowsToLocalPlayer(lf_unit(near)));
+    /* With a switch it comes on when built and jams only while on, by the
+     * call the Active and Inactive order lands on. */
+    UnitDef *jd = (UnitDef *)Units_GetDef(LF_JAMMER);
+    jd->onoffable = 1;
+    jd->activate_when_built = 1;
+    for (int i = 0; i < 12; i++) Units_TickEngines();
+    ASSERT_EQ_INT(1, Units_OnOffState(jam));
+    ASSERT_EQ_INT(0, Units_RadarShowsToLocalPlayer(lf_unit(near)));
+    Units_SetOnOff(jam, 0);
+    ASSERT_EQ_INT(0, Units_OnOffState(jam));
+    for (int i = 0; i < 12; i++) Units_TickEngines();
+    ASSERT_EQ_INT(1, Units_RadarShowsToLocalPlayer(lf_unit(near)));
     lf_end();
 }
 

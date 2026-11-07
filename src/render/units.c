@@ -16970,7 +16970,19 @@ void Units_TickEngines(void) {
 
     for (int i = 0; i < g_unit_count; i++) {
         Unit *u = &g_units[i];
-        if ((u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) || !u->cob) continue;
+        if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) continue;
+        if (!u->cob) {
+            /* A mod's jammer with no script still comes on when built. */
+            const UnitDef *jd = Units_GetDef(u->def_idx);
+            if (jd && jd->activate_when_built &&
+                (jd->radar_jam_distance > 0 || jd->sight_jam_distance > 0) &&
+                !u->under_construction && u->alive == UNIT_ALIVE_ACTIVE &&
+                u->script_ev[UNIT_SCRIPT_EV_ACTIVATE] == 0) {
+                u->cob_activation = 1;
+                unit_start_script(u, "Activate", NULL, 0);
+            }
+            continue;
+        }
         /* activatewhenbuilt: the moment the unit is complete, legacy
          * raises the activation state bit, and that rising edge runs
          * Activate once (legacy:236402). Lodestones raise their crystal

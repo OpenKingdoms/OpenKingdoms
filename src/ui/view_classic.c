@@ -30,6 +30,7 @@ static void classic_render(const GameWorld *world, TAK_Platform *plat,
     /* A feature is ground, and the fog covers ground: a dock whose
      * planks reach past the known map ends where the black begins. */
     Units_RenderFeatures(world, plat);
+    Fog_RenderJamHaze(world, plat);
     Fog_RenderOverlay(world, plat);
     Units_Render(world, plat);
     /* The selection's orders, while Shift is held. */

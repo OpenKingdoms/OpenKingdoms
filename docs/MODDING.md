@@ -109,15 +109,22 @@ explored map, so a sight jammer hides nothing. It does not hide radar
 blips either, and radar often reaches far past sight, so pair it with
 `radardistancejam` to hide a force from both.
 
+A sight jammer lays a pale haze on its ground, in both views, for
+everyone it does not jam: its owner, the owner's allies and anyone
+watching. It is there so the veil reads as a mechanic and not as a fog
+bug. The players it jams see the fog and no haze.
+
 A jammer jams while it is finished and alive. Give it `onoffable = 1`
-and it jams only while it is switched on, so pair that with
+and it jams only while it is switched on, and the Active and Inactive
+buttons on the orders panel switch it. Pair that with
 `activatewhenbuilt = 1` unless its script switches it on. A jammer
 never jams its own side or its allies, and an ally's jammer never hides
 anything from you.
 
 Sight jamming changes what units can see, so it is part of the
 simulation: a game with a sight jammer in it plays the same on every
-machine, and saves keep it. Radar and radar jamming are drawing only.
+machine, and saves keep it. Radar, radar jamming and the haze are
+drawing only.
 
 ## Choosing a mod set
 

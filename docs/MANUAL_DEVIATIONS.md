@@ -2529,14 +2529,18 @@ Format per entry:
   the jammed fog too. Targets already held or ordered are still fired
   on. Sight jamming does nothing with Line of Sight off, and it hides no
   radar blips. A jammer works while it is finished and alive, and with
-  `onoffable` only while it is on. It never jams its own side or its
-  allies.
+  `onoffable` only while it is on, which the Active and Inactive buttons
+  switch. With `activatewhenbuilt` it comes on when built, with a script
+  or without. It never jams its own side or its allies. Whoever it does not
+  jam, owner, allies and watchers, sees a pale haze on its ground in both
+  views, under the fog like the ground. Those it jams see no haze.
 - Why: a playtester asked for Total Annihilation's radar jamming and
   for sight jamming (#319). The original has neither, so the base game
   is unchanged. Sight jamming changes each seat's fog, which the
   simulation and the computer players read, so it is simulation state
   and in the hash and saves through the fog layers. Radar jamming, like
-  radar, is drawing only. The nine cells are the ones the original's
+  radar, is drawing only, and so is the haze, which keeps the veil from
+  reading as a fog bug. The nine cells are the ones the original's
   stamp lights round a unit whatever its sight (legacy:167402).
 - Citation: the manual is silent. Radar itself is the original's
   (legacy:208642-208655, docs/notes/2026-10-21-radar.md).

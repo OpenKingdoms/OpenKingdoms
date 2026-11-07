@@ -2266,6 +2266,7 @@ add_executable(test_fog
     game/test_fog.c
     game/fog.c
     core/memory.c
+    core/trig.c
 )
 target_include_directories(test_fog PRIVATE
     ${CMAKE_SOURCE_DIR}/include
