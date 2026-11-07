@@ -6747,7 +6747,7 @@ TEST(skirmish_ai_issues_attack_orders) {
             ai_ordered = 1;
             break;
         }
-        if (u->cmd_kind == UNIT_CMD_BUILD && u->build_target >= 0) {
+        if (u->cmd_kind == UNIT_CMD_BUILD) {
             ai_building = 1;
         }
     }

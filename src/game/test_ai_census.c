@@ -364,6 +364,30 @@ int Units_BeginBuildingForUnit(int builder_handle, int building_def_idx,
     return slot;
 }
 
+/* A walker that is far off holds the order with no frame, as units.c
+ * does, for sim_step to raise later. */
+int Units_OrderBuild(int builder_handle, int def_idx, int32_t world_x,
+                     int32_t world_y, int facing, int endless) {
+    (void)facing; (void)endless;
+    if (builder_handle >= 0 && builder_handle < g_unit_count &&
+        def_idx >= 0 && def_idx < MOCK_DEFS &&
+        g_defs[g_units[builder_handle].def_idx].max_velocity > 0.0f &&
+        ((uint32_t)(world_x + world_y) & 16u)) {
+        Unit *b = &g_units[builder_handle];
+        log_i(6); log_i(builder_handle); log_i(def_idx);
+        b->cmd_kind = UNIT_CMD_BUILD;
+        b->build_target = -1;
+        b->build_held = 1;
+        b->build_def = (int16_t)def_idx;
+        b->cmd_x = world_x;
+        b->cmd_y = world_y;
+        g_builds++;
+        return 1;
+    }
+    return Units_BeginBuildingForUnit(builder_handle, def_idx, world_x,
+                                      world_y) >= 0;
+}
+
 int Fog_IsVisibleForPlayer(const struct GameWorld *world, int player_id,
                            int32_t world_x, int32_t world_y) {
     (void)world;
@@ -535,7 +559,13 @@ static void sim_step(void) {
         if (u->under_construction && rnd(40) == 0) u->under_construction = 0;
         if (rnd(900) == 0) { u->alive = UNIT_ALIVE_DYING; continue; }
         if (u->cmd_kind != UNIT_CMD_NONE && rnd(30) == 0) {
+            if (u->build_held && u->cmd_kind == UNIT_CMD_BUILD && rnd(2) == 0) {
+                u->build_held = 0;
+                (void)Units_BeginBuildingForUnit(i, u->build_def, u->cmd_x, u->cmd_y);
+                continue;
+            }
             u->cmd_kind = UNIT_CMD_NONE;
+            u->build_held = 0;
             u->build_target = -1;
             u->target = -1;
         }

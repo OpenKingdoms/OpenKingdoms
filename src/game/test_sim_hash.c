@@ -458,18 +458,14 @@ static int test_every_subsystem_contributes(void) {
     POKE("cloaked", g_units[0].cloaked = 1, g_units[0].cloaked = 0);
     POKE("cloak wait", g_units[0].cloak_wait = 90, g_units[0].cloak_wait = 0);
     g_units[0].build_held = 1;
-    POKE("build walked to out of sight", g_units[0].build_unseen = 1,
-         g_units[0].build_unseen = 0);
-    g_units[0].build_unseen = 1;
-    POKE("unseen build facing", g_units[0].build_facing = 2,
+    POKE("held build facing", g_units[0].build_facing = 2,
          g_units[0].build_facing = 0);
-    g_units[0].build_unseen = 0;
     g_units[0].build_held = 0;
     POKE("hit by", g_units[0].hit_by = 77, g_units[0].hit_by = 0);
     g_units[0].hit_by = 77;
     POKE("hit tick", g_units[0].hit_tick = 300, g_units[0].hit_tick = 0);
     g_units[0].hit_by = 0;
-    POKE("summons held for units on its spot",
+    POKE("build held until its builder arrives",
          g_units[0].build_held = 1, g_units[0].build_held = 0);
     g_units[0].build_held = 1;
     POKE("held summons def", g_units[0].build_def = 6, g_units[0].build_def = 0);

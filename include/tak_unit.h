@@ -1123,14 +1123,11 @@ typedef struct Unit {
     uint8_t    build_tries;
     uint8_t    build_wait;
     int16_t    build_def;
-    /* A summons taken while units stand on its spot: no frame yet, and
-     * build_def goes up at cmd_x, cmd_y once they leave, looked for as
-     * build_endless's next is (legacy:12088-12124). */
+    /* A build order on its way: no frame yet. build_def goes up at cmd_x,
+     * cmd_y turned to build_facing once the builder is there and no unit
+     * stands on the site, looked for as build_endless's next is
+     * (legacy:12063-12147). */
     uint8_t    build_held;
-    /* With build_held: a site its side did not see when ordered. The
-     * builder walks there first and the site is judged on arrival, the
-     * building turned to build_facing (legacy:12063-12124). */
-    uint8_t    build_unseen;
     uint8_t    build_facing;
     /* Ticks left in the attack handler's wait, after which a fight it
      * took on for itself looks again (legacy:11485-11509). 0 when not
@@ -2127,14 +2124,9 @@ int               Units_Candidates(int32_t x0, int32_t y0, int32_t x1, int32_t y
 void              Units_DebugSetGridQueries(int on);
 int               Units_DebugGridQueries(void);
 
-/* Spawn a building at (world_x, world_y) for `player_id` at low health
- * and immediately order the selected friendly builder(s) to walk to
- * the site and add HP to it (legacy 1.0/workertime per tick formula).
- * Returns the new building's unit handle, or -1 on failure (player
- * couldn't afford it, no buildable def, no friendly builder selected,
- * etc). Mirrors the legacy reference's `Build_BeginConstruction`. */
-int               Units_BeginBuilding(int building_def_idx,
-                                       int32_t world_x, int32_t world_y);
+/* Put a frame up now at (world_x, world_y) for this builder, wherever it
+ * stands. A factory's product goes through here, and a walking builder's
+ * once it has reached its site. An order goes through Units_OrderBuild. */
 int               Units_BeginBuildingForUnit(int builder_handle,
                                              int building_def_idx,
                                              int32_t world_x,
@@ -2146,12 +2138,11 @@ int               Units_BeginBuildingForUnitFacing(int builder_handle,
                                                    int32_t world_x,
                                                    int32_t world_y,
                                                    int facing);
-/* A build order as a command gives it: 1 when the builder took it. With
- * endless a walking builder summons a def Units_DefCanRepeat names there
- * without end, each one done stepping off the spot for the next
- * (legacy:12272-12315). A walking builder takes a summons whose spot
- * only units hold and waits for them to leave (legacy:12088-12124),
- * where Units_BeginBuildingForUnit refuses it. */
+/* A build order as a command gives it: 1 when the builder took it. A
+ * walking builder goes to the site and the frame goes up once it is there
+ * and no unit stands on the site, so until then nothing holds the site
+ * (legacy:12063-12147). With endless it summons a def Units_DefCanRepeat
+ * names there again and again (legacy:12272-12315). */
 int               Units_OrderBuild(int builder_handle, int def_idx,
                                    int32_t world_x, int32_t world_y,
                                    int facing, int endless);

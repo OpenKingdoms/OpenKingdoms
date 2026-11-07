@@ -1254,12 +1254,11 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_u8(r + U_MAGIC_DEATH, u->magic_death);
     tak_put_u8(r + U_DEATH_DONE, u->death_finished);
     tak_put_u8(r + U_MAGIC_FADE, u->magic_death_fade);
-    /* Bit 2 marks a held order on a site out of sight, bits 3-4 its
-     * facing. */
+    /* Bits 3-4 hold a held order's facing. */
     tak_put_u8(r + U_BUILD_ENDLESS, (uint8_t)((u->build_endless ? 1u : 0u) |
                                               (u->build_held ? 2u : 0u) |
-                                              (u->build_held && u->build_unseen
-                                                   ? 4u | ((u->build_facing & 3u) << 3)
+                                              (u->build_held
+                                                   ? (u->build_facing & 3u) << 3
                                                    : 0u)));
     tak_put_u8(r + U_BUILD_TRIES, u->build_tries);
     tak_put_u8(r + U_BUILD_WAIT, u->build_wait);
@@ -1535,8 +1534,7 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     uint8_t summons = tak_get_u8(r + U_BUILD_ENDLESS);
     u->build_endless = (summons & 1u) ? 1 : 0;
     u->build_held = (summons & 2u) ? 1 : 0;
-    u->build_unseen = (u->build_held && (summons & 4u)) ? 1 : 0;
-    u->build_facing = u->build_unseen ? (uint8_t)((summons >> 3) & 3u) : 0;
+    u->build_facing = u->build_held ? (uint8_t)((summons >> 3) & 3u) : 0;
     u->build_tries = tak_get_u8(r + U_BUILD_TRIES);
     u->build_wait = tak_get_u8(r + U_BUILD_WAIT);
     u->build_def = 0;

@@ -927,6 +927,8 @@ static uint32_t bf_build_by_order(int facing, int *out_facing) {
     TAK_CommandExec_Apply(&back);
     int count = 0;
     const Unit *units = Units_GetActive(&count);
+    for (int t = 0; t < 900 && units[b].build_target < 0; t++) Units_TickEngines();
+    units = Units_GetActive(&count);
     *out_facing = -1;
     for (int i = 0; i < count; i++)
         if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].def_idx == BF_HALL)

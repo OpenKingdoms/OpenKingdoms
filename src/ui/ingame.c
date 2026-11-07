@@ -1587,11 +1587,10 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
                 TAK_Cmd_EmitSelection(TAK_CMD_UNLOAD, gx, gy, -1, 0, q);
                 break;
             case HUD_CMD_PLACE_BUILD: {
-                /* Building placement: spawn the building at
-                 * 1 HP and issue the selected builder a BUILD
-                 * order. The TickCombat MOVING handler walks
-                 * the builder to the site and adds HP per
-                 * tick (1.0/workertime of max, legacy:162905). */
+                /* Building placement: issue the selected builder
+                 * a BUILD order. It walks to the site, the frame
+                 * goes up there at 1 HP and it adds HP per tick
+                 * (1.0/workertime of max, legacy:162905). */
                 int bdef = HUD_GetBuildPlacementDefIdx();
                 if (bdef >= 0) {
                     /* Same cell snap the ghost drew at, so the

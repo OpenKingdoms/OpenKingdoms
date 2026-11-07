@@ -421,7 +421,6 @@ static const char *unit_field_at(size_t o) {
         { offsetof(Unit, cloaked), 1, "cloaked" },
         { offsetof(Unit, cloak_wait), 2, "cloak_wait" },
         { offsetof(Unit, paralyzed_ticks), 2, "paralyzed_ticks" },
-        { offsetof(Unit, build_unseen), 1, "build_unseen" },
         { offsetof(Unit, build_facing), 1, "build_facing" },
         { offsetof(Unit, hit_by), 4, "hit_by" },
         { offsetof(Unit, hit_tick), 4, "hit_tick" },
@@ -1076,6 +1075,65 @@ TEST(a_save_taken_mid_build_finishes_the_building) {
     VFS_Shutdown();
 }
 
+static int is_on_its_way(const Unit *u) {
+    return u->alive == UNIT_ALIVE_ACTIVE && u->cmd_kind == UNIT_CMD_BUILD &&
+           u->build_held && u->build_target < 0;
+}
+
+/* A build order on its way has no frame yet, only the order: what goes up,
+ * where, turned how, and the looks made so far all have to come back. */
+TEST(a_save_with_a_builder_on_its_way_still_raises_its_frame) {
+    if (setup_vfs() != 0) { SKIP_MARK("no game data"); return; }
+    TAK_Platform plat;
+    if (setup_platform(&plat) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    GameWorld *w = NULL;
+    ASSERT_EQ_INT(0, boot_battle(&plat, &cfg, &w));
+
+    /* A monarch sent a walk off, close enough to get there in the window. */
+    int count = 0, h = -1;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count && h < 0; i++) {
+        const UnitDef *d = Units_GetDef(units[i].def_idx);
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 1 &&
+            d && (d->cap_flags & UNIT_CAP_BUILDER) && d->max_velocity > 0.0f)
+            h = i;
+    }
+    ASSERT(h >= 0);
+    int menu[32];
+    int n = Units_GetBuildables(units[h].def_idx, menu, 32);
+    int def = -1, ordered = 0;
+    for (int m = 0; m < n && def < 0; m++) {
+        const UnitDef *d = Units_GetDef(menu[m]);
+        if (d && d->max_velocity <= 0.0f && !d->yardmap_sacred) def = menu[m];
+    }
+    ASSERT(def >= 0);
+    for (int a = 0; a < 16 && !ordered; a++) {
+        static const int dir[8][2] = { {1,0},{1,1},{0,1},{-1,1},{-1,0},{-1,-1},{0,-1},{1,-1} };
+        int r = a < 8 ? 240 : 180;
+        int32_t x = units[h].world_x + dir[a % 8][0] * r;
+        int32_t y = units[h].world_y + dir[a % 8][1] * r;
+        if (Units_IsBuildSiteFree(def, x, y))
+            ordered = Units_OrderBuild(h, def, x, y, 1, 0);
+    }
+    ASSERT_EQ_INT(1, ordered);
+    ASSERT_EQ_INT(1, units_with(is_on_its_way));
+
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    int rc = save_then_replay(&plat, STATE_TICKS, err, sizeof(err));
+    if (rc != 0) { report(rc); printf("%s ", err); }
+    ASSERT_EQ_INT(0, rc);
+    /* It got there on the loaded side, inside the window the hashes cover. */
+    ASSERT_EQ_INT(0, units_with(is_on_its_way));
+
+    end_battle(&plat);
+    UI_Shutdown();
+    teardown_platform(&plat);
+    VFS_Shutdown();
+}
+
 /* A carried unit still owns its slot and the coupling runs both ways:
  * the transport's cargo count and drop counter, the passenger's
  * carrier handle and the order it will be set down in. */
@@ -1243,6 +1301,7 @@ int main(int argc, char **argv) {
     RUN(a_save_with_shots_in_the_air_keeps_them_flying);
     RUN(a_save_with_an_order_still_in_hand_still_carries_it_out);
     RUN(a_save_taken_mid_build_finishes_the_building);
+    RUN(a_save_with_a_builder_on_its_way_still_raises_its_frame);
     RUN(a_save_with_a_loaded_transport_keeps_its_passengers);
     RUN(a_save_taken_mid_raise_keeps_the_work_owed);
     remove(SCRATCH);

@@ -76,11 +76,8 @@ walker.
 
 ## Left as it was
 
-A frame here goes up before the builder gets there (M-009), so a spot
-that clears while the builder walks gets its frame at once, where the
-original would look only on arrival. The original's chatter for waiting
-and for giving up has no counterpart yet, so both are silent. That is
-M-015.
+The original's chatter for waiting and for giving up has no counterpart
+yet, so both are silent. That is M-015.
 
 A summons is still tested for slope against the def's own `maxslope`,
 where the original takes the slope from the move class. That was left

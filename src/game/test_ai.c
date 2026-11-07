@@ -368,6 +368,13 @@ int Units_BeginBuildingForUnit(int builder_handle,
     return g_unit_count;
 }
 
+int Units_OrderBuild(int builder_handle, int def_idx, int32_t world_x,
+                     int32_t world_y, int facing, int endless) {
+    (void)facing; (void)endless;
+    return Units_BeginBuildingForUnit(builder_handle, def_idx, world_x,
+                                      world_y) >= 0;
+}
+
 int Fog_IsVisibleForPlayer(const struct GameWorld *world, int player_id,
                            int32_t world_x, int32_t world_y) {
     (void)world;
@@ -806,6 +813,57 @@ static int test_ai_builds_lodestone_on_sacred_pad(void) {
 
     TAK_AI_TickSkirmish(&w);
     ASSERT_EQ_INT(0, g_begin_calls);
+    return 0;
+}
+
+/* No frame stands while a builder walks, so the seat counts the order:
+ * a pad one builder is on its way to is not free for the next, and a
+ * lodestone on the way holds back another. */
+static int test_ai_a_build_on_its_way_counts_as_a_frame(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    g_defs[1].yardmap_sacred = 1;
+    g_defs[1].footprint_x = 2;
+    g_defs[1].footprint_z = 2;
+    g_buildable_counts[0] = 1;
+    g_sacred_registered = 1;
+    g_sacred_def.sacred_site = 2.0f;
+    g_sacred_def.footprint_x = 2;
+    g_sacred_def.footprint_z = 2;
+    static struct MapFeature pad;
+    pad.feat_id = 0;
+    pad.tile_x = 40;
+    pad.tile_z = 24;
+    pad.global_idx = 0;
+    w.features = &pad;
+    w.feature_count = 1;
+    int32_t wx = 40 * 16 + 16, wy = 24 * 16 + 16;
+
+    /* One builder on its way to the pad, another free beside it. */
+    g_units[0].world_x = 4000;
+    g_units[0].world_y = 4000;
+    g_units[0].cmd_kind = UNIT_CMD_BUILD;
+    g_units[0].build_held = 1;
+    g_units[0].build_def = 1;
+    g_units[0].cmd_x = wx;
+    g_units[0].cmd_y = wy;
+    g_units[1] = g_units[0];
+    g_units[1].world_x = wx + 300;
+    g_units[1].world_y = wy;
+    g_units[1].cmd_kind = UNIT_CMD_NONE;
+    g_units[1].build_held = 0;
+    g_unit_count = 2;
+    g_defs[0].commander = 0;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(0, g_begin_calls);
+
+    /* The same free builder takes the pad once the other order is gone. */
+    g_units[0].cmd_kind = UNIT_CMD_NONE;
+    g_units[0].build_held = 0;
+    w.skirmish_elapsed_ticks = 120;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(1, g_last_build_def);
     return 0;
 }
 
@@ -4019,6 +4077,7 @@ int main(void) {
     if (test_ai_builds_economy_then_production_then_combat() != 0) return 1;
     if (test_ai_moves_to_the_next_factory_at_the_limit() != 0) return 1;
     if (test_ai_builds_lodestone_on_sacred_pad() != 0) return 1;
+    if (test_ai_a_build_on_its_way_counts_as_a_frame() != 0) return 1;
     if (test_ai_wave_targets_follow_the_teams() != 0) return 1;
     if (test_ai_wave_target_moves_on_when_it_dies() != 0) return 1;
     if (test_ai_waves_never_pick_a_wall() != 0) return 1;

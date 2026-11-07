@@ -84,7 +84,8 @@ int OrderOverlay_Plan(int handle, OrderStop *out, int cap) {
         if (v[i].kind == UNIT_LEG_BUILD) {
             st.def = v[i].def;
             st.facing = v[i].facing;
-            st.ghost = v[i].queued && v[i].def >= 0;
+            /* In hand with no frame up yet, it shows as a queued one does. */
+            st.ghost = (v[i].queued || v[i].target < 0) && v[i].def >= 0;
         } else if (v[i].target >= 0 && v[i].target < count &&
                    (units[v[i].target].alive == UNIT_ALIVE_ACTIVE ||
                     units[v[i].target].alive == UNIT_ALIVE_DYING)) {
