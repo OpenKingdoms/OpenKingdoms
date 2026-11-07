@@ -2,72 +2,70 @@ OpenKingdoms VERSION_HERE, an engine for Total Annihilation: Kingdoms.
 
 Play in a browser at [openkingdoms.net](https://openkingdoms.net), or download below and play on the desktop.
 
-This release keeps a multiplayer match together when a player's tab goes
-to the background or their connection drops, and brings a long list of
-the original's battlefield behaviour to the engine. All players need
-0.5.7: browser players just reload the page.
+This release works through a round of playtest reports: building at a
+distance, invisible lodestones, units that could not be hurt, a campaign
+mission that could not be won, and computer players that sat on their
+islands. All players need 0.5.8: browser players just reload the page.
 
-## Multiplayer stays together
+## Building
 
-- A browser tab in the background, a minimised window or one on another
-  desktop keeps playing. Before, the game went quiet, the match stopped
-  for everyone with the waiting countdown, and the player was cut off.
-  (#466)
-- A battle that loses its connection now reconnects by itself and is
-  handed the match back. While the server still holds the seat it tries
-  again every few seconds. Before, the battle stood still without a word
-  until the page was reloaded. (#466)
-- Orders given after coming back into a match count again. Before, every
-  order from a player who had reconnected was quietly ignored. (#466)
-- A match can be rejoined or watched however long it runs. A player who
-  comes back, a watcher and a player who drops in now take another
-  player's game as it stands and the turns after it, so they are back in
-  seconds rather than replaying the whole match from the start. (#447)
-- A finished match stays finished. After a win, a loss or leaving a
-  match, opening Multiplayer goes to the games list instead of back into
-  the battle to watch it again, and a decided game leaves the list.
-  (#472, #473)
+- A building goes up only once its builder stands at the site, as in the
+  original. Before, an order put an invisible frame down straight away.
+  That let a builder start a building from across the map, left invisible
+  lodestones behind an interrupted order, and could keep you off a
+  lodestone site a computer player had only ordered. A later builder of
+  the same side joins a frame it finds there. (#488)
+- A factory opens its yard before it trains, and the doors play. A unit
+  on a factory's pad can be hit now, so a unit stuck there is no longer
+  safe until the building falls. Idle units are sent off a yard. (#490)
 
-## Loading the page
+## Transports and the campaign
 
-The page says what it is doing from its first moment, shows how much of
-your stored game files it has read, and no longer sits on a black screen
-or freezes on a return visit. If the engine cannot download or start, the
-page says so. (#468)
+- Units aboard a transport stay in the battle. Builders on a ship keep
+  paying in their mana. Riders die with a lost transport, as in the
+  original, and that includes a monarch aboard. (#489)
+- Mission 3 of the Book of Darien is no longer lost the moment Joreth
+  boards the transport. (#489)
+- Seven campaign missions whose script commands did nothing now run them.
+  (#489)
 
 ## In battle
 
-- Sky Knights and other flyers hold the point they picked instead of
-  being pushed back by walkers, and a Dark Priest crowded by flyers goes
-  on building, as in the original. (#451, #453)
-- A shot at a ground point leaves when the unit's attack script lets it
-  go, as a shot at a unit does, and one drawn at a point the order then
-  moves out of reach is called off. (#455)
-- Radar shows other players' units as blips on the minimap beyond sight,
-  as in the original. Mods can give units radardistancejam and
-  sightdistancejam to hide units from radar and fog the ground round a
-  jammer. (#319)
-- The Sea Fort, the Floating Tower and the Iron Plague Navy Yard float at
-  their waterline instead of sitting on the sea floor, and a Sea Fort
-  launches ship after ship instead of stopping at its first. (#457, #458)
-- Damaged units burn and smoke by the original's rules, and steam, the
-  purple flash of a change of form, the Pillar of Light's light, and the
-  wakes and thrust of units that wade, swim or fly over water are drawn.
-  (#381)
-- A selected unit that dies no longer takes the orders panel with it, so
-  Patrol and the other orders stay for the rest of the selection. (#452)
-- The Sacred Fire's Active and Inactive buttons work, and the buttons
-  light the state the selection shares. (#456)
-- Acolytes, priests, the Pillar of Light and the Sacred Fire heal what
-  stands round them, and the Titan and the Shaman raise the armour and
-  attack of what is round them, as in the original. Healing is paid for
-  in mana at what the healed unit cost to build, so a wounded monarch
-  beside a healer can take the whole treasury, as it does in the
-  original. (#456)
-- A computer player cut off by water builds a transport, or a yard to
-  make one, and carries its army over to attack. (#454)
-- Units show their action and construction feedback again, and selection
-  rings are animated. (#371)
+- Crossbowmen and other ranged units stop stuttering as they aim. (#491)
+- A melee unit on its way to a far target takes what walks past it. Units
+  on a move order still walk on, which the original does not do. (#491)
+- A ranged unit whose shots are blocked walks closer until they land, and
+  a fixed unit such as a Trebuchet passes over a target it cannot hit for
+  a minute. (#491)
+- Water and roads now set a unit's speed. Most ground units wade 19
+  percent slower and move 21 percent faster on roads, and the Swamp Beast
+  goes about twice as fast in water. (#491)
+
+## Computer players
+
+- A computer player spaces its base by the original's grid, so its
+  buildings and builders pile up far less. (#492)
+- A computer player cut off by water keeps crossing rather than stopping
+  after its first boat, trains warships and fights at sea, sends more
+  boats for a large army, and lets a builder ride to a site it cannot walk
+  to. It lands more of its army, and it pays for that in losses. (#492,
+  #493)
+- Units at a computer player's home no longer take orders on targets over
+  water and stand stuck for the rest of the game. (#493)
+
+## Multiplayer and the site
+
+- The host of a battle room can set a computer player's team, side and
+  colour. (#476)
+- The home page says less, and its text no longer covers the Start
+  button. (#475)
+
+## For modders
+
+A sight jammer now lays a pale haze on the ground it covers, in both
+views, for its owner, its allies and anyone watching the whole map. Those
+it jams see only the fog. A jammer with no script and activatewhenbuilt
+now comes on when built. (#494)
 
 ## Multiplayer compatibility
 
