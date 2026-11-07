@@ -1145,6 +1145,52 @@ TEST(a_wide_unit_walks_a_corridor_its_own_width) {
  * flat and a marked wall with one gap lies across the walker's line. */
 static uint16_t g_mv_marks[MV_TILES * MV_TILES];
 
+/* How far a walker gets in five seconds on ground the given mark and
+ * sea make it stand on, with the given multipliers. */
+static int32_t mv_ground_run(int road, int wet, float water_mul, float road_mul) {
+    GameWorld *w = mv_world();
+    if (!w) return -1;
+    UnitDef *d = (UnitDef *)Units_GetDef(MV_DEF_WALKER);
+    d->water_multiplier = water_mul;
+    d->road_multiplier = road_mul;
+    for (int i = 0; i < MV_TILES * MV_TILES; i++)
+        g_mv_marks[i] = road ? TNT_CELL_ROAD : 0xFFFFu;
+    w->tnt.feature_layer = g_mv_marks;
+    /* Ankle deep, under any walker's limit. */
+    if (wet) {
+        w->water_height = MV_GROUND + 4;
+        w->moveinfo.classes[0].max_water_depth = 20;
+    }
+    int32_t y = 40 * 16 + 8;
+    int h = Units_Spawn(MV_DEF_WALKER, 1, 0, 40 * 16, y);
+    if (h < 0) return -1;
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    Units_CommandMoveUnit(h, 170 * 16, y);
+    for (int i = 0; i < 300; i++) Units_TickEngines();
+    int32_t got = mv_unit(h)->world_x - 40 * 16;
+    w->tnt.feature_layer = NULL;
+    mv_end();
+    return got;
+}
+
+/* Below the sea a walker takes its watermultiplier, on a road its
+ * roadmultiplier, and a road through the shallows counts as a road
+ * (legacy:183206-183224, legacy:185197-185206). */
+TEST(a_walker_takes_the_multiplier_of_the_ground_it_is_on) {
+    int32_t dry = mv_ground_run(0, 0, 2.0f, 1.5f);
+    int32_t wet = mv_ground_run(0, 1, 2.0f, 1.5f);
+    int32_t slow = mv_ground_run(0, 1, 0.5f, 1.5f);
+    int32_t road = mv_ground_run(1, 0, 2.0f, 1.5f);
+    int32_t both = mv_ground_run(1, 1, 2.0f, 1.5f);
+    printf("(dry %d, in water at 2 %d, at 0.5 %d, on a road at 1.5 %d, both %d) ",
+           dry, wet, slow, road, both);
+    ASSERT(dry > 100);
+    ASSERT(wet * 10 >= dry * 18 && wet * 10 <= dry * 21);
+    ASSERT(slow * 10 >= dry * 4 && slow * 10 <= dry * 6);
+    ASSERT(road * 10 >= dry * 13 && road * 10 <= dry * 16);
+    ASSERT(both * 10 >= dry * 13 && both * 10 <= dry * 16);
+}
+
 TEST(ground_the_map_marks_impassable_is_walked_round) {
     GameWorld *w = mv_world();
     ASSERT_NOT_NULL(w);
@@ -2690,6 +2736,7 @@ int main(int argc, char **argv) {
     RUN(a_near_blocked_unit_holds_its_line);
     RUN(a_wide_unit_walks_a_corridor_its_own_width);
     RUN(ground_the_map_marks_impassable_is_walked_round);
+    RUN(a_walker_takes_the_multiplier_of_the_ground_it_is_on);
     RUN(a_tick_opens_a_bounded_number_of_cells_on_route_searches);
     RUN(a_group_sent_to_one_place_sets_out_together);
     RUN(a_frame_whose_builder_is_not_closing_frees_the_site);

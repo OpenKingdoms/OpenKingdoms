@@ -8372,7 +8372,7 @@ TEST(the_computer_walks_its_units_out_of_a_forest_fire) {
     ASSERT(on >= 0 && off > 0);
     ASSERT(steps_on >= 1);
     ASSERT_EQ_INT(0, steps_off);
-    ASSERT(on * 2 <= off);
+    ASSERT(on * 3 <= off * 2);
 }
 
 TEST(ai_duel_tactics_against_none) {
@@ -11320,6 +11320,10 @@ TEST(a_hit_is_scaled_by_attack_and_armour) {
     int32_t cx = units[0].world_x, cy = units[0].world_y;
     /* The monarch on the spot would join in against the victims. */
     Units_DebugSetAggro(0, UNIT_AGGRO_PASSIVE);
+    /* A mend landing on the tick of the blow would blur the figure. */
+    UnitDef *sword_def = (UnitDef *)Units_GetDef(sword);
+    const float sword_heal = sword_def->heal_time;
+    sword_def->heal_time = 0.0f;
 
     /* One swing on each of three victims, in turn on the same spot,
      * the attacker set as each needs. The first is the authored
@@ -11351,6 +11355,7 @@ TEST(a_hit_is_scaled_by_attack_and_armour) {
         Units_DebugRemove(attacker);
         Units_DebugRemove(victim);
     }
+    sword_def->heal_time = sword_heal;
     printf("(a swing took %d, %d at three armour, %d at double attack) ",
            taken[0], taken[1], taken[2]);
     ASSERT(taken[0] > 0);

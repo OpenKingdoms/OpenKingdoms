@@ -239,6 +239,7 @@ typedef struct UnitWeapon {
     char    veteran_art_name[32];
     int32_t veteran_level;
     int16_t explosion_idx;    /* explosionclass slot, -1 = none */
+    int16_t water_explosion_idx; /* waterexplosionclass slot, -1 = none */
     /* shakemagnitude in pixels and shakeduration in seconds: the view
      * shakes where a shot of this weapon lands (legacy:250066). */
     int16_t shake_magnitude;
@@ -570,6 +571,8 @@ typedef struct UnitDef {
     int32_t  max_water_slope;  /* maxwaterslope */
     int32_t  bad_water_slope;  /* badwaterslope */
     float    max_velocity;     /* TAK units/sec from FBI; convert to pixels/tick at runtime */
+    float    water_multiplier; /* watermultiplier: speed and turning below the sea */
+    float    road_multiplier;  /* roadmultiplier: the same on a road */
     /* Movement law (FBI acceleration/brakerate/turnrate). Authored at
      * the original 30 Hz frame rate: acceleration and brakerate are
      * velocity-units gained/lost per frame, turnrate is TA angle units
@@ -1104,8 +1107,9 @@ typedef struct Unit {
      * lets go. */
     uint8_t    attack_explicit;
     /* D-025: shots in a row at target blocked_id that stopped short of
-     * it, and the target passed over until sim tick skip_until, while
-     * this unit stays by (skip_x, skip_y) and the target by
+     * it, with the walk they sent the unit on packed above them (CHASE_*
+     * in units.c), and the target passed over until sim tick skip_until,
+     * while this unit stays by (skip_x, skip_y) and the target by
      * (skip_tx, skip_ty). */
     uint8_t    blocked_shots;
     uint32_t   blocked_id;
