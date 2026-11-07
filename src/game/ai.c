@@ -2622,9 +2622,6 @@ static void ai_count_order(int from, int to, int kind) {
     g_ai_orders[from][to][kind]++;
 }
 
-/* Combat think (legacy:17624): a unit with no fight on its hands takes
- * the nearest seen enemy inside max(sight, range) plus its engagement
- * radius. Marching units divert too, as the original's do. */
 /* Whether a unit of class mc fits on the ground at (x, y), off the planner's
  * clearance map and so with no pass over the features. */
 static int ai_class_fits(const GameWorld *world, const MoveClassDef *mc, const UnitDef *d,
@@ -2682,6 +2679,9 @@ static int ai_walker_reaches(const GameWorld *world, const Unit *units, int i,
     return 0;
 }
 
+/* Combat think (legacy:17624): a unit with no fight on its hands takes
+ * the nearest seen enemy inside max(sight, range) plus its engagement
+ * radius. Marching units divert too, as the original's do. */
 static int ai_engage_nearby(const GameWorld *world, const Unit *units,
                             int unit_count, int actor_idx,
                             const UnitDef *def) {
