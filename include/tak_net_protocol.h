@@ -172,8 +172,10 @@
  * 59: healing, armour and attack auras work round the units that carry
  * them. 60: a computer cut off by water builds a transport and carries
  * its army over. 61: a building goes up only once its builder stands at
- * the site, and a site nobody has begun holds no cell. */
-#define TAK_ENGINE_BUILD_ID           61
+ * the site, and a site nobody has begun holds no cell. 62: a factory
+ * opens its yard before it trains and shuts it after, so a unit on its
+ * pad can be hit. */
+#define TAK_ENGINE_BUILD_ID           62
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

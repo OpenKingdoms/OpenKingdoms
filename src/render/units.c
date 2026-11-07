@@ -6439,6 +6439,24 @@ static int builder_may_summon(const Unit *u, int def_idx) {
 #define SUMMON_LOOK_TICKS 20
 #define SUMMON_LOOKS      30
 
+static int find_script_idx(const Unit *u, const char *name);
+
+/* An order on a yard still opening asks again at the computer player's next
+ * think, a second on, and the yard waits this long for it. */
+#define FACTORY_ASK_TICKS 120
+
+/* A yard with a script opens before it trains. Activate runs its doors and
+ * its yard, and a product goes up once the script says it stands ready
+ * (legacy:9330-9340, 179347-179358). */
+static int factory_ready(Unit *f) {
+    if (find_script_idx(f, "Activate") < 0) return 1;
+    if (!f->cob_activation) {
+        f->cob_activation = 1;
+        unit_start_script(f, "Activate", NULL, 0);
+    }
+    return f->cob_build_stance;
+}
+
 /* Is the builder within reach of a frame of def at (x, y)? The same
  * stand back the build walk stops at. */
 static int builder_in_reach(const Unit *u, const UnitDef *def, int site_def,
@@ -6513,10 +6531,16 @@ int Units_OrderBuild(int builder_handle, int def_idx, int32_t world_x,
         builder_hold_site(u, def_idx, world_x, world_y, facing, endless);
         return 1;
     }
-    /* A structure trains in its own yard and cannot walk to a site. */
-    if (!(d->max_velocity > 0.0f) &&
-        !builder_in_reach(u, ud, def_idx, world_x, world_y))
+    /* A structure trains in its own yard and cannot walk to a site. Its yard
+     * opens first, and stays open a while for an order asked again. */
+    if (d->max_velocity > 0.0f) {
+        if (!factory_ready(u)) {
+            u->prod_wait = FACTORY_ASK_TICKS;
+            return 0;
+        }
+    } else if (!builder_in_reach(u, ud, def_idx, world_x, world_y)) {
         return 0;
+    }
     return Units_BeginBuildingForUnitFacing(builder_handle, def_idx, world_x,
                                             world_y, facing) >= 0;
 }
@@ -6560,7 +6584,7 @@ static int factory_in_hand(const Unit *f) {
 static int factory_start_next(int fh) {
     Unit *f = &g_units[fh];
     if (f->prod_queue_len == 0 || f->under_construction) return 0;
-    if (factory_in_hand(f) >= 0) return 0;
+    if (factory_in_hand(f) >= 0 || !factory_ready(f)) return 0;
     if (Units_BeginBuildingForUnit(fh, f->prod_queue[0],
                                    f->world_x, f->world_y) < 0) {
         f->prod_wait = FACTORY_RETRY_TICKS;
@@ -6884,6 +6908,49 @@ static void factory_release(const Unit *f, const UnitDef *fd, Unit *bt,
     }
 }
 
+/* A yard that cannot change state holds up what is waiting behind it, as
+ * its script retries while a unit stands on the cells in the way. The side's
+ * idle units there are sent off, which is ours: BUGGER_OFF is the script's
+ * only signal, and the original reads it nowhere else (legacy:223287). */
+#define FACTORY_CLEAR_TICKS 60
+
+static int occ_stamp_for(int handle, TAK_OccStamp *st);
+
+static void factory_clear_yard(const Unit *f, int fh, const UnitDef *fd) {
+    TAK_OccStamp st;
+    if (!occ_stamp_for(fh, &st)) return;
+    int mask = TAK_OCC_MASK(!f->cob_yard_open);
+    int fx = fd->footprint_x > 0 ? fd->footprint_x : 2;
+    int fz = fd->footprint_z > 0 ? fd->footprint_z : 2;
+    for (int i = 0; i < g_unit_count; i++) {
+        Unit *o = &g_units[i];
+        if (i == fh || o->alive != UNIT_ALIVE_ACTIVE || o->under_construction ||
+            o->player_id != f->player_id || o->carried_by >= 0 ||
+            o->cmd_kind != UNIT_CMD_NONE)
+            continue;
+        const UnitDef *od = Units_GetDef(o->def_idx);
+        if (!od || unit_def_is_structure(od) || !unit_is_mobile_occupant(o, od))
+            continue;
+        int ofx, ofz, on = 0;
+        unit_occ_fp(o, &ofx, &ofz);
+        int c0 = Occ_TileOf(o->world_x - ofx * 8) - st.tx0;
+        int r0 = Occ_TileOf(o->world_y - ofz * 8) - st.ty0;
+        for (int r = r0; r < r0 + ofz && !on; r++)
+            for (int c = c0; c < c0 + ofx && !on; c++)
+                on = r >= 0 && c >= 0 && r < st.fz && c < st.fx &&
+                     (Occ_StampYard(&st, c, r) & mask);
+        if (!on) continue;
+        const UnitDef *ohd = def_hull(o->def_idx);
+        if (ohd) {
+            ShipYardWay yw;
+            ship_yard_way(f, o->world_x, o->world_y, ohd, &yw);
+            (void)ship_launch_spot(f, fx, fz, o, od, ohd, &yw);
+        } else {
+            (void)factory_step_off(f, fd, o, od);
+        }
+    }
+}
+
 /* A factory's turn each tick: the product in hand is built whatever
  * order came since, one finished by another builder still gets its
  * orders, and an idle yard with a queue starts the next. Production
@@ -6914,7 +6981,20 @@ static void factory_tick(Unit *u, int i, const UnitDef *def) {
             unit_clear_path(u);
         }
     }
-    if (u->prod_queue_len == 0) return;
+    if ((u->prod_queue_len > 0 || u->prod_wait > 0) && u->cob_bugger_off &&
+        g_sim_tick % FACTORY_CLEAR_TICKS == 0)
+        factory_clear_yard(u, i, def);
+    if (u->prod_queue_len == 0) {
+        if (u->prod_wait > 0) { u->prod_wait--; return; }
+        /* Nothing more to train, so the yard closes (legacy:9323-9328). Its
+         * script keeps trying until no unit stands on it. */
+        if (u->cob_activation && !def->activate_when_built && !def->onoffable &&
+            find_script_idx(u, "Deactivate") >= 0) {
+            u->cob_activation = 0;
+            unit_start_script(u, "Deactivate", NULL, 0);
+        }
+        return;
+    }
     if (u->prod_wait > 0) { u->prod_wait--; return; }
     (void)factory_start_next(i);
 }
@@ -6932,8 +7012,9 @@ int Units_FactoryAdd(int factory_handle, int def_idx, int count, int unfinished)
     int n = f->prod_queue_len;
     /* Nothing goes behind a run without end (legacy:181811-181813). */
     if (n > 0 && f->prod_more[n - 1] == UNIT_PROD_ENDLESS) return -1;
-    if (n == 0 && !f->under_construction && factory_in_hand(f) < 0) {
-        /* An idle yard starts the first at once. */
+    if (n == 0 && !f->under_construction && factory_in_hand(f) < 0 &&
+        factory_ready(f)) {
+        /* A yard standing ready starts the first at once. */
         if (Units_BeginBuildingForUnit(factory_handle, def_idx,
                                        f->world_x, f->world_y) >= 0) {
             f->prod_wait = 0;

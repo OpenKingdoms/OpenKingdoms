@@ -10011,6 +10011,18 @@ TEST(render_probe_lodestone_covers_pad) {
  * rate the mana coming in allows. The original pays what it can and
  * scales the tick by that share (legacy:39483-39496), so an empty
  * treasury slows a build down rather than stopping it for good. */
+/* Ticks until the factory has a product up, its yard opening first
+ * (legacy:9330-9340). Its handle, or -1. */
+static int factory_frame_up(int factory) {
+    int n = 0;
+    for (int t = 0; t < 1800; t++) {
+        const Unit *u = Units_GetActive(&n);
+        if (u[factory].build_target >= 0) return u[factory].build_target;
+        Units_TickEngines();
+    }
+    return -1;
+}
+
 TEST(a_starved_factory_still_builds_only_slower) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -10136,8 +10148,7 @@ TEST(two_factories_at_an_empty_pool_both_build) {
     int frame[2];
     for (int k = 0; k < 2; k++) {
         ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle[k], troop_def));
-        units = Units_GetActive(&count);
-        frame[k] = units[castle[k]].build_target;
+        frame[k] = factory_frame_up(castle[k]);
         ASSERT(frame[k] >= 0);
     }
     units = Units_GetActive(&count);
@@ -10214,9 +10225,10 @@ TEST(factory_queue_rally_and_cancel) {
     int32_t rally_y = cy + 300;
     Units_FactorySetRally(castle, rally_x, rally_y);
 
-    /* Queue: troop starts immediately (idle factory), zombie queues. */
+    /* Queue: troop starts once the yard is open, zombie queues. */
     ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
     ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, zombie_def));
+    ASSERT(factory_frame_up(castle) >= 0);
     ASSERT_EQ_INT(1, Units_FactoryQueueCount(castle));
 
     units = Units_GetActive(&unit_count);
@@ -10346,9 +10358,9 @@ TEST(factory_product_spawns_on_build_pad) {
 
     /* The real thing: the queued product spawns on that pad. */
     ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
-    units = Units_GetActive(&unit_count);
-    int troop = units[castle].build_target;
+    int troop = factory_frame_up(castle);
     ASSERT(troop >= 0);
+    units = Units_GetActive(&unit_count);
     ASSERT_EQ_INT(troop_def, units[troop].def_idx);
     ASSERT_EQ_INT(pad_x, units[troop].world_x);
     ASSERT_EQ_INT(pad_y, units[troop].world_y);
@@ -10392,6 +10404,123 @@ TEST(factory_product_spawns_on_build_pad) {
     ASSERT(exit_d2 > pad_d2);
 
     InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A factory opens its yard before it trains, so a unit on the pad holds
+ * its own cell and takes the shots aimed at it, and the yard shuts once
+ * the unit has left (legacy:9330-9340, 217987-217988, 245414-245424). */
+TEST(a_unit_standing_on_a_build_pad_takes_the_shots_aimed_at_it) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int abyss_def = Units_FindDefByName("TARDUNG");
+    int archer_def = Units_FindDefByName("TARARCH");
+    ASSERT(abyss_def >= 0 && archer_def >= 0);
+    int abyss = Units_Spawn(abyss_def, 1, 0, units[0].world_x - 400, units[0].world_y);
+    ASSERT(abyss >= 0);
+    Economy_AdjustCaps(&World_Get()->economy, 1, 100000, 500.0f);
+    Economy_Earn(&World_Get()->economy, 1, 100000);
+
+    /* Shut while it idles, open by the time the product goes up. */
+    units = Units_GetActive(&count);
+    ASSERT_EQ_INT(0, (int)units[abyss].cob_yard_open);
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(abyss, archer_def));
+    int archer = factory_frame_up(abyss);
+    ASSERT(archer >= 0);
+    units = Units_GetActive(&count);
+    ASSERT_EQ_INT(1, (int)units[abyss].cob_yard_open);
+
+    /* Finished and told to stand where it is, on the pad. */
+    for (int t = 0; t < 3000 && units[archer].under_construction; t++) {
+        Units_TickEngines();
+        units = Units_GetActive(&count);
+    }
+    ASSERT_EQ_INT(0, (int)units[archer].under_construction);
+    ASSERT_EQ_INT(1, Units_OrderStop(archer));
+    int32_t pad_x = units[archer].world_x, pad_y = units[archer].world_y;
+    int shooter = Units_Spawn(archer_def, 2, 1, pad_x, pad_y + 180);
+    ASSERT(shooter >= 0);
+    ASSERT_EQ_INT(1, Units_OrderAttack(shooter, archer));
+    Units_DebugSetAggro(archer, UNIT_AGGRO_PASSIVE);
+
+    units = Units_GetActive(&count);
+    int32_t abyss_hp = units[abyss].health, archer_hp = units[archer].health;
+    for (int t = 0; t < 600 && units[archer].health >= archer_hp; t++) {
+        Units_TickEngines();
+        units = Units_GetActive(&count);
+    }
+    printf("(archer %d of %d, abyss %d of %d) ", units[archer].health, archer_hp,
+           units[abyss].health, abyss_hp);
+    ASSERT(units[archer].health < archer_hp);
+    ASSERT_EQ_INT(abyss_hp, units[abyss].health);
+    ASSERT_EQ_INT(pad_x, units[archer].world_x);
+    ASSERT_EQ_INT(pad_y, units[archer].world_y);
+
+    /* It stays open under the unit, and shuts behind it. */
+    ASSERT_EQ_INT(1, (int)units[abyss].cob_yard_open);
+    ASSERT_EQ_INT(1, Units_OrderStop(shooter));
+    ASSERT_EQ_INT(1, Units_OrderMove(archer, pad_x + 200, pad_y + 300));
+    for (int t = 0; t < 1200 && units[abyss].cob_yard_open; t++) {
+        Units_TickEngines();
+        units = Units_GetActive(&count);
+    }
+    ASSERT_EQ_INT(0, (int)units[abyss].cob_yard_open);
+
+    /* A unit left on a shutting yard is sent off when more is ordered. */
+    Economy_Earn(&World_Get()->economy, 1, 100000);
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(abyss, archer_def));
+    int third = factory_frame_up(abyss);
+    ASSERT(third >= 0);
+    units = Units_GetActive(&count);
+    for (int t = 0; t < 3000 && units[third].under_construction; t++) {
+        Units_TickEngines();
+        units = Units_GetActive(&count);
+    }
+    ASSERT_EQ_INT(1, Units_OrderStop(third));
+    for (int t = 0; t < 300; t++) Units_TickEngines();
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(abyss, archer_def));
+    ASSERT(factory_frame_up(abyss) >= 0);
+
+    /* A queue given to one still being built trains once it is up. */
+    units = Units_GetActive(&count);
+    int32_t sx = units[0].world_x + 200, sy = units[0].world_y;
+    int second = -1;
+    for (int r = 0; r < 40 && second < 0; r++, sx += 32)
+        if (Units_IsBuildSiteFree(abyss_def, sx, sy))
+            second = Units_BeginBuildingForUnit(0, abyss_def, sx, sy);
+    ASSERT(second >= 0);
+    ASSERT_EQ_INT(0, Units_FactoryAdd(second, archer_def, 1, 1));
+    for (int t = 0; t < 30; t++) Units_TickEngines();
+    Unit *up = (Unit *)&Units_GetActive(&count)[second];
+    up->health = up->max_health - 1;
+    units = Units_GetActive(&count);
+    for (int t = 0; t < 3000 && units[second].under_construction; t++) {
+        Units_TickEngines();
+        units = Units_GetActive(&count);
+    }
+    ASSERT_EQ_INT(0, (int)units[second].under_construction);
+    ASSERT(factory_frame_up(second) >= 0);
+
     Loading_Shutdown();
     World_End(&platform);
     UI_Shutdown();
@@ -10617,6 +10746,7 @@ TEST(hud_idle_frames_selection_and_queue_badges) {
 
     ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
     ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
+    ASSERT(factory_frame_up(castle) >= 0);
     ASSERT(Units_FactoryQueuedCountForDef(castle, troop_def) >= 2);
 
     Units_SelectSingle(castle);
@@ -21538,6 +21668,7 @@ TEST(a_builder_whose_frame_dies_drops_the_order) {
     ASSERT(castle >= 0);
     ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
     ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
+    ASSERT(factory_frame_up(castle) >= 0);
     ASSERT_EQ_INT(1, Units_FactoryQueueCount(castle));
     InGame_DebugRunSimTicks(2);
     units = Units_GetActive(&unit_count);
@@ -25910,9 +26041,9 @@ TEST(the_battle_record_keeps_what_an_end_screen_tells) {
     Economy_AdjustCaps(&world->economy, 1, 100000, 500.0f);
     Economy_Earn(&world->economy, 1, 100000);
     ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
-    units = Units_GetActive(&n);
-    int troop = units[castle].build_target;
+    int troop = factory_frame_up(castle);
     ASSERT(troop >= 0);
+    units = Units_GetActive(&n);
     for (int f = 0; f < 400; f++) {
         units = Units_GetActive(&n);
         if (!units[troop].under_construction) break;
@@ -30950,6 +31081,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_starved_factory_still_builds_only_slower);
     RUN_UI_TEST(two_factories_at_an_empty_pool_both_build);
     RUN_UI_TEST(factory_product_spawns_on_build_pad);
+    RUN_UI_TEST(a_unit_standing_on_a_build_pad_takes_the_shots_aimed_at_it);
     RUN_UI_TEST(hud_idle_frames_selection_and_queue_badges);
     RUN_UI_TEST(ctrl_on_a_zhon_builders_button_summons_without_end);
     RUN_UI_TEST(the_status_line_names_the_mission_like_the_original);
