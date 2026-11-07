@@ -501,7 +501,11 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
             int other = exec_other_seat(cmd);
             if (other < 0 || other == (int)cmd->seat) break;
             int color = Units_PlayerColorIndex(other);
+            int live = 0;
+            const Unit *units = Units_GetActive(&live);
             for (int i = 0; i < count; i++) {
+                /* A transport with riders stays where it is (legacy:155789). */
+                if (units[g_exec_handles[i]].cargo_count > 0) continue;
                 Units_SetOwner(g_exec_handles[i], other, color);
                 applied++;
             }

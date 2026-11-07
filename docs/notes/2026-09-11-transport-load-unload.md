@@ -155,9 +155,45 @@ the transport cannot take (legacy:186387-186402). A unit with `canload`
 that is not a transport (ARADRAG, ZONDRAG) keeps the walk-to order it had
 before. The original reads no canload key at all.
 
+## What a rider still is
+
+The attach only records the transport on the rider and leaves the
+selection (:234562-234589). The rider stays a live unit of its seat, so
+the update loop and everything that reads the live flag go on with it.
+
+- It pays its `mogriumincome` and `mogriumstorage` into the pool
+  (:235853-235946).
+- Its own reserve fills, its wounds mend (:236276-236288, :8706-8709) and
+  its auras work from where the transport is (:235853-235876).
+- It keeps its sight (:206485-206491).
+- It keeps its place in a numbered group, and selecting a group skips it
+  (:239065-239070).
+- A map script does not hear it die. It hits triggers from aboard
+  (:178218-178250) and answers the value ports (:178769-178810).
+- A mission's conditions count it as alive, all but two. `AllUnitsKilled`
+  and `MoveUnitToRadius` ask for a unit that stands on the map
+  (:240925-240934, :240665-240686).
+
+A transport's end is its riders' end. The kill walks its chain and kills
+each one with no script and no body, its owner counting the loss and the
+transport's killer the kill (:227218-227234, :227293-227327). A monarch
+aboard goes the same way, and with Monarch Expendable off the transport
+counts as the monarch (:227100-227108). A gift leaves out a transport with
+riders (:155789).
+
+An order list's `i` is the attach itself, with no walk and no room check,
+whoever owns the transport (:228557-228561, :234446-234449). The name is
+the first placed unit that carries it (:228197-228238).
+
+The engine marks a rider with `UNIT_ALIVE_TRANSPORTED`, and a test against
+`UNIT_ALIVE_ACTIVE` is what leaves one out. Keep that for what asks for a
+unit standing on the map: orders, targets, picking, occupancy, the drawn
+frame.
+
 ## Tests
 
-All in `src/ui/test_ui_screens.c`.
+All in `src/ui/test_ui_screens.c`, with the rider's own rules in
+`src/net/test_command_pipeline.c` and `src/game/test_mission_script.c`.
 
 - `unload_in_range_does_not_move_the_ship`
 - `unload_out_of_range_stops_at_transport_distance`

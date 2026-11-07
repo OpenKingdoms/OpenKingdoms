@@ -146,10 +146,9 @@ as any new unit is.
 A flyer taken in the air comes over landed, as any new unit starts.
 
 A loaded transport can be taken, because the hit routine asks only
-whether the victim is itself a rider (:247782). What the original does
-with the riders was not established. Here they step out where the
-transport stood, still their old owner's, and the transport comes over
-empty.
+whether the victim is itself a rider (:247782). The old unit goes
+through the ordinary kill (:228985), which kills whatever it carries
+(:227218-227234), so the riders die and the transport comes over empty.
 
 The give units action still changes the owner in place, so a gift
 keeps its kills and rank where the original would reset them.
