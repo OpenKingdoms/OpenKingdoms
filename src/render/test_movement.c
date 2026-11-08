@@ -1412,6 +1412,25 @@ TEST(a_shipyard_builds_past_an_idle_ship_on_its_pad) {
     mv_end();
 }
 
+/* Another side's ship the yard cannot send off holds the pad only by the
+ * cells, as in the original (M-012). */
+TEST(a_shipyard_builds_past_another_sides_hull_on_its_pad) {
+    ASSERT_NOT_NULL(mv_sea());
+    int32_t yx = 1536, yy = 1536;
+    int yard = Units_Spawn(MV_DEF_YARD, 1, 0, yx, yy);
+    int parked = Units_Spawn(MV_DEF_GALLEY, 2, 1, yx, yy + 120);
+    ASSERT(yard >= 0 && parked >= 0);
+    Units_DebugSetAggro(parked, UNIT_AGGRO_PASSIVE);
+    mv_run(2);
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(yard, MV_DEF_GALLEY));
+    int t = 0;
+    for (; t < 3600 && mv_yard_built(yard, parked) < 1; t++) Units_TickEngines();
+    printf("(built after %d ticks) ", t);
+    ASSERT_EQ_INT(1, mv_yard_built(yard, parked));
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)mv_unit(parked)->cmd_kind);
+    mv_end();
+}
+
 /* A ship parked near the rally point is no business of the yard's while
  * its products sail past it (M-012). */
 TEST(a_shipyard_leaves_a_ship_parked_by_its_rally_point_alone) {
@@ -1436,6 +1455,64 @@ TEST(a_shipyard_leaves_a_ship_parked_by_its_rally_point_alone) {
            mv_yard_built(yard, parked), orders);
     ASSERT_EQ_INT(6, mv_yard_built(yard, parked));
     ASSERT_EQ_INT(0, orders);
+    mv_end();
+}
+
+/* Two ships caught bow to bow, each ordered across the other, do not
+ * stand there for good (M-012). */
+TEST(two_ships_caught_bow_to_bow_get_past_each_other) {
+    ASSERT_NOT_NULL(mv_sea());
+    int32_t x = 1536, y = 1536;
+    int a = Units_Spawn(MV_DEF_MANOWAR, 1, 0, x, y);
+    int b = Units_Spawn(MV_DEF_SKIFF, 1, 0, x + 113, y - 78);
+    ASSERT(a >= 0 && b >= 0);
+    Units_DebugSetAggro(a, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetAggro(b, UNIT_AGGRO_PASSIVE);
+    ((Unit *)mv_unit(a))->heading = 1.39f;
+    ((Unit *)mv_unit(b))->heading = -2.66f;
+    int32_t ax = x + 157, ay = y - 693, bx = x - 57, by = y - 257;
+    Units_OrderMove(a, ax, ay);
+    Units_OrderMove(b, bx, by);
+    int t = 0;
+    for (; t < 1800; t++) {
+        Units_TickEngines();
+        if (mv_dist2(mv_unit(a), ax, ay) < 300 * 300 &&
+            mv_dist2(mv_unit(b), bx, by) < 300 * 300) break;
+    }
+    printf("(on their way after %d ticks, at %d,%d and %d,%d) ", t,
+           mv_unit(a)->world_x - x, mv_unit(a)->world_y - y,
+           mv_unit(b)->world_x - x, mv_unit(b)->world_y - y);
+    ASSERT(t < 1800);
+    mv_end();
+}
+
+/* A yard in a corner of the sea, with no rally point, launches its whole
+ * queue and is never held long on its pad (M-012). */
+TEST(a_shipyard_in_a_corner_launches_its_whole_queue) {
+    ASSERT_NOT_NULL(mv_sea());
+    int32_t yx = 160, yy = 160;
+    int yard = Units_Spawn(MV_DEF_YARD, 1, 0, yx, yy);
+    ASSERT(yard >= 0);
+    #define MV_CORNER_N 16
+    static const int kinds[4] = { MV_DEF_MANOWAR, MV_DEF_SKIFF, MV_DEF_TREB,
+                                  MV_DEF_GALLEY };
+    for (int k = 0; k < MV_CORNER_N; k++)
+        ASSERT_EQ_INT(0, Units_FactoryAdd(yard, kinds[k % 4], 1, 0));
+    int t = 0, last = 0, longest = 0, built = 0;
+    for (; t < 36000 && built < MV_CORNER_N; t++) {
+        Units_TickEngines();
+        int now = mv_yard_built(yard, -1);
+        if (now != built) {
+            if (t - last > longest) longest = t - last;
+            last = t;
+            built = now;
+        }
+    }
+    printf("(%d of %d in %d ticks, longest between launches %d) ", built,
+           MV_CORNER_N, t, longest);
+    ASSERT_EQ_INT(MV_CORNER_N, built);
+    ASSERT(longest < 1200);
+    #undef MV_CORNER_N
     mv_end();
 }
 
@@ -2745,7 +2822,10 @@ int main(int argc, char **argv) {
     RUN(ships_sent_to_one_place_keep_their_hulls_apart);
     RUN(a_shipyard_launches_ship_after_ship);
     RUN(a_shipyard_builds_past_an_idle_ship_on_its_pad);
+    RUN(a_shipyard_builds_past_another_sides_hull_on_its_pad);
     RUN(a_shipyard_leaves_a_ship_parked_by_its_rally_point_alone);
+    RUN(two_ships_caught_bow_to_bow_get_past_each_other);
+    RUN(a_shipyard_in_a_corner_launches_its_whole_queue);
     RUN(a_fleet_sails_a_narrow_strait);
     RUN(a_ground_crowd_packs_as_it_did);
     TEST_SUITE("Flyers");

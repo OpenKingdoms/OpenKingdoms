@@ -104,3 +104,81 @@ defs:
 A walker and horsemen crowd lands on the same pixels as before (the
 test pins the layout), and the needs data test sends a fleet with its
 real scripts onto one point of open sea on Athri Cay.
+
+## The jam at a corner (#458)
+
+A Sea Fort on tight water stopped for good after a few ships. Measured
+on the shipped maps with the archives: the six tightest free sites of
+each map with water, a fort alone, twelve ships off a mixed queue, no
+rally point, mana to spare, up to 36000 ticks. Riparian Conflict has one
+free site and Iapur Narrows none, which makes 37 sites on seven maps.
+
+| | Before | After |
+|---|---|---|
+| Sites that launched all twelve | 23 | 32 |
+| Longest wait on the pad at the median site, ticks | 1479 | 580 |
+| Longest wait at the worst site that launched them all, ticks | 1885 | 2697 |
+| All the waiting on pads, ticks | 478622 | 268132 |
+| Sites with a pair more than 3.5 px on each other at some time | 0 | 25 |
+| Pairs more than 3.5 px on each other when a run ended | 0 | 0 |
+
+The same with 24 Men of War, 12 Trebuchet Ships or 24 of the mix at five
+of the sites finished 3 of 15 runs before and finishes 14 of 15 now.
+
+Traced, the sites that stopped had three causes:
+
+- Two ships under way pressed bow to bow, each with its order across
+  the other. A step that comes closer is refused, a turn is held and a
+  ship cannot reverse, so they stood until the order gave up, and the
+  yard then sent them off again from the same pose.
+- A ship sent off the pad was stopped within two lengths of its point
+  by an idle ship, settled at once, and was sent off again 28 ticks
+  later, for ever.
+- A launch went for a point in water its class could not stand on or
+  reach, or with shallows on the straight way to it. A ship with no
+  route runs straight at its point, so it grounded in the way of the
+  next ship.
+
+The overlap is the price, and it stays in the jams: ships that have
+stalled pass by the cells alone, and part again. The worst of it is
+88 px.
+
+## What still stops
+
+Five of the 37 sites still stop, and #458 stays open for them. Before
+counts the ships launched without these rules.
+
+| Site | Before | After |
+|---|---|---|
+| Ladron's Tarn (576,4032) | 12 | 1 |
+| Sea Dragon Spine (2816,2304) | 9 | 3 |
+| Riparian Conflict (2816,2240) | 4 | 1 |
+| Meredoc Keys (2880,6336) | 2 | 2 |
+| Lake Lokken (1280,2816) | 1 | 1 |
+
+The first three launch fewer than they did. A yard's script now opens
+it before it trains, so a ship on the pad no longer stands on a built
+cell. A route from there can die in a few cells where the class has no
+way out of the pocket, and the test for water ahead now counts the
+fort's closed cells as in the way. With no spot left the ship goes at
+most 48 px past the pad and stops, its cells on the pad's. Without these
+rules it was sent to a spot anyway and sailed straight at it.
+
+Two changes tried alone did not cure this, each ending at 32 or fewer of
+the 37. Judging a ship on its yard by where it stands and not by the
+cell moved Sea Dragon Spine to 11 and Ladron's Tarn to 3. Taking any spot
+as a last resort moved them the same way and stopped Meredoc Keys
+(192,5056) at 10.
+
+Giving a ship on or against its own yard's pad the pinch allowance a
+blocked start has, through a query field, did little on its own. Ladron's
+Tarn stayed at 1 and Sea Dragon Spine reached 5, and searches from the
+pad at the two sites traced still died in under 20 cells. With that and
+the yard judged by position together, 34 of the 37 launched all
+twelve, Ladron's Tarn and Sea Dragon Spine both reached 12, and the larger
+runs finished 13 of 15 with no tick over 6 ms. Riparian Conflict stayed at
+2 against 4, since the lane test then passes a line straight through the
+fort, which the ship cannot sail with the yard open. Forgiving the fort's
+cells only for the ship's own width lost the other two sites again. That
+missed the bar set for the attempt, no site more than one ship below the
+code without these rules, so none of it is in here.
