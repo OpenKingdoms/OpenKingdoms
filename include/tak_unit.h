@@ -1137,6 +1137,10 @@ typedef struct Unit {
      * took on for itself looks again (legacy:11485-11509). 0 when not
      * waiting. */
     uint8_t    research_wait;
+    /* On a move order, the stable id of what its weapons took for
+     * themselves on the way, 0 for none. The walk never turns for it
+     * (legacy:10354-10356, legacy:19247-19285). */
+    uint32_t   pass_id;
     /* UNIT_POST_*: where a fight it took on for itself began and how far
      * from there it follows, 0 for no limit (legacy:181900-181947), or
      * the point a patrol interrupted for repairs goes on to. */
