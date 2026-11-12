@@ -31,6 +31,15 @@ typedef enum {
     AI_TASK_HUNT,       /* warships go at the enemy's ships */
     AI_TASK_SHELL,      /* warships stand off the enemy's shore and fire */
     AI_TASK_STAND,      /* warships wait at their berths */
+    AI_TASK_GO_HOME,    /* a monarch turns for home */
+    AI_TASK_ON_WAY_HOME,/* and keeps on its way there */
+    AI_TASK_KEEP_HEART, /* it builds and fights only at the heart of home */
+    AI_TASK_BUILD_OR_HOME, /* it builds where it stands, or else goes home */
+    AI_TASK_ARM_PRIMARY,  /* a unit takes up its first attack */
+    AI_TASK_ARM_SECONDARY,
+    AI_TASK_ARM_SPECIAL,
+    AI_TASK_KEEP_ARMS,  /* it keeps the attack in hand */
+    AI_TASK_LET_GO,     /* with nothing to shoot it may put a dear one away */
     AI_TASK_COUNT
 } AiTask;
 
@@ -131,5 +140,41 @@ typedef struct AiFootingState {
 
 /* AI_TASK_EVADE when the unit should step away first, else AI_TASK_NONE. */
 AiTask AI_Htn_FootingTask(const AiFootingState *s);
+
+/* A monarch whose loss loses the game, asked each think before its
+ * builds (A-017). Its ground is home and what lies near it. */
+typedef struct AiMonarchState {
+    int outside;        /* it stands past its ground */
+    int in_build_ground;/* but inside the ground it builds on */
+    int building_in;    /* on a build the seat sited inside that ground */
+    int chase_out;      /* its target is past its ground and its reach */
+    int outmatched;     /* seen enemy strength where it stands outweighs ours */
+    int under_fire;     /* hit by what it does not see or cannot reach */
+    int hurt;           /* under half its hit points */
+    int at_core;        /* it stands at the heart of home */
+    int heading_home;   /* it is already walking there */
+} AiMonarchState;
+
+/* AI_TASK_GO_HOME, AI_TASK_ON_WAY_HOME, AI_TASK_KEEP_HEART,
+ * AI_TASK_BUILD_OR_HOME, or AI_TASK_NONE when it is free. */
+AiTask AI_Htn_MonarchTask(const AiMonarchState *s, const char **reason);
+
+/* A computer's unit that can switch attacks, asked each think which to
+ * hold (legacy:19008-19242). Wanted is paid for, able to hurt the target
+ * and serving it: see ai_arms_wanted in ai.c. */
+typedef struct AiWeaponState {
+    int target;           /* a live enemy is in its sights */
+    int held;             /* the slot in hand */
+    int held_kept;        /* the one in hand is cheap and plain, kept idle */
+    int secondary_wanted;
+    int special_wanted;
+    /* The primary in hand would finish the target in two blows. */
+    int secondary_spared;
+    int special_spared;
+} AiWeaponState;
+
+/* AI_TASK_ARM_PRIMARY, _SECONDARY or _SPECIAL, AI_TASK_KEEP_ARMS, or
+ * AI_TASK_LET_GO, which the caller takes one think in ten. */
+AiTask AI_Htn_WeaponTask(const AiWeaponState *s, const char **reason);
 
 #endif /* TAK_AI_HTN_H */

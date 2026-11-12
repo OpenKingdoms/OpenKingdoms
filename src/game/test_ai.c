@@ -245,6 +245,31 @@ void Units_CommandAttackUnit(int handle, int target_handle) {
     g_last_attack_target = target_handle;
 }
 
+/* The weapon buttons' order and the damage table, as units.c gives them
+ * for a weapon with no table: its default damage. */
+static int g_weapon_slot_calls;
+/* The engine's tick, which a hit is stamped with. */
+static uint32_t g_mock_sim_tick;
+uint32_t Units_SimTick(void) { return g_mock_sim_tick; }
+/* The stable id index, as a scan. */
+int Units_FindByStableId(uint32_t stable_id) {
+    for (int i = 0; stable_id && i < g_unit_count; i++)
+        if (g_units[i].stable_id == stable_id && g_units[i].alive >= 1) return i;
+    return -1;
+}
+int Units_OrderSetWeaponSlot(int handle, int slot) {
+    if (handle < 0 || handle >= g_unit_count || slot < 0 || slot > 2) return 0;
+    const UnitDef *d = Units_GetDef(g_units[handle].def_idx);
+    if (!d || slot >= d->num_weapons) return 0;
+    g_units[handle].weapon_slot = (uint8_t)slot;
+    g_weapon_slot_calls++;
+    return 1;
+}
+int Units_ComputeWeaponDamageForCategory(const UnitWeapon *wp, const char *category) {
+    (void)category;
+    return wp ? wp->damage : 0;
+}
+
 int Units_OrderSetAggro(int handle, int aggro_mode) {
     if (handle < 0 || handle >= g_unit_count) return 0;
     g_units[handle].aggro_mode = (uint8_t)aggro_mode;
@@ -454,6 +479,8 @@ static void reset_mock(GameWorld *w) {
     g_conn_split = 0;
     g_conn_calls = 0;
     g_conn_climbs = 0;
+    g_weapon_slot_calls = 0;
+    g_mock_sim_tick = 0;
     g_sacred_registered = 0;
     g_mock_profile = NULL;
     memset(&g_sacred_def, 0, sizeof(g_sacred_def));
@@ -791,6 +818,8 @@ static int test_ai_moves_to_the_next_factory_at_the_limit(void) {
 static int test_ai_builds_lodestone_on_sacred_pad(void) {
     GameWorld w;
     setup_ai_progression_fixture(&w);
+    /* The monarch walks far from home here, as it may when expendable (A-017). */
+    w.cfg.monarch_expendable = 1;
 
     g_defs[1].yardmap_sacred = 1;
     g_defs[1].footprint_x = 2;
@@ -852,6 +881,9 @@ static int test_ai_builds_lodestone_on_sacred_pad(void) {
 static int test_ai_a_build_on_its_way_counts_as_a_frame(void) {
     GameWorld w;
     setup_ai_progression_fixture(&w);
+    /* The builders are monarchs by their category and walk far from home,
+     * as they may when expendable (A-017). */
+    w.cfg.monarch_expendable = 1;
     g_defs[1].yardmap_sacred = 1;
     g_defs[1].footprint_x = 2;
     g_defs[1].footprint_z = 2;
@@ -2300,6 +2332,9 @@ static int test_ai_stream_follows_the_session_seed(void) {
 static int test_ai_sites_only_where_the_builder_can_walk(void) {
     GameWorld w;
     setup_ai_progression_fixture(&w);
+    /* One search's checks are counted. A kept monarch plans on past a
+     * search that fails and runs more than one (A-017). */
+    w.cfg.monarch_expendable = 1;
     g_units[0].world_x = 2000;
     g_units[0].world_y = 2000;
     g_path_walled = 1;
@@ -2316,6 +2351,9 @@ static int test_ai_sites_only_where_the_builder_can_walk(void) {
     /* Walled in: nothing reachable, so nothing is started, and the
      * search stops after a handful of checks. */
     setup_ai_progression_fixture(&w);
+    /* One search's checks are counted. A kept monarch plans on past a
+     * search that fails and runs more than one (A-017). */
+    w.cfg.monarch_expendable = 1;
     g_units[0].world_x = 2000;
     g_units[0].world_y = 2000;
     g_path_walled = 1;
@@ -3187,6 +3225,9 @@ static int ai_state_round_trips(void) {
 static void ride_fixture(GameWorld *w, int monarch, int transport, int *t_out) {
     static struct MapFeature pad;
     setup_ai_progression_fixture(w);
+    /* The monarch's case walks to a pad far from home, as it may when
+     * expendable (A-017). */
+    w->cfg.monarch_expendable = monarch;
     g_defs[0].commander = monarch;
     if (!monarch) {
         strcpy(g_defs[0].unitname, "TARTB");
@@ -4248,6 +4289,9 @@ static int test_ai_sends_its_fighters_out_offensive(void) {
 static int test_ai_does_not_expand_under_the_enemys_feet(void) {
     GameWorld w;
     setup_ai_progression_fixture(&w);
+    /* Outmatched at home by the troops on the near pad, a kept monarch
+     * would keep to the heart of home and leave the far pad (A-017). */
+    w.cfg.monarch_expendable = 1;
     g_defs[1].yardmap_sacred = 1;
     g_defs[1].footprint_x = 2;
     g_defs[1].footprint_z = 2;
@@ -4888,6 +4932,8 @@ static int test_ai_settles_the_far_pads_with_cover(void) {
     for (int variant = 0; variant < 2; variant++) {
         GameWorld w;
         setup_ai_progression_fixture(&w);
+        /* The far pads are past a kept monarch's ground (A-017). */
+        w.cfg.monarch_expendable = 1;
         if (variant) TAK_AI_DebugSetTactics(2, TAK_AI_TACTIC_ALL & ~TAK_AI_TACTIC_EXPAND);
         w.start_positions[0].player = 2;
         w.start_positions[0].x = 40;
@@ -4950,6 +4996,356 @@ static int test_ai_settles_the_far_pads_with_cover(void) {
  * won while it sees nothing to go on to, and presses on from where it
  * stands to a target it can see and take, as the original's group picks
  * its next from its own position (legacy:18343). */
+
+/* ── A monarch the game rides on (A-017) and its attacks ─────────────── */
+
+/* The progression fixture with two homes on one row: the computer's at
+ * (320, 320), a human's at (3200, 320). Its monarch stands at home with
+ * the weapons of a monarch and a staff of three attacks, and the enemy
+ * has a troop type, def 3, and a monarch, def 5. */
+#define MF_HOME_X 320
+#define MF_HOME_Y 320
+#define MF_ENEMY_MONARCH 5
+static void setup_monarch_fixture(GameWorld *w) {
+    setup_ai_progression_fixture(w);
+    w->cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w->cfg.players[0].team = 1;
+    w->start_positions[0].player = 2;
+    w->start_positions[0].x = MF_HOME_X / 16;
+    w->start_positions[0].z = MF_HOME_Y / 16;
+    w->start_positions[1].player = 1;
+    w->start_positions[1].x = 200;
+    w->start_positions[1].z = MF_HOME_Y / 16;
+    w->num_start_positions = 2;
+    UnitDef *m = &g_defs[0];
+    m->num_weapons = 3;
+    m->cap_flags |= UNIT_CAP_W_SWITCH;
+    m->max_mana = 1000;
+    m->sight_distance = 232;
+    strcpy(m->weapons[0].name, "Lightning");
+    m->weapons[0].range = 250;
+    m->weapons[0].damage = 950;
+    strcpy(m->weapons[1].name, "Meteor");
+    m->weapons[1].range = 400;
+    m->weapons[1].damage = 2000;
+    m->weapons[1].area_of_effect = 100;
+    m->weapons[1].mana_per_shot = 200;
+    strcpy(m->weapons[2].name, "Earthen Wave");
+    m->weapons[2].range = 120;
+    m->weapons[2].damage = 5000;
+    m->weapons[2].area_of_effect = 500;
+    m->weapons[2].mana_per_shot = 900;
+    g_defs[MF_ENEMY_MONARCH] = *m;
+    strcpy(g_defs[MF_ENEMY_MONARCH].unitname, "VERMAGE");
+    strcpy(g_defs[MF_ENEMY_MONARCH].category, "VER Monarch");
+    g_defs[3].weapons[0].damage = 40;
+    g_units[0].world_x = MF_HOME_X;
+    g_units[0].world_y = MF_HOME_Y;
+    g_units[0].health = g_units[0].max_health = 16000;
+    g_units[0].mana = g_units[0].mana_max = 1000.0f;
+    g_units[0].stable_id = 1;
+}
+
+static int mf_add(int player, int def, int32_t x, int32_t y) {
+    int h = hf_add_unit(player, def, x, y);
+    if (def == MF_ENEMY_MONARCH || def == 0) g_units[h].health = g_units[h].max_health = 16000;
+    return h;
+}
+
+/* Whether the monarch was sent to the heart of home. */
+static int mf_sent_home(void) {
+    const Unit *u = &g_units[0];
+    int32_t dx = u->cmd_x - MF_HOME_X, dy = u->cmd_y - MF_HOME_Y;
+    return u->cmd_kind == UNIT_CMD_MOVE && dx * dx + dy * dy <= 480 * 480;
+}
+
+/* With Monarch Expendable off the monarch builds on its own ground: a pad
+ * out toward the enemy is left to other builders and it puts up what it
+ * can at home, while a pad by home it takes. Expendable, it still walks
+ * to the far one. */
+static int test_ai_a_kept_monarch_builds_on_its_own_ground(void) {
+    GameWorld w;
+    static struct MapFeature pad;
+    for (int variant = 0; variant < 4; variant++) {
+        setup_monarch_fixture(&w);
+        w.cfg.monarch_expendable = variant == 1;
+        /* With the enemy out of the game its home shrinks nothing. */
+        w.stats[1].eliminated = variant == 3;
+        g_defs[1].yardmap_sacred = 1;
+        g_defs[1].footprint_x = g_defs[1].footprint_z = 2;
+        g_defs[2].footprint_x = g_defs[2].footprint_z = 2;
+        g_sacred_registered = 1;
+        g_sacred_def.sacred_site = 2.0f;
+        g_sacred_def.footprint_x = g_sacred_def.footprint_z = 2;
+        memset(&pad, 0, sizeof(pad));
+        pad.tile_x = variant == 2 ? 40 : 120;
+        pad.tile_z = MF_HOME_Y / 16;
+        pad.global_idx = 0;
+        w.features = &pad;
+        w.feature_count = 1;
+        TAK_AI_TickSkirmish(&w);
+        ASSERT_EQ_INT(1, g_begin_calls);
+        if (variant == 0) {
+            ASSERT_EQ_INT(2, g_last_build_def);
+            int32_t dx = g_last_build_x - MF_HOME_X, dy = g_last_build_y - MF_HOME_Y;
+            ASSERT_TRUE(dx * dx + dy * dy <= 960 * 960);
+        } else {
+            ASSERT_EQ_INT(1, g_last_build_def);
+            ASSERT_EQ_INT(pad.tile_x * 16 + 16, g_last_build_x);
+        }
+    }
+    return 0;
+}
+
+/* A kept monarch past its ground, on a chase that leads off it, or
+ * outmatched away from the heart of home turns for home. At the heart it
+ * fights what comes, and under fire from what it cannot see it stays
+ * there. An expendable one is left where it is. */
+static int test_ai_a_kept_monarch_turns_for_home(void) {
+    GameWorld w;
+    for (int variant = 0; variant < 7; variant++) {
+        setup_monarch_fixture(&w);
+        g_buildable_counts[0] = 0;
+        w.cfg.monarch_expendable = variant == 1;
+        g_defs[3].weapons[0].damage = 4000;
+        Unit *m = &g_units[0];
+        if (variant <= 1) {
+            /* Idle, 1900 px out toward the enemy. */
+            m->world_x = 2220;
+        } else if (variant == 2) {
+            /* On its ground, after a troop that has run off it. */
+            m->world_x = 900;
+            int t = mf_add(1, 3, 2400, MF_HOME_Y);
+            m->cmd_kind = UNIT_CMD_ATTACK;
+            m->target = (int16_t)t;
+        } else if (variant == 6) {
+            /* At the heart of home, shot by an archer it cannot see. */
+            g_visible = 0;
+            g_defs[3].weapons[0].range = 300;
+            int a = mf_add(1, 3, MF_HOME_X + 300, MF_HOME_Y);
+            m->hit_by = g_units[a].stable_id;
+            m->hit_tick = 50;
+            g_mock_sim_tick = 100;
+        } else {
+            /* Six troops on it, out past the heart of home or at it, or
+             * at the heart of home with the troops past its ground. */
+            if (variant == 3) m->world_x = 1000;
+            if (variant == 4) m->world_x = MF_HOME_X + 100;
+            if (variant == 5) m->world_x = MF_HOME_X + 470;
+            int32_t tx = variant == 5 ? 1300 : m->world_x + 40;
+            for (int k = 0; k < 6; k++) mf_add(1, 3, tx + 8 * k, MF_HOME_Y + 8);
+        }
+        TAK_AI_TickSkirmish(&w);
+        if (variant == 0 || variant == 2 || variant == 3) {
+            ASSERT_TRUE(mf_sent_home());
+            ASSERT_EQ_INT(1, TAK_AI_DebugCount(2, TAK_AI_COUNT_MONARCH_HOME));
+            /* On its way it is left to walk. */
+            w.skirmish_elapsed_ticks += 60;
+            TAK_AI_TickSkirmish(&w);
+            ASSERT_TRUE(mf_sent_home());
+            ASSERT_EQ_INT(1, TAK_AI_DebugCount(2, TAK_AI_COUNT_MONARCH_HOME));
+        } else if (variant == 4) {
+            ASSERT_EQ_INT(UNIT_CMD_ATTACK, m->cmd_kind);
+        } else if (variant == 6) {
+            /* It stays at the heart of home and walks out at nothing. */
+            ASSERT_EQ_INT(UNIT_CMD_NONE, m->cmd_kind);
+            ASSERT_EQ_INT(0, g_move_calls);
+            ASSERT_EQ_INT(0, TAK_AI_DebugCount(2, TAK_AI_COUNT_MONARCH_HOME));
+        } else {
+            ASSERT_TRUE(!mf_sent_home());
+            ASSERT_EQ_INT(0, TAK_AI_DebugCount(2, TAK_AI_COUNT_MONARCH_HOME));
+            if (variant == 5) ASSERT_EQ_INT(UNIT_CMD_NONE, m->cmd_kind);
+        }
+    }
+    return 0;
+}
+
+
+/* Whether the monarch's walk or build, if it has one, stays within r of home. */
+static int mf_order_within(int32_t r) {
+    const Unit *u = &g_units[0];
+    if (u->cmd_kind != UNIT_CMD_MOVE && u->cmd_kind != UNIT_CMD_BUILD) return 1;
+    int64_t dx = u->cmd_x - MF_HOME_X, dy = u->cmd_y - MF_HOME_Y;
+    return dx * dx + dy * dy <= (int64_t)r * r;
+}
+
+/* A catapult on its ground it cannot see shells a kept monarch. Walked by
+ * hand between thinks, it is never sent out at the catapult and turns
+ * home once, and its walk home goes on inside the heart of home. */
+static int test_ai_a_kept_monarch_under_fire_does_not_bounce(void) {
+    GameWorld w;
+    setup_monarch_fixture(&w);
+    g_buildable_counts[0] = 0;
+    g_visible = 0;
+    g_defs[3].weapons[0].range = 750;
+    int a = mf_add(1, 3, MF_HOME_X + 900, MF_HOME_Y);
+    Unit *m = &g_units[0];
+    /* Idle at the heart, then out at 500 px, then on its way back at 300,
+     * then home and idle, shot before every think. */
+    static const int32_t at[4] = { 300, 500, 300, 100 };
+    static const int idle[4] = { 1, 1, 0, 1 };
+    uint32_t tick = 100;
+    for (int k = 0; k < 4; k++) {
+        m->world_x = MF_HOME_X + at[k];
+        if (idle[k]) m->cmd_kind = UNIT_CMD_NONE;
+        m->hit_by = g_units[a].stable_id;
+        m->hit_tick = tick - 10;
+        g_mock_sim_tick = tick;
+        w.skirmish_elapsed_ticks += 60;
+        TAK_AI_TickSkirmish(&w);
+        ASSERT_TRUE(mf_order_within(480));
+        if (k == 1) ASSERT_TRUE(mf_sent_home());
+        if (k == 2) ASSERT_EQ_INT(UNIT_CMD_MOVE, m->cmd_kind);
+        tick += 300;
+    }
+    ASSERT_EQ_INT(1, TAK_AI_DebugCount(2, TAK_AI_COUNT_MONARCH_HOME));
+    return 0;
+}
+
+/* A kept monarch under half its hit points with an enemy troop in sight
+ * keeps to the heart of home: the free pad 900 px off is not its while
+ * the hurt lasts, so it is not sent out and turned back by turns. */
+static int test_ai_a_hurt_kept_monarch_is_not_sent_out_again(void) {
+    GameWorld w;
+    static struct MapFeature pad;
+    setup_monarch_fixture(&w);
+    g_defs[1].yardmap_sacred = 1;
+    g_defs[1].footprint_x = g_defs[1].footprint_z = 2;
+    g_buildable_counts[0] = 1;
+    g_sacred_registered = 1;
+    g_sacred_def.sacred_site = 2.0f;
+    g_sacred_def.footprint_x = g_sacred_def.footprint_z = 2;
+    memset(&pad, 0, sizeof(pad));
+    pad.tile_x = MF_HOME_X / 16 - 1;
+    pad.tile_z = (MF_HOME_Y + 900) / 16 - 1;
+    w.features = &pad;
+    w.feature_count = 1;
+    Unit *m = &g_units[0];
+    m->health = 7000;
+    mf_add(1, 3, 900, MF_HOME_Y);
+    m->world_y = MF_HOME_Y + 300;
+    for (int k = 0; k < 6; k++) {
+        w.skirmish_elapsed_ticks += 60;
+        TAK_AI_TickSkirmish(&w);
+        ASSERT_TRUE(mf_order_within(480));
+        /* About 90 px a second toward where it was sent. */
+        if (m->cmd_kind == UNIT_CMD_BUILD) m->world_y += 90;
+        else if (m->cmd_kind == UNIT_CMD_MOVE) m->world_y -= 90;
+    }
+    ASSERT_EQ_INT(0, g_begin_calls);
+    ASSERT_TRUE(TAK_AI_DebugCount(2, TAK_AI_COUNT_MONARCH_HOME) <= 1);
+    return 0;
+}
+
+/* A kept monarch done at a pad past its ground but on the ground it builds
+ * on goes on to the next pad there rather than home first, and home once
+ * there is nothing left to build. */
+static int test_ai_a_kept_monarch_builds_on_from_a_far_pad(void) {
+    GameWorld w;
+    static struct MapFeature pads[2];
+    setup_monarch_fixture(&w);
+    w.map_pixels_w = w.map_pixels_h = 8192;
+    w.start_positions[1].x = 480;
+    g_defs[1].yardmap_sacred = 1;
+    g_defs[1].footprint_x = g_defs[1].footprint_z = 2;
+    g_buildable_counts[0] = 1;
+    g_sacred_registered = 1;
+    g_sacred_def.sacred_site = 2.0f;
+    g_sacred_def.footprint_x = g_sacred_def.footprint_z = 2;
+    memset(pads, 0, sizeof(pads));
+    pads[0].tile_x = 110;
+    pads[0].tile_z = MF_HOME_Y / 16;
+    pads[1].tile_x = 120;
+    pads[1].tile_z = MF_HOME_Y / 16 + 8;
+    w.features = pads;
+    w.feature_count = 2;
+    Unit *m = &g_units[0];
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    int32_t first_x = g_last_build_x, first_y = g_last_build_y;
+    /* The first stands, the monarch idle beside it, 1456 px from home. */
+    hf_add_unit(2, 1, first_x, first_y);
+    m->cmd_kind = UNIT_CMD_NONE;
+    m->build_target = -1;
+    m->world_x = first_x - 64;
+    m->world_y = first_y;
+    w.skirmish_elapsed_ticks += 60;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(2, g_begin_calls);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, m->cmd_kind);
+    ASSERT_EQ_INT(0, TAK_AI_DebugCount(2, TAK_AI_COUNT_MONARCH_HOME));
+    /* Both stand: nothing left out there, so it goes home. */
+    hf_add_unit(2, 1, g_last_build_x, g_last_build_y);
+    m->cmd_kind = UNIT_CMD_NONE;
+    m->build_target = -1;
+    m->world_x = g_last_build_x - 64;
+    m->world_y = g_last_build_y;
+    w.skirmish_elapsed_ticks += 60;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_TRUE(mf_sent_home());
+    return 0;
+}
+
+/* The original's choice of attack (legacy:19008-19242): the secondary at a
+ * lone monarch, the special at a crowd, the primary when the dearer is not
+ * paid for or not needed, and a dear one put away with nothing in sight. */
+static int test_ai_a_unit_takes_the_attack_that_serves(void) {
+    GameWorld w;
+    for (int variant = 0; variant < 10; variant++) {
+        setup_monarch_fixture(&w);
+        w.cfg.monarch_expendable = 1;
+        g_buildable_counts[0] = 0;
+        Unit *m = &g_units[0];
+        int t = mf_add(1, MF_ENEMY_MONARCH, MF_HOME_X + 300, MF_HOME_Y);
+        m->cmd_kind = UNIT_CMD_ATTACK;
+        m->attack_explicit = UNIT_ATTACK_ORDER;
+        m->target = (int16_t)t;
+        int want = 1;
+        if (variant == 1) m->mana = 150.0f;                   /* no Meteor */
+        if (variant == 2) g_units[t].health = 1800;           /* two bolts kill it */
+        if (variant == 3 || variant == 4) {
+            /* Three troops by it, and with variant 4 two of the seat's in
+             * the blast as well, which keeps both dear attacks back. */
+            for (int k = 0; k < 3; k++) mf_add(1, 3, MF_HOME_X + 340 + 8 * k, MF_HOME_Y + 40);
+            if (variant == 4) {
+                mf_add(2, 3, MF_HOME_X + 320, MF_HOME_Y + 60);
+                mf_add(2, 3, MF_HOME_X + 360, MF_HOME_Y + 60);
+            }
+            want = variant == 3 ? 2 : 0;
+        }
+        if (variant == 5) m->health = 5000;                   /* hurt, but alone */
+        if (variant == 6) g_defs[0].cap_flags &= ~UNIT_CAP_W_SWITCH;
+        if (variant == 7) TAK_AI_DebugSetTactics(2, TAK_AI_TACTIC_ALL & ~TAK_AI_TACTIC_WEAPONS);
+        if (variant == 9) {
+            /* Walking, with the monarch taken by its weapons on the way. */
+            m->cmd_kind = UNIT_CMD_MOVE;
+            m->target = -1;
+            m->pass_id = g_units[t].stable_id;
+        }
+        if (variant == 1 || variant == 2 || variant == 6 || variant == 7) want = 0;
+        if (variant == 8) {
+            /* The wave in hand and nothing to shoot: put away within a
+             * minute, one think in ten. */
+            m->cmd_kind = UNIT_CMD_NONE;
+            m->target = -1;
+            m->weapon_slot = 2;
+            g_units[t].alive = UNIT_ALIVE_DEAD;
+            int put = 0;
+            for (int k = 0; k < 60 && !put; k++) {
+                w.skirmish_elapsed_ticks = 60 * (k + 1);
+                TAK_AI_TickSkirmish(&w);
+                put = m->weapon_slot == 0;
+            }
+            ASSERT_TRUE(put);
+            continue;
+        }
+        TAK_AI_TickSkirmish(&w);
+        ASSERT_EQ_INT(want, m->weapon_slot);
+        ASSERT_EQ_INT(want != 0, g_weapon_slot_calls);
+    }
+    return 0;
+}
+
 static int test_ai_a_group_that_wins_holds_or_presses_on(void) {
     GameWorld w;
     static const int ffa[5] = { 0, 0, 0, 0, 0 };
@@ -5088,6 +5484,12 @@ int main(void) {
     if (test_ai_sends_its_fighters_out_offensive() != 0) return 1;
     if (test_ai_a_badly_hurt_member_leaves_the_march() != 0) return 1;
     if (test_ai_a_hurt_builder_makes_for_home() != 0) return 1;
+    if (test_ai_a_kept_monarch_builds_on_its_own_ground() != 0) return 1;
+    if (test_ai_a_kept_monarch_turns_for_home() != 0) return 1;
+    if (test_ai_a_kept_monarch_under_fire_does_not_bounce() != 0) return 1;
+    if (test_ai_a_hurt_kept_monarch_is_not_sent_out_again() != 0) return 1;
+    if (test_ai_a_kept_monarch_builds_on_from_a_far_pad() != 0) return 1;
+    if (test_ai_a_unit_takes_the_attack_that_serves() != 0) return 1;
     if (test_ai_a_tower_goes_up_towards_the_threat() != 0) return 1;
     if (test_ai_fighters_gather_into_numbered_groups() != 0) return 1;
     if (test_ai_a_straggler_leaves_its_group() != 0) return 1;

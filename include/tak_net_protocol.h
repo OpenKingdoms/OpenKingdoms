@@ -184,8 +184,10 @@
  * sight jammer lays a haze on its ground, and one with no script comes on
  * when built. 68: a tick's orders read the ships the last tick left, as
  * a world loaded from its snapshot does. 69: on a move order a unit's
- * weapons take what they pass and fire as it walks. */
-#define TAK_ENGINE_BUILD_ID           69
+ * weapons take what they pass and fire as it walks. 70: a computer's
+ * monarch keeps home when its fall ends the game, and its units switch
+ * to the attack that serves the fight. */
+#define TAK_ENGINE_BUILD_ID           70
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

@@ -1061,6 +1061,48 @@ Format per entry:
   is rare. Rides are not taken on the land maps.
 - Citation: the manual describes no AI rule at this level.
 
+## A-017: A computer's monarch keeps home when its fall ends the game
+
+- Change: with Monarch Expendable off, under `TAK_AI_TACTIC_MONARCH`, a
+  computer's monarch keeps to its own ground. That is within 1280 px of
+  home and twice as near home as any enemy still in the game, and always
+  the 480 px at the heart of home. It builds out to 2048 px on the same
+  terms, a pad only where no enemy is seen near it, and leaves a pad or a
+  yard past that to its other builders. Done with a build out there, it
+  takes the next one there or goes home. Past that ground, or on a chase
+  that leads off its ground, it turns for home. It is in danger when the
+  enemy it can see outweighs its side where it stands, when it is shot by
+  what it cannot see or reach, and when it is under half its hit points.
+  In danger away from the heart of home it turns for home and walks on
+  while the danger lasts. In danger at the heart of home it stays there
+  and builds and fights only there. It takes a fight only in its reach, at
+  the heart of home, or on its ground where its side is as strong. The
+  rules are a table in `src/game/ai_htn.c`. With Monarch Expendable on the
+  monarch plays as before.
+- Why: from playtesting, the computer sent its monarch out close to enemy
+  territory, and a player who caught it there won the game. The monarch
+  was the seat's first builder, so it walked to whatever free pad was
+  nearest wherever that lay (A-012), and it chased what it engaged with no
+  leash. The original never makes the monarch the builder of an expedition
+  (legacy:15528-15545), and its idle monarch roams 400 px of home
+  (legacy:17687-17703). Ours lets it build further than that because the
+  first lodestones are the economy, and holds it back by what the seat can
+  see.
+- Measured: 20 minute games of every kingdom against itself with the seats
+  swapped, Monarch Expendable off, a seat with this and the original's
+  choice of attack against one with neither. On Two Castles and Tarosian
+  Plain, 60 games, its monarch fell in 15 against 22. It won 22 against 15
+  and was ahead at the end of an undecided game in 9 against 14, so it won
+  or was ahead in 31 against 29. Its monarch spent 1,211 seconds more than
+  1280 px from home against 27,287. This alone, on Two Castles, 30 games:
+  monarch lost in 7 against 12, won 12 against 7, won or ahead 15 against
+  15. The seat keeps its strongest unit out of the fighting away from home
+  and ends an undecided game with less standing. Against a monarch and
+  eight troops sent at the computer's monarch in the fourth minute it
+  stood in 56 of 60 games against 33 of 60. With Monarch Expendable on, 20
+  games on Two Castles, it won or was ahead in 11 against 9.
+- Citation: the manual describes no AI rule at this level.
+
 ## T-001: Flying transports load and unload by the ground rules
 
 - Change: The Roc and the Ghost Ship pick up and set down units the way
