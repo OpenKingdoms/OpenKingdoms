@@ -74,6 +74,7 @@ static struct {
     uint8_t drag_active;
     int     drag_start_wx, drag_start_wy;     /* window coords, threshold test */
     int32_t drag_world_x, drag_world_y;       /* world-space anchor corner */
+    uint8_t drag_no_monarch;                  /* M was down on some frame of it */
     /* Load kept armed by an order given with Shift held, until Shift
      * is let go (legacy:243768-243771). */
     uint8_t shift_hold;
@@ -1097,7 +1098,8 @@ static void InGame_DrawView3DNotice(TAK_Platform *platform) {
 /* A released drag box: with Load armed and one transport selected, a
  * pickup of every unit in it (legacy:238654-238692), else a box select. */
 void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
-                      int shift_held) {
+                      int mods) {
+    int shift_held = (mods & IG_CLICK_SHIFT) != 0;
     GameWorld *world = World_Get();
     if (!world || !world->loaded) return;
     if (HUD_GetCommandMode() == HUD_CMD_LOAD &&
@@ -1125,7 +1127,9 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
             return;
         }
     }
-    int n = Units_SelectInRect(x0, y0, x1, y1, shift_held);
+    /* M held on the drag leaves out what Ctrl+M would take. */
+    int n = Units_SelectInRectExcept(x0, y0, x1, y1, shift_held,
+                                     (mods & IG_DRAG_NO_MONARCH) ? "MONARCH" : NULL);
     /* Shift adds to the selection without a voice (legacy:237803). */
     if (n > 0 && !shift_held) ig_play_box_select_ack();
     fprintf(stderr, "Marquee select: %d units\n", n);
@@ -2376,6 +2380,10 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      *     on terrain = move (legacy default-cursor behaviour).
      *   - Right-click: cancel command mode if active, else deselect. */
     int32_t world_click_x = 0, world_click_y = 0;
+    /* M on any frame of a box drag, release included, keeps the monarch
+     * out of it. A chat line being typed owns the M. */
+    int m_box = platform->has_focus && !console_keys && InGame_BoxSkipsMonarchKey(keys);
+    if (ig.drag_tracking && m_box) ig.drag_no_monarch = 1;
     /* The large radar covers the battle, and takes its clicks above. */
     if (platform->has_focus && !dp_active && !Minimap_IsLarge() &&
         !HUD_HitTest(wx, wy, platform) &&
@@ -2394,6 +2402,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             ig.drag_start_wy = wy;
             ig.drag_world_x  = world_click_x;
             ig.drag_world_y  = world_click_y;
+            ig.drag_no_monarch = (uint8_t)m_box;
         }
         if (ig.drag_tracking && left &&
             (abs(wx - ig.drag_start_wx) > 4 || abs(wy - ig.drag_start_wy) > 4)) {
@@ -2401,7 +2410,9 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         }
         if (left_released && ig.drag_tracking && ig.drag_active) {
             InGame_WorldDrag(ig.drag_world_x, ig.drag_world_y,
-                             world_click_x, world_click_y, shift_held);
+                             world_click_x, world_click_y,
+                             (shift_held ? IG_CLICK_SHIFT : 0) |
+                             (ig.drag_no_monarch ? IG_DRAG_NO_MONARCH : 0));
             ig.drag_tracking = 0;
             ig.drag_active   = 0;
         } else if (left_released && ig.drag_tracking) {

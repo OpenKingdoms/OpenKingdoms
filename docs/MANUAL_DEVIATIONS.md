@@ -2545,6 +2545,20 @@ Format per entry:
 - Citation: the manual is silent. Radar itself is the original's
   (legacy:208642-208655, docs/notes/2026-10-21-radar.md).
 
+## D-046: M held on a drag box leaves the monarch out
+
+- Change: with M held at any point while a box is dragged over the
+  battle, the box selects every unit of yours it would select except
+  your monarch. That is any unit whose category line holds Monarch, the
+  units Ctrl+M takes. Shift with it adds them to the selection and keeps
+  the units already selected. It works in both views. With Ctrl held, M
+  is still Ctrl+M, and while a chat line is open M is a typed letter.
+- Why: the owner asked for a quick way to take an army into a fight and
+  leave the monarch behind.
+- Citation: the original's Keys.TDF binds M, LOWER_M and UPPER_M, to
+  UnitCommand Move, which this engine has never bound, so M did nothing
+  in battle before. The manual is silent.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

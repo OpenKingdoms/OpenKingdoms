@@ -2872,6 +2872,8 @@ TEST(select_game_hosting_a_game_names_the_rules_it_plays_by) {
                   (cr.options & TAK_ROOMOPT_SLOW_GAME) != 0);
     ASSERT_EQ_INT(defaults.crusades_balance,
                   (cr.options & TAK_ROOMOPT_CRUSADES_BALANCE) != 0);
+    /* A dropped player's seat waits a minute by default. */
+    ASSERT_EQ_INT(60, (int)cr.timeout_secs);
 
     SelectGame_Shutdown();
     NetSession_Disconnect();

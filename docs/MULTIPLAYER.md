@@ -657,8 +657,9 @@ player issuing orders against a stale view, so we react sooner.
 
 Silence for five seconds means a lost connection. The server pauses the match
 and opens the original's reject dialog with its countdown, which the room
-option bounds to the original's 30 to 150 seconds. The countdown is server
-owned, so no two clients can disagree about the outcome. The host may reject
+option bounds to the original's 30 to 150 seconds. A room this build hosts
+asks for 60. The countdown is server owned, so no two clients can disagree
+about the outcome. The host may reject
 early. If the player returns inside the window, the match resumes at once and
 they catch up from the turn log.
 

@@ -4224,6 +4224,13 @@ void Units_SelectToggle(int handle) {
 
 int Units_SelectInRect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                        int additive) {
+    return Units_SelectInRectExcept(x0, y0, x1, y1, additive, NULL);
+}
+
+static int def_has_category(const UnitDef *d, const char *word);
+
+int Units_SelectInRectExcept(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                             int additive, const char *skip) {
     if (x1 < x0) { int32_t t = x0; x0 = x1; x1 = t; }
     if (y1 < y0) { int32_t t = y0; y0 = y1; y1 = t; }
     if (!additive) g_selection_count = 0;
@@ -4237,6 +4244,7 @@ int Units_SelectInRect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
         int32_t uy = unit_drawn_y(world, u);
         if (u->world_x < x0 || u->world_x > x1) continue;
         if (uy < y0 || uy > y1) continue;
+        if (skip && def_has_category(Units_GetDef(u->def_idx), skip)) continue;
         Units_SelectAdd(i);
     }
     return g_selection_count;

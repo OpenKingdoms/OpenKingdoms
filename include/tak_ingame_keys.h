@@ -65,6 +65,10 @@ typedef struct InGameSelectKey {
 
 InGameSelectKey InGame_SelectKey(const uint8_t *keys, const uint8_t *prev);
 
+/* M held without Ctrl or Alt: a box drag leaves your monarch out. Ctrl+M
+ * stays the select key. The original's M arms Move, which we do not bind. */
+int  InGame_BoxSkipsMonarchKey(const uint8_t *keys);
+
 /* Ctrl+D, with or without Shift: Keys.TDF's CTRL_D and CTRLSHIFT_D bind
  * SelfDestruct. */
 int  InGame_SelfDestructKey(const uint8_t *keys, const uint8_t *prev);

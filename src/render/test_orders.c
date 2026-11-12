@@ -20,6 +20,7 @@
 #include "tak_hud.h"
 #include "tak_cob.h"
 #include "tak_ingame.h"
+#include "tak_ingame_keys.h"
 #include "tak_memory.h"
 #include "tak_moveinfo.h"
 #include "tak_net_protocol.h"
@@ -42,7 +43,8 @@
 #define OQ_GROUND 64
 
 enum { OQ_BUILDER = 0, OQ_SOLDIER, OQ_ARCHER, OQ_BARRACKS, OQ_HELPER, OQ_GATE,
-       OQ_HALL, OQ_BOW, OQ_CANNON, OQ_FLYER, OQ_LIMITED, OQ_SPY, OQ_DEF_COUNT };
+       OQ_HALL, OQ_BOW, OQ_CANNON, OQ_FLYER, OQ_LIMITED, OQ_SPY, OQ_KING,
+       OQ_DEF_COUNT };
 
 static void oq_fill(UnitDef *d, const char *name, float velocity, int fx, int fz) {
     memset(d, 0, sizeof(*d));
@@ -150,12 +152,14 @@ static GameWorld *oq_world(void) {
     defs[OQ_SPY].cloak_cost_moving_per_sec = 21.0f;
     defs[OQ_SPY].min_cloak_distance = 80;
     defs[OQ_SPY].cap_flags |= UNIT_CAP_CLOAK;
+    oq_fill(&defs[OQ_KING], "TESTKING", 1.4f, 1, 1);
     /* FBI category lines, for the select keys. */
     strcpy(defs[OQ_BUILDER].category, "TEST BUILDER");
     strcpy(defs[OQ_HELPER].category, "TEST BUILDER");
     strcpy(defs[OQ_SOLDIER].category, "TEST MELEE ATTACK");
     strcpy(defs[OQ_BOW].category, "TEST ATTACK BALLISTIC");
     strcpy(defs[OQ_BARRACKS].category, "TEST FACTORY");
+    strcpy(defs[OQ_KING].category, "TEST Monarch");
     if (Units_DebugSetDefs(defs, OQ_DEF_COUNT) != OQ_DEF_COUNT) return NULL;
     if (Units_DebugSetYardmap(OQ_BARRACKS, "oooooooooooooooo") != 0) return NULL;
     /* The shipped gates' yard: walls at each end, the doorway between. */
@@ -2003,6 +2007,54 @@ TEST(ctrl_letters_select_by_category_and_ctrl_a_takes_all) {
     oq_end();
 }
 
+/* M held on a box drag takes everything in it but your monarch, with
+ * Shift too. Ctrl+M still takes the monarch and a plain M does nothing. */
+TEST(m_on_a_box_drag_leaves_the_monarch_out) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    int32_t cam_x = w->cam_x, cam_y = w->cam_y;
+    int king = Units_Spawn(OQ_KING, 1, 0, OQ_CX, OQ_CY);
+    int sword = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX + 40, OQ_CY);
+    int bow = Units_Spawn(OQ_BOW, 1, 0, OQ_CX - 40, OQ_CY);
+    int away = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX + 600, OQ_CY);
+    ASSERT(king >= 0 && sword >= 0 && bow >= 0 && away >= 0);
+    int32_t y0 = oq_drawn_y(w, OQ_CX, OQ_CY - 60, 0.0f);
+    int32_t y1 = oq_drawn_y(w, OQ_CX, OQ_CY + 60, 0.0f);
+    InGame_WorldDrag(OQ_CX - 100, y0, OQ_CX + 100, y1, IG_DRAG_NO_MONARCH);
+    ASSERT_EQ_INT(2, oq_selection_count());
+    ASSERT(oq_selected(sword) && oq_selected(bow) && !oq_selected(king));
+    /* Shift adds the box and keeps what was held before. */
+    Units_SelectSingle(away);
+    InGame_WorldDrag(OQ_CX - 100, y0, OQ_CX + 100, y1,
+                     IG_CLICK_SHIFT | IG_DRAG_NO_MONARCH);
+    ASSERT_EQ_INT(3, oq_selection_count());
+    ASSERT(oq_selected(away) && !oq_selected(king));
+    InGame_WorldDrag(OQ_CX - 100, y0, OQ_CX + 100, y1, 0);
+    ASSERT_EQ_INT(3, oq_selection_count());
+    ASSERT(oq_selected(king));
+    /* M with Shift is the box key, with Ctrl or Alt it is not. */
+    uint8_t keys[SDL_NUM_SCANCODES];
+    memset(keys, 0, sizeof keys);
+    keys[SDL_SCANCODE_M] = 1;
+    ASSERT_EQ_INT(1, InGame_BoxSkipsMonarchKey(keys));
+    keys[SDL_SCANCODE_LSHIFT] = 1;
+    ASSERT_EQ_INT(1, InGame_BoxSkipsMonarchKey(keys));
+    keys[SDL_SCANCODE_LCTRL] = 1;
+    ASSERT_EQ_INT(0, InGame_BoxSkipsMonarchKey(keys));
+    keys[SDL_SCANCODE_LCTRL] = 0;
+    keys[SDL_SCANCODE_RALT] = 1;
+    ASSERT_EQ_INT(0, InGame_BoxSkipsMonarchKey(keys));
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_M);
+    ASSERT_EQ_INT(1, oq_selection_count());
+    ASSERT(oq_selected(king));
+    oq_chord(0, SDL_SCANCODE_M);
+    ASSERT_EQ_INT(1, oq_selection_count());
+    ASSERT_EQ_INT(0, HUD_GetCommandMode());
+    ASSERT_EQ_INT(cam_x, w->cam_x);
+    ASSERT_EQ_INT(cam_y, w->cam_y);
+    oq_end();
+}
+
 /* Ctrl+Shift with a digit adds the group to the selection, where Ctrl
  * alone files a new one (Keys.TDF CTRLSHIFT_1, RetrieveSquadAdd). */
 TEST(ctrl_shift_digit_adds_a_group_to_the_selection) {
@@ -2848,6 +2900,7 @@ int main(int argc, char **argv) {
     RUN(only_a_weapon_that_can_take_a_flyer_attacks_it);
     RUN(ctrl_z_selects_every_unit_of_a_type_the_selection_holds);
     RUN(ctrl_letters_select_by_category_and_ctrl_a_takes_all);
+    RUN(m_on_a_box_drag_leaves_the_monarch_out);
     RUN(ctrl_shift_digit_adds_a_group_to_the_selection);
     RUN(ctrl_u_selects_your_units_in_the_view);
     RUN(ctrl_on_a_builders_unit_button_summons_without_end);

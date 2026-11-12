@@ -2006,6 +2006,11 @@ void              Units_SelectToggle(int handle);
  * existing selection (shift-drag). Returns the new selection count. */
 int               Units_SelectInRect(int32_t x0, int32_t y0,
                                      int32_t x1, int32_t y1, int additive);
+/* The same box, leaving out units whose FBI category line holds the
+ * word skip (NULL leaves none out). */
+int               Units_SelectInRectExcept(int32_t x0, int32_t y0,
+                                           int32_t x1, int32_t y1, int additive,
+                                           const char *skip);
 /* Control groups 0..9: assign copies the current selection; recall
  * replaces the selection with the group's still-living members and
  * returns the resulting count. */
