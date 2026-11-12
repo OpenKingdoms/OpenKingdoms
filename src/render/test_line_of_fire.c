@@ -3737,6 +3737,47 @@ TEST(a_blade_on_its_way_takes_what_walks_past) {
     ASSERT_EQ_INT(0, kept);
 }
 
+/* A `def` of seat one walks 1400 px east between two dummies standing
+ * `off` px either side of its way. Returns the harm done to them, and
+ * whether the walker ever took one for its own target or strayed. */
+static int lf_pass_run(int def, int aggro, int off, int *out_turned) {
+    if (!lf_world(0, 0)) return -1;
+    int a = Units_Spawn(def, 1, 0, LF_SX, LF_ROW);
+    int n = lf_spawn(LF_TARGET, 2, LF_SX + 700, LF_ROW - off);
+    int s = lf_spawn(LF_TARGET, 2, LF_SX + 700, LF_ROW + off);
+    if (a < 0 || n < 0 || s < 0) return -1;
+    Units_DebugSetAggro(a, aggro);
+    Units_CommandMoveUnit(a, LF_SX + 1400, LF_ROW);
+    int turned = 0;
+    for (int i = 0; i < 4000 && lf_unit(a)->cmd_kind == UNIT_CMD_MOVE; i++) {
+        Units_TickEngines();
+        int32_t dy = lf_unit(a)->world_y - LF_ROW;
+        if (lf_unit(a)->target >= 0 || dy > off || dy < -off) turned = 1;
+    }
+    if (lf_unit(a)->world_x < LF_SX + 1380) turned = 1;
+    int harm = 2 * lf_unit(n)->max_health - lf_unit(n)->health - lf_unit(s)->health;
+    *out_turned = turned;
+    lf_end();
+    return harm;
+}
+
+/* On a move order the walk goes on and the weapons take what comes in
+ * reach, firing as it walks. Hold fire takes nothing
+ * (legacy:10354-10356, legacy:19247-19285). */
+TEST(a_walker_on_a_move_order_fires_at_what_it_passes) {
+    int bow_turned = 0, held_turned = 0, blade_turned = 0;
+    int bow = lf_pass_run(LF_ARCHER, UNIT_AGGRO_OFFENSIVE, 300, &bow_turned);
+    int held = lf_pass_run(LF_ARCHER, UNIT_AGGRO_PASSIVE, 300, &held_turned);
+    int blade = lf_pass_run(LF_SWORD, UNIT_AGGRO_DEFENSIVE, 30, &blade_turned);
+    printf("(bow did %d, held fire %d, blade %d) ", bow, held, blade);
+    ASSERT(bow > 0);
+    ASSERT_EQ_INT(0, bow_turned);
+    ASSERT_EQ_INT(0, held);
+    ASSERT_EQ_INT(0, held_turned);
+    ASSERT(blade > 0);
+    ASSERT_EQ_INT(0, blade_turned);
+}
+
 /* A maneuvering unit that takes the nearest looks again too, not only a
  * random picker, and takes what it finds only inside its leash
  * (legacy:11520). One that roams has no leash (legacy:13733-13737).
@@ -4534,6 +4575,7 @@ int main(int argc, char **argv) {
     RUN(a_ranged_unit_with_its_target_in_reach_keeps_it);
     RUN(a_blade_with_its_target_in_reach_keeps_it);
     RUN(a_blade_on_its_way_takes_what_walks_past);
+    RUN(a_walker_on_a_move_order_fires_at_what_it_passes);
     RUN(a_walker_whose_shots_stop_short_finds_a_place_to_shoot_from);
     RUN(a_walker_whose_shots_land_does_not_move);
     RUN(a_walker_that_can_find_no_place_gives_up_only_on_its_own_target);

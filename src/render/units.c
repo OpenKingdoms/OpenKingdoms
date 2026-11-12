@@ -210,10 +210,12 @@ static int unit_reach_ok(const Unit *u, const UnitWeapon *wp, const Unit *t) {
 
 /* A unit that cannot move, or one holding position, fights only what
  * it reaches. On patrol every stance with fire closes in on what the
- * search finds (legacy:10843-10851, legacy:181879-181947). */
+ * search finds (legacy:10843-10851, legacy:181879-181947), and on a
+ * move order the weapons look alike in every stance (legacy:19247). */
 static int unit_holds(const Unit *u, const UnitDef *d) {
     if (d && d->max_velocity <= 0.0f) return 1;
-    return u->aggro_mode == UNIT_AGGRO_DEFENSIVE && u->cmd_kind != UNIT_CMD_PATROL;
+    return u->aggro_mode == UNIT_AGGRO_DEFENSIVE && u->cmd_kind != UNIT_CMD_PATROL &&
+           u->cmd_kind != UNIT_CMD_MOVE;
 }
 
 /* D-025: a unit passes over what it skipped only while neither it nor
@@ -1845,6 +1847,96 @@ int Units_CanAnswer(int victim, int shooter) {
     return unit_would_answer(v, s);
 }
 
+/* On a move order the walk goes on and the weapons look for themselves
+ * (legacy:10354-10356, legacy:19247-19285). What they took, or -1. */
+static int unit_pass_target(const Unit *u) {
+    if (u->cmd_kind != UNIT_CMD_MOVE || u->pass_id == 0) return -1;
+    return Units_FindByStableId(u->pass_id);
+}
+
+/* What the weapons fire at: the unit's own target, or on a move order
+ * what they took on the way. */
+static int unit_fire_target(const Unit *u) {
+    return u->target >= 0 ? u->target : unit_pass_target(u);
+}
+
+static int unit_pass_slot(const Unit *u, const UnitDef *d) {
+    int slot = u->weapon_slot;
+    return slot >= 0 && slot < d->num_weapons ? slot : 0;
+}
+
+/* The weapon keeps what it took while it can still take it, in reach
+ * or not (legacy:19262-19284). */
+static int unit_pass_holds(const Unit *u, const UnitDef *d, const Unit *t) {
+    const UnitWeapon *wp = &d->weapons[unit_pass_slot(u, d)];
+    if (t->alive != UNIT_ALIVE_ACTIVE ||
+        !unit_players_are_enemies(u->player_id, t->player_id) ||
+        !weapon_can_target_unit(wp, t) || weapon_scan_skips(wp, t) ||
+        !unit_can_see_target(u, t))
+        return 0;
+    const UnitDef *td = Units_GetDef(t->def_idx);
+    return weapon_damage_for_category(wp, td ? td->damage_category : "") > 0;
+}
+
+/* Live built units per side, counted at the top of the combat tick. */
+static int g_side_live[TAK_MAX_PLAYERS + 1];
+
+/* The original visits units_per_side / 30 + 1 of a side's units a
+ * frame, round and round, so a small side looks every frame
+ * (legacy:18985-18996). */
+static int unit_pass_turn(const Unit *u) {
+    const GameWorld *w = World_Get();
+    int cap = w && w->cfg.units_per_side > 0 ? w->cfg.units_per_side
+                                              : TAK_UNITS_PER_SIDE_DEFAULT;
+    int per_frame = cap / 30 + 1;
+    int live = u->player_id <= TAK_MAX_PLAYERS ? g_side_live[u->player_id] : 0;
+    uint32_t frames = live > per_frame ? (uint32_t)((live + per_frame - 1) / per_frame) : 1u;
+    return (g_sim_tick + u->stable_id) % (2u * frames) == 0u;
+}
+
+/* A ranged weapon takes only what it reaches, a blade anything inside
+ * its range key (legacy:21113-21118, legacy:21141-21144). */
+static int unit_pass_search(const Unit *u, int i, const UnitDef *d) {
+    const UnitWeapon *wp = &d->weapons[unit_pass_slot(u, d)];
+    int64_t radius = weapon_is_melee(wp) ? wp->range : weapon_effective_range(wp);
+    return d->fire_at_will_random ? ugrid_random_enemy(u, i, radius, wp)
+                                  : ugrid_nearest_enemy(u, i, radius, wp);
+}
+
+/* With fire on, a weapon with nothing it holds looks once on its turn.
+ * Hold fire drops what it held (legacy:9820-9846). */
+static void unit_pass_tick(Unit *u, int i, const UnitDef *d) {
+    if (u->cmd_kind != UNIT_CMD_MOVE || d->num_weapons <= 0 ||
+        u->aggro_mode == UNIT_AGGRO_PASSIVE) {
+        u->pass_id = 0;
+        return;
+    }
+    int t = unit_pass_target(u);
+    if (t < 0 || !unit_pass_holds(u, d, &g_units[t])) u->pass_id = 0;
+    if (u->pass_id != 0 || u->target >= 0) return;
+    if (d->weapons[unit_pass_slot(u, d)].drop_key || !unit_pass_turn(u)) return;
+    int pick = unit_pass_search(u, i, d);
+    if (pick >= 0) u->pass_id = g_units[pick].stable_id;
+}
+
+/* Hit on a move order, the weapon takes the shooter if it reaches it
+ * and reaches nothing it holds (legacy:15187-15215). */
+static void unit_pass_answer(Unit *u, const Unit *shooter) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d || d->num_weapons <= 0 || u->aggro_mode == UNIT_AGGRO_PASSIVE ||
+        u->target >= 0)
+        return;
+    int slot = unit_pass_slot(u, d);
+    if (!weapon_can_target_unit(&d->weapons[slot], shooter) ||
+        !unit_weapon_reaches(u, d, slot, shooter))
+        return;
+    int t = unit_pass_target(u);
+    if (t >= 0 && unit_pass_holds(u, d, &g_units[t]) &&
+        unit_weapon_reaches(u, d, slot, &g_units[t]))
+        return;
+    u->pass_id = shooter->stable_id;
+}
+
 /* Return fire: a damaged unit with no current target engages its
  * attacker (legacy on-hit acquisition, legacy:15066-15230). Passive
  * holds; explicit orders (MOVE/BUILD/attack-ground/...) are not
@@ -1866,6 +1958,10 @@ static void unit_on_damaged(Unit *victim, int shooter_handle) {
         victim->skip_until = 0;
     }
     TAK_AI_NotifyDamage((int)(victim - g_units), shooter_handle);
+    if (victim->cmd_kind == UNIT_CMD_MOVE) {
+        unit_pass_answer(victim, shooter);
+        return;
+    }
     if (victim->target >= 0) return;
     if (victim->cmd_kind != UNIT_CMD_NONE &&
         victim->cmd_kind != UNIT_CMD_PATROL) return;
@@ -10276,9 +10372,11 @@ static void cob_host_set_unit_value(void *user, int port, int32_t value) {
                     ws->draw = UNIT_DRAW_NONE;
                     return;
                 }
-                if (ws->draw_target == -1)
-                    ws->draw_target = u->target >= 0 ? u->target
+                if (ws->draw_target == -1) {
+                    int ft = unit_fire_target(u);
+                    ws->draw_target = ft >= 0 ? (int16_t)ft
                                     : u->cmd_kind == UNIT_CMD_ATTACK_GROUND ? UNIT_DRAW_GROUND : -1;
+                }
                 if (ws->draw_target >= 0 || ws->draw_target == UNIT_DRAW_GROUND)
                     ws->draw = UNIT_DRAW_RELEASE;
             }
@@ -13880,7 +13978,7 @@ static void tick_weapon_draw(Unit *u, int shooter_idx, int slot,
     int ground = t == UNIT_DRAW_GROUND;
     if (ground ? u->cmd_kind != UNIT_CMD_ATTACK_GROUND ||
                  !ground_point_in_reach(u, &def->weapons[slot]) :
-        (t < 0 || t >= g_unit_count || t != u->target ||
+        (t < 0 || t >= g_unit_count || t != unit_fire_target(u) ||
          g_units[t].alive != UNIT_ALIVE_ACTIVE ||
          !unit_can_see_target(u, &g_units[t]))) {
         ws->draw = UNIT_DRAW_LOST;
@@ -13918,9 +14016,9 @@ static void tick_weapon_draw(Unit *u, int shooter_idx, int slot,
     if (weapon_is_melee(wp) && !unit_weapon_reaches(u, def, slot, &g_units[t]))
         return;
     fire_weapon_shot(u, shooter_idx, slot, wp, t, 0, 0);
-    if (wp->burst > 1 && u->target >= 0) {
+    if (wp->burst > 1) {
         ws->burst_remaining = (int16_t)(wp->burst - 1);
-        ws->burst_target = u->target;
+        ws->burst_target = (int16_t)t;
         ws->burst_ticks = wp->burst_rate_ticks > 0 ? wp->burst_rate_ticks : 1;
     }
 }
@@ -14700,19 +14798,20 @@ static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
     if (slot < 0 || slot >= def->num_weapons) slot = 0;
     UnitWeaponState *ws = &u->weapon_state[slot];
     int ground = (u->cmd_kind == UNIT_CMD_ATTACK_GROUND);
+    int tgt = unit_fire_target(u);
     /* Attack-ground aims at the clicked point the same
      * way a unit target is aimed at. */
-    int aim_key = ground ? -2 : u->target;
+    int aim_key = ground ? -2 : tgt;
     int32_t aim_x = u->world_x, aim_y = u->world_y;
     if (ground) {
         aim_x = u->cmd_x; aim_y = u->cmd_y;
-    } else if (u->target >= 0 && u->target < g_unit_count) {
-        aim_x = g_units[u->target].world_x;
-        aim_y = g_units[u->target].world_y;
+    } else if (tgt >= 0 && tgt < g_unit_count) {
+        aim_x = g_units[tgt].world_x;
+        aim_y = g_units[tgt].world_y;
     }
     if (flyer_holds_fire(u, def) ||
-        !(ground || u->target < 0 || u->target >= g_unit_count ||
-          weapon_can_target_unit(&def->weapons[slot], &g_units[u->target])) ||
+        !(ground || tgt < 0 || tgt >= g_unit_count ||
+          weapon_can_target_unit(&def->weapons[slot], &g_units[tgt])) ||
         !unit_body_on_target(u, def, &def->weapons[slot], aim_x, aim_y))
         return;
     /* The aim runs whenever the target is in reach, reloading or not,
@@ -14730,7 +14829,7 @@ static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
          * drawn shot pays when it leaves
          * (legacy:249341-249342, legacy:249460-249461). */
         int draws = def->script_launches && u->cob &&
-                    (ground || u->target >= 0);
+                    (ground || tgt >= 0);
         int may_fire = 1;
         if (wp->mana_per_shot > 0) {
             if (def->max_mana > 0) {
@@ -14764,18 +14863,18 @@ static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
             if (draws) {
                 start_fire_script(u, slot);
                 ws->draw = UNIT_DRAW_DRAWN;
-                ws->draw_target = ground ? UNIT_DRAW_GROUND : u->target;
+                ws->draw_target = ground ? UNIT_DRAW_GROUND : (int16_t)tgt;
                 return;
             }
             if (ground) {
                 fire_ground_shot(u, i, slot, wp, 1);
                 return;
             }
-            fire_weapon_shot(u, i, slot, wp, u->target, 0, 1);
+            fire_weapon_shot(u, i, slot, wp, tgt, 0, 1);
             int burst_count = wp->burst > 1 ? wp->burst : 1;
-            if (burst_count > 1 && u->target >= 0) {
+            if (burst_count > 1 && tgt >= 0) {
                 ws->burst_remaining = (int16_t)(burst_count - 1);
-                ws->burst_target = u->target;
+                ws->burst_target = (int16_t)tgt;
                 ws->burst_ticks = wp->burst_rate_ticks > 0
                                 ? wp->burst_rate_ticks : 1;
             }
@@ -15537,6 +15636,13 @@ int    g_cmb_prof_on;
 static void Units_TickCombat(void) {
     const GameWorld *flight_world = World_Get();
     pace_table_build();
+    memset(g_side_live, 0, sizeof(g_side_live));
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *c = &g_units[i];
+        if (c->alive == UNIT_ALIVE_ACTIVE && !c->under_construction &&
+            c->player_id <= TAK_MAX_PLAYERS)
+            g_side_live[c->player_id]++;
+    }
     for (int i = 0; i < g_unit_count; i++) {
         double cmb_t = g_cmb_prof_on ? eng_now_ms() : 0.0;
         Unit *u = &g_units[i];
@@ -15763,6 +15869,8 @@ static void Units_TickCombat(void) {
             u->research_wait = 0;
         }
 
+        unit_pass_tick(u, i, def);
+
         /* Auto-acquire when idle (no manual command + no target). Per
          * recon, TAK fires `Unit_FindTargetById` searches within sight
          * range and returns nearest enemy. */
@@ -15845,6 +15953,7 @@ static void Units_TickCombat(void) {
         int64_t  target_d2 = 0;
         float    heading_at_entry = u->heading;
         int      relocating = 0;
+        int      passing = 0;
         g_turn_left = 0.0f;
         /* A summons without end or one held belongs to the build order
          * in hand. */
@@ -16048,6 +16157,9 @@ static void Units_TickCombat(void) {
             goal_x = u->cmd_x;
             goal_y = u->cmd_y;
             if (def->can_fly) flyer_move_band(u, def, &goal_x, &goal_y);
+            int pt = unit_pass_target(u);
+            passing = pt >= 0 &&
+                      unit_weapon_reaches(u, def, unit_pass_slot(u, def), &g_units[pt]);
         } else if (u->cmd_kind == UNIT_CMD_PATROL ||
                    (u->cmd_kind == UNIT_CMD_NONE &&
                     u->post_set == UNIT_POST_FIGHT)) {
@@ -16214,7 +16326,7 @@ static void Units_TickCombat(void) {
                 /* The weapon stays on its target through the walk, and
                  * fires when the walk happens to face it
                  * (legacy:249255-249310, legacy:249328-249338). */
-                if ((hovering || relocating) && target_in_range)
+                if (((hovering || relocating) && target_in_range) || passing)
                     unit_fire_tick(u, i, def);
                 if (arrived && relocating) {
                     chase_walk_ends(u);
