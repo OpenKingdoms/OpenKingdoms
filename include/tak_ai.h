@@ -45,7 +45,8 @@ enum {
     TAK_AI_COUNT_SQUAD_WAITS, TAK_AI_COUNT_SWEEPS, TAK_AI_COUNT_FIRE_STEPS,
     TAK_AI_COUNT_ESCORTS, TAK_AI_COUNT_PRESSED, TAK_AI_COUNT_HOLDS,
     TAK_AI_COUNT_REGROUPED, TAK_AI_COUNT_FERRIES, TAK_AI_COUNT_LANDINGS,
-    TAK_AI_COUNT_RIDES, TAK_AI_COUNT_ASHORE,
+    TAK_AI_COUNT_RIDES, TAK_AI_COUNT_ASHORE, TAK_AI_COUNT_MONARCH_HOME,
+    TAK_AI_COUNT_ARMED_SECONDARY, TAK_AI_COUNT_ARMED_SPECIAL,
     TAK_AI_COUNT_KINDS
 };
 int  TAK_AI_DebugCount(int player_id, int kind);
@@ -75,8 +76,13 @@ const char *TAK_AI_DebugWaveReason(int player_id);
 #define TAK_AI_TACTIC_CONVOY    2048 /* more than one ferry at a time (A-013) */
 #define TAK_AI_TACTIC_FLEET     4096 /* warships a cut off seat needs, at sea (A-015) */
 #define TAK_AI_TACTIC_RIDE      8192 /* a builder rides to a hard pad (A-016) */
-#define TAK_AI_TACTIC_ALL       16383
+#define TAK_AI_TACTIC_MONARCH   16384 /* a monarch the game rides on keeps home (A-017) */
+#define TAK_AI_TACTIC_WEAPONS   32768 /* the original's choice of attack (legacy:19008) */
+#define TAK_AI_TACTIC_ALL       65535
 void TAK_AI_DebugSetTactics(int player_id, int mask);
+/* The attack choice a computer's unit makes, run for one unit whatever
+ * seat owns it, for a measuring run. */
+void TAK_AI_DebugPickArms(int handle);
 /* Ferries under way for a seat, and the bytes of the state before the
  * part a build with one ferry a seat never wrote. */
 int  TAK_AI_DebugFerries(int player_id);

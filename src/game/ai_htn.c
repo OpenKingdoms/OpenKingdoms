@@ -202,6 +202,14 @@ const char *AI_Htn_TaskName(AiTask task) {
     case AI_TASK_HUNT:      return "hunt";
     case AI_TASK_SHELL:     return "shell";
     case AI_TASK_STAND:     return "stand";
+    case AI_TASK_GO_HOME:   return "go home";
+    case AI_TASK_ON_WAY_HOME: return "on its way home";
+    case AI_TASK_CLOSE_IN:  return "close in";
+    case AI_TASK_ARM_PRIMARY: return "primary";
+    case AI_TASK_ARM_SECONDARY: return "secondary";
+    case AI_TASK_ARM_SPECIAL: return "special";
+    case AI_TASK_KEEP_ARMS: return "keep";
+    case AI_TASK_LET_GO:    return "let go";
     default:                return "none";
     }
 }
@@ -440,4 +448,194 @@ AiTask AI_Htn_FootingTask(const AiFootingState *s) {
     if (!Htn_Plan(&k_footing, T_FOOTING, w, &plan) || plan.step_count <= 0)
         return AI_TASK_NONE;
     return plan.steps[0] == P_EVADE ? AI_TASK_EVADE : AI_TASK_NONE;
+}
+
+/* A monarch the game rides on turns for home past its ground or on a chase
+ * off it, and away from home outmatched, shot or hurt. At home it fights,
+ * and idle under fire it cannot answer closes on the shooter (A-017). */
+enum { M_OUTSIDE = 0, M_BUILDING_IN, M_CHASE_OUT, M_OUTMATCHED, M_HURT, M_AT_CORE,
+       M_HEADING_HOME, M_UNDER_FIRE, M_IDLE, M_ANSWERABLE, M_CLOSING, M_COUNT };
+enum { T_MONARCH = 0, T_AWAY, T_HOMEWARD, T_ANSWER, P_GO_HOME, P_ON_WAY, P_CLOSE_IN,
+       P_FREE, MT_COUNT };
+
+static const HtnTask k_monarch_tasks[MT_COUNT] = {
+    [T_MONARCH] = {
+        .name = "monarch", .compound = 1, .method_count = 5,
+        .methods = {
+            { .name = "past its ground",
+              .pre = { AI_COND(M_OUTSIDE, AI_OP_NE, 0),
+                       AI_COND(M_BUILDING_IN, AI_OP_EQ, 0) },
+              .subtasks = { T_HOMEWARD }, .subtask_count = 1 },
+            { .name = "a chase leads off its ground",
+              .pre = { AI_COND(M_CHASE_OUT, AI_OP_NE, 0) },
+              .subtasks = { T_HOMEWARD }, .subtask_count = 1 },
+            { .name = "away from the heart of home",
+              .pre = { AI_COND(M_AT_CORE, AI_OP_EQ, 0) },
+              .subtasks = { T_AWAY }, .subtask_count = 1 },
+            { .name = "a shot it cannot answer",
+              .pre = { AI_COND(M_UNDER_FIRE, AI_OP_NE, 0),
+                       AI_COND(M_ANSWERABLE, AI_OP_NE, 0),
+                       AI_COND(M_IDLE, AI_OP_NE, 0) },
+              .subtasks = { T_ANSWER }, .subtask_count = 1 },
+            { .name = "free",
+              .subtasks = { P_FREE }, .subtask_count = 1 },
+        },
+    },
+    [T_AWAY] = {
+        .name = "away", .compound = 1, .method_count = 4,
+        .methods = {
+            { .name = "outmatched away from home",
+              .pre = { AI_COND(M_OUTMATCHED, AI_OP_NE, 0) },
+              .subtasks = { T_HOMEWARD }, .subtask_count = 1 },
+            { .name = "under fire away from home",
+              .pre = { AI_COND(M_UNDER_FIRE, AI_OP_NE, 0) },
+              .subtasks = { T_HOMEWARD }, .subtask_count = 1 },
+            { .name = "hurt away from home",
+              .pre = { AI_COND(M_HURT, AI_OP_NE, 0) },
+              .subtasks = { T_HOMEWARD }, .subtask_count = 1 },
+            { .name = "free",
+              .subtasks = { P_FREE }, .subtask_count = 1 },
+        },
+    },
+    [T_HOMEWARD] = {
+        .name = "homeward", .compound = 1, .method_count = 2,
+        .methods = {
+            { .name = "on its way",
+              .pre = { AI_COND(M_HEADING_HOME, AI_OP_NE, 0) },
+              .subtasks = { P_ON_WAY }, .subtask_count = 1 },
+            { .name = "turn for home",
+              .subtasks = { P_GO_HOME }, .subtask_count = 1 },
+        },
+    },
+    [T_ANSWER] = {
+        .name = "answer", .compound = 1, .method_count = 2,
+        .methods = {
+            { .name = "closing",
+              .pre = { AI_COND(M_CLOSING, AI_OP_NE, 0) },
+              .subtasks = { P_ON_WAY }, .subtask_count = 1 },
+            { .name = "close on the shooter",
+              .subtasks = { P_CLOSE_IN }, .subtask_count = 1 },
+        },
+    },
+    [P_GO_HOME]  = { .name = "go home" },
+    [P_ON_WAY]   = { .name = "on its way" },
+    [P_CLOSE_IN] = { .name = "close in" },
+    [P_FREE]     = { .name = "free" },
+};
+
+static const HtnDomain k_monarch = { k_monarch_tasks, MT_COUNT, M_COUNT };
+
+AiTask AI_Htn_MonarchTask(const AiMonarchState *s, const char **reason) {
+    if (reason) *reason = "no state";
+    if (!s) return AI_TASK_NONE;
+    int32_t w[M_COUNT];
+    w[M_OUTSIDE]      = s->outside ? 1 : 0;
+    w[M_BUILDING_IN]  = s->building_in ? 1 : 0;
+    w[M_CHASE_OUT]    = s->chase_out ? 1 : 0;
+    w[M_OUTMATCHED]   = s->outmatched ? 1 : 0;
+    w[M_HURT]         = s->hurt ? 1 : 0;
+    w[M_AT_CORE]      = s->at_core ? 1 : 0;
+    w[M_HEADING_HOME] = s->heading_home ? 1 : 0;
+    w[M_UNDER_FIRE]   = s->under_fire ? 1 : 0;
+    w[M_IDLE]         = s->idle ? 1 : 0;
+    w[M_ANSWERABLE]   = s->answerable ? 1 : 0;
+    w[M_CLOSING]      = s->closing ? 1 : 0;
+    HtnPlan plan;
+    if (!Htn_Plan(&k_monarch, T_MONARCH, w, &plan) || plan.step_count <= 0)
+        return AI_TASK_NONE;
+    if (reason && plan.via_count > 0) {
+        int k = plan.via_count > 1 && plan.via_task[1] == T_AWAY ? 1 : 0;
+        *reason = k_monarch_tasks[plan.via_task[k]].methods[plan.via_method[k]].name;
+    }
+    switch (plan.steps[0]) {
+    case P_GO_HOME:  return AI_TASK_GO_HOME;
+    case P_ON_WAY:   return AI_TASK_ON_WAY_HOME;
+    case P_CLOSE_IN: return AI_TASK_CLOSE_IN;
+    default:         return AI_TASK_NONE;
+    }
+}
+
+/* The original's choice of attack (legacy:19008-19242): the special, then
+ * the secondary, when wanted and the primary would not finish the target,
+ * else the primary. With nothing in its sights a dear one may be put away. */
+enum { A_TARGET = 0, A_HELD, A_HELD_KEPT, A_SECONDARY, A_SPECIAL, A_SECONDARY_SPARED,
+       A_SPECIAL_SPARED, A_COUNT };
+enum { T_ARMS = 0, T_IDLE, T_CHOOSE, P_PRIMARY, P_SECONDARY, P_SPECIAL, P_KEEP_ARMS,
+       P_LET_GO, AT_COUNT };
+
+static const HtnTask k_arms_tasks[AT_COUNT] = {
+    [T_ARMS] = {
+        .name = "arms", .compound = 1, .method_count = 2,
+        .methods = {
+            { .name = "nothing in its sights",
+              .pre = { AI_COND(A_TARGET, AI_OP_EQ, 0) },
+              .subtasks = { T_IDLE }, .subtask_count = 1 },
+            { .name = "a target",
+              .subtasks = { T_CHOOSE }, .subtask_count = 1 },
+        },
+    },
+    [T_IDLE] = {
+        .name = "idle", .compound = 1, .method_count = 2,
+        .methods = {
+            { .name = "a dear attack in hand",
+              .pre = { AI_COND(A_HELD, AI_OP_GT, 0),
+                       AI_COND(A_HELD_KEPT, AI_OP_EQ, 0) },
+              .subtasks = { P_LET_GO }, .subtask_count = 1 },
+            { .name = "keep what is in hand",
+              .subtasks = { P_KEEP_ARMS }, .subtask_count = 1 },
+        },
+    },
+    [T_CHOOSE] = {
+        .name = "choose", .compound = 1, .method_count = 5,
+        .methods = {
+            { .name = "the primary finishes it",
+              .pre = { AI_COND(A_SPECIAL, AI_OP_NE, 0),
+                       AI_COND(A_SPECIAL_SPARED, AI_OP_NE, 0) },
+              .subtasks = { P_KEEP_ARMS }, .subtask_count = 1 },
+            { .name = "the special serves",
+              .pre = { AI_COND(A_SPECIAL, AI_OP_NE, 0) },
+              .subtasks = { P_SPECIAL }, .subtask_count = 1 },
+            { .name = "the primary finishes it",
+              .pre = { AI_COND(A_SECONDARY, AI_OP_NE, 0),
+                       AI_COND(A_SECONDARY_SPARED, AI_OP_NE, 0) },
+              .subtasks = { P_KEEP_ARMS }, .subtask_count = 1 },
+            { .name = "the secondary serves",
+              .pre = { AI_COND(A_SECONDARY, AI_OP_NE, 0) },
+              .subtasks = { P_SECONDARY }, .subtask_count = 1 },
+            { .name = "the primary",
+              .subtasks = { P_PRIMARY }, .subtask_count = 1 },
+        },
+    },
+    [P_PRIMARY]   = { .name = "primary" },
+    [P_SECONDARY] = { .name = "secondary" },
+    [P_SPECIAL]   = { .name = "special" },
+    [P_KEEP_ARMS] = { .name = "keep" },
+    [P_LET_GO]    = { .name = "let go" },
+};
+
+static const HtnDomain k_arms = { k_arms_tasks, AT_COUNT, A_COUNT };
+
+AiTask AI_Htn_WeaponTask(const AiWeaponState *s, const char **reason) {
+    if (reason) *reason = "no state";
+    if (!s) return AI_TASK_KEEP_ARMS;
+    int32_t w[A_COUNT];
+    w[A_TARGET]           = s->target ? 1 : 0;
+    w[A_HELD]             = s->held;
+    w[A_HELD_KEPT]        = s->held_kept ? 1 : 0;
+    w[A_SECONDARY]        = s->secondary_wanted ? 1 : 0;
+    w[A_SPECIAL]          = s->special_wanted ? 1 : 0;
+    w[A_SECONDARY_SPARED] = s->secondary_spared ? 1 : 0;
+    w[A_SPECIAL_SPARED]   = s->special_spared ? 1 : 0;
+    HtnPlan plan;
+    if (!Htn_Plan(&k_arms, T_ARMS, w, &plan) || plan.step_count <= 0)
+        return AI_TASK_KEEP_ARMS;
+    if (reason && plan.via_count > 1)
+        *reason = k_arms_tasks[plan.via_task[1]].methods[plan.via_method[1]].name;
+    switch (plan.steps[0]) {
+    case P_PRIMARY:   return AI_TASK_ARM_PRIMARY;
+    case P_SECONDARY: return AI_TASK_ARM_SECONDARY;
+    case P_SPECIAL:   return AI_TASK_ARM_SPECIAL;
+    case P_LET_GO:    return AI_TASK_LET_GO;
+    default:          return AI_TASK_KEEP_ARMS;
+    }
 }

@@ -248,6 +248,18 @@ void Units_CommandAttackUnit(int handle, int target_handle) {
     g_units[handle].target = (int16_t)target_handle;
 }
 
+uint32_t Units_SimTick(void) { return 0; }
+/* The stable id index, as a scan. */
+int Units_FindByStableId(uint32_t stable_id) {
+    for (int i = 0; stable_id && i < g_unit_count; i++)
+        if (g_units[i].stable_id == stable_id && g_units[i].alive >= 1) return i;
+    return -1;
+}
+int Units_OrderSetWeaponSlot(int handle, int slot) { (void)handle; (void)slot; return 0; }
+int Units_ComputeWeaponDamageForCategory(const UnitWeapon *wp, const char *category) {
+    (void)category;
+    return wp ? wp->damage : 0;
+}
 int Units_OrderSetAggro(int handle, int aggro_mode) {
     if (handle < 0 || handle >= g_unit_count) return 0;
     g_units[handle].aggro_mode = (uint8_t)aggro_mode;

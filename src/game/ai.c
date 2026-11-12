@@ -47,6 +47,10 @@ static int g_ai_tactics_off[TAK_MAX_PLAYERS + 1];
 static int ai_beyond_home(int p, int32_t x, int32_t y);
 static void ai_home_point(int p, int32_t *x, int32_t *y);
 static int ai_home_known(int p);
+/* A point within reach px of home a kept monarch may stand on (A-017),
+ * and how far out it builds. */
+static int ai_monarch_ground(int p, int32_t x, int32_t y, int32_t reach);
+#define AI_MONARCH_BUILD_PX 2048
 
 static uint32_t ai_rand(uint32_t n) {
     g_ai_rng = g_ai_rng * 1664525u + 1013904223u;   /* deterministic LCG */
@@ -651,6 +655,8 @@ static int ai_on_way_overlaps(const AiOnWay *w, int def, int32_t x, int32_t y) {
 static int     g_ai_site_for_tower;
 static int     g_ai_site_at_home;
 static int32_t g_ai_site_cx, g_ai_site_cy;
+/* The seat whose kept monarch is searching for a site, or 0 (A-017). */
+static int     g_ai_site_kept;
 
 static int ai_def_is_tower(const UnitDef *def);
 
@@ -796,6 +802,8 @@ static int ai_site_try(AiSiteSearch *s, int32_t x, int32_t y,
     if (ai_site_failed(s->units[s->actor_idx].player_id, x, y, s->now))
         return 0;
     if (g_ai_site_for_tower && ai_near_own_tower(s->units, &s->on_way, x, y))
+        return 0;
+    if (g_ai_site_kept && !ai_monarch_ground(g_ai_site_kept, x, y, AI_MONARCH_BUILD_PX))
         return 0;
     for (int i = 0; i < s->bad_n; i++) {
         if (ai_within(x, y, s->bad_x[i], s->bad_y[i], AI_SITE_SKIP_PX))
@@ -1222,6 +1230,9 @@ static int ai_pad_site(const GameWorld *world, const Unit *units,
      * before it goes (legacy:16680-16686). */
     if (AI_Influence_At(p, AI_INF_THREAT, wx, wy) >
         AI_Influence_At(p, AI_INF_PRESENCE, wx, wy)) return 0;
+    /* A kept monarch takes a pad on its own ground with no enemy seen by. */
+    if (g_ai_site_kept == p && (!ai_monarch_ground(p, wx, wy, AI_MONARCH_BUILD_PX) ||
+                                AI_Influence_At(p, AI_INF_THREAT, wx, wy) > 0)) return 0;
     if (!Units_IsBuildSiteClear(lode_def, wx, wy)) return 0;
     *out_x = wx;
     *out_y = wy;
@@ -1381,6 +1392,57 @@ static void ai_home_point(int p, int32_t *x, int32_t *y) {
 
 static int ai_home_known(int p) {
     return g_ai_players[p].base_known;
+}
+
+/* A kept monarch's ground: within reach of home and twice as near home as
+ * any enemy's, or the heart of home on any map, where it stands to fight
+ * (A-017). */
+#define AI_MONARCH_GROUND_PX 1280
+#define AI_MONARCH_CORE_PX   480
+
+static int ai_monarch_ground(int p, int32_t x, int32_t y, int32_t reach) {
+    const AiPlayer *ap = &g_ai_players[p];
+    if (!ap->base_known) return 1;
+    int64_t dx = (int64_t)x - ap->base_x, dy = (int64_t)y - ap->base_y;
+    int64_t home = dx * dx + dy * dy;
+    if (home <= (int64_t)AI_MONARCH_CORE_PX * AI_MONARCH_CORE_PX) return 1;
+    if (home > (int64_t)reach * reach) return 0;
+    for (int q = 1; q <= TAK_MAX_PLAYERS; q++) {
+        const AiPlayer *e = &g_ai_players[q];
+        if (q == p || !e->base_known || !Units_PlayersAreEnemies(p, q)) continue;
+        int64_t ex = (int64_t)x - e->base_x, ey = (int64_t)y - e->base_y;
+        if (ex * ex + ey * ey < 4 * home) return 0;
+    }
+    return 1;
+}
+
+/* A monarch the game rides on, of a seat that keeps it home. */
+static int ai_monarch_kept(const GameWorld *world, int p, const UnitDef *d) {
+    return world && d && (d->commander || ai_unit_is_monarch(d)) &&
+           !world->cfg.monarch_expendable && p >= 1 && p <= TAK_MAX_PLAYERS &&
+           !(g_ai_tactics_off[p] & TAK_AI_TACTIC_MONARCH);
+}
+
+/* The longest any of a type's attacks reaches. */
+static int32_t ai_def_reach(const UnitDef *d) {
+    int32_t r = 0;
+    for (int k = 0; d && k < d->num_weapons && k < 3; k++)
+        if (d->weapons[k].range > r) r = d->weapons[k].range;
+    return r;
+}
+
+/* A fight a kept monarch goes to: in its reach where it stands, at the
+ * heart of home, or on its ground where we are as strong. */
+static int ai_monarch_may_take(int p, const Unit *u, const UnitDef *d, const Unit *t) {
+    if (ai_within(u->world_x, u->world_y, t->world_x, t->world_y, ai_def_reach(d)))
+        return 1;
+    if (!ai_monarch_ground(p, t->world_x, t->world_y, AI_MONARCH_GROUND_PX)) return 0;
+    const AiPlayer *ap = &g_ai_players[p];
+    if (ap->base_known &&
+        ai_within(t->world_x, t->world_y, ap->base_x, ap->base_y, AI_MONARCH_CORE_PX))
+        return 1;
+    return AI_Influence_At(p, AI_INF_THREAT, t->world_x, t->world_y) <=
+           AI_Influence_At(p, AI_INF_PRESENCE, t->world_x, t->world_y);
 }
 
 /* [from][to][0 = attack, 1 = march], read by tests. */
@@ -2688,6 +2750,7 @@ static int ai_engage_nearby(const GameWorld *world, const Unit *units,
     const Unit *u = &units[actor_idx];
     if (u->cmd_kind != UNIT_CMD_NONE && u->cmd_kind != UNIT_CMD_MOVE) return 0;
     int32_t r = ai_engage_radius(u, def);
+    int kept = ai_monarch_kept(world, u->player_id, def);
     int64_t best_d2 = (int64_t)r * r + 1;
     int best = -1;
     /* Only the units the grid has near; the lower slot wins a tie, as
@@ -2707,6 +2770,7 @@ static int ai_engage_nearby(const GameWorld *world, const Unit *units,
         if (d2 == best_d2 && best >= 0 && i == best) continue;
         if (!ai_visible_to(world, u->player_id, t)) continue;
         if (!Units_CanAttackTarget(actor_idx, i)) continue;
+        if (kept && !ai_monarch_may_take(u->player_id, u, def, t)) continue;
         if (!ai_walker_reaches(world, units, actor_idx, def, t)) continue;
         best_d2 = d2;
         best = i;
@@ -4564,6 +4628,9 @@ static int ai_shore_site(const Unit *units, int actor_idx, int p, int def_idx,
                         int32_t x = c[i][0] & ~15, y = c[i][1] & ~15;
                         if (!Units_IsBuildSiteFree(def_idx, x, y)) continue;
                         if (ai_on_way_overlaps(&on_way, def_idx, x, y)) continue;
+                        if (g_ai_site_kept &&
+                            !ai_monarch_ground(g_ai_site_kept, x, y, AI_MONARCH_BUILD_PX))
+                            continue;
                         if (!TAK_PathGroundConnected(world, mc, sd->max_slope, x, y, wx, wy))
                             continue;
                         if (room && !ai_shore_open(world, mc, sd, def_idx, x, y)) continue;
@@ -4606,8 +4673,10 @@ static int ai_try_start_on_shore(int actor_idx, int def_idx, int p) {
         return ai_try_start_build_def(actor_idx, def_idx);
     int32_t x = 0, y = 0;
     if (!ai_shore_site(units, actor_idx, p, def_idx, ship_def, &x, &y)) {
-        g_ai_ferry[p][0].build_until = (world ? world->skirmish_elapsed_ticks : 0) +
-                                    AI_FERRY_RETRY;
+        /* A kept monarch's ground is not the seat's, so the rest still look. */
+        if (!g_ai_site_kept)
+            g_ai_ferry[p][0].build_until = (world ? world->skirmish_elapsed_ticks : 0) +
+                                        AI_FERRY_RETRY;
         return 0;
     }
     return ai_begin_building(actor_idx, def_idx, x, y);
@@ -4926,6 +4995,8 @@ static int ai_try_sweep(const GameWorld *world, const Unit *units,
         int32_t fx = 0, fy = 0;
         if (g_ai_rubble[k] < 0 ||
             Features_InstanceCentre(world, g_ai_rubble[k], &fx, &fy) != 0) continue;
+        if (g_ai_site_kept && !ai_monarch_ground(g_ai_site_kept, fx, fy, AI_MONARCH_BUILD_PX))
+            continue;
         int64_t dx = (int64_t)fx - u->world_x, dy = (int64_t)fy - u->world_y;
         int64_t d = dx * dx + dy * dy;
         if (best < 0 || d < best_d) { best = k; best_d = d; bx = fx; by = fy; }
@@ -6021,6 +6092,200 @@ static void ai_transport_home(const GameWorld *world, const Unit *units, int uni
     ai_ship_to_berth(world, units, unit_count, p, i, -1);
 }
 
+/* ── A monarch the game rides on (A-017) ───────────────────────────── */
+
+/* A kept monarch's turn home before its builds, by the table in
+ * ai_htn.c, or at home its walk to see a shooter it cannot. 1 when that
+ * took its think. */
+#define AI_MONARCH_FIRE_TICKS 120
+
+static int ai_monarch_keep_home(const GameWorld *world, const Unit *units, int unit_count,
+                                int i, int p, const UnitDef *def) {
+    const AiPlayer *ap = &g_ai_players[p];
+    const Unit *u = &units[i];
+    if (!ap->base_known || def->max_velocity <= 0.0f) return 0;
+    AiMonarchState ms;
+    memset(&ms, 0, sizeof(ms));
+    ms.outside = !ai_monarch_ground(p, u->world_x, u->world_y, AI_MONARCH_GROUND_PX);
+    ms.building_in = u->cmd_kind == UNIT_CMD_BUILD &&
+                     ai_monarch_ground(p, u->cmd_x, u->cmd_y, AI_MONARCH_BUILD_PX);
+    int32_t threat = AI_Influence_At(p, AI_INF_THREAT, u->world_x, u->world_y);
+    ms.outmatched = threat > AI_Influence_At(p, AI_INF_PRESENCE, u->world_x, u->world_y);
+    ms.hurt = threat > 0 && u->max_health > 0 && u->health * 2 < u->max_health;
+    ms.at_core = ai_within(u->world_x, u->world_y, ap->base_x, ap->base_y, AI_MONARCH_CORE_PX);
+    ms.heading_home = u->cmd_kind == UNIT_CMD_MOVE &&
+                      ai_within(u->cmd_x, u->cmd_y, ap->base_x, ap->base_y, AI_MONARCH_CORE_PX);
+    ms.idle = u->cmd_kind == UNIT_CMD_NONE;
+    int32_t reach = ai_def_reach(def);
+    if (u->cmd_kind == UNIT_CMD_ATTACK && u->target >= 0 && u->target < unit_count) {
+        const Unit *t = &units[u->target];
+        ms.chase_out = t->alive == UNIT_ALIVE_ACTIVE &&
+                       !ai_monarch_ground(p, t->world_x, t->world_y, AI_MONARCH_GROUND_PX) &&
+                       !ai_within(u->world_x, u->world_y, t->world_x, t->world_y, reach);
+    }
+    /* A shot it cannot answer, by the last hit units.c keeps on it. */
+    int shooter = -1;
+    int32_t near_x = 0, near_y = 0;
+    if (u->hit_by && Units_SimTick() - u->hit_tick <= AI_MONARCH_FIRE_TICKS)
+        shooter = Units_FindByStableId(u->hit_by);
+    if (shooter >= 0 && shooter < unit_count && units[shooter].alive == UNIT_ALIVE_ACTIVE &&
+        Units_PlayersAreEnemies(p, units[shooter].player_id) &&
+        !(u->cmd_kind == UNIT_CMD_ATTACK && u->target == shooter)) {
+        const Unit *sh = &units[shooter];
+        ms.under_fire = !ai_visible_to(world, p, sh) ||
+                        !ai_within(u->world_x, u->world_y, sh->world_x, sh->world_y, reach);
+        ms.answerable = ai_monarch_ground(p, sh->world_x, sh->world_y, AI_MONARCH_GROUND_PX);
+        /* Where it would see the shooter, on its own side of it. */
+        int32_t see = def->sight_distance < reach ? def->sight_distance : reach;
+        see = see > 64 ? see - 32 : 32;
+        int64_t dx = (int64_t)u->world_x - sh->world_x, dy = (int64_t)u->world_y - sh->world_y;
+        int32_t d = ai_squad_dist(u->world_x, u->world_y, sh->world_x, sh->world_y);
+        near_x = sh->world_x + (d > 0 ? (int32_t)(dx * see / d) : 0);
+        near_y = sh->world_y + (d > 0 ? (int32_t)(dy * see / d) : 0);
+        ms.closing = u->cmd_kind == UNIT_CMD_MOVE &&
+                     ai_within(u->cmd_x, u->cmd_y, sh->world_x, sh->world_y, see + 32);
+    }
+    const char *why = NULL;
+    AiTask task = AI_Htn_MonarchTask(&ms, &why);
+    if (task == AI_TASK_NONE) return 0;
+    if (task == AI_TASK_ON_WAY_HOME) return 1;
+    if (u->cmd_kind == UNIT_CMD_BUILD && ai_on_way_def(u) >= 0) g_ai_census.n = -1;
+    if (u->cmd_kind != UNIT_CMD_NONE && u->cmd_kind != UNIT_CMD_MOVE) Units_StopUnit(i);
+    if (task == AI_TASK_CLOSE_IN) {
+        Units_CommandMoveUnit(i, near_x & ~15, near_y & ~15);
+    } else {
+        /* A spot round home's point, as a hurt builder takes (legacy:17458). */
+        int32_t dx = (int32_t)ai_rand(2 * AI_BUILDER_HOME_PX + 1) - AI_BUILDER_HOME_PX;
+        int32_t dy = (int32_t)ai_rand(2 * AI_BUILDER_HOME_PX + 1) - AI_BUILDER_HOME_PX;
+        Units_CommandMoveUnit(i, ap->base_x + dx / 2, ap->base_y + dy / 2);
+        g_ai_counts[p][TAK_AI_COUNT_MONARCH_HOME]++;
+    }
+    if (ai_trace())
+        fprintf(stderr, "AI %d: monarch %s, %s\n", p, AI_Htn_TaskName(task), why ? why : "");
+    return 1;
+}
+
+/* ── Which attack a fight takes (legacy:19008-19242) ───────────────── */
+
+/* The original's bands of areaofeffect: a blow at one unit, and the line
+ * between a near blast and a wide one (legacy:19097, :19124, :19208). */
+#define AI_ARMS_SINGLE_AOE 51
+#define AI_ARMS_WIDE_AOE   200
+
+/* Slot s of unit i is wanted against t when paid for and able to hurt it:
+ * at one unit, a blast with friends under a fifth of the enemy, a wide one
+ * under a third of three or more, or a hurt monarch's (legacy:19050-19214). */
+static int ai_arms_wanted(const GameWorld *world, const Unit *units, int unit_count,
+                          int i, int p, const UnitDef *def, int s, int t, int hurt) {
+    if (s >= def->num_weapons) return 0;
+    const UnitWeapon *wp = &def->weapons[s];
+    const Unit *u = &units[i];
+    const Unit *tu = &units[t];
+    const UnitDef *td = Units_GetDef(tu->def_idx);
+    if (wp->mana_per_shot > 0) {
+        float have = def->max_mana > 0 ? u->mana
+                                       : (float)Economy_GetMana(&world->economy, p);
+        if (have < (float)wp->mana_per_shot) return 0;
+    }
+    /* What units.c lets the attack take (legacy:249578-249586, :21149-21160). */
+    if (tu->flying && (wp->no_air_weapon || Units_WeaponIsMelee((int)u->def_idx, s))) return 0;
+    if (!tu->flying && wp->to_air_weapon) return 0;
+    if (td && Units_ComputeWeaponDamageForCategory(wp, td->damage_category) <= 0) return 0;
+    if (td && wp->mind_control == UNIT_SPELL_MIND && td->cant_be_captured) return 0;
+    if (td && wp->mind_control == UNIT_SPELL_STONE && td->cant_be_stoned) return 0;
+    if (td && wp->mind_control == UNIT_SPELL_FROZEN && td->cant_be_frozen) return 0;
+    if (wp->paralyzer && (tu->paralyzed_ticks || (td && td->immune_to_paralyzer))) return 0;
+    int32_t aoe = wp->area_of_effect;
+    if (aoe < AI_ARMS_SINGLE_AOE) return 1;
+    /* What the seat sees inside the blast, the target among them. */
+    int enemies = 1, friends = 0;
+    static int near[AI_NEAR_CAP];
+    int nn = Units_Candidates(tu->world_x - aoe, tu->world_y - aoe, tu->world_x + aoe,
+                              tu->world_y + aoe, near, AI_NEAR_CAP);
+    for (int k = 0; k < (nn < 0 ? unit_count : nn); k++) {
+        int h = nn < 0 ? k : near[k];
+        if (h < 0 || h >= unit_count || h == t) continue;
+        const Unit *o = &units[h];
+        if (o->alive != UNIT_ALIVE_ACTIVE || o->under_construction) continue;
+        if (!ai_within(o->world_x, o->world_y, tu->world_x, tu->world_y, aoe)) continue;
+        if ((int)o->player_id == p || ai_players_allied(p, o->player_id)) {
+            if (ai_visible_to(world, p, o)) friends++;
+            continue;
+        }
+        const UnitDef *od = Units_GetDef(o->def_idx);
+        if (!od || od->is_feature || !Units_PlayersAreEnemies(p, o->player_id)) continue;
+        if (ai_visible_to(world, p, o)) enemies++;
+    }
+    if (aoe < AI_ARMS_WIDE_AOE) return friends * 5 < enemies || hurt;
+    return enemies > 2 && (friends * 3 < enemies || hurt);
+}
+
+/* A computer's unit that can switch attacks takes the one that serves
+ * the fight in hand, through the order a player's button gives. */
+static void ai_pick_arms(const GameWorld *world, const Unit *units, int unit_count,
+                         int i, int p, const UnitDef *def) {
+    if (g_ai_tactics_off[p] & TAK_AI_TACTIC_WEAPONS) return;
+    if (def->num_weapons < 2 || !(def->cap_flags & UNIT_CAP_W_SWITCH)) return;
+    const Unit *u = &units[i];
+    int held = u->weapon_slot < def->num_weapons ? u->weapon_slot : 0;
+    AiWeaponState ws;
+    memset(&ws, 0, sizeof(ws));
+    ws.held = held;
+    int t = u->target;
+    /* On a move order the weapons' own pick is the target in its sights. */
+    if (t < 0 && u->cmd_kind == UNIT_CMD_MOVE && u->pass_id) t = Units_FindByStableId(u->pass_id);
+    ws.target = t >= 0 && t < unit_count && u->cmd_kind != UNIT_CMD_GUARD &&
+                u->cmd_kind != UNIT_CMD_REPAIR && u->cmd_kind != UNIT_CMD_RECLAIM &&
+                u->cmd_kind != UNIT_CMD_LOAD && u->cmd_kind != UNIT_CMD_BOARD &&
+                units[t].alive == UNIT_ALIVE_ACTIVE && !units[t].under_construction &&
+                Units_PlayersAreEnemies(p, units[t].player_id);
+    if (ws.target) {
+        int hurt = (def->commander || ai_unit_is_monarch(def)) &&
+                   u->health < u->max_health / 3;
+        ws.secondary_wanted = ai_arms_wanted(world, units, unit_count, i, p, def, 1, t, hurt);
+        ws.special_wanted = ai_arms_wanted(world, units, unit_count, i, p, def, 2, t, hurt);
+        /* The primary in hand kills it in two (legacy:19225-19236). */
+        int spare = held == 0 && units[t].health / 2 <= def->weapons[0].damage;
+        ws.secondary_spared = spare && !def->weapons[1].mind_control &&
+                              def->weapons[1].area_of_effect < AI_ARMS_WIDE_AOE;
+        ws.special_spared = spare && def->num_weapons > 2 && !def->weapons[2].mind_control &&
+                            def->weapons[2].area_of_effect < AI_ARMS_WIDE_AOE;
+    } else {
+        /* A plain short attack at a tenth of the reserve or less stays in
+         * hand (legacy:19029-19040). */
+        const UnitWeapon *wp = &def->weapons[held];
+        ws.held_kept = !wp->mind_control && !wp->paralyzer &&
+                       wp->area_of_effect < AI_ARMS_WIDE_AOE &&
+                       (float)wp->mana_per_shot <= u->mana_max * 0.1f;
+    }
+    const char *why = NULL;
+    AiTask task = AI_Htn_WeaponTask(&ws, &why);
+    int slot = held;
+    if (task == AI_TASK_ARM_PRIMARY) slot = 0;
+    else if (task == AI_TASK_ARM_SECONDARY) slot = 1;
+    else if (task == AI_TASK_ARM_SPECIAL) slot = 2;
+    else if (task == AI_TASK_LET_GO && ai_rand(10) == 0) slot = 0;
+    if (slot == held || slot >= def->num_weapons) return;
+    if (!Units_OrderSetWeaponSlot(i, slot)) return;
+    if (slot == 1) g_ai_counts[p][TAK_AI_COUNT_ARMED_SECONDARY]++;
+    if (slot == 2) g_ai_counts[p][TAK_AI_COUNT_ARMED_SPECIAL]++;
+    if (ai_trace())
+        fprintf(stderr, "AI %d: %s takes %s, %s\n", p, def->unitname,
+                def->weapons[slot].name, why ? why : "");
+}
+
+void TAK_AI_DebugPickArms(int handle) {
+    const GameWorld *world = World_Get();
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    if (!world || !units || handle < 0 || handle >= unit_count) return;
+    const Unit *u = &units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d || u->alive != UNIT_ALIVE_ACTIVE || u->player_id < 1 ||
+        u->player_id > TAK_MAX_PLAYERS) return;
+    ai_pick_arms(world, units, unit_count, handle, u->player_id, d);
+}
+
 static void ai_tick_player(const GameWorld *world, const Unit *units,
                            int unit_count, int p, int now) {
     double ai_t = g_ai_prof_on ? ai_now_ms() : 0.0;
@@ -6287,12 +6552,15 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
         if (u->player_id != p) continue;
         const UnitDef *def = Units_GetDef(u->def_idx);
         if (!ai_unit_can_fight_or_move(u, def)) continue;
+        ai_pick_arms(world, units, unit_count, i, p, def);
         /* A transport carrying a wave is its ferry's (A-013), and a builder
          * riding is its ride's (A-016). */
         if (ai_in_ferry(p, i) || ai_riding(p, i)) continue;
         AI_MARK(ai_cat);
         ai_cat = (def->cap_flags & UNIT_CAP_BUILDER) ? 5 : 6;
         if (ai_step_out_of_fire(world, units, unit_count, i, def, p)) continue;
+        int kept = ai_monarch_kept(world, p, def);
+        if (kept && ai_monarch_keep_home(world, units, unit_count, i, p, def)) continue;
         if ((def->cap_flags & UNIT_CAP_BUILDER) && def->max_velocity > 0.0f &&
             ai_builder_retreats(units, i, p, def)) {
             continue;
@@ -6348,9 +6616,17 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
                     if (cls == AI_ACTOR_BUILDER)
                         own.allowed[AI_ACT_TRAIN_TRANSPORT] = pc.allowed[AI_ACT_TRAIN_TRANSPORT];
                     act = AI_Plan_NextAction(&ps, &own, cls, &goal);
-                    if (act != AI_ACT_NONE &&
-                        !ai_execute_build(world, units, unit_count, i, def, act))
-                        act = AI_ACT_NONE;
+                    /* A kept monarch sites on its ground and plans past a step
+                     * with no site there (A-017). */
+                    if (kept) g_ai_site_kept = p;
+                    for (int tries = 0; act != AI_ACT_NONE; tries++) {
+                        if (ai_execute_build(world, units, unit_count, i, def, act)) break;
+                        if (!kept || tries >= 2) { act = AI_ACT_NONE; break; }
+                        own.allowed[act] = 0;
+                        goal = AI_GOAL_NONE;
+                        act = AI_Plan_NextAction(&ps, &own, cls, &goal);
+                    }
+                    g_ai_site_kept = 0;
                 }
                 if (act != AI_ACT_NONE) {
                     if (ai_trace()) {

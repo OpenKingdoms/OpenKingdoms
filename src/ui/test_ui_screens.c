@@ -8021,6 +8021,9 @@ typedef struct DuelTally {
     int     transports[3], yards[3];
     int     buildings[3], touching[3];
     int64_t gap_sum[3];
+    /* Monarch seconds more than 1280 px from its start, and whether it fell. */
+    int64_t monarch_far_s[3];
+    int     monarch_lost[3];
 } DuelTally;
 static char g_duel_names[DUEL_DEFS][16];
 
@@ -8061,6 +8064,10 @@ static void duel_sample(DuelTally *t, int second) {
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (!d || u->under_construction) continue;
         if (duel_is_lodestone(d)) lodes[u->player_id]++;
+        if (d->commander && has_start[u->player_id]) {
+            int64_t dx = u->world_x - sx[u->player_id], dy = u->world_y - sy[u->player_id];
+            if (dx * dx + dy * dy > 1280 * 1280) t->monarch_far_s[u->player_id]++;
+        }
         if (d->max_velocity > 0.0f && d->num_weapons > 0 &&
             !(d->cap_flags & UNIT_CAP_BUILDER) && !d->commander &&
             has_start[u->player_id]) {
@@ -8189,6 +8196,8 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
     strncpy(cfg.map_name, map, sizeof(cfg.map_name) - 1);
     cfg.seed = seed;
     cfg.remastered = remastered;
+    if (getenv("TAK_AI_DUEL_EXPENDABLE"))
+        cfg.monarch_expendable = atoi(getenv("TAK_AI_DUEL_EXPENDABLE")) != 0;
     if (sides) sscanf(sides, "%d,%d", &cfg.players[0].side, &cfg.players[1].side);
     if (getenv("TAK_AI_DUEL_STARTS"))
         sscanf(getenv("TAK_AI_DUEL_STARTS"), "%d,%d", &cfg.players[0].start_pos, &cfg.players[1].start_pos);
@@ -8227,13 +8236,18 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
     {
         int count = 0;
         const Unit *units = Units_GetActive(&count);
+        int monarchs[3] = { 0, 0, 0 };
         for (int i = 0; i < count; i++) {
             const Unit *u = &units[i];
-            if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id < 1 || u->player_id > 2)
+            if ((u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_TRANSPORTED) ||
+                u->player_id < 1 || u->player_id > 2)
                 continue;
             const UnitDef *d = Units_GetDef(u->def_idx);
+            if (d && d->commander) monarchs[u->player_id]++;
+            if (u->alive != UNIT_ALIVE_ACTIVE) continue;
             if (d && !d->commander) tally->standing[u->player_id] += d->build_cost;
         }
+        for (int p = 1; p <= 2; p++) tally->monarch_lost[p] = monarchs[p] == 0;
     }
     for (int i = 0; i < world->feature_count; i++) rubble += world->features[i].rubble;
     for (int p = 1; p <= 2; p++) {
@@ -8275,6 +8289,13 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_FIRE_STEPS));
         fprintf(stderr, "duel:   seat %d rides %d, %d set ashore\n", p,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_RIDES), TAK_AI_DebugCount(p, TAK_AI_COUNT_ASHORE));
+        fprintf(stderr, "duel:   seat %d monarch %s, %lld s past 1280 px of home, sent home %d, "
+                "took secondary %d special %d\n", p,
+                tally->monarch_lost[p] ? "lost" : "standing",
+                (long long)tally->monarch_far_s[p],
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_MONARCH_HOME),
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_ARMED_SECONDARY),
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_ARMED_SPECIAL));
         fprintf(stderr, "duel:   seat %d escorts %d pressed on %d held ground %d "
                 "regrouped %d ferries %d landings %d first ashore at %d s\n", p,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_ESCORTS),
@@ -8522,6 +8543,8 @@ TEST(ai_duel_tactics_against_none) {
     int remastered = r && atoi(r) != 0;
     int32_t with_k = 0, with_l = 0, plain_k = 0, plain_l = 0;
     int with_wins = 0, plain_wins = 0, with_ahead = 0, plain_ahead = 0;
+    int with_mlost = 0, plain_mlost = 0;
+    int64_t with_far = 0, plain_far = 0;
     int64_t with_lode = 0, plain_lode = 0;
     int64_t with_home = 0, with_away = 0, plain_home = 0, plain_away = 0;
     static DuelTally tally;
@@ -8548,6 +8571,10 @@ TEST(ai_duel_tactics_against_none) {
             if (winner == 0 && tally.standing[plain] > tally.standing[with]) plain_ahead++;
             with_lode += tally.lode_seconds[with];
             plain_lode += tally.lode_seconds[plain];
+            with_mlost += tally.monarch_lost[with];
+            plain_mlost += tally.monarch_lost[plain];
+            with_far += tally.monarch_far_s[with];
+            plain_far += tally.monarch_far_s[plain];
             with_home += tally.home_s[with];   with_away += tally.away_s[with];
             plain_home += tally.home_s[plain]; plain_away += tally.away_s[plain];
             for (int k = 0; k < DUEL_DEFS; k++) {
@@ -8562,11 +8589,284 @@ TEST(ai_duel_tactics_against_none) {
            remastered ? " remastered" : "", games * 2, minutes,
            with_k, with_l, with_wins, with_ahead, (long long)(with_lode / 60),
            plain_k, plain_l, plain_wins, plain_ahead, (long long)(plain_lode / 60));
+    fprintf(stderr, "duel: monarchs lost with %d without %d, monarch seconds past "
+            "1280 px of home with %lld without %lld, won or ahead with %d without %d\n",
+            with_mlost, plain_mlost, (long long)with_far, (long long)plain_far,
+            with_wins + with_ahead, plain_wins + plain_ahead);
     fprintf(stderr, "duel: fighters at home %d%% of the time with, %d%% without\n",
             with_home + with_away > 0 ? (int)(with_home * 100 / (with_home + with_away)) : 0,
             plain_home + plain_away > 0 ? (int)(plain_home * 100 / (plain_home + plain_away)) : 0);
     duel_print_mix("all games, with", with_raised);
     duel_print_mix("all games, plain", plain_raised);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A measuring tool, not a case. TAK_AI_MONARCH_DUEL=<duels> sets two
+ * monarchs of one kingdom on each other in the open on Two Castles, one
+ * taking its attacks as a computer's unit does and one keeping its
+ * first, for each kingdom of TAK_AI_MONARCH_DUEL_SIDES ("0,1,2,3,7" when
+ * unset), each duel with the seats swapped, and prints who stood. Both
+ * seats are human, so nothing but the choice of attack differs. */
+static int monarch_duel_once(TAK_Platform *platform, int side, int chooser,
+                             uint32_t seed, int *ticks, int *hp_left) {
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.seed = seed;
+    cfg.monarch_expendable = 1;
+    for (int k = 0; k < 2; k++) {
+        cfg.players[k].kind = TAK_SLOT_HUMAN;
+        cfg.players[k].side = side;
+        cfg.players[k].color = k;
+    }
+    *ticks = 0;
+    *hp_left = 0;
+    if (World_BeginLoad(platform, &cfg, cfg.map_name, "aramon") != 0) return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    GameWorld *world = World_Get();
+    int winner = -1;
+    if (next == GAMESTATE_IN_GAME && world && InGame_Init(platform) == 0) {
+        InGame_DebugPlayWithoutHumans(1);
+        int m[3] = { -1, hostility_monarch_of(1), hostility_monarch_of(2) };
+        int32_t ax = 0, ay = 0, bx = 0, by = 0, x = 0, y = 0;
+        if (m[1] >= 0 && m[2] >= 0 && hostility_start_of(world, 1, &ax, &ay) == 0 &&
+            hostility_start_of(world, 2, &bx, &by) == 0 &&
+            corpse_find_clear_ground(world, (ax + bx) / 2, (ay + by) / 2, 128, &x, &y)) {
+            /* In each other's sight, the seed setting which side of whom. */
+            int32_t off = (seed & 1) ? 96 : -96;
+            Units_DebugPlace(m[1], x - off, y);
+            Units_DebugPlace(m[2], x + off, y);
+            winner = 0;
+            for (int t = 0; t < 5 * 60 * 60 && winner == 0; t += 60) {
+                int count = 0;
+                const Unit *units = Units_GetActive(&count);
+                int up[3] = { 0, 0, 0 };
+                for (int p = 1; p <= 2; p++)
+                    up[p] = units[m[p]].alive == UNIT_ALIVE_ACTIVE;
+                if (!up[1] || !up[2]) {
+                    winner = up[1] ? 1 : up[2] ? 2 : 3;
+                    *ticks = t;
+                    *hp_left = up[1] ? units[m[1]].health : up[2] ? units[m[2]].health : 0;
+                    break;
+                }
+                for (int p = 1; p <= 2; p++) {
+                    const Unit *u = &units[m[p]];
+                    if (u->cmd_kind != UNIT_CMD_ATTACK || u->target != m[3 - p])
+                        Units_CommandAttackUnit(m[p], m[3 - p]);
+                    if (p == chooser) TAK_AI_DebugPickArms(m[p]);
+                }
+                InGame_DebugRunSimTicks(60);
+            }
+        }
+        InGame_DebugPlayWithoutHumans(0);
+        InGame_Shutdown();
+    }
+    Loading_Shutdown();
+    World_End(platform);
+    return winner;
+}
+
+TEST(ai_monarch_duel_against_its_first_attack) {
+    const char *ask = getenv("TAK_AI_MONARCH_DUEL");
+    if (!ask || atoi(ask) <= 0) return;
+    if (mount_iron_plague() != 0) SKIP("no game dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    int duels = atoi(ask);
+    const char *list = getenv("TAK_AI_MONARCH_DUEL_SIDES");
+    if (!list || !*list) list = "0,1,2,3,7";
+    int all_with = 0, all_plain = 0, all = 0;
+    for (const char *c = list; *c; ) {
+        int side = atoi(c);
+        int with = 0, plain = 0, neither = 0;
+        int64_t with_t = 0, with_hp = 0;
+        for (int d = 0; d < duels; d++) {
+            for (int chooser = 1; chooser <= 2; chooser++) {
+                int ticks = 0, hp = 0;
+                int w = monarch_duel_once(&platform, side, chooser,
+                                          (uint32_t)(d * 7919 + chooser), &ticks, &hp);
+                if (w == chooser) { with++; with_t += ticks; with_hp += hp; }
+                else if (w == 3 - chooser) plain++;
+                else neither++;
+                fprintf(stderr, "monarch duel: side %d duel %d chooser seat %d: winner %d "
+                        "after %d s with %d hp\n", side, d, chooser, w, ticks / 60, hp);
+            }
+        }
+        fprintf(stderr, "monarch duel: side %d: the chooser won %d, the first attack %d, "
+                "neither %d, the chooser's wins took %d s on average with %d hp left\n",
+                side, with, plain, neither, with ? (int)(with_t / with / 60) : 0,
+                with ? (int)(with_hp / with) : 0);
+        all_with += with;
+        all_plain += plain;
+        all += 2 * duels;
+        while (*c && *c != ',') c++;
+        if (*c == ',') c++;
+    }
+    printf("(monarch duels: the chooser won %d, the first attack %d, of %d) ",
+           all_with, all_plain, all);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A measuring tool, not a case. TAK_AI_RUSH=<minute> plays a human seat
+ * against a computer with Monarch Expendable off on Two Castles
+ * (TAK_AI_RUSH_MAP). At that minute the human's monarch and an early
+ * army of TAK_AI_RUSH_ARMY troops (eight) go for the computer's monarch
+ * wherever it stands, and they play on six minutes or to a monarch's
+ * fall. Each game is played with the computer's behaviours as
+ * TAK_AI_RUSH_MASK (all) and as TAK_AI_RUSH_BASE (all but A-017 and the
+ * choice of attack), over TAK_AI_RUSH_GAMES seeds (3) on both starts,
+ * for each kingdom of TAK_AI_RUSH_SIDES ("0,1,2,3,7"), the rusher of the
+ * same kingdom. It prints how often the computer's monarch stood. */
+/* A walking melee troop of the kingdom, Creon's as well. */
+static int rush_troop_def(int side) {
+    if (side != TAK_SIDE_CREON) return hostility_combat_def_for_side(side);
+    int n = Units_GetDefCount();
+    for (int i = 0; i < n; i++) {
+        const UnitDef *d = Units_GetDef(i);
+        if (!d || strncmp(d->category, "CRE", 3) != 0 || !strstr(d->category, "MELEE")) continue;
+        if (d->max_velocity <= 0.0f || d->num_weapons <= 0 || d->can_fly) continue;
+        if ((d->cap_flags & UNIT_CAP_BUILDER) || strstr(d->category, "Monarch")) continue;
+        return i;
+    }
+    return hostility_combat_def_for_side(TAK_SIDE_ARAMON);
+}
+
+static int rush_once(TAK_Platform *platform, int side, int mask, int minute, int army,
+                     uint32_t seed, int ai_seat, int *rusher_lost, int *ai_far_s) {
+    const char *map = getenv("TAK_AI_RUSH_MAP");
+    if (!map || !*map) map = "two castles";
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, map, sizeof(cfg.map_name) - 1);
+    cfg.seed = seed;
+    cfg.monarch_expendable = 0;
+    int rs = 3 - ai_seat;
+    for (int k = 0; k < 2; k++) {
+        cfg.players[k].side = side;
+        cfg.players[k].color = k;
+    }
+    cfg.players[ai_seat - 1].kind = TAK_SLOT_AI;
+    cfg.players[ai_seat - 1].ai_difficulty = 2;
+    cfg.players[rs - 1].kind = TAK_SLOT_HUMAN;
+    *rusher_lost = 0;
+    *ai_far_s = 0;
+    if (World_BeginLoad(platform, &cfg, map, "aramon") != 0) return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    GameWorld *world = World_Get();
+    int stood = -1;
+    if (next == GAMESTATE_IN_GAME && world && InGame_Init(platform) == 0) {
+        TAK_AI_DebugSetTactics(ai_seat, mask);
+        InGame_DebugPlayWithoutHumans(1);
+        int troop = rush_troop_def(side);
+        int32_t hx = 0, hy = 0, ax = 0, ay = 0;
+        hostility_start_of(world, ai_seat, &ax, &ay);
+        int rusher = hostility_monarch_of(rs);
+        int band[16], n = 0;
+        const int end = (minute + 6) * 3600;
+        for (int t = 0; t < end && !world->skirmish_game_over; t += 60) {
+            int count = 0;
+            const Unit *units = Units_GetActive(&count);
+            int target = hostility_monarch_of(ai_seat);
+            if (target >= 0) {
+                int64_t dx = units[target].world_x - ax, dy = units[target].world_y - ay;
+                if (dx * dx + dy * dy > 1280 * 1280) (*ai_far_s)++;
+            }
+            if (t == minute * 3600 && rusher >= 0 && troop >= 0) {
+                hx = units[rusher].world_x;
+                hy = units[rusher].world_y;
+                band[n++] = rusher;
+                for (int k = 0; k < army && n < 16; k++) {
+                    int h = Units_Spawn(troop, rs, rs - 1, hx + 48 * (k % 4) - 72,
+                                        hy + 48 * (k / 4) + 64);
+                    if (h >= 0) band[n++] = h;
+                }
+                units = Units_GetActive(&count);
+            }
+            for (int k = 0; t >= minute * 3600 && target >= 0 && k < n; k++) {
+                const Unit *u = &units[band[k]];
+                if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != rs) continue;
+                if (u->cmd_kind == UNIT_CMD_ATTACK && u->target == target) continue;
+                if (Fog_IsVisibleForPlayer(world, rs, units[target].world_x,
+                                           units[target].world_y))
+                    Units_CommandAttackUnit(band[k], target);
+                else if (u->cmd_kind != UNIT_CMD_ATTACK)
+                    Units_CommandMoveUnit(band[k], units[target].world_x, units[target].world_y);
+            }
+            InGame_DebugRunSimTicks(60);
+        }
+        int count = 0;
+        const Unit *units = Units_GetActive(&count);
+        stood = hostility_monarch_of(ai_seat) >= 0;
+        *rusher_lost = hostility_monarch_of(rs) < 0;
+        (void)units;
+        InGame_DebugPlayWithoutHumans(0);
+        InGame_Shutdown();
+    }
+    Loading_Shutdown();
+    World_End(platform);
+    return stood;
+}
+
+TEST(ai_rush_on_the_computers_monarch) {
+    const char *ask = getenv("TAK_AI_RUSH");
+    if (!ask || atoi(ask) <= 0) return;
+    if (mount_iron_plague() != 0) SKIP("no game dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    int minute = atoi(ask);
+    const char *a = getenv("TAK_AI_RUSH_ARMY");
+    int army = a && atoi(a) > 0 ? atoi(a) : 8;
+    const char *g = getenv("TAK_AI_RUSH_GAMES");
+    int games = g && atoi(g) > 0 ? atoi(g) : 3;
+    const char *m = getenv("TAK_AI_RUSH_MASK");
+    const char *b = getenv("TAK_AI_RUSH_BASE");
+    int masks[2] = { m ? atoi(m) : TAK_AI_TACTIC_ALL,
+                     b ? atoi(b) : TAK_AI_TACTIC_ALL & ~(TAK_AI_TACTIC_MONARCH |
+                                                         TAK_AI_TACTIC_WEAPONS) };
+    const char *list = getenv("TAK_AI_RUSH_SIDES");
+    if (!list || !*list) list = "0,1,2,3,7";
+    int stood[2] = { 0, 0 }, rushers_lost[2] = { 0, 0 }, played[2] = { 0, 0 };
+    int64_t far[2] = { 0, 0 };
+    for (const char *c = list; *c; ) {
+        int side = atoi(c);
+        for (int s = 1; s <= games; s++) {
+            for (int ai_seat = 1; ai_seat <= 2; ai_seat++) {
+                for (int v = 0; v < 2; v++) {
+                    int rl = 0, fs = 0;
+                    int r = rush_once(&platform, side, masks[v], minute, army,
+                                      (uint32_t)(s * 7919), ai_seat, &rl, &fs);
+                    if (r < 0) continue;
+                    played[v]++;
+                    stood[v] += r;
+                    rushers_lost[v] += rl;
+                    far[v] += fs;
+                    fprintf(stderr, "rush: side %d seed %d computer seat %d mask %d: its monarch "
+                            "%s, the rusher's %s, %d s past 1280 px of home\n", side, s,
+                            ai_seat, masks[v], r ? "stood" : "fell", rl ? "fell" : "stood", fs);
+                }
+            }
+        }
+        while (*c && *c != ',') c++;
+        if (*c == ',') c++;
+    }
+    fprintf(stderr, "rush: mask %d: the computer's monarch stood %d of %d, the rusher's fell "
+            "%d, %lld s past 1280 px; mask %d: stood %d of %d, the rusher's fell %d, %lld s\n",
+            masks[0], stood[0], played[0], rushers_lost[0], (long long)far[0],
+            masks[1], stood[1], played[1], rushers_lost[1], (long long)far[1]);
+    printf("(rush at minute %d: with %d of %d stood, without %d of %d) ", minute,
+           stood[0], played[0], stood[1], played[1]);
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
@@ -31158,6 +31458,12 @@ static void ui_run_cases(void) {
      * that skipped when it is not. */
     if (getenv("TAK_AI_DUEL")) {
         RUN_UI_TEST(ai_duel_tactics_against_none);
+    }
+    if (getenv("TAK_AI_MONARCH_DUEL")) {
+        RUN_UI_TEST(ai_monarch_duel_against_its_first_attack);
+    }
+    if (getenv("TAK_AI_RUSH")) {
+        RUN_UI_TEST(ai_rush_on_the_computers_monarch);
     }
     if (getenv("TAK_SPIKE_PROBE")) {
         RUN_UI_TEST(sim_spike_probe);

@@ -1061,6 +1061,34 @@ Format per entry:
   is rare. Rides are not taken on the land maps.
 - Citation: the manual describes no AI rule at this level.
 
+## A-017: A computer's monarch keeps home when its fall ends the game
+
+- Change: with Monarch Expendable off, under `TAK_AI_TACTIC_MONARCH`, a
+  computer's monarch keeps to its own ground. That is within 1280 px of
+  home and twice as near home as any enemy's, and always the 480 px at the
+  heart of home. It builds out to 2048 px on the same terms, a pad only
+  where no enemy is seen near it, and leaves a pad or a yard past that to
+  its other builders. Past its ground, or on a chase that leads off it, it
+  turns for home. Away from the heart of home it also turns for home when
+  the enemy it can see outweighs its side where it stands, when it is shot
+  by what it cannot see or reach, and when it is under half its hit points
+  with the enemy near. It takes a fight only in its reach, at the heart of
+  home, or on its ground where its side is as strong. At the heart of home
+  it fights what comes, and idle under fire from what it cannot see or
+  reach it walks to where it would see the shooter. The rules are a table in
+  `src/game/ai_htn.c`. With Monarch Expendable on the monarch plays as
+  before.
+- Why: from playtesting, the computer sent its monarch out close to enemy
+  territory, and a player who caught it there won the game. The monarch
+  was the seat's first builder, so it walked to whatever free pad was
+  nearest wherever that lay (A-012), and it chased what it engaged with no
+  leash. The original never makes the monarch the builder of an expedition
+  (legacy:15528-15545), and its idle monarch roams 400 px of home
+  (legacy:17687-17703). Ours lets it build further than that because the
+  first lodestones are the economy, and holds it back by what the seat can
+  see.
+- Citation: the manual describes no AI rule at this level.
+
 ## T-001: Flying transports load and unload by the ground rules
 
 - Change: The Roc and the Ghost Ship pick up and set down units the way
