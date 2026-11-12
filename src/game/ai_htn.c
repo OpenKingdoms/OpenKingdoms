@@ -204,7 +204,8 @@ const char *AI_Htn_TaskName(AiTask task) {
     case AI_TASK_STAND:     return "stand";
     case AI_TASK_GO_HOME:   return "go home";
     case AI_TASK_ON_WAY_HOME: return "on its way home";
-    case AI_TASK_CLOSE_IN:  return "close in";
+    case AI_TASK_KEEP_HEART: return "keep to the heart of home";
+    case AI_TASK_BUILD_OR_HOME: return "build or go home";
     case AI_TASK_ARM_PRIMARY: return "primary";
     case AI_TASK_ARM_SECONDARY: return "secondary";
     case AI_TASK_ARM_SPECIAL: return "special";
@@ -451,19 +452,20 @@ AiTask AI_Htn_FootingTask(const AiFootingState *s) {
 }
 
 /* A monarch the game rides on turns for home past its ground or on a chase
- * off it, and away from home outmatched, shot or hurt. At home it fights,
- * and idle under fire it cannot answer closes on the shooter (A-017). */
-enum { M_OUTSIDE = 0, M_BUILDING_IN, M_CHASE_OUT, M_OUTMATCHED, M_HURT, M_AT_CORE,
-       M_HEADING_HOME, M_UNDER_FIRE, M_IDLE, M_ANSWERABLE, M_CLOSING, M_COUNT };
-enum { T_MONARCH = 0, T_AWAY, T_HOMEWARD, T_ANSWER, P_GO_HOME, P_ON_WAY, P_CLOSE_IN,
-       P_FREE, MT_COUNT };
+ * off it, and in danger away from the heart of home. In danger at the heart
+ * it stays there, and a walk home goes on while the danger lasts (A-017). */
+enum { M_OUTSIDE = 0, M_IN_BUILD_GROUND, M_BUILDING_IN, M_CHASE_OUT, M_OUTMATCHED,
+       M_UNDER_FIRE, M_HURT, M_AT_CORE, M_HEADING_HOME, M_COUNT };
+enum { T_MONARCH = 0, T_AWAY, T_HEART, T_HOMEWARD, T_STAY, P_GO_HOME, P_ON_WAY,
+       P_HEART, P_BUILD_OR_HOME, P_FREE, MT_COUNT };
 
 static const HtnTask k_monarch_tasks[MT_COUNT] = {
     [T_MONARCH] = {
-        .name = "monarch", .compound = 1, .method_count = 5,
+        .name = "monarch", .compound = 1, .method_count = 4,
         .methods = {
-            { .name = "past its ground",
+            { .name = "past the ground it builds on",
               .pre = { AI_COND(M_OUTSIDE, AI_OP_NE, 0),
+                       AI_COND(M_IN_BUILD_GROUND, AI_OP_EQ, 0),
                        AI_COND(M_BUILDING_IN, AI_OP_EQ, 0) },
               .subtasks = { T_HOMEWARD }, .subtask_count = 1 },
             { .name = "a chase leads off its ground",
@@ -472,17 +474,12 @@ static const HtnTask k_monarch_tasks[MT_COUNT] = {
             { .name = "away from the heart of home",
               .pre = { AI_COND(M_AT_CORE, AI_OP_EQ, 0) },
               .subtasks = { T_AWAY }, .subtask_count = 1 },
-            { .name = "a shot it cannot answer",
-              .pre = { AI_COND(M_UNDER_FIRE, AI_OP_NE, 0),
-                       AI_COND(M_ANSWERABLE, AI_OP_NE, 0),
-                       AI_COND(M_IDLE, AI_OP_NE, 0) },
-              .subtasks = { T_ANSWER }, .subtask_count = 1 },
-            { .name = "free",
-              .subtasks = { P_FREE }, .subtask_count = 1 },
+            { .name = "at the heart of home",
+              .subtasks = { T_HEART }, .subtask_count = 1 },
         },
     },
     [T_AWAY] = {
-        .name = "away", .compound = 1, .method_count = 4,
+        .name = "away", .compound = 1, .method_count = 5,
         .methods = {
             { .name = "outmatched away from home",
               .pre = { AI_COND(M_OUTMATCHED, AI_OP_NE, 0) },
@@ -493,6 +490,26 @@ static const HtnTask k_monarch_tasks[MT_COUNT] = {
             { .name = "hurt away from home",
               .pre = { AI_COND(M_HURT, AI_OP_NE, 0) },
               .subtasks = { T_HOMEWARD }, .subtask_count = 1 },
+            { .name = "past its ground by ground it builds on",
+              .pre = { AI_COND(M_OUTSIDE, AI_OP_NE, 0),
+                       AI_COND(M_BUILDING_IN, AI_OP_EQ, 0) },
+              .subtasks = { P_BUILD_OR_HOME }, .subtask_count = 1 },
+            { .name = "free",
+              .subtasks = { P_FREE }, .subtask_count = 1 },
+        },
+    },
+    [T_HEART] = {
+        .name = "heart", .compound = 1, .method_count = 4,
+        .methods = {
+            { .name = "outmatched at home",
+              .pre = { AI_COND(M_OUTMATCHED, AI_OP_NE, 0) },
+              .subtasks = { T_STAY }, .subtask_count = 1 },
+            { .name = "under fire at home",
+              .pre = { AI_COND(M_UNDER_FIRE, AI_OP_NE, 0) },
+              .subtasks = { T_STAY }, .subtask_count = 1 },
+            { .name = "hurt at home",
+              .pre = { AI_COND(M_HURT, AI_OP_NE, 0) },
+              .subtasks = { T_STAY }, .subtask_count = 1 },
             { .name = "free",
               .subtasks = { P_FREE }, .subtask_count = 1 },
         },
@@ -507,20 +524,21 @@ static const HtnTask k_monarch_tasks[MT_COUNT] = {
               .subtasks = { P_GO_HOME }, .subtask_count = 1 },
         },
     },
-    [T_ANSWER] = {
-        .name = "answer", .compound = 1, .method_count = 2,
+    [T_STAY] = {
+        .name = "stay", .compound = 1, .method_count = 2,
         .methods = {
-            { .name = "closing",
-              .pre = { AI_COND(M_CLOSING, AI_OP_NE, 0) },
+            { .name = "on its way",
+              .pre = { AI_COND(M_HEADING_HOME, AI_OP_NE, 0) },
               .subtasks = { P_ON_WAY }, .subtask_count = 1 },
-            { .name = "close on the shooter",
-              .subtasks = { P_CLOSE_IN }, .subtask_count = 1 },
+            { .name = "keep to the heart",
+              .subtasks = { P_HEART }, .subtask_count = 1 },
         },
     },
-    [P_GO_HOME]  = { .name = "go home" },
-    [P_ON_WAY]   = { .name = "on its way" },
-    [P_CLOSE_IN] = { .name = "close in" },
-    [P_FREE]     = { .name = "free" },
+    [P_GO_HOME]       = { .name = "go home" },
+    [P_ON_WAY]        = { .name = "on its way" },
+    [P_HEART]         = { .name = "keep to the heart" },
+    [P_BUILD_OR_HOME] = { .name = "build or go home" },
+    [P_FREE]          = { .name = "free" },
 };
 
 static const HtnDomain k_monarch = { k_monarch_tasks, MT_COUNT, M_COUNT };
@@ -529,29 +547,29 @@ AiTask AI_Htn_MonarchTask(const AiMonarchState *s, const char **reason) {
     if (reason) *reason = "no state";
     if (!s) return AI_TASK_NONE;
     int32_t w[M_COUNT];
-    w[M_OUTSIDE]      = s->outside ? 1 : 0;
-    w[M_BUILDING_IN]  = s->building_in ? 1 : 0;
-    w[M_CHASE_OUT]    = s->chase_out ? 1 : 0;
-    w[M_OUTMATCHED]   = s->outmatched ? 1 : 0;
-    w[M_HURT]         = s->hurt ? 1 : 0;
-    w[M_AT_CORE]      = s->at_core ? 1 : 0;
-    w[M_HEADING_HOME] = s->heading_home ? 1 : 0;
-    w[M_UNDER_FIRE]   = s->under_fire ? 1 : 0;
-    w[M_IDLE]         = s->idle ? 1 : 0;
-    w[M_ANSWERABLE]   = s->answerable ? 1 : 0;
-    w[M_CLOSING]      = s->closing ? 1 : 0;
+    w[M_OUTSIDE]         = s->outside ? 1 : 0;
+    w[M_IN_BUILD_GROUND] = s->in_build_ground ? 1 : 0;
+    w[M_BUILDING_IN]     = s->building_in ? 1 : 0;
+    w[M_CHASE_OUT]       = s->chase_out ? 1 : 0;
+    w[M_OUTMATCHED]      = s->outmatched ? 1 : 0;
+    w[M_UNDER_FIRE]      = s->under_fire ? 1 : 0;
+    w[M_HURT]            = s->hurt ? 1 : 0;
+    w[M_AT_CORE]         = s->at_core ? 1 : 0;
+    w[M_HEADING_HOME]    = s->heading_home ? 1 : 0;
     HtnPlan plan;
     if (!Htn_Plan(&k_monarch, T_MONARCH, w, &plan) || plan.step_count <= 0)
         return AI_TASK_NONE;
     if (reason && plan.via_count > 0) {
-        int k = plan.via_count > 1 && plan.via_task[1] == T_AWAY ? 1 : 0;
+        int k = plan.via_count > 1 && (plan.via_task[1] == T_AWAY ||
+                                       plan.via_task[1] == T_HEART) ? 1 : 0;
         *reason = k_monarch_tasks[plan.via_task[k]].methods[plan.via_method[k]].name;
     }
     switch (plan.steps[0]) {
-    case P_GO_HOME:  return AI_TASK_GO_HOME;
-    case P_ON_WAY:   return AI_TASK_ON_WAY_HOME;
-    case P_CLOSE_IN: return AI_TASK_CLOSE_IN;
-    default:         return AI_TASK_NONE;
+    case P_GO_HOME:       return AI_TASK_GO_HOME;
+    case P_ON_WAY:        return AI_TASK_ON_WAY_HOME;
+    case P_HEART:         return AI_TASK_KEEP_HEART;
+    case P_BUILD_OR_HOME: return AI_TASK_BUILD_OR_HOME;
+    default:              return AI_TASK_NONE;
     }
 }
 

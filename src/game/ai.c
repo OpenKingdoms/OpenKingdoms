@@ -655,8 +655,10 @@ static int ai_on_way_overlaps(const AiOnWay *w, int def, int32_t x, int32_t y) {
 static int     g_ai_site_for_tower;
 static int     g_ai_site_at_home;
 static int32_t g_ai_site_cx, g_ai_site_cy;
-/* The seat whose kept monarch is searching for a site, or 0 (A-017). */
+/* The seat whose kept monarch is searching for a site, or 0, and how far
+ * from home it may build this think (A-017). */
 static int     g_ai_site_kept;
+static int32_t g_ai_site_reach = AI_MONARCH_BUILD_PX;
 
 static int ai_def_is_tower(const UnitDef *def);
 
@@ -803,7 +805,7 @@ static int ai_site_try(AiSiteSearch *s, int32_t x, int32_t y,
         return 0;
     if (g_ai_site_for_tower && ai_near_own_tower(s->units, &s->on_way, x, y))
         return 0;
-    if (g_ai_site_kept && !ai_monarch_ground(g_ai_site_kept, x, y, AI_MONARCH_BUILD_PX))
+    if (g_ai_site_kept && !ai_monarch_ground(g_ai_site_kept, x, y, g_ai_site_reach))
         return 0;
     for (int i = 0; i < s->bad_n; i++) {
         if (ai_within(x, y, s->bad_x[i], s->bad_y[i], AI_SITE_SKIP_PX))
@@ -1231,7 +1233,7 @@ static int ai_pad_site(const GameWorld *world, const Unit *units,
     if (AI_Influence_At(p, AI_INF_THREAT, wx, wy) >
         AI_Influence_At(p, AI_INF_PRESENCE, wx, wy)) return 0;
     /* A kept monarch takes a pad on its own ground with no enemy seen by. */
-    if (g_ai_site_kept == p && (!ai_monarch_ground(p, wx, wy, AI_MONARCH_BUILD_PX) ||
+    if (g_ai_site_kept == p && (!ai_monarch_ground(p, wx, wy, g_ai_site_reach) ||
                                 AI_Influence_At(p, AI_INF_THREAT, wx, wy) > 0)) return 0;
     if (!Units_IsBuildSiteClear(lode_def, wx, wy)) return 0;
     *out_x = wx;
@@ -1407,9 +1409,12 @@ static int ai_monarch_ground(int p, int32_t x, int32_t y, int32_t reach) {
     int64_t home = dx * dx + dy * dy;
     if (home <= (int64_t)AI_MONARCH_CORE_PX * AI_MONARCH_CORE_PX) return 1;
     if (home > (int64_t)reach * reach) return 0;
+    const GameWorld *world = World_Get();
     for (int q = 1; q <= TAK_MAX_PLAYERS; q++) {
         const AiPlayer *e = &g_ai_players[q];
         if (q == p || !e->base_known || !Units_PlayersAreEnemies(p, q)) continue;
+        /* A seat out of the game threatens nothing from its home. */
+        if (world && (world->stats[q].eliminated || world->resigned[q])) continue;
         int64_t ex = (int64_t)x - e->base_x, ey = (int64_t)y - e->base_y;
         if (ex * ex + ey * ey < 4 * home) return 0;
     }
@@ -1432,11 +1437,15 @@ static int32_t ai_def_reach(const UnitDef *d) {
 }
 
 /* A fight a kept monarch goes to: in its reach where it stands, at the
- * heart of home, or on its ground where we are as strong. */
+ * heart of home, or on its ground where we are as strong. Kept to the
+ * heart, only the first two. */
+static int g_ai_kept_heart;
 static int ai_monarch_may_take(int p, const Unit *u, const UnitDef *d, const Unit *t) {
     if (ai_within(u->world_x, u->world_y, t->world_x, t->world_y, ai_def_reach(d)))
         return 1;
-    if (!ai_monarch_ground(p, t->world_x, t->world_y, AI_MONARCH_GROUND_PX)) return 0;
+    if (!ai_monarch_ground(p, t->world_x, t->world_y,
+                           g_ai_kept_heart ? AI_MONARCH_CORE_PX : AI_MONARCH_GROUND_PX))
+        return 0;
     const AiPlayer *ap = &g_ai_players[p];
     if (ap->base_known &&
         ai_within(t->world_x, t->world_y, ap->base_x, ap->base_y, AI_MONARCH_CORE_PX))
@@ -4629,7 +4638,7 @@ static int ai_shore_site(const Unit *units, int actor_idx, int p, int def_idx,
                         if (!Units_IsBuildSiteFree(def_idx, x, y)) continue;
                         if (ai_on_way_overlaps(&on_way, def_idx, x, y)) continue;
                         if (g_ai_site_kept &&
-                            !ai_monarch_ground(g_ai_site_kept, x, y, AI_MONARCH_BUILD_PX))
+                            !ai_monarch_ground(g_ai_site_kept, x, y, g_ai_site_reach))
                             continue;
                         if (!TAK_PathGroundConnected(world, mc, sd->max_slope, x, y, wx, wy))
                             continue;
@@ -4995,7 +5004,7 @@ static int ai_try_sweep(const GameWorld *world, const Unit *units,
         int32_t fx = 0, fy = 0;
         if (g_ai_rubble[k] < 0 ||
             Features_InstanceCentre(world, g_ai_rubble[k], &fx, &fy) != 0) continue;
-        if (g_ai_site_kept && !ai_monarch_ground(g_ai_site_kept, fx, fy, AI_MONARCH_BUILD_PX))
+        if (g_ai_site_kept && !ai_monarch_ground(g_ai_site_kept, fx, fy, g_ai_site_reach))
             continue;
         int64_t dx = (int64_t)fx - u->world_x, dy = (int64_t)fy - u->world_y;
         int64_t d = dx * dx + dy * dy;
@@ -6094,28 +6103,43 @@ static void ai_transport_home(const GameWorld *world, const Unit *units, int uni
 
 /* ── A monarch the game rides on (A-017) ───────────────────────────── */
 
-/* A kept monarch's turn home before its builds, by the table in
- * ai_htn.c, or at home its walk to see a shooter it cannot. 1 when that
- * took its think. */
+/* What a kept monarch's think comes to: free, taken by its walk home, kept
+ * to the heart of home, or a build where it stands or else home. */
+enum { AI_KEEP_FREE = 0, AI_KEEP_TOOK, AI_KEEP_HEART, AI_KEEP_BUILD_OR_HOME };
 #define AI_MONARCH_FIRE_TICKS 120
 
+/* A spot round home's point, as a hurt builder takes (legacy:17458). */
+static void ai_monarch_send_home(const Unit *units, int i, int p) {
+    const AiPlayer *ap = &g_ai_players[p];
+    const Unit *u = &units[i];
+    if (u->cmd_kind == UNIT_CMD_BUILD && ai_on_way_def(u) >= 0) g_ai_census.n = -1;
+    if (u->cmd_kind != UNIT_CMD_NONE && u->cmd_kind != UNIT_CMD_MOVE) Units_StopUnit(i);
+    int32_t dx = (int32_t)ai_rand(2 * AI_BUILDER_HOME_PX + 1) - AI_BUILDER_HOME_PX;
+    int32_t dy = (int32_t)ai_rand(2 * AI_BUILDER_HOME_PX + 1) - AI_BUILDER_HOME_PX;
+    Units_CommandMoveUnit(i, ap->base_x + dx / 2, ap->base_y + dy / 2);
+    g_ai_counts[p][TAK_AI_COUNT_MONARCH_HOME]++;
+}
+
+/* A kept monarch's state before its builds, read by the table in
+ * ai_htn.c: its ground, a chase off it, and the dangers that send it home
+ * or keep it at the heart of home. */
 static int ai_monarch_keep_home(const GameWorld *world, const Unit *units, int unit_count,
                                 int i, int p, const UnitDef *def) {
     const AiPlayer *ap = &g_ai_players[p];
     const Unit *u = &units[i];
-    if (!ap->base_known || def->max_velocity <= 0.0f) return 0;
+    if (!ap->base_known || def->max_velocity <= 0.0f) return AI_KEEP_FREE;
     AiMonarchState ms;
     memset(&ms, 0, sizeof(ms));
     ms.outside = !ai_monarch_ground(p, u->world_x, u->world_y, AI_MONARCH_GROUND_PX);
+    ms.in_build_ground = ai_monarch_ground(p, u->world_x, u->world_y, AI_MONARCH_BUILD_PX);
     ms.building_in = u->cmd_kind == UNIT_CMD_BUILD &&
                      ai_monarch_ground(p, u->cmd_x, u->cmd_y, AI_MONARCH_BUILD_PX);
     int32_t threat = AI_Influence_At(p, AI_INF_THREAT, u->world_x, u->world_y);
     ms.outmatched = threat > AI_Influence_At(p, AI_INF_PRESENCE, u->world_x, u->world_y);
-    ms.hurt = threat > 0 && u->max_health > 0 && u->health * 2 < u->max_health;
+    ms.hurt = u->max_health > 0 && u->health * 2 < u->max_health;
     ms.at_core = ai_within(u->world_x, u->world_y, ap->base_x, ap->base_y, AI_MONARCH_CORE_PX);
     ms.heading_home = u->cmd_kind == UNIT_CMD_MOVE &&
                       ai_within(u->cmd_x, u->cmd_y, ap->base_x, ap->base_y, AI_MONARCH_CORE_PX);
-    ms.idle = u->cmd_kind == UNIT_CMD_NONE;
     int32_t reach = ai_def_reach(def);
     if (u->cmd_kind == UNIT_CMD_ATTACK && u->target >= 0 && u->target < unit_count) {
         const Unit *t = &units[u->target];
@@ -6125,7 +6149,6 @@ static int ai_monarch_keep_home(const GameWorld *world, const Unit *units, int u
     }
     /* A shot it cannot answer, by the last hit units.c keeps on it. */
     int shooter = -1;
-    int32_t near_x = 0, near_y = 0;
     if (u->hit_by && Units_SimTick() - u->hit_tick <= AI_MONARCH_FIRE_TICKS)
         shooter = Units_FindByStableId(u->hit_by);
     if (shooter >= 0 && shooter < unit_count && units[shooter].alive == UNIT_ALIVE_ACTIVE &&
@@ -6134,35 +6157,19 @@ static int ai_monarch_keep_home(const GameWorld *world, const Unit *units, int u
         const Unit *sh = &units[shooter];
         ms.under_fire = !ai_visible_to(world, p, sh) ||
                         !ai_within(u->world_x, u->world_y, sh->world_x, sh->world_y, reach);
-        ms.answerable = ai_monarch_ground(p, sh->world_x, sh->world_y, AI_MONARCH_GROUND_PX);
-        /* Where it would see the shooter, on its own side of it. */
-        int32_t see = def->sight_distance < reach ? def->sight_distance : reach;
-        see = see > 64 ? see - 32 : 32;
-        int64_t dx = (int64_t)u->world_x - sh->world_x, dy = (int64_t)u->world_y - sh->world_y;
-        int32_t d = ai_squad_dist(u->world_x, u->world_y, sh->world_x, sh->world_y);
-        near_x = sh->world_x + (d > 0 ? (int32_t)(dx * see / d) : 0);
-        near_y = sh->world_y + (d > 0 ? (int32_t)(dy * see / d) : 0);
-        ms.closing = u->cmd_kind == UNIT_CMD_MOVE &&
-                     ai_within(u->cmd_x, u->cmd_y, sh->world_x, sh->world_y, see + 32);
     }
     const char *why = NULL;
     AiTask task = AI_Htn_MonarchTask(&ms, &why);
-    if (task == AI_TASK_NONE) return 0;
-    if (task == AI_TASK_ON_WAY_HOME) return 1;
-    if (u->cmd_kind == UNIT_CMD_BUILD && ai_on_way_def(u) >= 0) g_ai_census.n = -1;
-    if (u->cmd_kind != UNIT_CMD_NONE && u->cmd_kind != UNIT_CMD_MOVE) Units_StopUnit(i);
-    if (task == AI_TASK_CLOSE_IN) {
-        Units_CommandMoveUnit(i, near_x & ~15, near_y & ~15);
-    } else {
-        /* A spot round home's point, as a hurt builder takes (legacy:17458). */
-        int32_t dx = (int32_t)ai_rand(2 * AI_BUILDER_HOME_PX + 1) - AI_BUILDER_HOME_PX;
-        int32_t dy = (int32_t)ai_rand(2 * AI_BUILDER_HOME_PX + 1) - AI_BUILDER_HOME_PX;
-        Units_CommandMoveUnit(i, ap->base_x + dx / 2, ap->base_y + dy / 2);
-        g_ai_counts[p][TAK_AI_COUNT_MONARCH_HOME]++;
+    if (task == AI_TASK_GO_HOME) {
+        ai_monarch_send_home(units, i, p);
+        if (ai_trace())
+            fprintf(stderr, "AI %d: monarch goes home, %s\n", p, why ? why : "");
+        return AI_KEEP_TOOK;
     }
-    if (ai_trace())
-        fprintf(stderr, "AI %d: monarch %s, %s\n", p, AI_Htn_TaskName(task), why ? why : "");
-    return 1;
+    if (task == AI_TASK_ON_WAY_HOME) return AI_KEEP_TOOK;
+    if (task == AI_TASK_KEEP_HEART) return AI_KEEP_HEART;
+    if (task == AI_TASK_BUILD_OR_HOME) return AI_KEEP_BUILD_OR_HOME;
+    return AI_KEEP_FREE;
 }
 
 /* ── Which attack a fight takes (legacy:19008-19242) ───────────────── */
@@ -6560,7 +6567,9 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
         ai_cat = (def->cap_flags & UNIT_CAP_BUILDER) ? 5 : 6;
         if (ai_step_out_of_fire(world, units, unit_count, i, def, p)) continue;
         int kept = ai_monarch_kept(world, p, def);
-        if (kept && ai_monarch_keep_home(world, units, unit_count, i, p, def)) continue;
+        int keep = kept ? ai_monarch_keep_home(world, units, unit_count, i, p, def)
+                        : AI_KEEP_FREE;
+        if (keep == AI_KEEP_TOOK) continue;
         if ((def->cap_flags & UNIT_CAP_BUILDER) && def->max_velocity > 0.0f &&
             ai_builder_retreats(units, i, p, def)) {
             continue;
@@ -6616,9 +6625,11 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
                     if (cls == AI_ACTOR_BUILDER)
                         own.allowed[AI_ACT_TRAIN_TRANSPORT] = pc.allowed[AI_ACT_TRAIN_TRANSPORT];
                     act = AI_Plan_NextAction(&ps, &own, cls, &goal);
-                    /* A kept monarch sites on its ground and plans past a step
-                     * with no site there (A-017). */
+                    /* A kept monarch sites on its ground, or at the heart of
+                     * home in danger, and plans past a step with no site there. */
                     if (kept) g_ai_site_kept = p;
+                    g_ai_site_reach = keep == AI_KEEP_HEART ? AI_MONARCH_CORE_PX
+                                                            : AI_MONARCH_BUILD_PX;
                     for (int tries = 0; act != AI_ACT_NONE; tries++) {
                         if (ai_execute_build(world, units, unit_count, i, def, act)) break;
                         if (!kept || tries >= 2) { act = AI_ACT_NONE; break; }
@@ -6627,6 +6638,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
                         act = AI_Plan_NextAction(&ps, &own, cls, &goal);
                     }
                     g_ai_site_kept = 0;
+                    g_ai_site_reach = AI_MONARCH_BUILD_PX;
                 }
                 if (act != AI_ACT_NONE) {
                     if (ai_trace()) {
@@ -6639,9 +6651,16 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
                     continue;
                 }
             }
+            /* Past its ground with nothing to build there, it goes home. */
+            if (keep == AI_KEEP_BUILD_OR_HOME && u->cmd_kind != UNIT_CMD_BUILD) {
+                ai_monarch_send_home(units, i, p);
+                continue;
+            }
             if (def->num_weapons > 0 && def->max_velocity > 0.0f &&
                 u->cmd_kind == UNIT_CMD_NONE) {
+                g_ai_kept_heart = keep == AI_KEEP_HEART;
                 ai_engage_nearby(world, units, unit_count, i, def);
+                g_ai_kept_heart = 0;
             }
             if (cls == AI_ACTOR_BUILDER && u->cmd_kind == UNIT_CMD_NONE) {
                 /* A cut off seat's builder at sea stays off the narrows. */

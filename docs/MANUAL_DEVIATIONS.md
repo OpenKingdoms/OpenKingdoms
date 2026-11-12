@@ -1065,19 +1065,20 @@ Format per entry:
 
 - Change: with Monarch Expendable off, under `TAK_AI_TACTIC_MONARCH`, a
   computer's monarch keeps to its own ground. That is within 1280 px of
-  home and twice as near home as any enemy's, and always the 480 px at the
-  heart of home. It builds out to 2048 px on the same terms, a pad only
-  where no enemy is seen near it, and leaves a pad or a yard past that to
-  its other builders. Past its ground, or on a chase that leads off it, it
-  turns for home. Away from the heart of home it also turns for home when
-  the enemy it can see outweighs its side where it stands, when it is shot
-  by what it cannot see or reach, and when it is under half its hit points
-  with the enemy near. It takes a fight only in its reach, at the heart of
-  home, or on its ground where its side is as strong. At the heart of home
-  it fights what comes, and idle under fire from what it cannot see or
-  reach it walks to where it would see the shooter. The rules are a table in
-  `src/game/ai_htn.c`. With Monarch Expendable on the monarch plays as
-  before.
+  home and twice as near home as any enemy still in the game, and always
+  the 480 px at the heart of home. It builds out to 2048 px on the same
+  terms, a pad only where no enemy is seen near it, and leaves a pad or a
+  yard past that to its other builders. Done with a build out there, it
+  takes the next one there or goes home. Past that ground, or on a chase
+  that leads off its ground, it turns for home. It is in danger when the
+  enemy it can see outweighs its side where it stands, when it is shot by
+  what it cannot see or reach, and when it is under half its hit points.
+  In danger away from the heart of home it turns for home and walks on
+  while the danger lasts. In danger at the heart of home it stays there
+  and builds and fights only there. It takes a fight only in its reach, at
+  the heart of home, or on its ground where its side is as strong. The
+  rules are a table in `src/game/ai_htn.c`. With Monarch Expendable on the
+  monarch plays as before.
 - Why: from playtesting, the computer sent its monarch out close to enemy
   territory, and a player who caught it there won the game. The monarch
   was the seat's first builder, so it walked to whatever free pad was

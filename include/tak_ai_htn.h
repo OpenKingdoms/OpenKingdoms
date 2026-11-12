@@ -33,7 +33,8 @@ typedef enum {
     AI_TASK_STAND,      /* warships wait at their berths */
     AI_TASK_GO_HOME,    /* a monarch turns for home */
     AI_TASK_ON_WAY_HOME,/* and keeps on its way there */
-    AI_TASK_CLOSE_IN,   /* a monarch closes on a shooter it cannot answer */
+    AI_TASK_KEEP_HEART, /* it builds and fights only at the heart of home */
+    AI_TASK_BUILD_OR_HOME, /* it builds where it stands, or else goes home */
     AI_TASK_ARM_PRIMARY,  /* a unit takes up its first attack */
     AI_TASK_ARM_SECONDARY,
     AI_TASK_ARM_SPECIAL,
@@ -144,20 +145,18 @@ AiTask AI_Htn_FootingTask(const AiFootingState *s);
  * builds (A-017). Its ground is home and what lies near it. */
 typedef struct AiMonarchState {
     int outside;        /* it stands past its ground */
-    int building_in;    /* on a build the seat sited inside its ground */
+    int in_build_ground;/* but inside the ground it builds on */
+    int building_in;    /* on a build the seat sited inside that ground */
     int chase_out;      /* its target is past its ground and its reach */
     int outmatched;     /* seen enemy strength where it stands outweighs ours */
-    int hurt;           /* under half its hit points with the enemy near */
+    int under_fire;     /* hit by what it does not see or cannot reach */
+    int hurt;           /* under half its hit points */
     int at_core;        /* it stands at the heart of home */
     int heading_home;   /* it is already walking there */
-    int under_fire;     /* hit by what it does not see or cannot reach */
-    int idle;           /* it has no order */
-    int answerable;     /* the shooter stands on its ground */
-    int closing;        /* already walking to where it would see the shooter */
 } AiMonarchState;
 
-/* AI_TASK_GO_HOME, AI_TASK_CLOSE_IN, AI_TASK_ON_WAY_HOME, or
- * AI_TASK_NONE when it is free to build and fight. */
+/* AI_TASK_GO_HOME, AI_TASK_ON_WAY_HOME, AI_TASK_KEEP_HEART,
+ * AI_TASK_BUILD_OR_HOME, or AI_TASK_NONE when it is free. */
 AiTask AI_Htn_MonarchTask(const AiMonarchState *s, const char **reason);
 
 /* A computer's unit that can switch attacks, asked each think which to
