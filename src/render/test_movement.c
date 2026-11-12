@@ -24,6 +24,8 @@
 #include "tak_economy.h"
 #include "tak_fog.h"
 #include "tak_sim_rand.h"
+#include "tak_sim_hash.h"
+#include "tak_savegame.h"
 
 #include <SDL.h>
 #include <stdio.h>
@@ -1439,6 +1441,58 @@ TEST(a_shipyard_leaves_a_ship_parked_by_its_rally_point_alone) {
     mv_end();
 }
 
+/* The hulls standing on the map, a yard's products under way included. */
+static int mv_hulls(void) {
+    int count = 0, n = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count; i++)
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].def_idx == MV_DEF_GALLEY) n++;
+    return n;
+}
+
+/* A world that loads a snapshot of a tick and one that played that tick
+ * see the same ships when the next tick's orders run. A second yard told
+ * to begin beside the hull its neighbour began on that tick then does
+ * the same on both, and the two hash alike. */
+TEST(a_loaded_world_sees_the_ships_a_running_one_does) {
+    ASSERT_NOT_NULL(mv_sea());
+    int32_t yx = 1536, yy = 1536;
+    int y1 = Units_Spawn(MV_DEF_YARD, 1, 0, yx, yy);
+    int y2 = Units_Spawn(MV_DEF_YARD, 1, 0, yx, yy - 96);
+    ASSERT(y1 >= 0 && y2 >= 0);
+    Units_FactorySetRally(y1, yx + 900, yy + 300);
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(y1, MV_DEF_GALLEY));
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(y1, MV_DEF_GALLEY));
+    ASSERT_EQ_INT(1, mv_hulls());
+    /* Up to the tick the second hull goes up inside the tick. */
+    int t = 0;
+    for (; t < 9000 && mv_hulls() < 2; t++) Units_TickEngines();
+    ASSERT_EQ_INT(2, mv_hulls());
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    size_t len = 0;
+    uint8_t *snap = Save_WriteMemory(&len, err, sizeof err);
+    if (!snap) printf("(%s) ", err);
+    ASSERT_NOT_NULL(snap);
+
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(y2, MV_DEF_GALLEY));
+    Units_TickEngines();
+    uint32_t played = TAK_SimHash();
+    int played_hulls = mv_hulls();
+
+    TAK_SaveGame *sg = Save_ReadMemory(snap, len, err, sizeof err);
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(0, Save_Apply(sg, err, sizeof err));
+    Save_ReadClose(sg);
+    tak_free(snap);
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(y2, MV_DEF_GALLEY));
+    Units_TickEngines();
+    uint32_t loaded = TAK_SimHash();
+    printf("(second hull after %d ticks, %d hulls played on, %d loaded, %08x and %08x) ",
+           t, played_hulls, mv_hulls(), (unsigned)played, (unsigned)loaded);
+    ASSERT(played == loaded);
+    mv_end();
+}
+
 /* A fleet sent through a strait about two hulls wide gets through with
  * no hull through another. Past it there is room for the fleet in line. */
 TEST(a_fleet_sails_a_narrow_strait) {
@@ -2746,6 +2800,7 @@ int main(int argc, char **argv) {
     RUN(a_shipyard_launches_ship_after_ship);
     RUN(a_shipyard_builds_past_an_idle_ship_on_its_pad);
     RUN(a_shipyard_leaves_a_ship_parked_by_its_rally_point_alone);
+    RUN(a_loaded_world_sees_the_ships_a_running_one_does);
     RUN(a_fleet_sails_a_narrow_strait);
     RUN(a_ground_crowd_packs_as_it_did);
     TEST_SUITE("Flyers");

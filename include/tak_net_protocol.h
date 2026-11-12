@@ -182,8 +182,9 @@
  * fights at sea, sends more boats for a large army, lets a builder ride,
  * and sends no walker at a target it cannot reach by ground. 67: a mod's
  * sight jammer lays a haze on its ground, and one with no script comes on
- * when built. */
-#define TAK_ENGINE_BUILD_ID           67
+ * when built. 68: a tick's orders read the ships the last tick left, as
+ * a world loaded from its snapshot does. */
+#define TAK_ENGINE_BUILD_ID           68
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
