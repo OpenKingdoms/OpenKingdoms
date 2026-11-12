@@ -40,6 +40,7 @@
 #define TAK_ROOM_CODE_ALPHABET "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 #define TAK_ROOM_TIMEOUT_MIN   30    /* the original's own bounds */
 #define TAK_ROOM_TIMEOUT_MAX   150
+#define TAK_ROOM_TIMEOUT_DEFAULT 60  /* what a room this build hosts asks for */
 #define TAK_ROOM_SIDES         4     /* Aramon, Taros, Veruna, Zhon */
 #define TAK_ROOM_COLOURS       10
 #define TAK_ROOM_TEAMS         4     /* 0 means every player for themselves */

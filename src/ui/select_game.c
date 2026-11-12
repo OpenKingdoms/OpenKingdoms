@@ -481,9 +481,9 @@ static void host_game(void) {
     cr.flags = TAK_ROOMF_LISTED | TAK_ROOMF_ALLOW_WATCHING |
                TAK_ROOMF_AI_TAKES_OVER | TAK_ROOMF_DROP_IN;
     cr.max_players = TAK_NET_SEATS;
-    /* A dropped player's seat is held as long as the original allows,
-     * so a closed tab has time to reload and rejoin (#293). */
-    cr.timeout_secs = TAK_ROOM_TIMEOUT_MAX;
+    /* A dropped player's seat is held a minute, time for a closed tab to
+     * reload and rejoin (#293) without the others waiting long. */
+    cr.timeout_secs = TAK_ROOM_TIMEOUT_DEFAULT;
     /* The rules this build plays a skirmish under. Sending nothing
      * reads as every rule off, which is not a default anybody chose:
      * line of sight alone is a different battle. */
@@ -699,6 +699,8 @@ int SelectGame_Init(TAK_Platform *platform) {
 
     NetSession_DefaultAddress(sg.address, sizeof sg.address);
     if (!sg.address[0]) load_address();
+    /* The longest any room holds a seat, since a reloaded page no longer
+     * knows its room's. The relay hands a match back after that too. */
     if (Settings_GetStr("RejoinMatch", "")[0])
         sg.rejoin_until_ms = SDL_GetTicks64() + (uint64_t)TAK_ROOM_TIMEOUT_MAX * 1000u;
     if (sg.address[0]) {

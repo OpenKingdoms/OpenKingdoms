@@ -88,9 +88,11 @@ int  InGame_CommandCursorOn(int mode, int hit, int32_t world_x, int32_t world_y)
 
 /* One left-button drag box on the game world, corners in world
  * coordinates. The tick calls this on release and tests call it
- * directly. */
+ * directly. mods holds IG_CLICK_SHIFT to add to the selection and
+ * IG_DRAG_NO_MONARCH for M held during the drag. */
+#define IG_DRAG_NO_MONARCH 4
 void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
-                      int shift_held);
+                      int mods);
 
 /* Test seam: a control group key, assign = ctrl held. Runs the same
  * dispatch the keyboard reaches. */
