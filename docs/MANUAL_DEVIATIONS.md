@@ -1091,17 +1091,16 @@ Format per entry:
 - Measured: 20 minute games of every kingdom against itself with the seats
   swapped, Monarch Expendable off, a seat with this and the original's
   choice of attack against one with neither. On Two Castles and Tarosian
-  Plain, 60 games, its monarch fell in 13 against 19. It won 19 against 13
-  and was ahead at the end of an undecided game in 10 against 18, so it
-  won or was ahead in 29 against 31. Its monarch spent 1,132 seconds more
-  than 1280 px from home against 25,033. This alone, on Two Castles, 30
-  games: monarch lost in 6 against 10, won 10 against 6, won or ahead 12
-  against 18. The seat keeps its strongest unit out of the fighting away
-  from home and ends an undecided game with less standing. Against a
-  monarch and eight troops sent at the computer's monarch in the fourth
-  minute it stood in 56 of 60 games against 33 of 60. With Monarch
-  Expendable on, 20 games on Two Castles, it won or was ahead in 11
-  against 9.
+  Plain, 60 games, its monarch fell in 15 against 22. It won 22 against 15
+  and was ahead at the end of an undecided game in 9 against 14, so it won
+  or was ahead in 31 against 29. Its monarch spent 1,211 seconds more than
+  1280 px from home against 27,287. This alone, on Two Castles, 30 games:
+  monarch lost in 7 against 12, won 12 against 7, won or ahead 15 against
+  15. The seat keeps its strongest unit out of the fighting away from home
+  and ends an undecided game with less standing. Against a monarch and
+  eight troops sent at the computer's monarch in the fourth minute it
+  stood in 56 of 60 games against 33 of 60. With Monarch Expendable on, 20
+  games on Two Castles, it won or was ahead in 11 against 9.
 - Citation: the manual describes no AI rule at this level.
 
 ## T-001: Flying transports load and unload by the ground rules
