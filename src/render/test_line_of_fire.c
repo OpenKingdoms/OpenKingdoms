@@ -3778,6 +3778,22 @@ TEST(a_walker_on_a_move_order_fires_at_what_it_passes) {
     ASSERT_EQ_INT(0, blade_turned);
 }
 
+/* Hold fire drops what a walker's weapons took at once, before the
+ * next fire tick can loose at it (legacy:9820-9846). */
+TEST(hold_fire_drops_what_a_walker_took) {
+    ASSERT(lf_world(0, 0));
+    int a = Units_Spawn(LF_ARCHER, 1, 0, LF_SX, LF_ROW);
+    int n = lf_spawn(LF_TARGET, 2, LF_SX + 700, LF_ROW - 300);
+    ASSERT(a >= 0 && n >= 0);
+    Units_DebugSetAggro(a, UNIT_AGGRO_OFFENSIVE);
+    Units_CommandMoveUnit(a, LF_SX + 1400, LF_ROW);
+    for (int i = 0; i < 4000 && lf_unit(a)->pass_id == 0; i++) Units_TickEngines();
+    ASSERT(lf_unit(a)->pass_id != 0);
+    ASSERT(Units_OrderSetAggro(a, UNIT_AGGRO_PASSIVE));
+    ASSERT_EQ_INT(0, (int)lf_unit(a)->pass_id);
+    lf_end();
+}
+
 /* A maneuvering unit that takes the nearest looks again too, not only a
  * random picker, and takes what it finds only inside its leash
  * (legacy:11520). One that roams has no leash (legacy:13733-13737).
@@ -4576,6 +4592,7 @@ int main(int argc, char **argv) {
     RUN(a_blade_with_its_target_in_reach_keeps_it);
     RUN(a_blade_on_its_way_takes_what_walks_past);
     RUN(a_walker_on_a_move_order_fires_at_what_it_passes);
+    RUN(hold_fire_drops_what_a_walker_took);
     RUN(a_walker_whose_shots_stop_short_finds_a_place_to_shoot_from);
     RUN(a_walker_whose_shots_land_does_not_move);
     RUN(a_walker_that_can_find_no_place_gives_up_only_on_its_own_target);

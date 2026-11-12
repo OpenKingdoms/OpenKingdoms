@@ -5369,6 +5369,8 @@ int Units_OrderSetAggro(int handle, int aggro_mode) {
     if (aggro_mode == UNIT_AGGRO_PASSIVE && u->cmd_kind == UNIT_CMD_NONE) {
         u->target = -1;
     }
+    /* Hold fire drops what a walker's weapons took (legacy:9820-9846). */
+    if (aggro_mode == UNIT_AGGRO_PASSIVE) u->pass_id = 0;
     return 1;
 }
 
