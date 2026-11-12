@@ -17050,6 +17050,9 @@ void Units_TickEngines(void) {
         if (wind_heard) wind_world->wind_changed = 0;
         if ((g_sim_tick & 1u) == 0) Features_TickFrame(wind_world);
     }
+    /* The ships again as the tick leaves them: the next tick's orders run
+     * before its own gather, and a world loaded from here reads these. */
+    ships_rebuild();
     double e4 = eng_now_ms();
     g_eng_prof_ms[2] += e4 - e3;
     g_eng_prof_ms[3] += e3 - e2;
