@@ -328,8 +328,11 @@ int Chat_Submit(uint32_t now_ms) {
      * active player and nothing leaves the machine. */
     TAK_MsgChat m;
     memset(&m, 0, sizeof(m));
+    /* The relay stamps the seat as it passes the line on. Ours is the
+     * wire's count, from zero. */
     m.scope     = TAK_CHAT_ALL;
-    m.from_seat = (uint8_t)ch.local_slot;
+    m.from_seat = (ch.local_slot >= 1 && ch.local_slot <= TAK_NET_SEATS)
+                ? (uint8_t)(ch.local_slot - 1) : TAK_NET_SEAT_NONE;
     m.to_seat   = TAK_NET_SEAT_NONE;
     m.turn      = 0;
     snprintf(m.name, sizeof(m.name), "%s", ch.local_name);
@@ -337,9 +340,9 @@ int Chat_Submit(uint32_t now_ms) {
 
     ch.last_frame_len = TAK_Msg_ChatEncode(&m, ch.last_frame,
                                            sizeof(ch.last_frame));
-    if (ch.send && ch.last_frame_len > 0) {
-        ch.send(ch.last_frame, ch.last_frame_len, ch.send_user);
-    }
+    int unsent = 0;
+    if (ch.send && ch.last_frame_len > 0)
+        unsent = ch.send(ch.last_frame, ch.last_frame_len, ch.send_user) != 0;
 
     /* Your own line is stored with type 4 and your own slot. Only a
      * received line is type 8, which is why ChatLevel off hides your own
@@ -347,6 +350,9 @@ int Chat_Submit(uint32_t now_ms) {
     chat_push_named(formatted, CHAT_TYPE_MINE, ch.local_slot, now_ms,
                     (int)strlen(ch.local_name) + 1);
     if (note[0]) Chat_Push(note, CHAT_TYPE_NOTICE, CHAT_OWNER_SYSTEM, now_ms);
+    if (unsent)
+        Chat_Push("That line did not reach the other players.", CHAT_TYPE_NOTICE,
+                  CHAT_OWNER_SYSTEM, now_ms);
     chat_close();
     return 1;
 }
@@ -957,6 +963,26 @@ static int entry_seat(const ChatEntry *e) {
     return (e->owner >= 1 && e->owner <= TAK_MAX_PLAYERS) ? e->owner : 0;
 }
 
+/* The seat an entry is drawn for and its colour and side, from the
+ * battle's own setup, which every machine shares. */
+static int entry_style(const ChatEntry *e, int *colour, int *side) {
+    int seat = entry_seat(e);
+    const GameWorld *w = World_Get();
+    if (colour) *colour = (seat && w) ? w->cfg.players[seat - 1].color : 0;
+    if (side) *side = (seat && w) ? w->cfg.players[seat - 1].side : -1;
+    return seat;
+}
+
+int Chat_EntryStyle(int index, int *colour, int *side) {
+    const ChatEntry *e = ring_at(index);
+    if (!e) {
+        if (colour) *colour = 0;
+        if (side) *side = -1;
+        return 0;
+    }
+    return entry_style(e, colour, side);
+}
+
 /* Where an entry's text starts at one to one: past the badge for a
  * player, at the margin for a system line. */
 static int entry_text_x(const ChatEntry *e) {
@@ -1038,7 +1064,6 @@ void Chat_Draw(SDL_Surface *off) {
     }
     int r0 = r;
     if (SDL_MUSTLOCK(off)) SDL_LockSurface(off);
-    const GameWorld *w = World_Get();
     while (r < ch.row_count) {
         /* One message: its rows share a plate, and its first carries
          * the badge. */
@@ -1051,11 +1076,10 @@ void Chat_Draw(SDL_Surface *off) {
 
         ChatInk name_ink = Chat_SystemInk(), text_ink = Chat_SystemInk();
         const ChatBadge *badge = NULL;
-        int seat = entry_seat(e);
-        if (seat) {
-            int colour = w ? w->cfg.players[seat - 1].color : 0;
+        int colour, side;
+        if (entry_style(e, &colour, &side)) {
             Chat_PlayerInk(colour, &name_ink, &text_ink);
-            if (w) badge = badge_for(w->cfg.players[seat - 1].side, colour);
+            if (side >= 0) badge = badge_for(side, colour);
         }
         /* A line with no name, a fall or an order, reads in the strong ink. */
         if (!e->name_len) text_ink = name_ink;

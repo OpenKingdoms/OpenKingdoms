@@ -54,6 +54,9 @@ static struct {
     /* The watchers already told about, by name. */
     char           watched_by[TAK_NET_WATCHERS_MAX][TAK_NET_NAME_MAX];
     int            watched_count;
+    /* Our last lines sent, so a watcher knows its own coming back. */
+    char           said[4][TAK_NET_CHAT_MAX];
+    int            said_next;
 } g_match;
 
 void TAK_Match_Begin(TAK_NetClient *client, uint8_t seat, uint8_t turn_ticks) {
@@ -368,6 +371,44 @@ void TAK_Match_SetBeaten(void) {
      * worlds are compared, and one that parts is rebuilt alone. */
     if (g_match.client && g_match.seat != TAK_NET_SEAT_NONE)
         (void)TAK_NetClient_Resign(g_match.client);
+}
+
+int TAK_Match_SendChat(const void *frame, size_t len, void *user) {
+    (void)user;
+    if (!g_match.live || !g_match.client) return 0;
+    TAK_NetFrame f;
+    TAK_MsgChat m;
+    if (!frame || TAK_Net_Split((const uint8_t *)frame, len, &f) != 0 ||
+        f.type != TAK_MSG_CHAT || TAK_Msg_ChatDecode(&m, f.payload, f.payload_len) != 0)
+        return -1;
+    if (TAK_NetClient_BattleChat(g_match.client, &m) != 0) return -1;
+    memcpy(g_match.said[g_match.said_next], m.text, TAK_NET_CHAT_MAX);
+    g_match.said_next = (g_match.said_next + 1) % 4;
+    return 0;
+}
+
+/* Our own line back from the relay. A seated machine is sent a line with
+ * no seat only as its own, when the relay counts it a watcher. A real
+ * watcher's is known by our name and a line we sent. */
+static int match_own_line(const TAK_NetClient *c, const TAK_MsgChat *m) {
+    if (m->from_seat != TAK_NET_SEAT_NONE) return m->from_seat == c->seat;
+    if (!m->name[0]) return 0;
+    if (c->seat != TAK_NET_SEAT_NONE) return 1;
+    if (strncmp(m->name, c->name, TAK_NET_NAME_MAX) != 0) return 0;
+    for (int i = 0; i < 4; i++) {
+        if (!g_match.said[i][0] || strncmp(g_match.said[i], m->text, TAK_NET_CHAT_MAX) != 0)
+            continue;
+        g_match.said[i][0] = '\0';
+        return 1;
+    }
+    return 0;
+}
+
+int TAK_Match_TakeChat(TAK_MsgChat *out) {
+    if (!g_match.live || !g_match.client || !out) return 0;
+    while (TAK_NetClient_TakeChat(g_match.client, out))
+        if (!match_own_line(g_match.client, out)) return 1;
+    return 0;
 }
 
 /* How many of `list` are called `name`. */

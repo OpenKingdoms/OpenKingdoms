@@ -122,4 +122,13 @@ int  TAK_Match_ReportResult(TAK_MsgMatchResult *m);
 /* 1 once this match's result has gone out. */
 int  TAK_Match_Reported(void);
 
+/* Battle chat rides the match's link beside the turns, never in them,
+ * so no line reaches the simulation. SendChat takes the TAK_MSG_CHAT
+ * frame the chat console encodes, in the console's sender shape: 0 when
+ * it went or there is no match to hear it, -1 when the link had no room.
+ * TakeChat gives the next line from someone else, 1 with *out filled,
+ * and drops the copy of our own line the relay hands back. */
+int  TAK_Match_SendChat(const void *frame, size_t len, void *user);
+int  TAK_Match_TakeChat(TAK_MsgChat *out);
+
 #endif /* TAK_NET_MATCH_H */

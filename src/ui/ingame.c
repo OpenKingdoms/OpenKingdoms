@@ -970,7 +970,15 @@ int InGame_Init(TAK_Platform *platform) {
             cw->cfg.players[me - 1].name[0]) {
             who = cw->cfg.players[me - 1].name;
         }
-        Chat_SetLocalPlayer(me, who);
+        /* A watcher holds no seat and speaks as one. */
+        if (TAK_Match_IsWatching()) {
+            const char *self = Settings_GetStr("PlayerName", "");
+            Chat_SetLocalPlayer(CHAT_OWNER_SYSTEM, self && self[0] ? self : "Player");
+        } else {
+            Chat_SetLocalPlayer(me, who);
+        }
+        /* A match carries the lines, beside its turns and never in them. */
+        Chat_SetSender(TAK_Match_IsLive() ? TAK_Match_SendChat : NULL, NULL);
     }
 
     /* The banner dialogs are one label each in font48
@@ -2043,6 +2051,11 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         return GAMESTATE_IN_GAME;
     }
     TAK_Match_Pump();
+    /* The other players' chat, shown as it comes and never simulated. */
+    {
+        TAK_MsgChat said;
+        while (TAK_Match_TakeChat(&said)) Chat_OnMessage(&said, SDL_GetTicks());
+    }
     /* Whoever began or stopped watching, as a system line. */
     {
         const char *self = Settings_GetStr("PlayerName", "");

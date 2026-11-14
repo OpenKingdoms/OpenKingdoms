@@ -349,7 +349,14 @@ Chat rides its own channel rather than the turn stream, so it is never
 delayed by a turn and cannot affect the hash. The server stamps each line
 with the turn number and writes it into the server side replay. The
 original's rules stay: 256 characters, watcher chat reaching only watchers,
-direct messages, and the 30 line ring.
+direct messages, and the 30 line ring. In a battle the console sends each
+line to everyone in the match, as the original's default goes to every
+other human player, and
+the battle takes the lines that came each frame. The client holds the last
+eight for it and drops the room's talk when the match starts. The copy the
+relay hands back to the sender is dropped, since the sender already shows
+its own line. A line never takes more than half the link's out queue, so
+the turns always have room, and one refused is noted for its sender.
 
 ### Versioning
 

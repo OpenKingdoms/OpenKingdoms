@@ -32,6 +32,8 @@
 #include "tak_net_match.h"
 #include "tak_net_relay.h"
 #include "tak_bytes.h"
+#include "tak_chat.h"
+#include "tak_settings.h"
 #include "tak_paths.h"
 #include "tak_replay_session.h"
 #include "tak_savelist.h"
@@ -3606,8 +3608,9 @@ static int di_spawn(int *h) {
     return 1;
 }
 
-/* The live half. Returns 1 when the late client took seat 2. */
-static int di_play(void) {
+/* A room of the host in seat 0, an ally in seat 1 and two computers,
+ * started and playing. 1 when both people are in the match. */
+static int di_open_match(void) {
     memset(g_di, 0, sizeof g_di);
     g_di_now = 1000;
     TAK_RelayCfg rc;
@@ -3654,7 +3657,15 @@ static int di_play(void) {
     (void)TAK_NetClient_Start(&g_di_net[0]);
     di_flush();
     di_run(300);
-    if (g_di_net[0].state != TAK_NC_PLAYING || g_di_net[1].state != TAK_NC_PLAYING) return 0;
+    return g_di_net[0].state == TAK_NC_PLAYING && g_di_net[1].state == TAK_NC_PLAYING;
+}
+
+/* The live half. Returns 1 when the late client took seat 2. */
+static int di_play(void) {
+    if (!di_open_match()) return 0;
+    TAK_MsgJoinRoom jr;
+    memset(&jr, 0, sizeof jr);
+    jr.room_id = g_di_net[0].room.room_id;
 
     di_run(1000);
     di_move(0, g_di_ids[1], 1000, 700);
@@ -3787,6 +3798,85 @@ TEST(a_player_who_drops_in_mid_game_sees_the_same_world_as_everyone) {
     ASSERT(differs);
 }
 
+
+/* ── battle chat through the relay ─────────────────────────────────── */
+
+/* A line typed in a match goes up the match's link beside the turns,
+ * never in them, and reaches the other player through the real relay in
+ * the sender's colour and badge. The relay's copy back to the sender is
+ * dropped, and a link with no room refuses the line without flagging
+ * the connection. */
+TEST(a_battle_chat_line_reaches_the_other_seat_in_its_colour) {
+    ASSERT(di_open_match());
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    w->cfg.players[0].color = 6;     /* the host plays Gold */
+    w->cfg.players[0].side = 1;      /* for Taros */
+    Settings_SetInt("MaxTextLines", 8);
+    Settings_SetInt("ChatLevel", 1);
+    Chat_Reset();
+    Chat_SetLocalPlayer(1, "Host");
+    Chat_SetSender(TAK_Match_SendChat, NULL);
+
+    /* The host types a line. The link carries one chat frame and no
+     * command, so the turns, and with them the simulation, never hear it. */
+    TAK_Match_Begin(&g_di_net[0], 0, 3);
+    size_t before = g_di_net[0].out_len;
+    Chat_Open();
+    Chat_TypeText("hold the ford");
+    ASSERT_EQ_INT(1, Chat_Submit(2000));
+    ASSERT_EQ_INT(1, Chat_Count());
+    size_t n = TAK_Net_PeekLen(g_di_net[0].out + before, g_di_net[0].out_len - before);
+    ASSERT(n > 0);
+    ASSERT_EQ_INT((int)(before + n), (int)g_di_net[0].out_len);
+    TAK_NetFrame f;
+    ASSERT_EQ_INT(0, TAK_Net_Split(g_di_net[0].out + before, n, &f));
+    ASSERT_EQ_INT(TAK_MSG_CHAT, f.type);
+    di_flush();
+    di_run(100);
+    /* Our own came back and is dropped. */
+    ASSERT_EQ_INT(1, (int)g_di_net[0].chat_in_count);
+    TAK_MsgChat got;
+    ASSERT_EQ_INT(0, TAK_Match_TakeChat(&got));
+    ASSERT_EQ_INT(0, (int)g_di_net[0].chat_in_count);
+    TAK_Match_End();
+
+    /* The ally's battle takes it from seat 0, player 1, in Gold with
+     * the Taros badge. */
+    Chat_Reset();
+    Chat_SetLocalPlayer(2, "Ally");
+    TAK_Match_Begin(&g_di_net[1], 1, 3);
+    ASSERT_EQ_INT(1, TAK_Match_TakeChat(&got));
+    ASSERT_EQ_INT(0, (int)got.from_seat);
+    TAK_MsgChat more;
+    ASSERT_EQ_INT(0, TAK_Match_TakeChat(&more));
+    Chat_OnMessage(&got, 2100);
+    ASSERT_EQ_INT(1, Chat_Count());
+    ASSERT_EQ_STR("Host: hold the ford", Chat_EntryText(0));
+    ASSERT_EQ_INT(CHAT_TYPE_THEIRS, Chat_EntryType(0));
+    int colour = -1, side = -1;
+    ASSERT_EQ_INT(1, Chat_EntryStyle(0, &colour, &side));
+    ASSERT_EQ_INT(6, colour);
+    ASSERT_EQ_INT(1, side);
+
+    /* A link half full says the line did not go, and leaves the rest of
+     * the queue to the turns. */
+    size_t keep = g_di_net[1].out_len;
+    g_di_net[1].out_len = sizeof g_di_net[1].out / 2 - 8;
+    Chat_SetSender(TAK_Match_SendChat, NULL);
+    Chat_Open();
+    Chat_TypeText("are you there");
+    ASSERT_EQ_INT(1, Chat_Submit(2200));
+    ASSERT_EQ_INT(0, (int)g_di_net[1].out_overflow);
+    ASSERT_EQ_STR("That line did not reach the other players.",
+                  Chat_EntryText(Chat_Count() - 1));
+    g_di_net[1].out_len = keep;
+
+    Chat_SetSender(NULL, NULL);
+    Chat_Reset();
+    cp_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("The one ownership check");
@@ -3886,6 +3976,7 @@ int main(int argc, char **argv) {
     RUN(a_seat_changes_hands_by_the_relays_command);
     RUN(the_battle_says_when_a_person_takes_over_from_the_computer);
     RUN(a_player_who_drops_in_mid_game_sees_the_same_world_as_everyone);
+    RUN(a_battle_chat_line_reaches_the_other_seat_in_its_colour);
     TEST_SUITE("The def order");
     RUN(the_def_order_does_not_depend_on_the_archives);
     RUN(the_builderlimited_line_is_read);

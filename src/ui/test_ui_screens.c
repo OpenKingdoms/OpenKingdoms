@@ -29800,11 +29800,12 @@ TEST(chat_ink_reads_on_snow_and_water_for_every_player_colour) {
 static int chat_sent_frames;
 static uint8_t chat_sent_copy[512];
 static size_t chat_sent_len;
-static void chat_test_sender(const void *frame, size_t len, void *user) {
+static int chat_test_sender(const void *frame, size_t len, void *user) {
     (void)user;
     chat_sent_frames++;
     chat_sent_len = len < sizeof(chat_sent_copy) ? len : sizeof(chat_sent_copy);
     memcpy(chat_sent_copy, frame, chat_sent_len);
+    return 0;
 }
 
 TEST(a_sent_line_goes_out_as_a_protocol_chat_message) {
@@ -29824,7 +29825,8 @@ TEST(a_sent_line_goes_out_as_a_protocol_chat_message) {
     TAK_MsgChat got;
     ASSERT_EQ_INT(0, TAK_Msg_ChatDecode(&got, f.payload, f.payload_len));
     ASSERT_EQ_INT(TAK_CHAT_ALL, got.scope);
-    ASSERT_EQ_INT(1, got.from_seat);
+    /* Player 1 is the wire's seat 0. */
+    ASSERT_EQ_INT(0, got.from_seat);
     ASSERT_EQ_STR("Player", got.name);
     ASSERT_EQ_STR("for the wire", got.text);
     /* And the local copy is there regardless of who heard it. */

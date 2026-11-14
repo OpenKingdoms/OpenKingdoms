@@ -60,6 +60,12 @@ void TAK_NetClient_Init(TAK_NetClient *c, const TAK_MsgHello *hello) {
     c->room.room_id = 0;
     c->status.seat = TAK_NET_SEAT_NONE;
     c->pace.seat = TAK_NET_SEAT_NONE;
+    /* Trimmed as the relay trims it, so our own lines are known. */
+    size_t a = 0, b = strnlen(hello->name, sizeof hello->name);
+    while (a < b && (hello->name[a] == ' ' || hello->name[a] == '\t')) a++;
+    while (b > a && (hello->name[b - 1] == ' ' || hello->name[b - 1] == '\t')) b--;
+    if (b - a >= sizeof c->name) b = a + sizeof c->name - 1;
+    memcpy(c->name, hello->name + a, b - a);
     uint8_t frame[TAK_NET_FRAME_MAX];
     size_t n = TAK_Msg_HelloEncode(hello, frame, sizeof frame);
     if (n == 0) { c->state = TAK_NC_GONE; c->out_overflow = 1; return; }
@@ -230,6 +236,12 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
         TAK_MsgChat m;
         if (TAK_Msg_ChatDecode(&m, f.payload, f.payload_len) != 0) return -1;
         c->chat = m;
+        /* A full inbox loses its oldest line, the one longest on show. */
+        if (c->chat_in_count >= TAK_NC_CHAT_IN) {
+            memmove(&c->chat_in[0], &c->chat_in[1], sizeof(c->chat_in[0]) * (TAK_NC_CHAT_IN - 1));
+            c->chat_in_count = TAK_NC_CHAT_IN - 1;
+        }
+        c->chat_in[c->chat_in_count++] = m;
         raise_event(c, TAK_NC_EV_CHAT);
         return 0;
     }
@@ -238,6 +250,7 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
         TAK_MsgStartGame m;
         if (TAK_Msg_StartGameDecode(&m, f.payload, f.payload_len) != 0) return -1;
         c->start = m;
+        c->chat_in_count = 0;
         /* The server names the seat here too, and this one is the one
          * the simulation uses, so it wins over anything the room
          * snapshot said. */
@@ -491,6 +504,24 @@ int TAK_NetClient_Resign(TAK_NetClient *c) {
 int TAK_NetClient_Chat(TAK_NetClient *c, const TAK_MsgChat *m) {
     if (!ready(c)) return -1;
     QUEUE_ENCODED(c, TAK_Msg_ChatEncode(m, _f, sizeof _f));
+}
+
+int TAK_NetClient_BattleChat(TAK_NetClient *c, const TAK_MsgChat *m) {
+    if (c->state != TAK_NC_LOADING && c->state != TAK_NC_PLAYING) return -1;
+    uint8_t frame[TAK_NET_FRAME_MAX];
+    size_t n = TAK_Msg_ChatEncode(m, frame, sizeof frame);
+    /* Half the queue at most, as snapshot pieces take, so the acks and
+     * orders that share it always have room. */
+    if (n == 0 || c->out_len + n > sizeof c->out / 2) return -1;
+    return queue(c, frame, n);
+}
+
+int TAK_NetClient_TakeChat(TAK_NetClient *c, TAK_MsgChat *out) {
+    if (c->chat_in_count == 0) return 0;
+    *out = c->chat_in[0];
+    c->chat_in_count--;
+    memmove(&c->chat_in[0], &c->chat_in[1], sizeof(c->chat_in[0]) * c->chat_in_count);
+    return 1;
 }
 
 int TAK_NetClient_Start(TAK_NetClient *c) {

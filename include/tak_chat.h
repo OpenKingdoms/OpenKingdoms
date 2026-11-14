@@ -115,6 +115,9 @@ int  Chat_Count(void);
 const char *Chat_EntryText(int index);
 int  Chat_EntryType(int index);
 int  Chat_EntryOwner(int index);
+/* The player a line is drawn for, 1 to 8, with the colour index and
+ * side of its badge from the battle, or 0 for a system line. */
+int  Chat_EntryStyle(int index, int *colour, int *side);
 
 /* ── The input line ───────────────────────────────────────────────── */
 
@@ -178,11 +181,21 @@ int     Chat_ScaleQuarters(int canvas_h);
  * a frame and hands it to whatever the session registered. With no
  * session registered the line is still stored locally, which is what
  * the original does in single player: its send loop finds no other
- * active player and nothing leaves the machine. */
-typedef void (*Chat_SendFn)(const void *frame, size_t len, void *user);
+ * active player and nothing leaves the machine.
+ *
+ * A line goes to everyone in the match, as the original's default goes
+ * to every other human player (legacy:154355-154375). Its only narrower
+ * form is a Chat box per player in the in-battle players dialog
+ * (legacy:155914-155920), which this engine does not have. A watcher's
+ * line reaches only watchers (legacy:205855-205866), which the relay
+ * enforces. The sender returns 0 when the line went, else Submit leaves
+ * a note. */
+typedef int (*Chat_SendFn)(const void *frame, size_t len, void *user);
 void Chat_SetSender(Chat_SendFn fn, void *user);
 
-/* A TAK_MSG_CHAT that arrived. Stores it as a received line, type 8. */
+/* A TAK_MSG_CHAT that arrived. Stores it as a received line, type 8,
+ * owned by the player one past the wire's seat, or as a system line
+ * from a watcher or the server. */
 void Chat_OnMessage(const TAK_MsgChat *m, uint32_t now_ms);
 
 /* The frame Submit last handed to the sender, for tests. len is 0 when
