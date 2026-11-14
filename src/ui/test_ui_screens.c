@@ -8994,6 +8994,110 @@ TEST(ai_rush_on_the_computers_monarch) {
     VFS_Shutdown();
 }
 
+/* A measuring tool, not a case. TAK_AI_STARVE=<minute> plays two computer
+ * seats of one kingdom on Two Castles and at that minute takes seat 2's
+ * lodestones, its fighters and its pool, the aftermath of a lost battle.
+ * For each kingdom of TAK_AI_STARVE_SIDES ("0,1,2,3,7") over
+ * TAK_AI_STARVE_GAMES seeds (1) it prints its producers every 15 s, what
+ * it made in the five minutes after and how long every one stood idle. */
+static void starve_once(TAK_Platform *platform, int side, int minute, uint32_t seed,
+                        int *made, int *idle_s) {
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.seed = seed;
+    for (int k = 0; k < 2; k++) {
+        cfg.players[k].kind = TAK_SLOT_AI;
+        cfg.players[k].ai_difficulty = 2;
+        cfg.players[k].side = side;
+        cfg.players[k].color = k;
+    }
+    *made = *idle_s = 0;
+    if (World_BeginLoad(platform, &cfg, cfg.map_name, "aramon") != 0) return;
+    if (Loading_Init(platform) != 0) return;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    GameWorld *world = World_Get();
+    if (next == GAMESTATE_IN_GAME && world && InGame_Init(platform) == 0) {
+        InGame_DebugPlayWithoutHumans(1);
+        const int start = minute * 60, end = start + 300;
+        int built0 = 0;
+        for (int s = 0; s < end && !world->skirmish_game_over; s++) {
+            int count = 0;
+            const Unit *units = Units_GetActive(&count);
+            if (s == start) {
+                for (int i = 0; i < count; i++) {
+                    const UnitDef *d = Units_GetDef(units[i].def_idx);
+                    if (units[i].alive != UNIT_ALIVE_ACTIVE || units[i].player_id != 2 ||
+                        !d || d->commander || (d->cap_flags & UNIT_CAP_BUILDER)) continue;
+                    if (d->mogrium_income_per_sec >= 0.01f ||
+                        (d->max_velocity > 0.0f && d->num_weapons > 0))
+                        Units_DebugKillHandle(i);
+                }
+                world->economy.players[1].mana = 0.0f;
+                built0 = world->stats[2].units_built;
+            }
+            InGame_DebugRunSimTicks(60);
+            units = Units_GetActive(&count);
+            int fac = 0, idle = 0, army = 0;
+            for (int i = 0; i < count; i++) {
+                const Unit *u = &units[i];
+                if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != 2) continue;
+                const UnitDef *d = Units_GetDef(u->def_idx);
+                if (!d) continue;
+                if (d->max_velocity > 0.0f && d->num_weapons > 0 && !d->commander) army++;
+                if (d->max_velocity > 0.0f || u->under_construction ||
+                    !TAK_AI_DebugIsProductionStructure(u->def_idx)) continue;
+                fac++;
+                idle += u->cmd_kind == UNIT_CMD_NONE && u->build_target < 0;
+            }
+            if (s >= start && fac > 0 && idle == fac) (*idle_s)++;
+            if (s % 15 == 0 && s >= start - 60)
+                fprintf(stderr, "starve: side %d seed %u t %d s mana %d/%d income %d spend %d "
+                        "share %.2f factories %d idle %d army %d built %d\n",
+                        side, (unsigned)seed, s, Economy_GetMana(&world->economy, 2),
+                        Economy_GetMaxMana(&world->economy, 2),
+                        Economy_GetIncome(&world->economy, 2),
+                        Economy_GetSpend(&world->economy, 2),
+                        (double)Economy_GetShare(&world->economy, 2), fac, idle, army,
+                        world->stats[2].units_built);
+        }
+        *made = world->stats[2].units_built - built0;
+        InGame_DebugPlayWithoutHumans(0);
+        InGame_Shutdown();
+    }
+    Loading_Shutdown();
+    World_End(platform);
+}
+
+TEST(ai_starved_seat_trains_again) {
+    const char *ask = getenv("TAK_AI_STARVE");
+    if (!ask || atoi(ask) <= 0) return;
+    if (mount_iron_plague() != 0) SKIP("no game dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    const char *g = getenv("TAK_AI_STARVE_GAMES");
+    int games = g && atoi(g) > 0 ? atoi(g) : 1;
+    const char *list = getenv("TAK_AI_STARVE_SIDES");
+    if (!list || !*list) list = "0,1,2,3,7";
+    for (const char *c = list; *c; ) {
+        int side = atoi(c);
+        for (int s = 1; s <= games; s++) {
+            int made = 0, idle = 0;
+            starve_once(&platform, side, atoi(ask), (uint32_t)(s * 7919), &made, &idle);
+            fprintf(stderr, "starve: side %d seed %d: %d made in the five minutes after, "
+                    "every producer idle %d s of them\n", side, s, made, idle);
+        }
+        while (*c && *c != ',') c++;
+        if (*c == ',') c++;
+    }
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(skirmish_ai_full_progression) {
     if (setup_vfs() != 0) SKIP("no data dir");
 
@@ -31821,6 +31925,9 @@ static void ui_run_cases(void) {
     }
     if (getenv("TAK_AI_RUSH")) {
         RUN_UI_TEST(ai_rush_on_the_computers_monarch);
+    }
+    if (getenv("TAK_AI_STARVE")) {
+        RUN_UI_TEST(ai_starved_seat_trains_again);
     }
     if (getenv("TAK_SPIKE_PROBE")) {
         RUN_UI_TEST(sim_spike_probe);

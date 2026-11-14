@@ -1005,6 +1005,16 @@ static int ai_begin_building(int actor_idx, int build_def,
     return took;
 }
 
+/* Every unit the seat has, the original's per-player count. */
+static int ai_units_of(int player_id) {
+    int count = 0, n = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; units && i < count; i++)
+        if ((units[i].alive == UNIT_ALIVE_ACTIVE || units[i].alive == UNIT_ALIVE_TRANSPORTED) &&
+            units[i].player_id == player_id) n++;
+    return n;
+}
+
 static int ai_try_start_build_def(int actor_idx, int build_def) {
     const Unit *units = Units_GetActive(NULL);
     if (!units) return 0;
@@ -1021,22 +1031,23 @@ static int ai_try_start_build_def(int actor_idx, int build_def) {
      * Units_BeginBuildingForUnit handles the in-yard spawn. */
     const UnitDef *bd = Units_GetDef(build_def);
     const UnitDef *ad = Units_GetDef((int)actor->def_idx);
-    /* A starved seat holds back. A factory trains nothing below 0.7 of
-     * what it asks for (legacy:13147-13155), a walker trains nothing
-     * that earns no income below it (legacy:12121-12129), and a
-     * builder puts up nothing that earns no income below 0.2333
-     * (legacy:9385-9393). */
+    /* A starved seat holds back what earns no income: a factory trains
+     * it down to 0.2333 of what the seat asks for (legacy:9392), a
+     * walking builder starts it down to 0.7 (legacy:12127). */
     if (bd && ad) {
         const GameWorld *sw = World_Get();
         float share = sw ? Economy_GetShare(&sw->economy, actor->player_id) : 1.0f;
         int earns = bd->mogrium_income_per_sec >= 0.01f;
-        if (ad->max_velocity <= 0.0f) {
-            if (share < 0.7f) return 0;
-        } else if (bd->max_velocity > 0.0f) {
-            if (!earns && share < 0.7f) return 0;
-        } else if (!earns && share < 0.23333333f) {
+        int factory = ad->max_velocity <= 0.0f;
+        if (!earns && share < (factory ? 0.23333333f : 0.7f))
             return 0;
-        }
+        /* Below 0.7 a factory passes over a product dearer than 500, all
+         * but one time in 2 + (cost - 500) / 300, while the seat owns fewer
+         * than 30 to 59 units (legacy:18001-18010). */
+        if (factory && share < 0.7f && bd->build_cost > 500 &&
+            ai_rand((uint32_t)((bd->build_cost - 500) / 300 + 2)) != 0 &&
+            ai_units_of(actor->player_id) < 30 + (int)ai_rand(30))
+            return 0;
     }
     if (bd && ad && bd->max_velocity > 0.0f && ad->max_velocity <= 0.0f) {
         return ai_begin_building(actor_idx, build_def,
@@ -5596,29 +5607,10 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
     s->mana_pct = cap > 0 ? (int32_t)((int64_t)mana * 100 / cap) : 0;
     s->stalling = ai_player_stalling(world, p);
     /* Build efficiency, the measure the original gates its picks on:
-     * the pool over what the frames being fed ask for this tick, and
-     * 1.0 with nothing building (legacy:235975-235983). */
-    float demand = 0.0f;
-    for (int i = 0; i < unit_count; i++) {
-        const Unit *b = &units[i];
-        if (b->alive != UNIT_ALIVE_ACTIVE || b->player_id != p) continue;
-        if (b->cmd_kind != UNIT_CMD_BUILD) continue;
-        if (b->build_target < 0 || b->build_target >= unit_count) continue;
-        const Unit *f = &units[b->build_target];
-        if (f->alive != UNIT_ALIVE_ACTIVE || !f->under_construction) continue;
-        const UnitDef *bd = Units_GetDef(b->def_idx);
-        const UnitDef *fd = Units_GetDef(f->def_idx);
-        if (!bd || !fd || fd->build_cost <= 0) continue;
-        float worker = bd->worker_time > 0.0f ? bd->worker_time : 1.0f;
-        float btime = fd->buildtime > 0.0f ? fd->buildtime : 100.0f;
-        demand += ((float)fd->build_cost * worker) / (btime * 60.0f);
-    }
-    int32_t demand_milli = (int32_t)(demand * 1000.0f);
-    s->build_eff = 100;
-    if (demand_milli > 0) {
-        int64_t eff = (int64_t)mana * 100000 / demand_milli;
-        s->build_eff = eff > 100 ? 100 : (int32_t)eff;
-    }
+     * the pool with this tick's income in it over what the seat's builds
+     * ask for, 1.0 with nothing building (legacy:235959-235983). */
+    float share = Economy_GetShare(&world->economy, p);
+    s->build_eff = share >= 1.0f ? 100 : share > 0.0f ? (int32_t)(share * 100.0f) : 0;
     int lode_def = -1, factory_def = -1, tower_def = -1, train_def = -1;
     int mobile_factory_def = -1;
     int32_t factory_want = 0, mobile_want = 0;
