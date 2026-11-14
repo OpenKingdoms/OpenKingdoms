@@ -19,8 +19,14 @@
  * down the top left corner of the screen in absolute screen pixels,
  * not anchored to the play viewport (legacy:205958-206051). The first
  * row of the block sits at (10, 23) and each further row is 18 px
- * below. Every message is word wrapped to the screen width less the
- * 128 px sidebar and a 10 px margin.
+ * below. A player's line carries their team badge at x 10 and its text
+ * starts at x 31, a system line starts at x 10 (legacy:206008-206015).
+ * Every message is word wrapped to the screen width less the 128 px
+ * sidebar and a 10 px margin.
+ *
+ * The look is ours (D-047): those numbers are scaled with the screen,
+ * each line is inked in its sender's colour, lifted until it reads, and
+ * sits on a soft dark plate with a halo round every glyph.
  *
  * Nothing here touches the simulation. The console never pauses the
  * battle and no simulation state reads it. Pausing on a chat line
@@ -59,6 +65,8 @@
 #define CHAT_LIST_X       10
 #define CHAT_LIST_TOP     23
 #define CHAT_LINE_PITCH   18
+#define CHAT_BADGE_TOP    20    /* the badge sits 3 px above its row  */
+#define CHAT_TEXT_X       31    /* a player's text, right of the badge */
 #define CHAT_RIGHT_INSET  138   /* the 128 px sidebar plus a 10 px margin */
 #define CHAT_INPUT_X      9
 #define CHAT_INPUT_W      512
@@ -146,6 +154,24 @@ void Chat_DrawClock(SDL_Surface *off, const char *text);
  * without a font. */
 int  Chat_VisibleRows(void);
 const char *Chat_VisibleRow(int row);
+
+/* ── Ink ──────────────────────────────────────────────────────────────
+ * Ours (D-047). A sender's name is drawn in their player colour and the
+ * message in a paler tint of it, each lifted toward white in linear
+ * light until it is bright enough, which keeps the hue. A system line
+ * takes the parchment of the game's own text. */
+typedef struct ChatInk { uint8_t r, g, b; } ChatInk;
+
+void    Chat_PlayerInk(int color_index, ChatInk *name, ChatInk *text);
+ChatInk Chat_SystemInk(void);
+/* The plate behind a line, as it reads over ground of this colour. */
+ChatInk Chat_PlateOver(ChatInk ground);
+/* The contrast ratio of two colours as the web guidelines count it,
+ * times 100. */
+int     Chat_ContrastX100(ChatInk a, ChatInk b);
+/* How much larger than the original the chat draws on a canvas this
+ * tall, in quarters, so 4 is one to one. */
+int     Chat_ScaleQuarters(int canvas_h);
 
 /* ── The wire ─────────────────────────────────────────────────────────
  * One path, the multiplayer protocol's own TAK_MSG_CHAT. Submit encodes
