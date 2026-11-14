@@ -10135,17 +10135,24 @@ TEST(render_probe_models) {
     ASSERT(at_pole > 0);
     ASSERT(base_before_pole * 2 > base_tris);
 
-    /* A building's faces show where the original's per pixel height key
-     * puts them (legacy:265317) at nearly every pixel, the Veruna
-     * bastion's front walls over the fins inside it among them. */
+    /* A building's or a ship's faces show where the original's per
+     * pixel height key puts them (legacy:265317) at nearly every pixel,
+     * the Veruna bastion's front walls over the fins inside it among
+     * them. */
     {
         int bastion_def = Units_FindDefByName("VERTOWER");
         ASSERT(bastion_def >= 0);
         int bastion = Units_Spawn(bastion_def, 1, 2, cx + 420, cy + 420);
         ASSERT(bastion >= 0);
-        static const char *bn[] = { "ARAKEEP", "ARACASTL", "VERTOWER" };
-        const int bh[] = { keep, castle, bastion };
-        for (int i = 0; i < 3; i++) {
+        /* A ship's too: the Man of War's rigging behind its sails. */
+        int ship_def = Units_FindDefByName("VERMAN");
+        ASSERT(ship_def >= 0);
+        int ship = Units_Spawn(ship_def, 1, 2, cx + 420, cy + 120);
+        ASSERT(ship >= 0);
+        Units_SetHeading(ship, 2.4f);
+        static const char *bn[] = { "ARAKEEP", "ARACASTL", "VERTOWER", "VERMAN" };
+        const int bh[] = { keep, castle, bastion, ship };
+        for (int i = 0; i < 4; i++) {
             int covered = 0;
             int wrong = Units_DebugOrderMismatch(bh[i], world, &covered);
             fprintf(stderr, "probe: %s %d of %d px off the height key\n", bn[i], wrong,
@@ -24397,6 +24404,14 @@ TEST(a_towers_crew_draws_the_same_beside_a_second_tower) {
     SDL_FreeSurface(paired);
     SDL_FreeSurface(alone);
 
+    /* A tower posed apart from the first finds an order of its own, so it
+     * draws in a run of its own, as a citadel with its doors open does. */
+    Units_SetHeading(twin, 1.0f);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(1, Units_DebugDrawRunSize(tower));
+    ASSERT_EQ_INT(1, Units_DebugDrawRunSize(twin));
+
     InGame_Shutdown();
     Loading_Shutdown();
     World_End(&platform);
@@ -24532,8 +24547,8 @@ TEST(a_wrecked_keep_shows_its_timbers_over_its_walls) {
  * to be drawn, not that anything of it reaches the screen, so the test
  * passed while the crew was being buried under the tower's own
  * masonry. It now renders the tower as well, beside a second
- * stronghold so the coalesced draw path carries both, and measures
- * the crew in the frame. */
+ * stronghold, and measures the crew in the frame. The second keeps its
+ * plain pieces, so it draws in a run of its own. */
 TEST(veteran_swap_keeps_the_crew_drawn) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -24627,7 +24642,7 @@ TEST(veteran_swap_keeps_the_crew_drawn) {
     }
     timer.accumulator = 0.0;
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
-    ASSERT_EQ_INT(2, Units_DebugDrawRunSize(tower));
+    ASSERT_EQ_INT(1, Units_DebugDrawRunSize(tower));
     SDL_Surface *paired = crew_shoot(&platform);
     ASSERT_NOT_NULL(paired);
     CrewMark duo = crew_measure(paired, box);

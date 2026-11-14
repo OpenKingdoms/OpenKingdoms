@@ -18689,10 +18689,11 @@ static int tri_overlap_side(const TriSort *p, const TriSort *q) {
  * its per pixel height key (legacy:265317). Ordering whole triangles by
  * their tallest key gets that wrong when a tall face stands behind a
  * short one: the Veruna bastion's inner fins painted over its front
- * walls. So for a building, wherever two of its triangles overlap on
- * screen, the one lower at the middle of the overlap goes first, two
- * level there keep the key order, and the rest is free to keep to one
- * texture. A building keeps what it found and works out again only the
+ * walls. So for a building or a ship, wherever two of its triangles
+ * overlap on screen, the one lower at the middle of the overlap goes
+ * first, of two level there the one the original draws first stays on
+ * top as its key test keeps it, and the rest is free to keep to one
+ * texture. A unit keeps what it found and works out again only the
  * triangles that moved since, a waving flag or a turning turret.
  * Walkers keep the key order: every step moves most of their faces. */
 /* A triangle's id is its second vertex: a 3DO face is a fan over
@@ -18716,6 +18717,10 @@ static uint32_t    g_ov_clock;
  * unit -1 for a draw that keeps the key order. */
 static int   g_emit_unit = -1;
 static float g_emit_ax, g_emit_ay, g_emit_ah;
+/* How far a vertex moves before its triangles are looked at again: a
+ * hundredth of a pixel for a building, a pixel for a ship, whose turn
+ * moves every face a little each frame. */
+static float g_emit_slack = 0.01f;
 
 /* Scratch for one ordering: per kept triangle a box (x0, x1, y0, y1,
  * low, high), then the sweep, indegree, heads, heap, output and fill. */
@@ -18843,8 +18848,9 @@ static void ov_test_pair(OverlapMemo *o, int a, int b) {
     if (ba[0] == ba[1] || ba[2] == ba[3] || bb[0] == bb[1] || bb[2] == bb[3]) return;
     int side = tri_overlap_side(&g_ov_tri[a], &g_ov_tri[b]);
     if (side == 2) return;
-    /* Level where they meet: the key order decides, as before. */
-    if (side == 0) side = a < b ? -1 : 1;
+    /* Level where they meet: the first drawn keeps the pixel, as the
+     * original's textured fill takes only a key above (legacy:265317). */
+    if (side == 0) side = g_ov_tri[a].key < g_ov_tri[b].key ? 1 : -1;
     const int ta = g_ov_tri[a].i1, tb = g_ov_tri[b].i1;
     ov_add_edge(o, side < 0 ? ta : tb, side < 0 ? tb : ta);
 }
@@ -18894,7 +18900,8 @@ static void order_by_overlap(const UnitMesh *m, TriSort *tri, int n) {
         const float ry = g_scratch_xy[2 * v + 1] - g_emit_ay;
         const float rh = g_scratch_wy[v] - g_emit_ah;
         float *c = &o->rel[3 * v];
-        vmoved[v] = fabsf(rx - c[0]) > 0.01f || fabsf(ry - c[1]) > 0.01f || fabsf(rh - c[2]) > 0.01f;
+        vmoved[v] = fabsf(rx - c[0]) > g_emit_slack || fabsf(ry - c[1]) > g_emit_slack ||
+                    fabsf(rh - c[2]) > g_emit_slack;
         if (vmoved[v]) { c[0] = rx; c[1] = ry; c[2] = rh; moved_v++; }
     }
     for (int t = 0; t < m->vert_count; t++) g_ov_pos[t] = -1;
@@ -19055,14 +19062,40 @@ static int faces_away_first(int n) {
     return away;
 }
 
-/* Picks the overlap order for the next draw when `handle` is a
- * building, anchored where it stands on screen; the key order else. */
+/* Buildings and ships draw in overlap order. A ship's rigging crosses its
+ * sails, and its hull is rigid, so its order seldom has to be found
+ * again. */
+static int unit_overlap_ordered(const Unit *u) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    return d && (!(d->max_velocity > 0.0f) || d->floater);
+}
+
+/* Two units of one mesh standing and animated alike: one order serves
+ * both. */
+static int unit_same_pose(const Unit *a, const Unit *b) {
+    if (a->heading != b->heading || a->pitch != b->pitch || a->roll != b->roll ||
+        a->facing != b->facing || !a->cob != !b->cob)
+        return 0;
+    if (!a->cob) return 1;
+    if (a->cob->piece_count != b->cob->piece_count) return 0;
+    for (int i = 0; i < a->cob->piece_count; i++) {
+        const CobPiece *p = &a->cob->pieces[i], *q = &b->cob->pieces[i];
+        if (memcmp(p->rot, q->rot, sizeof p->rot) || memcmp(p->pos, q->pos, sizeof p->pos) ||
+            p->hidden != q->hidden)
+            return 0;
+    }
+    return 1;
+}
+
+/* Picks the overlap order for the next draw when `handle` is a building
+ * or a ship, anchored where it stands on screen; the key order else. */
 static void overlap_order_for(const struct GameWorld *world, int handle) {
     g_emit_unit = -1;
     if (handle < 0 || handle >= g_unit_count || !world) return;
     const Unit *u = &g_units[handle];
+    if (!unit_overlap_ordered(u)) return;
     const UnitDef *d = Units_GetDef(u->def_idx);
-    if (!d || d->max_velocity > 0.0f) return;
+    g_emit_slack = d && d->max_velocity > 0.0f ? 1.0f : 0.01f;
     g_emit_ah = (float)Terrain_SampleHeight(world, u->world_x, u->world_y) +
                 Units_DrawnAlt(world, u);
     g_emit_ax = (float)(u->world_x - world->cam_x);
@@ -19864,6 +19897,10 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
             if ((uk->magic_death != 0) != (u0->magic_death != 0)) break;
             /* A frame being built draws its own mass over its body. */
             if (uk->under_construction || u0->under_construction) break;
+            /* The run takes its first unit's overlap order, which fits
+             * only a unit posed the same: a door open or a ship turned
+             * another way draws in a run of its own. */
+            if (unit_overlap_ordered(u0) && !unit_same_pose(u0, uk)) break;
             run_end++;
         }
         int run_len = run_end - run_start;
