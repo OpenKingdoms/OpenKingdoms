@@ -2630,6 +2630,20 @@ Format per entry:
   `chat_ink_reads_on_snow_and_water_for_every_player_colour`. The
   manual is silent on how chat looks.
 
+## D-048: A ranged unit turns on a flyer hitting a friend
+
+- Change: when a flyer hits a ground unit, every ranged unit of that
+  unit's side whose weapon in hand reaches the flyer and can hurt it,
+  and that is in a fight it picked for itself against a unit on the
+  ground, takes the flyer as its target instead. A fight a player or a
+  mission script ordered is left alone, and so is a unit holding fire.
+- Why: a playtester asked for archers to help against flyers attacking
+  the units round them while they have targets of their own (#503).
+- Citation: none. The original's target search scores what it finds by
+  distance, the damage the weapon does and the turn to face it
+  (legacy:21170-21246), and a hit draws only the unit that was hit
+  (legacy:15187-15215), or a guard's charge (legacy:233765-233768).
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

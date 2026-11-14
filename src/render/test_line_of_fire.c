@@ -2762,6 +2762,56 @@ TEST(a_tower_fires_both_its_bows_each_at_its_own_target) {
     ASSERT_EQ_INT(0, sw_dummy);
 }
 
+/* An archer sent at a target far off is shot at by a tower beside its
+ * way. Its weapon takes the tower while the target is out of reach and
+ * fires as it walks, and the attack goes on (legacy:15187-15215). */
+TEST(a_unit_walking_to_its_target_answers_what_shoots_it) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int a = lf_spawn(LF_ARCHER, 1, LF_SX, LF_ROW);
+    int far = lf_spawn(LF_STURDY, 2, LF_SX + 1600, LF_ROW);
+    int tower = lf_spawn(LF_TOWER, 2, LF_SX + 200, LF_ROW - 300);
+    ASSERT(a >= 0 && far >= 0 && tower >= 0);
+    Units_DebugSetAggro(a, UNIT_AGGRO_OFFENSIVE);
+    Units_DebugSetAggro(tower, UNIT_AGGRO_DEFENSIVE);
+    ASSERT(Units_OrderAttack(a, far));
+    for (int i = 0; i < 1800; i++) Units_TickEngines();
+    int harm = lf_unit(tower)->max_health - lf_unit(tower)->health;
+    int cmd = lf_unit(a)->cmd_kind, target = lf_unit(a)->target;
+    lf_end();
+    printf("(tower took %d) ", harm);
+    ASSERT(harm > 0);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, cmd);
+    ASSERT_EQ_INT(far, target);
+}
+
+/* Ours (#503): an archer in a fight it picked turns on a flyer that hits
+ * a friend within its reach. */
+TEST(an_archer_turns_on_a_flyer_hitting_a_friend) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    UnitDef *fd = (UnitDef *)Units_GetDef(LF_HAWK);
+    fd->weapons[0] = Units_GetDef(LF_ARCHER)->weapons[0];
+    fd->num_weapons = 1;
+    int a = lf_spawn(LF_ARCHER, 1, LF_SX, LF_ROW);
+    int foe = lf_spawn(LF_STURDY, 2, LF_SX + 300, LF_ROW);
+    int friend_ = lf_spawn(LF_STURDY, 1, LF_SX + 450, LF_ROW + 250);
+    int hawk = lf_spawn(LF_HAWK, 2, LF_SX + 300, LF_ROW + 400);
+    ASSERT(a >= 0 && foe >= 0 && friend_ >= 0 && hawk >= 0);
+    Units_DebugSetAggro(a, UNIT_AGGRO_DEFENSIVE);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    ASSERT_EQ_INT(foe, lf_unit(a)->target);
+    Units_DebugSetAggro(hawk, UNIT_AGGRO_OFFENSIVE);
+    int hit = 0, turned = 0;
+    for (int i = 0; i < 1800 && !turned; i++) {
+        Units_TickEngines();
+        if (lf_unit(friend_)->health < lf_unit(friend_)->max_health) hit = 1;
+        turned = lf_unit(a)->target == hawk;
+    }
+    lf_end();
+    printf("(friend hit %d, turned %d) ", hit, turned);
+    ASSERT_EQ_INT(1, hit);
+    ASSERT_EQ_INT(1, turned);
+}
+
 /* Tracking a walker is no turn to a script: under a degree a frame the
  * original sends no TurnDirection, and scripts walk the legs while one
  * is set (legacy:183163-183172). */
@@ -4633,6 +4683,8 @@ int main(int argc, char **argv) {
     RUN(a_walker_on_a_move_order_fires_at_what_it_passes);
     RUN(hold_fire_drops_what_a_walker_took);
     RUN(a_tower_fires_both_its_bows_each_at_its_own_target);
+    RUN(a_unit_walking_to_its_target_answers_what_shoots_it);
+    RUN(an_archer_turns_on_a_flyer_hitting_a_friend);
     RUN(a_walker_whose_shots_stop_short_finds_a_place_to_shoot_from);
     RUN(a_walker_whose_shots_land_does_not_move);
     RUN(a_walker_that_can_find_no_place_gives_up_only_on_its_own_target);

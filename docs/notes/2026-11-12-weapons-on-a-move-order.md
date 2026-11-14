@@ -49,6 +49,13 @@ is only for a unit standing by or on patrol. With fire on, each free
 weapon that reaches the shooter takes it, unless it already holds
 something it reaches (legacy:15187-15215).
 
+The same rule holds in a fight (2026-11-14). An attack puts its target
+on the weapon only while the target is in reach (legacy:11137-11141),
+so a unit walking to a target out of reach that is hit takes the
+shooter with its weapon if it reaches it, and fires at it as it walks
+when its body allows. The attack goes on, and the weapon goes back to
+the attack's target once that is in reach.
+
 ## Stances
 
 The stance buttons set the original's fire and move orders together
