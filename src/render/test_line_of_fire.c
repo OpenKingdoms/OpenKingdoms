@@ -44,7 +44,8 @@ enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_SWEEPER, LF_BOMBER, LF_STURDY, LF_TWISTER, LF_TORNADO,
        LF_ROVEROAM, LF_HAWK, LF_MASON, LF_FREEZER, LF_ICEMAN, LF_BREATHER,
        LF_TURRET, LF_STUNNER, LF_RADAR, LF_JAMMER, LF_PRIEST, LF_PATIENT, LF_SHAMAN, LF_FIRE,
-       LF_SLOWBLADE, LF_BLADEROAM, LF_PICKY, LF_STONE, LF_TRACKER, LF_DEF_COUNT };
+       LF_SLOWBLADE, LF_BLADEROAM, LF_PICKY, LF_STONE, LF_TRACKER, LF_TWOBOW,
+       LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
 #define LF_SX   800
@@ -304,6 +305,12 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     wp->damage_scale_count = 1;
     lf_fill(&defs[LF_STONE], "TESTSTONE", 0.0f, 1000);
     strncpy(defs[LF_STONE].damage_category, "STONE", sizeof(defs[LF_STONE].damage_category) - 1);
+    /* A tower with two bows, the second no use on stone. */
+    lf_fill(&defs[LF_TWOBOW], "TESTTWOBOW", 0.0f, 2000);
+    lf_weapon(&defs[LF_TWOBOW], "TESTTWOB1", "Line of Sight", 500, 500, 40);
+    wp = lf_weapon(&defs[LF_TWOBOW], "TESTTWOB2", "Line of Sight", 500, 500, 40);
+    strncpy(wp->damage_scales[0].category, "STONE", sizeof(wp->damage_scales[0].category) - 1);
+    wp->damage_scale_count = 1;
     /* A bolt on a unit that turns its body onto what it shoots. */
     lf_fill(&defs[LF_TRACKER], "TESTTRACK", 1.2f, 1000);
     defs[LF_TRACKER].turn_in_place_rate = 2300.0f;
@@ -2723,6 +2730,38 @@ TEST(a_search_passes_over_what_its_weapon_cannot_hurt) {
     ASSERT_EQ_INT(walker, took);
 }
 
+/* The two bow tower against a stone beside it and a dummy further off
+ * and clear of it, with or without weaponswitching. The harm done to each in 10 s. */
+static int lf_twobow_run(int switching, int *stone_harm, int *dummy_harm) {
+    if (!lf_world(0, 0)) return -1;
+    UnitDef *d = (UnitDef *)Units_GetDef(LF_TWOBOW);
+    if (switching) d->cap_flags |= UNIT_CAP_W_SWITCH;
+    int a = lf_spawn(LF_TWOBOW, 1, LF_SX, LF_ROW);
+    int stone = lf_spawn(LF_STONE, 2, LF_SX + 150, LF_ROW);
+    int dummy = lf_spawn(LF_TARGET, 2, LF_SX + 300, LF_ROW + 250);
+    if (a < 0 || stone < 0 || dummy < 0) return -1;
+    Units_DebugSetAggro(a, UNIT_AGGRO_DEFENSIVE);
+    for (int i = 0; i < 600; i++) Units_TickEngines();
+    *stone_harm = lf_unit(stone)->max_health - lf_unit(stone)->health;
+    *dummy_harm = lf_unit(dummy)->max_health - lf_unit(dummy)->health;
+    lf_end();
+    return 0;
+}
+
+/* Without weaponswitching every weapon fires, each at a target of its
+ * own, and with it only the weapon in hand (legacy:19247-19285,
+ * legacy:233882-233896). */
+TEST(a_tower_fires_both_its_bows_each_at_its_own_target) {
+    int stone = 0, dummy = 0, sw_stone = 0, sw_dummy = 0;
+    ASSERT_EQ_INT(0, lf_twobow_run(0, &stone, &dummy));
+    ASSERT_EQ_INT(0, lf_twobow_run(1, &sw_stone, &sw_dummy));
+    printf("(stone %d dummy %d, switching %d %d) ", stone, dummy, sw_stone, sw_dummy);
+    ASSERT(stone > 0);
+    ASSERT(dummy > 0);
+    ASSERT(sw_stone > 0);
+    ASSERT_EQ_INT(0, sw_dummy);
+}
+
 /* Tracking a walker is no turn to a script: under a degree a frame the
  * original sends no TurnDirection, and scripts walk the legs while one
  * is set (legacy:183163-183172). */
@@ -4593,6 +4632,7 @@ int main(int argc, char **argv) {
     RUN(a_blade_on_its_way_takes_what_walks_past);
     RUN(a_walker_on_a_move_order_fires_at_what_it_passes);
     RUN(hold_fire_drops_what_a_walker_took);
+    RUN(a_tower_fires_both_its_bows_each_at_its_own_target);
     RUN(a_walker_whose_shots_stop_short_finds_a_place_to_shoot_from);
     RUN(a_walker_whose_shots_land_does_not_move);
     RUN(a_walker_that_can_find_no_place_gives_up_only_on_its_own_target);

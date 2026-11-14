@@ -1144,6 +1144,10 @@ typedef struct Unit {
      * themselves on the way, 0 for none. The walk never turns for it
      * (legacy:10354-10356, legacy:19247-19285). */
     uint32_t   pass_id;
+    /* On a unit that fires every weapon, what each weapon but the one in
+     * hand took for itself, by stable id, 0 for none (legacy:19247-19285,
+     * legacy:233882-233896). */
+    uint32_t   slot_id[3];
     /* UNIT_POST_*: where a fight it took on for itself began and how far
      * from there it follows, 0 for no limit (legacy:181900-181947), or
      * the point a patrol interrupted for repairs goes on to. */

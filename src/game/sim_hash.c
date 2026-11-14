@@ -244,6 +244,11 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
         h = TAK_HashI32(h, 0xa00);
         h = TAK_HashU32(h, u->pass_id);
     }
+    /* Only a unit whose other weapons took something adds them. */
+    if (u->slot_id[0] | u->slot_id[1] | u->slot_id[2]) {
+        h = TAK_HashI32(h, 0xb00);
+        for (int s = 0; s < 3; s++) h = TAK_HashU32(h, u->slot_id[s]);
+    }
     /* Only a unit with a post to walk back to, or a patrol to go on
      * with, adds to the hash. */
     if (u->post_set) {
