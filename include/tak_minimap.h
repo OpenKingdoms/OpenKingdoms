@@ -42,6 +42,11 @@ int Minimap_RenderThumbnail(uint8_t *out_rgb, int tw, int th);
 int Minimap_PointToWorld(TAK_Platform *plat, int win_x, int win_y, int clamp,
                          int32_t *out_x, int32_t *out_y);
 
+/* The unit whose blip is under a window point on the minimap, the
+ * nearest drawn there within two radar pixels, radar blips beyond sight
+ * among them, or -1. */
+int Minimap_UnitAt(TAK_Platform *plat, int win_x, int win_y);
+
 /* Debug: the window-pixel rect a unit dot at this world position would
  * occupy, clipped to the drawn map. Returns 0 when the minimap is not
  * up or the position falls outside it. */

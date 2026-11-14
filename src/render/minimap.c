@@ -550,6 +550,33 @@ int Minimap_PointToWorld(TAK_Platform *plat, int win_x, int win_y, int clamp,
     return 1;
 }
 
+int Minimap_UnitAt(TAK_Platform *plat, int win_x, int win_y) {
+    const GameWorld *world = World_Get();
+    SDL_Rect map;
+    if (!plat || !world || !world->loaded || !mm.tex ||
+        world->map_pixels_w <= 0 || world->map_pixels_h <= 0 ||
+        !minimap_compute_rect(plat, &map))
+        return -1;
+    /* The original keeps where it drew each blip and takes the nearest
+     * under four in squared radar pixels (legacy:208518-208522,
+     * legacy:238386-238401). */
+    const float s = plat->scale > 0.0f ? plat->scale : 1.0f;
+    float best = 4.0f * s * s;
+    int pick = -1, count = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; units && i < count; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || !minimap_shows_unit(world, u)) continue;
+        const float dx = (float)(win_x - (map.x + (int)((int64_t)u->world_x * map.w / world->map_pixels_w)));
+        const float dy = (float)(win_y - (map.y + (int)((int64_t)u->world_y * map.h / world->map_pixels_h)));
+        if (dx * dx + dy * dy < best) {
+            best = dx * dx + dy * dy;
+            pick = i;
+        }
+    }
+    return pick;
+}
+
 void Minimap_Shutdown(TAK_Platform *plat) {
     g_mm_large = 0;
     if (mb.gen == (plat ? plat->renderer_gen : 0u)) blips_free(plat);

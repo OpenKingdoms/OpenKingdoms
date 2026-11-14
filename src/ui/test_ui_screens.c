@@ -28684,32 +28684,24 @@ TEST(minimap_left_button_carries_out_the_armed_command) {
     igm_teardown(&platform);
 }
 
-/* A minimap pixel whose map point picks this unit, near its dot. */
+/* The minimap pixel a unit's blip is drawn at, where a click finds it
+ * (legacy:238386-238401). */
 static int mmc_pixel_on(const GameWorld *w, const SDL_Rect *r, int handle,
                         int *out_x, int *out_y) {
     int n = 0;
     const Unit *units = Units_GetActive(&n);
-    int ux = r->x + (int)((int64_t)units[handle].world_x * r->w / w->map_pixels_w);
-    int uy = r->y + (int)((int64_t)units[handle].world_y * r->h / w->map_pixels_h);
-    for (int dy = -8; dy <= 8; dy++) {
-        for (int dx = -8; dx <= 8; dx++) {
-            int x = ux + dx, y = uy + dy;
-            if (x < r->x || y < r->y || x >= r->x + r->w || y >= r->y + r->h) continue;
-            int32_t px, py;
-            mmc_point(w, r, x, y, &px, &py);
-            if (Units_PickAt(px, py, 0) != handle) continue;
-            *out_x = x;
-            *out_y = y;
-            return 1;
-        }
-    }
-    return 0;
+    int x = r->x + (int)((int64_t)units[handle].world_x * r->w / w->map_pixels_w);
+    int y = r->y + (int)((int64_t)units[handle].world_y * r->h / w->map_pixels_h);
+    if (x < r->x || y < r->y || x >= r->x + r->w || y >= r->y + r->h) return 0;
+    *out_x = x;
+    *out_y = y;
+    return 1;
 }
 
 /* With nothing armed the left button gives the order a field click
- * would over what stands there: an enemy is attacked and a unit of
- * your own is selected (legacy:243640-243648, legacy:186540-186606,
- * legacy:237934-237950). */
+ * would over the blip there: an enemy is attacked, one only radar shows
+ * among them, and a unit of your own is selected (legacy:243640-243648,
+ * legacy:186540-186606, legacy:237934-237950). */
 TEST(minimap_left_button_gives_the_field_order_over_a_unit) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -28757,6 +28749,32 @@ TEST(minimap_left_button_gives_the_field_order_over_a_unit) {
     ASSERT_EQ_INT(1, sel_n);
     ASSERT_EQ_INT(pal, sel[0]);
     Fog_SetSeeAll(0);
+
+    /* A foe beyond sight that radar marks is picked by its blip as well
+     * (legacy:238386-238401). The monarch sees 232 and radars 650. */
+    int32_t far_dx = ax < w->map_pixels_w / 2 ? 420 : -420;
+    int far = Units_Spawn(Units_FindDefByName("ARASWORD"), 2, 1, ax + far_dx, ay);
+    ASSERT(far >= 0);
+    Units_DebugSetAggro(far, UNIT_AGGRO_PASSIVE);
+    Units_SelectSingle(mine);
+    for (int i = 0; i < 40; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    units = Units_GetActive(&n);
+    ASSERT_EQ_INT(0, Units_IsVisibleToLocalPlayer(&units[far]));
+    ASSERT_EQ_INT(1, Units_RadarShowsToLocalPlayer(&units[far]));
+    ASSERT(mmc_pixel_on(w, &r, far, &fx, &fy));
+    InGame_DebugMouse(1, fx, fy, SDL_BUTTON(SDL_BUTTON_LEFT));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    InGame_DebugMouse(1, fx, fy, 0);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    TAK_CmdQueue_Run();
+    units = Units_GetActive(&n);
+    printf("(on a radar blip: order %d at unit %d, want %d at %d) ",
+           (int)units[mine].cmd_kind, units[mine].target, UNIT_CMD_ATTACK, far);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, units[mine].cmd_kind);
+    ASSERT_EQ_INT(far, units[mine].target);
     InGame_DebugMouse(0, 0, 0, 0);
     igm_teardown(&platform);
 }

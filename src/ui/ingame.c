@@ -1734,8 +1734,9 @@ static int ig_minimap(GameWorld *world, TAK_Platform *platform, int wx, int wy,
         ig.mm_look = SDL_BUTTON_LEFT;
     } else {
         /* The point walks to the ground as a field point does
-         * (legacy:243979), and the unit there is the target. */
-        InGame_WorldClickOn(px, py, Units_PickAt(px, py, 0), mods);
+         * (legacy:243979), and the unit whose blip is there, radar's
+         * among them, is the target (legacy:238386-238401). */
+        InGame_WorldClickOn(px, py, Minimap_UnitAt(platform, wx, wy), mods);
         return 1;
     }
     ig_center_camera(world, px, py);
