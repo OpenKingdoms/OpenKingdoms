@@ -1375,15 +1375,17 @@ static int def_rides_sea(const UnitDef *d) {
     return d && (d->floater || d->yard_floats);
 }
 
-/* Where a unit stands: the ground, the sea over it for a floater or a
- * flyer, and its altitude on top. The original keeps this on the unit
- * (unit+0x6c), and holds a flyer cruisealt over the higher of the
- * ground and the sea (legacy:190499-190507). */
+/* Where a unit stands: the ground, the sea over it for a floater, a
+ * flyer or a hover that is not upright, and its altitude on top. The
+ * original keeps this on the unit (unit+0x6c), and holds a flyer cruisealt
+ * over the higher of the ground and the sea (legacy:190499-190507,
+ * legacy:234194-234212). */
 static float unit_base_height(const GameWorld *w, const Unit *v) {
     if (!w || !v) return 0.0f;
     float g = (float)Terrain_SampleHeight(w, v->world_x, v->world_y);
     const UnitDef *d = Units_GetDef(v->def_idx);
-    if (d && (def_rides_sea(d) || d->can_fly) && (float)w->water_height > g)
+    if (d && (def_rides_sea(d) || d->can_fly || (d->can_hover && !d->upright)) &&
+        (float)w->water_height > g)
         g = (float)w->water_height;
     return g + v->flight_alt;
 }
@@ -1401,14 +1403,19 @@ static float unit_air_alt(const GameWorld *w, const Unit *u) {
 }
 
 /* How far a def at (x, y) rides over the ground: its waterline under
- * the sea, never under the ground (legacy:234287-234330,
- * legacy:184112-184122). Drawing only. */
+ * the sea, or the surface for a hover neither upright nor a floater,
+ * never under the ground (legacy:234194-234330, legacy:184112-184122). */
 static float def_float_lift(const GameWorld *w, const UnitDef *d,
                             int32_t x, int32_t y) {
     if (!w || !d || w->water_height <= 0) return 0.0f;
-    if (!(d->upright ? d->can_hover : def_rides_sea(d))) return 0.0f;
+    int line;
+    if (d->upright ? d->can_hover : def_rides_sea(d))
+        line = w->water_height - (int)d->waterline;
+    else if (d->can_hover && !d->can_fly)
+        line = w->water_height;
+    else
+        return 0.0f;
     int g = Terrain_SampleHeight(w, x, y);
-    int line = w->water_height - (int)d->waterline;
     return line > g ? (float)(line - g) : 0.0f;
 }
 

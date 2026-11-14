@@ -2242,7 +2242,9 @@ TEST(a_flyer_cruises_over_the_sea_not_the_sea_floor) {
 
 /* A ship is drawn with its origin its waterline under the sea and an
  * upright hover unit wades the same way, neither under the ground; a
- * land unit stands on the sea floor (legacy:234287-234330). */
+ * hover that is not upright, the Rictus, rides the surface
+ * (legacy:234194-234212); a land unit stands on the sea floor
+ * (legacy:234287-234330). */
 TEST(a_ship_is_drawn_at_its_waterline_not_on_the_sea_floor) {
     GameWorld *w = mv_sea();
     ASSERT_NOT_NULL(w);
@@ -2253,15 +2255,20 @@ TEST(a_ship_is_drawn_at_its_waterline_not_on_the_sea_floor) {
     defs[MV_DEF_KNIGHT].can_hover = 1;
     defs[MV_DEF_KNIGHT].upright = 1;
     defs[MV_DEF_KNIGHT].waterline = 40;
+    defs[MV_DEF_HORSE].can_hover = 1;
+    defs[MV_DEF_HORSE].upright = 0;
+    defs[MV_DEF_HORSE].waterline = 40;
     ASSERT_EQ_INT(MV_DEF_SEA_COUNT, Units_DebugSetDefs(defs, MV_DEF_SEA_COUNT));
     int ship = Units_Spawn(MV_DEF_GALLEY, 1, 0, 1500, 1500);
     int wader = Units_Spawn(MV_DEF_KNIGHT, 1, 0, 1700, 1500);
     int walker = Units_Spawn(MV_DEF_WALKER, 1, 0, 1900, 1500);
-    ASSERT(ship >= 0 && wader >= 0 && walker >= 0);
+    int skimmer = Units_Spawn(MV_DEF_HORSE, 1, 0, 2100, 1500);
+    ASSERT(ship >= 0 && wader >= 0 && walker >= 0 && skimmer >= 0);
     /* Each ground: the deep sea, the shallows, dry land. */
     static const int ground[3] = { MV_SEABED, MV_WATER - 10, MV_WATER + 10 };
     static const int ship_at[3] = { MV_WATER - 5, MV_WATER - 5, MV_WATER + 10 };
     static const int wader_at[3] = { MV_WATER - 40, MV_WATER - 10, MV_WATER + 10 };
+    static const int skim_at[3] = { MV_WATER, MV_WATER, MV_WATER + 10 };
     size_t hn = (size_t)w->tnt.height_w * (size_t)w->tnt.height_h;
     for (int k = 0; k < 3; k++) {
         memset(w->tnt.heightmap, ground[k], hn);
@@ -2271,6 +2278,9 @@ TEST(a_ship_is_drawn_at_its_waterline_not_on_the_sea_floor) {
                (double)(g + Units_DrawnAlt(w, mv_unit(wader))));
         ASSERT_EQ_INT(ship_at[k], (int)(g + Units_DrawnAlt(w, mv_unit(ship))));
         ASSERT_EQ_INT(wader_at[k], (int)(g + Units_DrawnAlt(w, mv_unit(wader))));
+        ASSERT_EQ_INT(skim_at[k], (int)(g + Units_DrawnAlt(w, mv_unit(skimmer))));
+        /* and its shots and flames leave from the same height. */
+        ASSERT_EQ_INT(skim_at[k], (int)Units_DebugStandHeight(skimmer));
         ASSERT(Units_DrawnAlt(w, mv_unit(walker)) == 0.0f);
     }
     mv_end();
