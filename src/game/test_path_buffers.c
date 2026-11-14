@@ -51,6 +51,12 @@ int Terrain_IsWalkable(const struct GameWorld *world,
     return 1;
 }
 
+/* The planner's bad ground asks the slope alone, which is all of it here. */
+int Terrain_SlopeAllows(const struct GameWorld *world,
+                        int32_t world_x, int32_t world_y, int max_slope) {
+    return Terrain_IsWalkable(world, world_x, world_y, max_slope);
+}
+
 void Terrain_WalkableTiles(const struct GameWorld *world, int max_slope,
                            uint8_t *out, int tw, int th) {
     for (int ty = 0; ty < th; ty++) {
