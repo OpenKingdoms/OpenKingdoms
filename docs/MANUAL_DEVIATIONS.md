@@ -2601,6 +2601,35 @@ Format per entry:
   UnitCommand Move, which this engine has never bound, so M did nothing
   in battle before. The manual is silent.
 
+## D-047: Battle chat is larger, in the sender's colour, on a plate
+
+- Change: the chat lines in the top left of a battle, the chat edit box
+  and the +Clock line scale with the screen. They draw at one and a
+  quarter times the original on the 480 row canvas, twice on a 1080 row
+  screen, and at most four times, in steps of a quarter. The game's own
+  Times sheets are scaled by edge directed doubling and then resampled,
+  so the strokes stay crisp. A player's line carries their team badge,
+  their name in the bold sheet in their player colour, and the message
+  in a paler tint of that colour. A colour too dark to read is lifted
+  toward white in linear light, which keeps its hue, until the name
+  reaches a relative luminance of 0.34 and the message 0.64. Each
+  message sits on a rounded warm dark plate about three quarters
+  opaque, every glyph has a dark halo, and a line fades out over the
+  last half second of its life. A system line keeps the margin, has no
+  badge, and is drawn in the parchment of the game's own text. A line
+  stops at 560 original pixels across before it wraps, and when the
+  block would reach the edit box the oldest messages give way.
+- Why: the owner asked for chat that is larger, easy to see, in colours
+  near the units' own, and more modern while keeping the game's feel.
+  The original draws its 8 point face one to one in white, which reads
+  at 640x480 but is tiny on a browser sized canvas and vanishes over
+  snow and sand. The badge, the margins and the 18 pixel row are the
+  original's, scaled.
+- Citation: the block and its badge, legacy:205958-206051 and
+  legacy:206008-206015. Covered by
+  `chat_ink_reads_on_snow_and_water_for_every_player_colour`. The
+  manual is silent on how chat looks.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

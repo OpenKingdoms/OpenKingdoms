@@ -59,6 +59,8 @@ typedef struct {
 /* Events are polled, not called back, so a screen reads them where it
  * already runs. Sixteen is more than a frame ever produces. */
 #define TAK_NC_EVENTS_MAX 16
+/* Chat lines held for the battle, which takes them a frame at a time. */
+#define TAK_NC_CHAT_IN    8
 
 /* Turns held but not yet simulated. A player who rejoins, or drops in
  * to a match under way, is handed the whole turn log at once, while the
@@ -99,6 +101,13 @@ typedef struct TAK_NetClient {
     TAK_MsgRoomList  rooms;
     TAK_MsgRoomState room;
     TAK_MsgChat      chat;
+    /* Chat held for the battle, oldest first. A START_GAME empties it,
+     * so the room's talk stays in the room. */
+    TAK_MsgChat      chat_in[TAK_NC_CHAT_IN];
+    uint8_t          chat_in_count;
+    /* The name this client said hello with, which the relay signs our
+     * lines with. */
+    char             name[TAK_NET_NAME_MAX];
     /* Which seat the server gave us, once we are in a room, and
      * TAK_NET_SEAT_NONE before that. The server stamps every command
      * with it, so nothing here has to be told twice. */
@@ -247,6 +256,12 @@ int TAK_NetClient_EditComputer(TAK_NetClient *c, uint8_t seat,
  * counted with them. */
 int TAK_NetClient_Resign(TAK_NetClient *c);
 int TAK_NetClient_Chat(TAK_NetClient *c, const TAK_MsgChat *m);
+/* A chat line from the battle. It never crowds out the turns: past half
+ * the out queue it is refused, and nothing is flagged. */
+int TAK_NetClient_BattleChat(TAK_NetClient *c, const TAK_MsgChat *m);
+/* The oldest chat line held for the battle: 1 with *out filled, 0 when
+ * none is held. */
+int TAK_NetClient_TakeChat(TAK_NetClient *c, TAK_MsgChat *out);
 int TAK_NetClient_Start(TAK_NetClient *c);
 
 /* ── The match ─────────────────────────────────────────────────────── */

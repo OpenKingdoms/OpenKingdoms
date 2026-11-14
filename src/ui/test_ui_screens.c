@@ -29710,6 +29710,8 @@ TEST(chat_level_off_hides_your_own_line_and_not_theirs) {
     Chat_OnMessage(&m, 1000);
     ASSERT_EQ_INT(2, Chat_Count());
     ASSERT_EQ_INT(CHAT_TYPE_THEIRS, Chat_EntryType(1));
+    /* The wire's seat 2 is the third player, whose colour the line takes. */
+    ASSERT_EQ_INT(3, Chat_EntryOwner(1));
     ASSERT_EQ_INT(1, Chat_VisibleRows());
     ASSERT_EQ_STR("Elsin: theirs", Chat_VisibleRow(0));
 
@@ -29746,17 +29748,64 @@ TEST(the_chat_ring_drops_its_oldest_when_it_fills) {
     ASSERT_EQ_INT(20, Chat_VisibleRows());
 }
 
+/* Hue in degrees, or -1 for a grey. */
+static int chat_test_hue(int r, int g, int b) {
+    int mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    int mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    if (mx - mn < 24) return -1;
+    double d = mx - mn, h;
+    if (mx == r)      h = 60.0 * ((g - b) / d);
+    else if (mx == g) h = 60.0 * ((b - r) / d + 2.0);
+    else              h = 60.0 * ((r - g) / d + 4.0);
+    return (int)(h < 0 ? h + 360.0 : h);
+}
+
+/* Every player colour reads on the chat plate over bright snow and over
+ * black water, keeps its hue, and stays apart from the others (D-047). */
+TEST(chat_ink_reads_on_snow_and_water_for_every_player_colour) {
+    ChatInk snow = { 255, 255, 255 }, water = { 0, 0, 0 };
+    ChatInk on_snow = Chat_PlateOver(snow), on_water = Chat_PlateOver(water);
+    ChatInk names[TAK_PLAYER_COLOR_COUNT];
+    for (int c = 0; c < TAK_PLAYER_COLOR_COUNT; c++) {
+        const TakPlayerColor *pc = BattleConfig_PlayerColor(c);
+        ChatInk name, text;
+        Chat_PlayerInk(c, &name, &text);
+        printf("\n    %-6s name %3d %3d %3d (%d.%02d) text %3d %3d %3d (%d.%02d)", pc->name,
+               name.r, name.g, name.b, Chat_ContrastX100(name, on_snow) / 100,
+               Chat_ContrastX100(name, on_snow) % 100, text.r, text.g, text.b,
+               Chat_ContrastX100(text, on_snow) / 100, Chat_ContrastX100(text, on_snow) % 100);
+        ASSERT(Chat_ContrastX100(name, on_snow) >= 300);
+        ASSERT(Chat_ContrastX100(text, on_snow) >= 450);
+        ASSERT(Chat_ContrastX100(name, on_water) >= 700);
+        ASSERT(Chat_ContrastX100(text, on_water) >= 700);
+        int hue = chat_test_hue(pc->r, pc->g, pc->b);
+        if (hue >= 0) {
+            int dn = abs(chat_test_hue(name.r, name.g, name.b) - hue);
+            if (dn > 180) dn = 360 - dn;
+            ASSERT(dn <= 8);
+        }
+        names[c] = name;
+    }
+    for (int a = 0; a < TAK_PLAYER_COLOR_COUNT; a++)
+        for (int b = a + 1; b < TAK_PLAYER_COLOR_COUNT; b++)
+            ASSERT(abs(names[a].r - names[b].r) + abs(names[a].g - names[b].g) +
+                   abs(names[a].b - names[b].b) >= 48);
+    ASSERT(Chat_ContrastX100(Chat_SystemInk(), on_snow) >= 450);
+    printf("\n    ");
+}
+
 /* One path to the network, the protocol's own chat message. A skirmish
  * with nobody listening still shows the line locally, the way the
  * original's send loop finds no other player and stores yours anyway. */
 static int chat_sent_frames;
 static uint8_t chat_sent_copy[512];
 static size_t chat_sent_len;
-static void chat_test_sender(const void *frame, size_t len, void *user) {
+static int chat_test_sender(const void *frame, size_t len, void *user) {
     (void)user;
     chat_sent_frames++;
     chat_sent_len = len < sizeof(chat_sent_copy) ? len : sizeof(chat_sent_copy);
     memcpy(chat_sent_copy, frame, chat_sent_len);
+    return 0;
 }
 
 TEST(a_sent_line_goes_out_as_a_protocol_chat_message) {
@@ -29776,7 +29825,8 @@ TEST(a_sent_line_goes_out_as_a_protocol_chat_message) {
     TAK_MsgChat got;
     ASSERT_EQ_INT(0, TAK_Msg_ChatDecode(&got, f.payload, f.payload_len));
     ASSERT_EQ_INT(TAK_CHAT_ALL, got.scope);
-    ASSERT_EQ_INT(1, got.from_seat);
+    /* Player 1 is the wire's seat 0. */
+    ASSERT_EQ_INT(0, got.from_seat);
     ASSERT_EQ_STR("Player", got.name);
     ASSERT_EQ_STR("for the wire", got.text);
     /* And the local copy is there regardless of who heard it. */
@@ -31691,6 +31741,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(chat_level_off_hides_your_own_line_and_not_theirs);
     RUN_UI_TEST(text_lines_at_zero_stores_no_chat);
     RUN_UI_TEST(the_chat_ring_drops_its_oldest_when_it_fills);
+    RUN_UI_TEST(chat_ink_reads_on_snow_and_water_for_every_player_colour);
     RUN_UI_TEST(a_sent_line_goes_out_as_a_protocol_chat_message);
     RUN_UI_TEST(a_plus_line_runs_and_is_echoed);
     RUN_UI_TEST(typing_a_chat_line_issues_no_orders);

@@ -1762,6 +1762,60 @@ static int playing_client(void) {
     return g_c.state == TAK_NC_PLAYING ? 0 : -1;
 }
 
+/* The room's talk stays in the room, a busy battle keeps its newest
+ * lines, and battle chat never crowds the turns out of the link. */
+TEST(battle_chat_keeps_the_newest_lines_and_never_floods_the_link) {
+    ASSERT_EQ_INT(0, welcome_client(7));
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    TAK_MsgChat ch;
+    memset(&ch, 0, sizeof ch);
+    ch.from_seat = 1;
+    snprintf(ch.text, sizeof ch.text, "%s", "lobby talk");
+    size_t n = TAK_Msg_ChatEncode(&ch, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1000));
+    ASSERT_EQ_INT(1, (int)g_c.chat_in_count);
+    ASSERT_EQ_INT(-1, TAK_NetClient_BattleChat(&g_c, &ch));
+
+    TAK_MsgStartGame sg;
+    memset(&sg, 0, sizeof sg);
+    sg.match_id = 1;
+    sg.your_seat = 0;
+    sg.turn_ticks = 3;
+    n = TAK_Msg_StartGameEncode(&sg, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1000));
+    ASSERT_EQ_INT(0, (int)g_c.chat_in_count);
+    TAK_MsgGo go;
+    go.first_turn = 0;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1000));
+    ASSERT_EQ_INT(TAK_NC_PLAYING, g_c.state);
+    for (int i = 0; i < TAK_NC_CHAT_IN + 2; i++) {
+        snprintf(ch.text, sizeof ch.text, "line %d", i);
+        n = TAK_Msg_ChatEncode(&ch, msg, sizeof msg);
+        ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1000));
+    }
+    TAK_MsgChat got;
+    ASSERT_EQ_INT(1, TAK_NetClient_TakeChat(&g_c, &got));
+    ASSERT_EQ_STR("line 2", got.text);
+    int left = 1;
+    while (TAK_NetClient_TakeChat(&g_c, &got)) left++;
+    ASSERT_EQ_INT(TAK_NC_CHAT_IN, left);
+    ASSERT_EQ_STR("line 9", got.text);
+
+    memset(ch.text, 'x', sizeof ch.text - 1);
+    int sent = 0;
+    while (sent < 4096 && TAK_NetClient_BattleChat(&g_c, &ch) == 0) sent++;
+    ASSERT(sent > 0 && sent < 4096);
+    ASSERT_EQ_INT(0, (int)g_c.out_overflow);
+    /* An order and an ack still fit behind it. */
+    uint8_t order[64];
+    memset(order, 1, sizeof order);
+    TAK_CmdBlob blob = { order, (uint16_t)sizeof order };
+    ASSERT_EQ_INT(0, TAK_NetClient_SendCommands(&g_c, &blob, 1));
+    ASSERT_EQ_INT(0, TAK_NetClient_Ack(&g_c, 0, TAK_NET_NO_HASH, 0));
+    ASSERT_EQ_INT(0, (int)g_c.out_overflow);
+}
+
 /* One turn into the client: `cmds` commands from `seat`, each four bytes
  * naming its turn, or an empty run of `run` when cmds is 0. */
 static int feed_turn(uint32_t turn, uint8_t seat, int cmds, uint16_t run) {
@@ -2505,6 +2559,7 @@ int main(void) {
     RUN(nothing_is_asked_for_before_the_welcome);
     RUN(a_message_this_build_never_heard_of_is_skipped);
     RUN(a_queue_that_fills_says_so_rather_than_losing_a_message);
+    RUN(battle_chat_keeps_the_newest_lines_and_never_floods_the_link);
     RUN(a_closed_transport_is_reported_once);
 
     TEST_SUITE("The client against the real relay");
