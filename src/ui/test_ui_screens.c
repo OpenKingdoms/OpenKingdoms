@@ -11419,11 +11419,18 @@ TEST(ctrl_on_a_zhon_builders_button_summons_without_end) {
             slot = i;
     }
     ASSERT(slot >= 0);
+    /* The button's help line, the name over the cost (legacy:149796-149810). */
+    char help[96];
+    ASSERT_EQ_INT(1, HUD_BuildButtonHelp(gob, help, sizeof help));
+    {
+        char want[96];
+        snprintf(want, sizeof want, "%s\ncost %d", Units_GetDef(gob)->display_name,
+                 Units_GetDef(gob)->build_cost);
+        ASSERT_EQ_STR(want, help);
+    }
     r = TAK_Platform_CanvasRectToWindow(&platform, r);
-    SDL_SetModState(KMOD_LCTRL);
-    ASSERT_EQ_INT(1, HUD_HandleSidebarClick(r.x + r.w / 2, r.y + r.h / 2,
-                                            &platform));
-    SDL_SetModState(KMOD_NONE);
+    ASSERT_EQ_INT(1, HUD_HandleSidebarClickHeld(r.x + r.w / 2, r.y + r.h / 2,
+                                                &platform, HUD_HELD_CTRL));
     ASSERT_EQ_INT(HUD_CMD_PLACE_BUILD, HUD_GetCommandMode());
     int32_t seen_y = sy - (int32_t)((float)Terrain_SampleHeight(world, sx, sy)
                                     * Units_GetTanTilt());
@@ -26086,10 +26093,25 @@ TEST(hud_kill_count_follows_the_selected_units_kills) {
     VFS_Shutdown();
 }
 
-/* The rank shield in the sidebar shows frame rank minus one, capped at
- * its three frames, and hides at rank 0, for enemy units and for a
- * noveteran monarch (legacy:152439-152449, legacy:232939-232941). It
- * used to show the top frame at any rank. */
+/* Canvas pixels over the portrait that differ from a copy taken
+ * earlier. */
+static int rank_canvas_diff(const uint32_t *before) {
+    SDL_Surface *c = UI_Offscreen();
+    const GUIWidget *pic = GUIRuntime_WidgetByName(HUD_DebugRuntime(), "UnitImage");
+    if (!pic) return -1;
+    int diff = 0;
+    for (int y = pic->rect.y; y < pic->rect.y + pic->rect.h && y < c->h; y++) {
+        const uint32_t *row = (const uint32_t *)((const uint8_t *)c->pixels + (size_t)y * c->pitch);
+        for (int x = pic->rect.x; x < pic->rect.x + pic->rect.w && x < c->w; x++)
+            diff += row[x] != before[y * c->w + x];
+    }
+    return diff;
+}
+
+/* The rank shield in the bottom panel: level times three over the cap
+ * of ten picks bronze, silver or gold, nothing below level 4, for any
+ * unit but a noveteran monarch (legacy:152439-152450,
+ * legacy:232939-232941). It sits on the portrait's corner and shows. */
 TEST(hud_rank_shield_follows_the_units_rank) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -26116,9 +26138,12 @@ TEST(hud_rank_shield_follows_the_units_rank) {
     Timer timer;
     Timer_Init(&timer);
 
-    static const int ranks[]  = { 0, 1, 2, 3, 7, 10 };
-    static const int frames[] = { -1, 0, 1, 2, 2, 2 };
+    static const int ranks[]  = { 0, 3, 4, 6, 7, 9, 10 };
+    static const int frames[] = { -1, -1, 0, 0, 1, 1, 2 };
     Units_SelectSingle(mine);
+    SDL_Surface *canvas = UI_Offscreen();
+    uint32_t *bare = (uint32_t *)malloc((size_t)canvas->w * (size_t)canvas->h * 4u);
+    ASSERT_NOT_NULL(bare);
     for (int i = 0; i < (int)(sizeof(ranks) / sizeof(ranks[0])); i++) {
         Units_DebugSetVeteranLevel(mine, ranks[i]);
         ASSERT_EQ_INT(ranks[i], Units_GetVeteranLevel(mine));
@@ -26126,11 +26151,18 @@ TEST(hud_rank_shield_follows_the_units_rank) {
         InGame_Tick(&platform, &timer);
         if (frames[i] < 0) {
             ASSERT_EQ_INT(1, HUD_WidgetHidden("Experience"));
+            for (int y = 0; y < canvas->h; y++)
+                memcpy(bare + (size_t)y * canvas->w,
+                       (const uint8_t *)canvas->pixels + (size_t)y * canvas->pitch,
+                       (size_t)canvas->w * 4u);
         } else {
             ASSERT_EQ_INT(0, HUD_WidgetHidden("Experience"));
             ASSERT_EQ_INT(frames[i], HUD_WidgetFrame("Experience"));
+            /* The shield shows on the portrait's corner, not under it. */
+            ASSERT(rank_canvas_diff(bare) > 40);
         }
     }
+    free(bare);
 
     /* The monarch is noveteran and never ranks, whatever its XP. */
     const UnitDef *kd = Units_GetDef(units[hero].def_idx);
@@ -26147,7 +26179,8 @@ TEST(hud_rank_shield_follows_the_units_rank) {
     Units_SelectSingle(theirs);
     timer.accumulator = 0.0;
     InGame_Tick(&platform, &timer);
-    ASSERT_EQ_INT(1, HUD_WidgetHidden("Experience"));
+    ASSERT_EQ_INT(0, HUD_WidgetHidden("Experience"));
+    ASSERT_EQ_INT(0, HUD_WidgetFrame("Experience"));
 
     InGame_Shutdown();
     Loading_Shutdown();

@@ -414,14 +414,17 @@ TEST(ctrl_trains_without_end_until_a_click_cancels_it) {
 
 /* The held keys pick the count a build button sends. */
 TEST(the_held_keys_choose_how_many_a_build_button_sends) {
-    SDL_SetModState(KMOD_NONE);
-    ASSERT_EQ_INT(1, (int)HUD_BuildCountArg());
+    uint8_t keys[SDL_NUM_SCANCODES] = { 0 };
+    ASSERT_EQ_INT(1, (int)HUD_BuildCountFor(HUD_HeldKeys(keys)));
+    keys[SDL_SCANCODE_RSHIFT] = 1;
+    ASSERT_EQ_INT(5, (int)HUD_BuildCountFor(HUD_HeldKeys(keys)));
+    keys[SDL_SCANCODE_LCTRL] = 1;
+    ASSERT_EQ_INT((int)TAK_FACTORY_ALL, (int)HUD_BuildCountFor(HUD_HeldKeys(keys)));
+    keys[SDL_SCANCODE_RSHIFT] = 0;
+    ASSERT_EQ_INT((int)TAK_FACTORY_ALL, (int)HUD_BuildCountFor(HUD_HeldKeys(keys)));
+    /* A modifier state still holding a Shift no key holds sends one. */
     SDL_SetModState(KMOD_LSHIFT);
-    ASSERT_EQ_INT(5, (int)HUD_BuildCountArg());
-    SDL_SetModState(KMOD_LCTRL);
-    ASSERT_EQ_INT((int)TAK_FACTORY_ALL, (int)HUD_BuildCountArg());
-    SDL_SetModState((SDL_Keymod)(KMOD_LCTRL | KMOD_LSHIFT));
-    ASSERT_EQ_INT((int)TAK_FACTORY_ALL, (int)HUD_BuildCountArg());
+    ASSERT_EQ_INT(1, (int)HUD_BuildCountArg());
     SDL_SetModState(KMOD_NONE);
 }
 

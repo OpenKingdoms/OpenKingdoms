@@ -126,6 +126,10 @@ int  HUD_TriggerCommand(int mode);
  * treat the click as consumed. Stop is fired immediately and the
  * mode reverts to NONE. */
 int  HUD_HandleSidebarClick(int win_x, int win_y, TAK_Platform *plat);
+/* The same with the keys the click is made with given as HUD_HELD_*
+ * bits, which is how a test holds Ctrl. */
+int  HUD_HandleSidebarClickHeld(int win_x, int win_y, TAK_Platform *plat,
+                                int held);
 
 /* Active pending command, or HUD_CMD_NONE. ingame.c reads this on
  * world clicks to dispatch Move/Attack/Patrol etc. */
@@ -251,6 +255,20 @@ int  HUD_GetQueueBadgeDialogRect(int slot, SDL_Rect *out);
  * end or every one taken off, Shift five, else one (legacy:150094-150101,
  * manual section IV). */
 uint16_t HUD_BuildCountArg(void);
+/* The rank shield frame a veteran level shows, bronze 0 to gold 2, or
+ * -1 for none: levels 4 to 6 bronze, 7 to 9 silver, 10 gold. */
+int      HUD_RankShieldFrame(int level);
+/* The help line a build button gives the sidebar while the pointer
+ * rests on it: the unit's name over the cost word and its price
+ * (legacy:149796-149810, format "%s\n%s %d"). 1 when written. */
+int      HUD_BuildButtonHelp(int def_idx, char *out, size_t cap);
+/* Shift and Ctrl held, read by scancode as the order clicks read them.
+ * SDL's modifier state keeps Shift when a browser reports its release as
+ * Caps Lock (xkb shift:both_capslock_cancel). */
+#define HUD_HELD_SHIFT 1
+#define HUD_HELD_CTRL  2
+int      HUD_HeldKeys(const uint8_t *keys);
+uint16_t HUD_BuildCountFor(int held);
 /* The label on a build button: the count a factory has queued and
  * building, or +++ for the def a factory makes or a walking builder
  * summons without end (legacy:149922-149930). 0 and an empty string

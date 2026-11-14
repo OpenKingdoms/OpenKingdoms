@@ -55,6 +55,7 @@ static HUDText    *g_text        = NULL;
  * key, as the original's lookup does (legacy:267931). */
 static char g_msg_carrying[48] = "TRANSPORT_CARRYING_HELPTEXT";
 static char g_msg_mana[48]     = "CRYSTALBALL_MOGRIUM_MESSAGE";
+static char g_msg_cost[48]     = "UNIT_COST_HELPTEXT";
 
 /* Command-mode (legacy click-button-then-click-world flow). */
 static int g_cmd_mode = HUD_CMD_NONE;
@@ -413,7 +414,7 @@ static int collect_panel_widgets(SDL_Rect bounds,
         { "ManaBar",    0, 1 },
         { "Static0",    0, 0 },   /* araingame.gui's HealthBack/ManaBack */
         { "KillCount",  0, 1, 1 },
-        { "Experience", 1, 1 },
+        { "Experience", 1, 0 },
     };
     int n = 0;
     if (!g_rt) return 0;
@@ -532,6 +533,8 @@ static void hud_load_messages(void) {
                          g_msg_carrying, sizeof(g_msg_carrying));
         hud_read_message(tdf, "CRYSTALBALL_MOGRIUM_MESSAGE",
                          g_msg_mana, sizeof(g_msg_mana));
+        hud_read_message(tdf, "UNIT_COST_HELPTEXT",
+                         g_msg_cost, sizeof(g_msg_cost));
     }
     TDF_Close(tdf);
 }
@@ -950,6 +953,20 @@ static const Unit *hud_selection_target(const int *sel, int count, int *handle) 
     return t;
 }
 
+/* The build button under the pointer, by the rects the last frame laid
+ * out, or -1. */
+static int hud_build_def_under_pointer(const TAK_Platform *plat) {
+    if (!plat || !plat->has_focus) return -1;
+    int mx = 0, my = 0;
+    SDL_GetMouseState(&mx, &my);
+    for (int i = 0; i < g_build_slots_count; i++) {
+        const SDL_Rect *r = &g_build_slots_live[i].rect;
+        if (mx >= r->x && mx < r->x + r->w && my >= r->y && my < r->y + r->h)
+            return g_build_slots_live[i].def_idx;
+    }
+    return -1;
+}
+
 void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
     if (!plat || !plat->renderer) return;
 
@@ -1035,12 +1052,13 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
          * the kill tally, leaving the strip art up
          * (legacy:152277-152296, legacy:152496-152506). The second panel
          * describes the selection's TARGET (legacy:152140-152143). */
-        int sel_rank = have_sel ? Units_GetSelectedVeteranLevel() : 0;
-        int show_xp = sel_rank > 0;
+        int sel_rank = have_sel ? HUD_RankShieldFrame(Units_GetSelectedVeteranLevel()) : -1;
+        int show_xp = sel_rank >= 0;
         int sel_own = hud_selection_is_own();
         /* The kill tally shows at one kill and up (legacy:152496-152506). */
         int sel_kills = have_sel ? Units_GetSelectedKills() : 0;
-        int tgt_rank = (tgt && tgt_handle >= 0) ? Units_GetVeteranLevel(tgt_handle) : 0;
+        int tgt_rank = (tgt && tgt_handle >= 0)
+                     ? HUD_RankShieldFrame(Units_GetVeteranLevel(tgt_handle)) : -1;
         if (g_panel1_n > 0) {
             for (int i = 0; i < g_panel1_n; i++) {
                 int show = g_panel1[i].is_xp ? show_xp : have_sel;
@@ -1056,7 +1074,7 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             int tgt_kills = tgt ? tgt->kills : 0;
             for (int i = 0; i < g_panel2_n; i++) {
                 int show = tgt != NULL;
-                if (show && g_panel2[i].is_xp)    show = tgt_rank > 0;
+                if (show && g_panel2[i].is_xp)    show = tgt_rank >= 0;
                 if (show && g_panel2[i].is_kills)  show = tgt_kills > 0;
                 if (show && g_panel2[i].own_only && !tgt_own) show = 0;
                 GUIRuntime_SetWidgetVisibleAt(g_rt, g_panel2[i].index, show);
@@ -1068,18 +1086,14 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             GUIRuntime_SetWidgetVisible(g_rt, "ManaBar", have_sel && sel_own);
             GUIRuntime_SetWidgetVisible(g_rt, "KillCount",
                                         have_sel && sel_own && sel_kills > 0);
-            GUIRuntime_SetWidgetVisible(g_rt, "Experience", show_xp && sel_own);
+            GUIRuntime_SetWidgetVisible(g_rt, "Experience", show_xp);
         }
-        /* The shield shows frame rank minus one, and ranks past the
-         * three authored frames keep the last (legacy:152439-152449). */
         if (show_xp)
-            GUIRuntime_SetFrameOverride(g_rt, "Experience",
-                                        (sel_rank < 3 ? sel_rank : 3) - 1);
+            GUIRuntime_SetFrameOverride(g_rt, "Experience", sel_rank);
         /* The target's shield after, since the override above names both. */
-        for (int i = 0; tgt_rank > 0 && i < g_panel2_n; i++)
+        for (int i = 0; tgt_rank >= 0 && i < g_panel2_n; i++)
             if (g_panel2[i].is_xp)
-                GUIRuntime_SetFrameOverrideAt(g_rt, g_panel2[i].index,
-                                              (tgt_rank < 3 ? tgt_rank : 3) - 1);
+                GUIRuntime_SetFrameOverrideAt(g_rt, g_panel2[i].index, tgt_rank);
     }
 
     /* Per-frame: keep the aggression + active-weapon buttons visually
@@ -1173,17 +1187,19 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             GUIRuntime_SetWidgetTextAt(g_rt, g_target_kills, tbuf);
         }
 
-        /* HelpText is the desktop's own help line. A transport with
-         * passengers reads "Carrying N", TRANSPORT_CARRYING_HELPTEXT
-         * through "%s %d" (legacy:152081-152089). Otherwise it is the
-         * mana readout, "Mana" over "cur/max" with cur clamped to max
-         * (legacy:152100-152110). */
+        /* HelpText shows the help of the widget under the cursor
+         * (legacy:148835-148893): a build button's name and price, else
+         * "Carrying N" for a loaded transport (legacy:152081-152089),
+         * else "Mana" over "cur/max", cur clamped (legacy:152100-152110). */
         {
-            char help[64] = "";
+            char help[96] = "";
             const UnitDef *sd = Units_GetSelectedDef();
             int cargo = (sd && (sd->cap_flags & UNIT_CAP_TRANSPORT))
                       ? Units_GetSelectedCargoCount() : 0;
-            if (cargo > 0) {
+            int hover_def = hud_build_def_under_pointer(plat);
+            if (hover_def >= 0) {
+                (void)HUD_BuildButtonHelp(hover_def, help, sizeof(help));
+            } else if (cargo > 0) {
                 snprintf(help, sizeof(help), "%s %d", g_msg_carrying, cargo);
             } else if (world) {
                 int me = Units_LocalPlayer();
@@ -1373,6 +1389,14 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         /* The portrait frame is authored after the unit name and its art
          * reaches into the name's cell, so the name goes back on top. */
         if (g_rt && g_idx_unit_text >= 0) GUIRuntime_DrawTextAt(g_rt, g_idx_unit_text);
+        /* The rank shield is authored after the portrait and sits on its
+         * corner, so it goes back on top too. */
+        for (int i = 0; g_rt && g_rect_have_unit_image && i < GUIRuntime_NumWidgets(g_rt); i++) {
+            const GUIWidget *w = GUIRuntime_WidgetAt(g_rt, i);
+            if (w && tak_stricmp(w->name, "Experience") == 0 &&
+                SDL_HasIntersection(&w->rect, &g_rect_unit_image))
+                GUIRuntime_DrawWidgetAt(g_rt, i);
+        }
     }
 
     /* ── Build menu (visible when a builder is selected) ──────────
@@ -1642,11 +1666,42 @@ int HUD_GetQueueBadgeDialogRect(int slot, SDL_Rect *out) {
     return 1;
 }
 
-uint16_t HUD_BuildCountArg(void) {
-    SDL_Keymod mod = SDL_GetModState();
-    if (mod & KMOD_CTRL) return (uint16_t)TAK_FACTORY_ALL;
-    if (mod & KMOD_SHIFT) return 5;
+int HUD_HeldKeys(const uint8_t *keys) {
+    if (!keys) return 0;
+    int held = 0;
+    if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) held |= HUD_HELD_SHIFT;
+    if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL])   held |= HUD_HELD_CTRL;
+    return held;
+}
+
+uint16_t HUD_BuildCountFor(int held) {
+    if (held & HUD_HELD_CTRL) return (uint16_t)TAK_FACTORY_ALL;
+    if (held & HUD_HELD_SHIFT) return 5;
     return 1;
+}
+
+int HUD_BuildButtonHelp(int def_idx, char *out, size_t cap) {
+    if (!out || cap == 0) return 0;
+    out[0] = 0;
+    const UnitDef *d = Units_GetDef(def_idx);
+    if (!d) return 0;
+    hud_load_messages();
+    const char *name = d->display_name[0] ? d->display_name
+                     : d->description[0] ? d->description : d->unitname;
+    snprintf(out, cap, "%s\n%s %d", name, g_msg_cost, d->build_cost);
+    return 1;
+}
+
+int HUD_RankShieldFrame(int level) {
+    /* Level over the cap of 10, times the three shields, truncated
+     * (legacy:152441-152450). Rank 0 shows none. */
+    int rank = level * 3 / 10;
+    if (rank > 3) rank = 3;
+    return rank > 0 ? rank - 1 : -1;
+}
+
+uint16_t HUD_BuildCountArg(void) {
+    return HUD_BuildCountFor(HUD_HeldKeys(SDL_GetKeyboardState(NULL)));
 }
 
 int HUD_QueueBadgeText(int factory, int def_idx, char *out, size_t cap) {
@@ -1724,6 +1779,12 @@ int HUD_ActionSlotCenter(int mode, int *out_x, int *out_y) {
 }
 
 int HUD_HandleSidebarClick(int win_x, int win_y, TAK_Platform *plat) {
+    return HUD_HandleSidebarClickHeld(win_x, win_y, plat,
+                                      HUD_HeldKeys(SDL_GetKeyboardState(NULL)));
+}
+
+int HUD_HandleSidebarClickHeld(int win_x, int win_y, TAK_Platform *plat,
+                               int held) {
     (void)plat;
     /* Build-menu icons take precedence — they sit in the lower
      * sidebar region and would otherwise miss the action-slot table. */
@@ -1741,14 +1802,13 @@ int HUD_HandleSidebarClick(int win_x, int win_y, TAK_Platform *plat) {
             if (n_sel > 0 && bd && sd && hud_selection_is_own() &&
                 sd->max_velocity <= 0.0f && bd->max_velocity > 0.0f) {
                 TAK_Cmd_EmitUnit(TAK_CMD_FACTORY_ENQUEUE, sel[0], 0, 0, -1,
-                                 (uint16_t)bs->def_idx, HUD_BuildCountArg());
+                                 (uint16_t)bs->def_idx, HUD_BuildCountFor(held));
                 GameSound_PlayUI("addbuild");
                 return 1;
             }
         }
         /* Ctrl on a unit summons it without end (legacy:150077-150084). */
-        HUD_BeginBuildPlacementRepeat(bs->def_idx,
-                                      (SDL_GetModState() & KMOD_CTRL) != 0);
+        HUD_BeginBuildPlacementRepeat(bs->def_idx, (held & HUD_HELD_CTRL) != 0);
         GameSound_PlayUI("addbuild");   /* legacy queue-add cue (:150087) */
         return 1;
     }
