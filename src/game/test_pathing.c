@@ -1666,13 +1666,9 @@ static void test_a_patched_cache_is_a_fresh_one(void) {
     occ_world_free(&w);
 }
 
-/* A gentle hill between start and goal, open ground all round it. The
- * original charges a step by the kind of ground, not by how far it
- * climbs (legacy:22210-22222), so the route goes over the hill rather
- * than round it. The second half puts a steep but passable band in the
- * way with a gap of open ground a little to the side, which the route
- * takes, since the original charges bad ground double. Returns the
- * route's furthest waypoint from the straight line, in px. */
+/* How far a route strays from the straight line over a gentle hill, or
+ * past a steep band with a gap beside it. A step costs by kind of ground,
+ * not by climb, and bad ground costs more (legacy:22210-22222). */
 static int hill_route_wander(int band) {
     TAK_PathCacheReset();
     GameWorld world;

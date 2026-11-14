@@ -412,12 +412,9 @@ static uint8_t cell_bits(const uint8_t *plain, int tw, int th,
     return (uint8_t)mask;
 }
 
-/* What a step onto or off bad ground adds, each way. The original
- * charges a cell of open ground 24 on top of the step and one of bad
- * ground 48 (legacy:22210-22222, legacy:22988-22990), a straight step
- * being 16 (legacy:23535-23543). Ten here is a straight step of open
- * ground, so bad ground adds six to a step onto it, three from each
- * end, which keeps a step the same cost both ways. */
+/* Bad ground costs 48 to the original's 24 on a step of 16
+ * (legacy:22210-22222, legacy:22988-22990, legacy:23535-23543). On our
+ * step of ten that is six, three at each end so it costs the same both ways. */
 #define PATH_BAD_HALF 3
 
 /* The depth the class crosses at full pace, inside its bad depths
@@ -441,12 +438,9 @@ static int prefix_any(const int32_t *ps, int tw, int th,
            ps[(y1 + 1) * w + x0] + ps[y0 * w + x0] != 0;
 }
 
-/* Bad ground, per path cell: a footprint on a tile steeper than the
- * class's badslope or outside its bad depths, or beside one it cannot
- * cross, at every placement the cell has (legacy:219720-219743, the ring
- * at legacy:219761-219791).
- * It is read off the heightmap and the sea alone, which never change,
- * so every machine and a loaded world see the same costs. */
+/* Bad ground per path cell: every placement on a tile past badslope or
+ * the bad depths, or beside one, read off the heightmap and the sea alone
+ * (legacy:219720-219743, the ring legacy:219761-219791). */
 static void cell_bad_fill(const struct GameWorld *world, const MoveClassDef *mc,
                           int fallback_slope, int fx, int fz, int cw, int ch,
                           uint8_t *out) {
@@ -1541,8 +1535,8 @@ typedef struct PlanCtx {
     /* Cells whose pmask this plan filled, for the next plan to reset. */
     int *memo_dirty;
     int *memo_dirty_n;
-    /* Height at each cell centre, and the long route field: the marks
-     * this plan may use and each mark's distance to the goal cell. */
+    /* Bad ground per cell, and the long route field: the marks this
+     * plan may use and each mark's distance to the goal cell. */
     const uint8_t *cellbad;
     const int32_t *field[PATH_FIELD_MARKS];
     int32_t field_goal[PATH_FIELD_MARKS];

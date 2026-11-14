@@ -1894,10 +1894,9 @@ static int unit_in_fight(const Unit *u) {
            unit_players_are_enemies(u->player_id, g_units[u->target].player_id);
 }
 
-/* On a move order the walk goes on and the weapons look for themselves
- * (legacy:10354-10356, legacy:19247-19285). In a fight the weapon in
- * hand takes what hits it while the fight's target is out of its reach
- * (legacy:15187-15215). What it took, or -1. */
+/* What the weapon in hand took for itself, or -1: on a move order
+ * (legacy:10354-10356, legacy:19247-19285), or in a fight while its
+ * target is out of reach and something hits it (legacy:15187-15215). */
 static int unit_pass_target(const Unit *u) {
     if (u->pass_id == 0 || (u->cmd_kind != UNIT_CMD_MOVE && !unit_in_fight(u)))
         return -1;
@@ -2001,11 +2000,9 @@ static int unit_slot_target(const Unit *u, const UnitDef *d, int slot) {
     return Units_FindByStableId(u->slot_id[slot]);
 }
 
-/* The other weapons of a unit that fires them all keep what they took
- * and, with fire on, look on the unit's turn while they hold nothing, a
- * dropped weapon never (legacy:19247-19285). A structure's attack puts
- * every weapon on its target (legacy:9141-9158). Hold fire drops all
- * (legacy:9820-9846). */
+/* The other weapons keep what they took and look on the unit's turn
+ * with fire on, a dropped one never (legacy:19247-19285, hold fire
+ * legacy:9820-9846). A structure's attack arms them all (legacy:9141-9158). */
 static void unit_slots_tick(Unit *u, int i, const UnitDef *d) {
     int hand = unit_pass_slot(u, d);
     int all = unit_fires_all(d) && u->aggro_mode != UNIT_AGGRO_PASSIVE;
@@ -2074,9 +2071,10 @@ static void unit_pass_answer(Unit *u, const Unit *shooter) {
     u->pass_id = shooter->stable_id;
 }
 
+static int unit_attack_own(const Unit *u);
+
 /* D-048, ours: a flyer hitting a ground unit draws the ranged units of
- * its side that reach it and are in a fight they picked for themselves
- * on a unit on the ground. */
+ * its side near it that reach it and are in a fight of their own. */
 #define UNIT_ALLY_ANSWER_PX 640
 static void unit_allies_answer_flyer(const Unit *victim, int shooter_handle) {
     const Unit *shooter = &g_units[shooter_handle];
@@ -2091,8 +2089,12 @@ static void unit_allies_answer_flyer(const Unit *victim, int shooter_handle) {
     for (int k = 0; k < count; k++) {
         int j = all ? k : cand[k];
         Unit *u = &g_units[j];
+        int64_t dx = (int64_t)u->world_x - shooter->world_x;
+        int64_t dy = (int64_t)u->world_y - shooter->world_y;
+        if (dx * dx + dy * dy > (int64_t)UNIT_ALLY_ANSWER_PX * UNIT_ALLY_ANSWER_PX)
+            continue;
         if (u == victim || u->alive != UNIT_ALIVE_ACTIVE || u->under_construction ||
-            u->aggro_mode == UNIT_AGGRO_PASSIVE || u->attack_explicit ||
+            u->aggro_mode == UNIT_AGGRO_PASSIVE || !unit_attack_own(u) ||
             !unit_in_fight(u) || g_units[u->target].flying || u->target == shooter_handle ||
             unit_players_are_enemies(u->player_id, victim->player_id) ||
             !unit_players_are_enemies(u->player_id, shooter->player_id))
@@ -10603,7 +10605,8 @@ static void cob_host_set_unit_value(void *user, int port, int32_t value) {
                     return;
                 }
                 if (ws->draw_target == -1) {
-                    int ft = unit_fire_target(u);
+                    const UnitDef *pd = Units_GetDef(u->def_idx);
+                    int ft = pd ? unit_slot_target(u, pd, value) : unit_fire_target(u);
                     ws->draw_target = ft >= 0 ? (int16_t)ft
                                     : u->cmd_kind == UNIT_CMD_ATTACK_GROUND ? UNIT_DRAW_GROUND : -1;
                 }
@@ -15028,9 +15031,8 @@ static void hover_attack_tick(Unit *u, int h, const UnitDef *def,
     unit_face_toward(u, def, dx, dy);
 }
 
-/* A shot from the weapon in hand at the unit's target or its ground
- * point, once its reload, its aim and its mana allow. */
-/* Weapon slot fires at unit tgt, or at the attack-ground point. */
+/* A shot from weapon slot at unit tgt or the attack-ground point, once
+ * its reload, its aim and its mana allow. */
 static void unit_fire_slot(Unit *u, int i, const UnitDef *def, int slot,
                            int tgt, int ground) {
     UnitWeaponState *ws = &u->weapon_state[slot];
@@ -16928,10 +16930,7 @@ static void Units_TickCombat(void) {
 
             case UNIT_ANIM_ATTACKING: {
                 u->velocity = 0; u->cur_speed_ppt = 0.0f;
-                /* Multi-weapon: each slot fires independently when its
-                 * own cooldown is ready. For now we only have target
-                 * info for slot 0 (range tracking); future Phase G
-                 * extends per-weapon target acquisition. */
+                /* The weapon in hand. The others fire after the switch. */
                 if (target_in_range) unit_fire_tick(u, i, def);
             } break;
 
