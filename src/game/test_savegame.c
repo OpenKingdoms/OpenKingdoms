@@ -818,6 +818,13 @@ static int setup(const char *map_name) {
     g_units[1].legs[2] = (UnitMoveLeg){ 1600, 1700, 0, 0, 0, 0,
                                         UNIT_LEG_BUILD, 1, 3, 0, 1 };
     g_units[1].legs[5].x = 77;          /* past the live count */
+    /* The king's route runs past sixteen legs, a summons among them. */
+    g_units[0].leg_count = 20;
+    for (int i = 0; i < 20; i++)
+        g_units[0].legs[i] = (UnitMoveLeg){ 3000 + i * 16, 3100 + i, 0, 0, 0, 0,
+                                            UNIT_LEG_PATROL, 0, 0, 0, 0 };
+    g_units[0].legs[18] = (UnitMoveLeg){ 3400, 3500, 0, 0, 0, 0,
+                                         UNIT_LEG_BUILD, 2, 3, 0, 1 };
 
     g_projectiles = (Projectile *)tak_calloc(FIX_PROJ, sizeof(Projectile));
     if (!g_projectiles) return -1;
@@ -1654,6 +1661,14 @@ TEST(a_build_queue_survives_a_reordered_registry) {
     ASSERT_EQ_STR("TARNECRO", Units_GetDef(g_units[1].legs[2].def)->unitname);
     ASSERT_EQ_INT(1, (int)g_units[1].legs[2].endless);
     ASSERT_EQ_INT(0, (int)g_units[1].legs[0].endless);
+    ASSERT_EQ_INT(20, (int)g_units[0].leg_count);
+    ASSERT_EQ_INT(3000 + 19 * 16, g_units[0].legs[19].x);
+    ASSERT_EQ_INT(3100 + 16, g_units[0].legs[16].y);
+    ASSERT_EQ_INT(UNIT_LEG_PATROL, (int)g_units[0].legs[17].kind);
+    ASSERT_EQ_INT(UNIT_LEG_BUILD, (int)g_units[0].legs[18].kind);
+    ASSERT_EQ_INT(2, (int)g_units[0].legs[18].facing);
+    ASSERT_EQ_STR("TARNECRO", Units_GetDef(g_units[0].legs[18].def)->unitname);
+    ASSERT_EQ_INT(1, (int)g_units[0].legs[18].endless);
     /* The summons names its def the same way. */
     ASSERT_EQ_INT(1, (int)g_units[0].build_endless);
     ASSERT_EQ_STR("TARNECRO", Units_GetDef(g_units[0].build_def)->unitname);
@@ -1750,8 +1765,9 @@ static uint32_t rec_u32(const uint8_t *r, int at) {
  * cloak at 1057, version 17 a paralyzer's hold at 1060, version 18
  * a magic death at 1062, version 19 a hover point on the map rather
  * than off its target, in the same bytes, version 20 what a moving
- * unit's weapon took at 1065, and version 21 what each weapon of a unit
- * that fires them all took at 1069. */
+ * unit's weapon took at 1065, version 21 what each weapon of a unit
+ * that fires them all took at 1069, and version 22 the legs past sixteen
+ * at 1081 with their bits without end at 1465. */
 TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
@@ -1763,8 +1779,9 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
-    ASSERT_EQ_INT(21, (int)version);
-    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24 + 12 + 11 + 2 + 8 + 3 + 2 + 3 + 4 + 12,
+    ASSERT_EQ_INT(22, (int)version);
+    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24 + 12 + 11 + 2 + 8 + 3 + 2 + 3 + 4 + 12 +
+                  24 * 16 + 2,
                   (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;
     /* The bowman's formation group at 487 and its second leg at 520. */

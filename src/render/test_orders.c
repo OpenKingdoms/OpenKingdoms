@@ -529,6 +529,14 @@ TEST(shift_patrol_points_make_one_route) {
     ASSERT_EQ_INT(1, seen_home);
     ASSERT_EQ_INT(UNIT_CMD_PATROL, (int)oq_unit(s)->cmd_kind);
     ASSERT_EQ_INT(3, Units_OrdersOf(s, NULL, 0));
+    /* A long route keeps every point the queue has room for. */
+    for (int i = 0; i < UNIT_MOVE_LEGS_MAX - 1; i++)
+        ASSERT_EQ_INT(1, oq_command(TAK_CMD_PATROL, s, OQ_CX + 8 * i, OQ_CY - 200,
+                                    -1, -1, TAK_CMD_ARG_QUEUE));
+    ASSERT_EQ_INT(0, oq_command(TAK_CMD_PATROL, s, OQ_CX, OQ_CY - 300, -1, -1,
+                                TAK_CMD_ARG_QUEUE));
+    ASSERT_EQ_INT(UNIT_MOVE_LEGS_MAX + 2, Units_OrdersOf(s, NULL, 0));
+    ASSERT(UNIT_MOVE_LEGS_MAX >= 32);
     oq_end();
 }
 
