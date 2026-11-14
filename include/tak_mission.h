@@ -112,11 +112,33 @@ typedef struct MissionUnitSnapshot {
  * Index 0 is unused. */
 #define TAK_MISSION_PLAYER_LINES 11
 
+/* What a PlayerN line makes of its seat (legacy:169018-169095). */
+typedef enum MissionSeatRelation {
+    MISSION_SEAT_NEUTRAL  = 0,   /* every seat leaves it alone */
+    MISSION_SEAT_ALLY     = 1,   /* allied with the player */
+    MISSION_SEAT_OPPONENT = 2
+} MissionSeatRelation;
+
+typedef struct MissionSeat {
+    /* The line names two of strategic, passive, opponent, ally and
+     * neutral. Player1 is always present. */
+    uint8_t present;
+    uint8_t strategic;   /* "strategic" rather than "passive" */
+    uint8_t relation;    /* MissionSeatRelation */
+    int     logo;        /* "logo N", the seat's colour, -1 when unnamed */
+} MissionSeat;
+
+/* The seat a mission's victory conditions read as the enemy and its
+ * defeat conditions as the player: the original's second seat and its
+ * first, whatever the other lines say (legacy:240361-240377). */
+#define TAK_MISSION_ENEMY_SEAT 2
+
 typedef struct MissionData {
     char path[256];
     char mission_name[96];
     char kingdom[32];
     char player_lines[TAK_MISSION_PLAYER_LINES][96];
+    MissionSeat seats[TAK_MISSION_PLAYER_LINES];
     int  size_x;
     int  size_y;
     /* The GlobalHeader mapping key. 1 starts the map black, anything
@@ -129,9 +151,20 @@ typedef struct MissionData {
     /* How many of `objectives` carry each role. */
     int victory_count;
     int defeat_count;
+    /* The unit types Missions\<stem>.tdf names, the only ones the
+     * mission lets anyone make (legacy:164261-164355). has_roster is 0
+     * when the mission has no such file and every type is allowed. */
+    int   has_roster;
+    char (*roster)[32];
+    int   roster_count;
 } MissionData;
 
 int  Mission_LoadOTA(const char *vfs_path, MissionData *out);
+/* Reads one PlayerN line. `first` is Player1, which counts as present
+ * whatever it says (legacy:169044). */
+void Mission_ParseSeat(const char *line, int first, MissionSeat *out);
+/* 1 when the roster names the type, or when there is no roster. */
+int  Mission_RosterAllows(const MissionData *mission, const char *unitname);
 int  Mission_ParseInitialMission(const char *text,
                                   MissionCommand **out_commands,
                                   int *out_count);
@@ -165,6 +198,9 @@ void Mission_FreeCommands(MissionCommand *commands);
 void Mission_Free(MissionData *mission);
 
 struct BattleConfig;
+/* Each seat's colour from its PlayerN line's logo. */
+void Mission_ApplySeatColors(const MissionData *mission,
+                             struct BattleConfig *cfg);
 /* Sets the options a mission file decides. Call before the fog is built. */
 void Mission_ApplyVisibility(const MissionData *mission,
                              struct BattleConfig *cfg);

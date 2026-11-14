@@ -288,6 +288,10 @@ int Units_GetBuildables(int builder_def_idx, int *out_def_idxs, int max_out) {
     return n;
 }
 
+int Units_GetBuildMenu(int builder_def_idx, int *out_def_idxs, int max_out) {
+    return Units_GetBuildables(builder_def_idx, out_def_idxs, max_out);
+}
+
 void Terrain_BlockingBegin(const struct GameWorld *world,
                            int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
     (void)world; (void)x0; (void)y0; (void)x1; (void)y1;

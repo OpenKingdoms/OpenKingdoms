@@ -98,16 +98,63 @@ give them.
 
 ## Which side a condition reads
 
-A condition that takes no unit type has to know whose units it counts,
-because otherwise the victory key and the defeat key of a pair would
-ask the same question. `DestroyAllUnits` and `KillEnemyCommander` read
-the enemy. `AllUnitsKilled` and `CommanderKilled` read the player.
-`AnyUnitPassesX` and `AnyUnitPassesZ` read the enemy.
+The original never asks who is an enemy. Each condition reads fixed
+seats by number. The victory conditions that count losses read the
+second seat alone, the one Player2 names: `KillEnemyCommander`
+:240270, `DestroyAllUnits` :239280 reads that seat's unit count, and
+`KillAllMobileUnits` :240354-240377 and `KillAllOfType` :240545-240568
+test the owner byte for seat 1 and walk that seat's list, and
+`KillUnitType` :240609 counts that seat's deaths of the type down from
+the number the key names. `AnyUnitPassesX` and `AnyUnitPassesZ` read
+the same seat :241193-241215.
 
-A condition that names a unit type does not need the side as well. The
-mission author picks the key whose list the named type belongs in, so
-`AllUnitsKilledOfType` and `KillAllOfType` ask the same question of the
-map and differ only in which list holds the answer. The engine reads
-them that way because it cannot yet prove the original narrows them,
-and because narrowing them would break any mission whose escorted unit
-belongs to a seat other than the player's.
+The conditions about the player's own units read the first seat:
+`MoveUnitToRadius` :240671, `UnitTypePassesX` and `UnitTypePassesZ`
+:240795-240822, `BuildUnitType`, `CommanderKilled` :240884 and
+`AllUnitsKilled` :240923-240965. `AllUnitsKilledOfType` walks the first two
+seats together :241056-241100, and `UnitTypeKilled` counts deaths on
+any seat :240997. The counts of the two kill keys are not followed here
+yet, and the first death answers both.
+
+The four passes keys ask whether a unit stands within three squares of
+the line, not past it :240719-240733, :241133-241145. A mission that
+starts its unit far beyond the line, as takmission28_dh does with Dern
+at z 262 for a line at 11, is won by walking it there.
+
+So a passive or neutral seat never counts toward a mission's outcome.
+Black Peace (takmission05_dh) is won by `KillAllMobileUnits` while its
+map keeps wolves on seat 9 and cows, birds, deer and townsfolk on
+seat 10, and the herd does not hold the win off.
+
+## The seats a mission's PlayerN lines make
+
+Each `PlayerN` line is lowered and searched for words anywhere in it
+:169018-169095. `strategic` or `passive` says whether the seat plans,
+`opponent`, `ally` or `neutral` what it is to the others, and the line
+makes a seat only when two of those five words are in it. Player1 is a
+seat whatever it says. `logo N` is the seat's colour and a side name is
+its side.
+
+At the start :177689-177749 Player1 takes its logo and side, and each
+other seat takes its logo, or its own number counted from nought when
+the line names none. Every seat marks a neutral seat as an ally, while
+the neutral seat marks no one :177727-177734. An ally seat and the
+player mark each other :177736-177741. An opponent is left at war with
+everyone.
+
+The mark is read by the attacker's own target search :19267, so every
+seat passes a neutral seat's cows and townsfolk over while the neutral
+seat's own wolves still go for anyone. A click on a passive seat's unit
+is an attack all the same :186172-186174, and a mission order to attack
+a type asks nothing of the mark :8990-8993.
+
+## The units a mission allows
+
+`Missions\<stem>.tdf` beside the .ota holds one empty section per unit
+type :168660. When it loads, every type is turned off, the types it
+names are turned on, and so is every side's monarch :164261-164355. A
+type left off cannot be made at all :226872-226874. 64 of the 74 campaign
+missions ship one, and every unit a mission places or its script creates
+is in it or is a monarch. Six skirmish maps ship one as well and the
+original reads them outside a multiplayer game :168849-168857, which is
+not followed here yet.

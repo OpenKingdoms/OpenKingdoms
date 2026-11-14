@@ -325,6 +325,10 @@ int Units_GetBuildables(int builder_def_idx, int *out_def_idxs, int max_out) {
     return n;
 }
 
+int Units_GetBuildMenu(int builder_def_idx, int *out_def_idxs, int max_out) {
+    return Units_GetBuildables(builder_def_idx, out_def_idxs, max_out);
+}
+
 /* The site search's feature stamp. The stubbed site test above never
  * asks the terrain, so there is nothing to stamp. */
 void Terrain_BlockingBegin(const struct GameWorld *world,

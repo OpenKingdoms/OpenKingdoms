@@ -86,9 +86,13 @@ static int mission_unit_matches(const MissionUnitSnapshot *u,
     return tak_stricmp(u->unitname, unitname) == 0;
 }
 
+/* The enemy is the second seat alone: the original's victory conditions
+ * count only its units, never a passive or neutral seat's
+ * (legacy:240361-240377, legacy:240545-240568). */
 static int mission_unit_is_enemy(const MissionUnitSnapshot *u,
                                  int local_player) {
-    return u && u->player > 0 && u->player != local_player;
+    (void)local_player;
+    return u && u->player == TAK_MISSION_ENEMY_SEAT;
 }
 
 /* An empty type name is the ANYTYPE wildcard the original stores for
@@ -100,12 +104,17 @@ static int mission_unit_matches_any(const MissionUnitSnapshot *u,
     return tak_stricmp(u->unitname, unitname) == 0;
 }
 
-/* Which side a condition counts. A key that takes no unit type has to
- * say, because otherwise the victory key and the defeat key of a pair
- * would ask the same question. */
+/* A unit passes a line while it stands within three squares of it. */
+static int mission_on_line(int v, int line) {
+    int d = v - line;
+    return d > -3 && d < 3;
+}
+
+/* Which seats a condition counts. */
 #define MISSION_OWNER_ANY   0
 #define MISSION_OWNER_ENEMY 1
 #define MISSION_OWNER_OWN   2
+#define MISSION_OWNER_BOTH  3   /* the player and the enemy */
 
 static int mission_unit_owner_ok(const MissionUnitSnapshot *u,
                                  int local_player,
@@ -113,6 +122,8 @@ static int mission_unit_owner_ok(const MissionUnitSnapshot *u,
     if (!u) return 0;
     if (owner == MISSION_OWNER_ENEMY) return mission_unit_is_enemy(u, local_player);
     if (owner == MISSION_OWNER_OWN)   return u->player == local_player;
+    if (owner == MISSION_OWNER_BOTH)
+        return u->player == local_player || mission_unit_is_enemy(u, local_player);
     return 1;
 }
 
@@ -165,10 +176,12 @@ static int no_own_unit_on_the_map(const MissionUnitSnapshot *units,
     return seen;
 }
 
-/* A unit aboard a transport has not got there (legacy:240665-240686). */
+/* One of the player's own units, and one aboard a transport has not
+ * got there (legacy:240665-240686). */
 static int any_matching_inside_radius(const MissionUnitSnapshot *units,
                                       int unit_count,
                                       const char *unitname,
+                                      int local_player,
                                       int x,
                                       int z,
                                       int radius) {
@@ -176,7 +189,8 @@ static int any_matching_inside_radius(const MissionUnitSnapshot *units,
     for (int i = 0; i < unit_count; i++) {
         const MissionUnitSnapshot *u = &units[i];
         int64_t dx, dz;
-        if (!u->alive || u->carried || !mission_unit_matches_any(u, unitname))
+        if (!u->alive || u->carried || u->player != local_player ||
+            !mission_unit_matches_any(u, unitname))
             continue;
         dx = (int64_t)u->x - (int64_t)x;
         dz = (int64_t)u->z - (int64_t)z;
@@ -367,12 +381,15 @@ int Mission_ObjectiveSatisfied(const MissionObjective *objective,
     case MISSION_OBJ_DESTROY_ALL_UNITS:
         return no_matching_alive(units, unit_count, NULL, local_player,
                                  MISSION_OWNER_ENEMY, 0, 0);
-    /* A condition that names a unit type needs no side as well: which
-     * list the key belongs to is what says whose loss it is. */
+    /* The defeat key counts the player's and the enemy's units of the
+     * type, the victory key the enemy's alone (legacy:241056-241100,
+     * legacy:240545-240568). */
     case MISSION_OBJ_ALL_UNITS_KILLED_OF_TYPE:
+        return no_matching_alive(units, unit_count, objective->text,
+                                 local_player, MISSION_OWNER_BOTH, 0, 0);
     case MISSION_OBJ_KILL_ALL_OF_TYPE:
         return no_matching_alive(units, unit_count, objective->text,
-                                 local_player, MISSION_OWNER_ANY, 0, 0);
+                                 local_player, MISSION_OWNER_ENEMY, 0, 0);
     case MISSION_OBJ_KILL_ALL_MOBILE_UNITS:
         return no_matching_alive(units, unit_count, NULL, local_player,
                                  MISSION_OWNER_ENEMY, 1, 0);
@@ -382,10 +399,14 @@ int Mission_ObjectiveSatisfied(const MissionObjective *objective,
     case MISSION_OBJ_KILL_ENEMY_COMMANDER:
         return no_matching_alive(units, unit_count, objective->text,
                                  local_player, MISSION_OWNER_ENEMY, 0, 1);
+    /* The victory key counts the enemy's losses, the defeat key any
+     * seat's (legacy:240609, legacy:240997). */
     case MISSION_OBJ_UNIT_TYPE_KILLED:
-    case MISSION_OBJ_KILL_UNIT_TYPE:
         return any_matching_dead(units, unit_count, objective->text,
                                  local_player, MISSION_OWNER_ANY);
+    case MISSION_OBJ_KILL_UNIT_TYPE:
+        return any_matching_dead(units, unit_count, objective->text,
+                                 local_player, MISSION_OWNER_ENEMY);
     /* A unit the player owns of that type, which is how a mission
      * reads both "build one" and "capture one". */
     case MISSION_OBJ_BUILD_UNIT_TYPE:
@@ -398,35 +419,38 @@ int Mission_ObjectiveSatisfied(const MissionObjective *objective,
         return 0;
     case MISSION_OBJ_MOVE_UNIT_TO_RADIUS:
         return any_matching_inside_radius(units, unit_count, objective->text,
-                                          objective->a, objective->b,
-                                          objective->c);
+                                          local_player, objective->a,
+                                          objective->b, objective->c);
+    /* One of the player's own units within three squares of the line
+     * (legacy:240719-240733, legacy:240795-240822). */
     case MISSION_OBJ_UNIT_TYPE_PASSES_X:
         for (int i = 0; i < unit_count; i++) {
-            if (units[i].alive &&
+            if (units[i].alive && units[i].player == local_player &&
                 mission_unit_matches_any(&units[i], objective->text) &&
-                units[i].x >= objective->a) return 1;
+                mission_on_line(units[i].x, objective->a)) return 1;
         }
         return 0;
     case MISSION_OBJ_UNIT_TYPE_PASSES_Z:
         for (int i = 0; i < unit_count; i++) {
-            if (units[i].alive &&
+            if (units[i].alive && units[i].player == local_player &&
                 mission_unit_matches_any(&units[i], objective->text) &&
-                units[i].z >= objective->a) return 1;
+                mission_on_line(units[i].z, objective->a)) return 1;
         }
         return 0;
-    /* The defeat pair takes a bare coordinate and reads any enemy. */
+    /* The defeat pair takes a bare coordinate and reads the enemy
+     * (legacy:241133-241145, legacy:241193-241215). */
     case MISSION_OBJ_ANY_UNIT_PASSES_X:
         for (int i = 0; i < unit_count; i++) {
             if (units[i].alive &&
                 mission_unit_is_enemy(&units[i], local_player) &&
-                units[i].x >= objective->a) return 1;
+                mission_on_line(units[i].x, objective->a)) return 1;
         }
         return 0;
     case MISSION_OBJ_ANY_UNIT_PASSES_Z:
         for (int i = 0; i < unit_count; i++) {
             if (units[i].alive &&
                 mission_unit_is_enemy(&units[i], local_player) &&
-                units[i].z >= objective->a) return 1;
+                mission_on_line(units[i].z, objective->a)) return 1;
         }
         return 0;
     case MISSION_OBJ_DEATH_TIMER_RUNS_OUT:
@@ -487,7 +511,86 @@ void Mission_Free(MissionData *mission) {
     }
     if (mission->placements) tak_free(mission->placements);
     if (mission->objectives) tak_free(mission->objectives);
+    if (mission->roster) tak_free(mission->roster);
     memset(mission, 0, sizeof(*mission));
+}
+
+/* The original lowers the line and looks for each word anywhere in it
+ * (legacy:169018-169095). */
+void Mission_ParseSeat(const char *line, int first, MissionSeat *out) {
+    char low[128];
+    size_t n = 0;
+    int words = 0;
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->relation = MISSION_SEAT_NEUTRAL;
+    out->logo = -1;
+    if (!line) line = "";
+    for (; line[n] && n + 1 < sizeof(low); n++) {
+        char c = line[n];
+        low[n] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+    }
+    low[n] = '\0';
+    if (first) out->present = 1;
+    if (!low[0]) return;
+    if (strstr(low, "strategic")) { out->strategic = 1; words++; }
+    if (strstr(low, "passive"))   { out->strategic = 0; words++; }
+    if (strstr(low, "opponent"))  { out->relation = MISSION_SEAT_OPPONENT; words++; }
+    if (strstr(low, "ally"))      { out->relation = MISSION_SEAT_ALLY; words++; }
+    if (strstr(low, "neutral"))   { out->relation = MISSION_SEAT_NEUTRAL; words++; }
+    if (words == 2) out->present = 1;
+    const char *logo = strstr(low, "logo");
+    int v = 0;
+    if (logo && sscanf(logo, "logo %i", &v) == 1) out->logo = v;
+}
+
+int Mission_RosterAllows(const MissionData *mission, const char *unitname) {
+    if (!mission || !mission->has_roster) return 1;
+    if (!unitname || !unitname[0]) return 0;
+    for (int i = 0; i < mission->roster_count; i++) {
+        if (tak_stricmp(mission->roster[i], unitname) == 0) return 1;
+    }
+    return 0;
+}
+
+/* Missions\<stem>.tdf beside the .ota: one empty section per type the
+ * mission allows (legacy:168660, legacy:164277-164315). */
+static void load_roster(const char *ota_path, MissionData *out) {
+    char path[256];
+    copy_str(path, sizeof(path), ota_path);
+    char *dot = strrchr(path, '.');
+    if (!dot || (size_t)(dot - path) + 5 > sizeof(path)) return;
+    strcpy(dot, ".tdf");
+    TDFFile *tdf = TDF_Open(path);
+    if (!tdf) return;
+    if (TDF_Load(tdf) == 0) {
+        int cap = 0;
+        out->has_roster = 1;
+        for (const char *name = TDF_GetFirstSection(tdf); name;
+             name = TDF_GetNextSection(tdf)) {
+            if (out->roster_count >= cap) {
+                int next = cap ? cap * 2 : 64;
+                char (*bigger)[32] = (char (*)[32])tak_realloc(
+                    out->roster, (size_t)next * sizeof(out->roster[0]));
+                if (!bigger) break;
+                out->roster = bigger;
+                cap = next;
+            }
+            copy_str(out->roster[out->roster_count++], sizeof(out->roster[0]), name);
+        }
+    }
+    TDF_Close(tdf);
+}
+
+void Mission_ApplySeatColors(const MissionData *mission, BattleConfig *cfg) {
+    if (!mission || !cfg) return;
+    /* Player1 takes its logo whatever else its line says, the others
+     * only when the line makes them a seat (legacy:177711-177749). */
+    for (int p = 1; p <= TAK_MAX_PLAYERS && p < TAK_MISSION_PLAYER_LINES; p++) {
+        const MissionSeat *seat = &mission->seats[p];
+        if ((p == 1 || seat->present) && seat->logo >= 0)
+            cfg->players[p - 1].color = seat->logo;
+    }
 }
 
 void Mission_ApplyVisibility(const MissionData *mission, BattleConfig *cfg) {
@@ -629,6 +732,7 @@ int Mission_LoadOTA(const char *vfs_path, MissionData *out) {
         snprintf(key, sizeof(key), "Player%d", n);
         copy_str(out->player_lines[n], sizeof(out->player_lines[n]),
                  TDF_ReadString(tdf, key, ""));
+        Mission_ParseSeat(out->player_lines[n], n == 1, &out->seats[n]);
     }
     parse_size_text(TDF_ReadString(tdf, "Size", ""), &out->size_x, &out->size_y);
     /* A missing key reads as 0 (legacy:168883). */
@@ -678,6 +782,7 @@ int Mission_LoadOTA(const char *vfs_path, MissionData *out) {
     /* Every file this reads is a campaign mission, which is the mode
      * that gets no implicit victory condition (legacy:239825). */
     Mission_ApplyImplicitConditions(out, 1);
+    load_roster(vfs_path, out);
     rc = 0;
 
 done:
