@@ -2713,6 +2713,150 @@ TEST(a_hover_attacker_flies_round_a_target_its_shots_do_not_hurt) {
 }
 
 
+/* The hover harpy turned into a Dirigible: no hoverattack, the original's
+ * Dropped bomb, weaponvelocity 15 and range 200 (units/verball.fbi). */
+static int mv_add_dirigible(int hover) {
+    int harpy = mv_add_hover_harpy();
+    if (harpy < 0) return -1;
+    UnitDef *d = (UnitDef *)Units_GetDef(harpy);   /* test-only */
+    d->hover_attack = (uint8_t)hover;
+    d->weapons[0].range = 200;
+    d->weapons[0].velocity_pps = 15;
+    d->weapons[0].dropped = 1;
+    d->weapons[0].gravity_adjust = 1.0f;
+    return harpy;
+}
+
+/* A flyer without hoverattack attacks in runs: at the target, on past it
+ * three times its range, off to one side and round again
+ * (legacy:28630-28925). It never holds off its target. */
+TEST(a_flyer_without_hoverattack_attacks_in_runs) {
+    ASSERT_NOT_NULL(mv_world());
+    int ball = mv_add_dirigible(0);
+    ASSERT(ball >= 0);
+    int h = Units_Spawn(ball, 1, 0, 2100, 1500);
+    ASSERT(h >= 0);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    ASSERT(Units_OrderAttackGround(h, 1500, 1500));
+    int passes = 0, over = 0, beyond = 0, held = 0, still = 0;
+    for (int t = 0; t < 7200; t++) {
+        Units_TickEngines();
+        const Unit *u = mv_unit(h);
+        int64_t d2 = mv_dist2(u, 1500, 1500);
+        if (d2 < 60 * 60 && !over) { passes++; over = 1; }
+        if (d2 > 120 * 120) over = 0;
+        if (d2 > 400 * 400 && passes > 0) beyond = 1;
+        if (t > 1200 && u->flying && u->cur_speed_ppt <= 0.0f) still++;
+        if (t > 1200 && d2 > 150 * 150 && d2 < 260 * 260 && u->cur_speed_ppt <= 0.0f) held++;
+    }
+    printf("(%d passes over the point, %d ticks still, past it %d) ", passes, still, beyond);
+    ASSERT(passes >= 2);
+    ASSERT(beyond);
+    ASSERT_EQ_INT(0, held);
+    mv_end();
+}
+
+/* A Dirigible's run at a point in a corner of the map keeps its legs a
+ * turning circle inside the edges, so it never flies off the map. */
+TEST(a_flyer_on_an_attack_run_stays_on_the_map) {
+    static const int32_t aims[2][2] = { { 60, 60 }, { 3012, 1500 } };
+    int32_t lo = INT32_MAX, hi = INT32_MIN;
+    for (int a = 0; a < 2; a++) {
+        ASSERT_NOT_NULL(mv_world());
+        int ball = mv_add_dirigible(0);
+        ASSERT(ball >= 0);
+        UnitDef *d = (UnitDef *)Units_GetDef(ball);   /* test-only */
+        d->max_velocity = 1.5f;
+        d->turn_rate = 100.0f;
+        int h = Units_Spawn(ball, 1, 0, 1500, 1500);
+        ASSERT(h >= 0);
+        Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+        ASSERT(Units_OrderAttackGround(h, aims[a][0], aims[a][1]));
+        for (int t = 0; t < 10800; t++) {
+            Units_TickEngines();
+            const Unit *u = mv_unit(h);
+            int32_t m = u->world_x < u->world_y ? u->world_x : u->world_y;
+            int32_t x = u->world_x > u->world_y ? u->world_x : u->world_y;
+            if (m < lo) lo = m;
+            if (x > hi) hi = x;
+        }
+        mv_end();
+    }
+    printf("(kept between %d and %d px of a 3072 px map) ", lo, hi);
+    ASSERT(lo >= 0);
+    ASSERT(hi <= MV_TILES * 16);
+}
+
+/* A dropped shot leaves level and falls, its run across the ground set
+ * so the fall ends on its aim (legacy:246799-246829): from a Dirigible
+ * hovering 200 px off a point it lands there in under 2 s. */
+TEST(a_dropped_shot_falls_onto_its_aim) {
+    ASSERT_NOT_NULL(mv_world());
+    int ball = mv_add_dirigible(1);
+    ASSERT(ball >= 0);
+    int h = Units_Spawn(ball, 1, 0, 2100, 1500);
+    ASSERT(h >= 0);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    ASSERT(Units_OrderAttackGround(h, 1500, 1500));
+    int landed = 0, life = 0, slot = -1;
+    int32_t ex = 0, ey = 0;
+    float speed = 0.0f;
+    for (int t = 0; t < 3600 && !landed; t++) {
+        Units_TickEngines();
+        int n = 0;
+        const Projectile *ps = Units_GetProjectiles(&n);
+        if (slot < 0) {
+            for (int i = 0; i < n; i++)
+                if (ps[i].alive && ps[i].shooter == h) { slot = i; speed = ps[i].speed_ppt; }
+            continue;
+        }
+        if (slot < n && ps[slot].alive) {
+            ex = ps[slot].world_x;
+            ey = ps[slot].world_y;
+            life++;
+        } else {
+            landed = 1;
+        }
+    }
+    int64_t dx = ex - 1500, dy = ey - 1500;
+    printf("(%.2f px a tick, landed %d ticks on, %.0f px from the aim) ", speed, life,
+           sqrt((double)(dx * dx + dy * dy)));
+    ASSERT(landed);
+    ASSERT(speed > 1.0f);
+    ASSERT(life < 140);
+    ASSERT(dx * dx + dy * dy <= 24 * 24);
+    mv_end();
+}
+
+/* A flyer's patrol leg ends within 128 px of its point and the next
+ * starts at speed (legacy:26275), so a patroller never stops on a
+ * waypoint. */
+TEST(a_patrolling_flyer_keeps_its_speed_round_its_points) {
+    ASSERT_NOT_NULL(mv_world());
+    int harpy = mv_add_harpy();
+    ASSERT(harpy >= 0);
+    /* The Parrot's flight from units/verpar.fbi. */
+    UnitDef *d = (UnitDef *)Units_GetDef(harpy);   /* test-only */
+    d->max_velocity = 5.0f;
+    d->acceleration = 0.2f;
+    d->brake_rate = 0.15f;
+    d->turn_rate = 1200.0f;
+    int h = Units_Spawn(harpy, 1, 0, 1400, 1500);
+    ASSERT(h >= 0);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    ASSERT(Units_OrderPatrol(h, 2000, 1500));
+    float top = 0.0f, low = 1e9f;
+    for (int t = 0; t < 3600; t++) {
+        Units_TickEngines();
+        const Unit *u = mv_unit(h);
+        if (u->cur_speed_ppt > top) top = u->cur_speed_ppt;
+        if (t >= 600 && u->cur_speed_ppt < low) low = u->cur_speed_ppt;
+    }
+    printf("(top %.2f, slowest %.2f px a tick after 10 s) ", top, low);
+    ASSERT(low * 2.0f > top);
+    mv_end();
+}
+
 /* The Dark Priest from units/tarpries.fbi, a flying builder, and a two
  * tile frame for it that takes 30 s. */
 enum { MV_PRIEST = MV_DEF_COUNT, MV_PRIEST_COUNT };
@@ -2838,6 +2982,10 @@ int main(int argc, char **argv) {
     RUN(a_crowded_hover_attacker_steps_out_far_and_gives_up);
     RUN(a_hover_attacker_flies_round_a_target_its_shots_do_not_hurt);
     RUN(a_walker_does_not_push_a_hover_attacker_back);
+    RUN(a_flyer_without_hoverattack_attacks_in_runs);
+    RUN(a_flyer_on_an_attack_run_stays_on_the_map);
+    RUN(a_dropped_shot_falls_onto_its_aim);
+    RUN(a_patrolling_flyer_keeps_its_speed_round_its_points);
     TEST_SUITE("State hash");
     RUN(a_repeated_run_hashes_the_same);
     RUN(a_cold_planner_hashes_the_same);

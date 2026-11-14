@@ -80,6 +80,8 @@ static void sd_read_side(TDFFile *tdf, TakSideInfo *s) {
             TDF_ReadString(tdf, "resurrectsparklyanim", ""));
     sd_copy(s->buildpalette, sizeof(s->buildpalette),
             TDF_ReadString(tdf, "buildpalette", ""));
+    /* Its models are drawn in this palette (legacy:164721-164729). */
+    sd_copy(s->palette, sizeof(s->palette), TDF_ReadString(tdf, "palette", ""));
     if (TDF_ReadString(tdf, "stonegaf", "")[0])
         sd_copy(s->stoneanim, sizeof(s->stoneanim),
                 TDF_ReadString(tdf, "stoneanim", ""));

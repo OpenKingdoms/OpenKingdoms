@@ -522,6 +522,7 @@ typedef struct UnitDef {
     uint8_t  hover_attack;
     int16_t  hover_attack_dist;
     int16_t  hover_attack_alt;
+    int16_t  attack_run_length;   /* attackrunlength (legacy:163062) */
     /* activatewhenbuilt — legacy activates the unit the moment it
      * finishes (sets ACTIVATION and runs the COB Activate script;
      * lodestones raise their crystal through this). */
@@ -951,6 +952,12 @@ typedef struct UnitMoveLeg {
 #define UNIT_HOVER_WAIT   3
 #define UNIT_HOVER_RANDOM 4
 #define UNIT_HOVER_ROUND  5
+/* The attack run of a flyer without hoverattack, in the same field
+ * (legacy:28491-29118): flying at its target, on past it, and off to
+ * one side before it comes round again. */
+#define UNIT_RUN_IN       6
+#define UNIT_RUN_PAST     7
+#define UNIT_RUN_TURN     8
 /* Unit.hover_events: a shot fired, a shot landed that did not hurt the
  * other side more than twice its own, the point reached, closing from
  * further than its distance plus 160 px, the weapons set on the target,
@@ -1088,7 +1095,9 @@ typedef struct Unit {
      * stage, hover_wait the frames before it looks again, hover_steps
      * the step outs this attack, hover_events the UNIT_HOVER_EV_* bits
      * raised since it last looked, and (hover_x, hover_y) its point on
-     * the map, which stays where it was picked. */
+     * the map, which stays where it was picked. An attack run keeps its
+     * UNIT_RUN_* stage, its passes in hover_steps and its leg's reach
+     * draw in hover_events. */
     uint8_t    hover_state;
     uint8_t    hover_wait;
     uint8_t    hover_steps;

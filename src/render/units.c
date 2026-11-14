@@ -1502,10 +1502,9 @@ static float shot_aim_height(const GameWorld *w, int32_t tx, int32_t ty,
 }
 
 /* Every shot but a remote effect or a wandering one meets what it
- * flies into (legacy:245377-245476). Dropped ordnance still hugs the
- * ground until its own fall lands (legacy:246794). */
+ * flies into (legacy:245377-245476). */
 static uint8_t weapon_path_flags(const UnitWeapon *w) {
-    if (!w || w->path_free || w->dropped) return 0;
+    if (!w || w->path_free) return 0;
     uint8_t f = UNIT_PROJ_PATH_TESTED;
     if (w->units_only)       f |= TAK_SHOT_UNITS_ONLY;
     if (w->ground_bounce)    f |= TAK_SHOT_GROUND_BOUNCE;
@@ -1546,6 +1545,7 @@ static int spawn_projectile(int32_t x, int32_t y,
         slot = g_projectile_count++;
     }
     Projectile *p = &g_projectiles[slot];
+    int drop_frames = 0;
     p->world_x = x;
     p->world_y = y;
     float dx = (float)(tx - x);
@@ -1700,25 +1700,32 @@ static int spawn_projectile(int32_t x, int32_t y,
         p->spin_pitch   = (float)source_weapon->spin_pitch   * SPIN_TO_RAD;
         p->spin_heading = (float)source_weapon->spin_heading * SPIN_TO_RAD;
         p->spin_roll    = (float)source_weapon->spin_roll    * SPIN_TO_RAD;
-        if (source_weapon->is_gravity && p->speed_ppt > 0.0f) {
+        if (source_weapon->dropped && lw) {
+            /* Dropped ordnance leaves level, nose down, and falls. Its
+             * run across the ground is set so the fall ends on its aim,
+             * whatever its weaponvelocity (legacy:246799-246829). */
+            p->gravity_ppt2 =
+                projectile_gravity_ppt2(source_weapon->gravity_adjust);
+            float fall = p->height - shot_aim_height(lw, tx, ty, target_handle);
+            drop_frames = fall > 0.0f
+                        ? (int)sqrtf(fall / (2.0f * p->gravity_ppt2)) : 0;
+            if (drop_frames < 1) drop_frames = 1;
+            p->speed_ppt = len / (float)(2 * drop_frames);
+            p->vel_up_ppt = 0.0f;
+            p->pitch = -1.57079633f;
+        } else if (source_weapon->is_gravity && p->speed_ppt > 0.0f) {
             p->gravity_ppt2 =
                 projectile_gravity_ppt2(source_weapon->gravity_adjust);
             float rise = 0.0f;
             if (lw) rise = shot_aim_height(lw, tx, ty, target_handle) - p->height;
-            if (source_weapon->dropped) {
-                /* Dropped ordnance keeps the carrier's horizontal run
-                 * and simply falls (legacy:246794). */
-                p->pitch = 0.0f;
-            } else {
-                p->pitch = projectile_launch_pitch(p->speed_ppt, len, rise,
-                                                   p->gravity_ppt2,
-                                                   source_weapon->lob_preferred);
-                float cp = tak_cosf(p->pitch);
-                p->vel_up_ppt = p->speed_ppt * tak_sinf(p->pitch);
-                /* The horizontal term shrinks with pitch, which is what
-                 * stretches a lobbed shot's flight time. */
-                p->speed_ppt  = p->speed_ppt * (cp > 0.05f ? cp : 0.05f);
-            }
+            p->pitch = projectile_launch_pitch(p->speed_ppt, len, rise,
+                                               p->gravity_ppt2,
+                                               source_weapon->lob_preferred);
+            float cp = tak_cosf(p->pitch);
+            p->vel_up_ppt = p->speed_ppt * tak_sinf(p->pitch);
+            /* The horizontal term shrinks with pitch, which is what
+             * stretches a lobbed shot's flight time. */
+            p->speed_ppt  = p->speed_ppt * (cp > 0.05f ? cp : 0.05f);
         } else if (meets && lw && p->speed_ppt > 0.0f && len >= 1.0f) {
             /* Any other shot flies straight from the muzzle to the point
              * it aims at (legacy:246851-246866). */
@@ -1743,6 +1750,8 @@ static int spawn_projectile(int32_t x, int32_t y,
     int ttl = (int)(len / (p->speed_ppt > 0 ? p->speed_ppt : 1) * 1.5f);
     if (ttl < 30) ttl = 30;
     if (ttl > 1200) ttl = 1200;   /* slow weapons at long range */
+    /* A dropped shot lives through its fall, however short its run. */
+    if (ttl < 3 * drop_frames) ttl = 3 * drop_frames;
     if (p->mind_control && source_weapon && p->speed_ppt > 0.0f) {
         /* Its range over its speed across the ground in 30 Hz frames,
          * and one more, each frame two ticks (legacy:246919-246922). */
@@ -2367,7 +2376,8 @@ static ShotTally g_shot_tally;
 
 static void shot_tally_begin(int shooter) {
     g_shot_tally.on = shooter >= 0 && shooter < g_unit_count &&
-                      g_units[shooter].hover_state != UNIT_HOVER_NONE;
+                      g_units[shooter].hover_state != UNIT_HOVER_NONE &&
+                      g_units[shooter].hover_state < UNIT_RUN_IN;
     g_shot_tally.landed = 0;
     g_shot_tally.shooter = (int16_t)shooter;
     g_shot_tally.other = 0;
@@ -2384,7 +2394,8 @@ static void shot_tally_end(void) {
     if (g_shot_tally.on && g_shot_tally.landed &&
         g_shot_tally.other <= 2 * g_shot_tally.own) {
         Unit *s = &g_units[g_shot_tally.shooter];
-        if (s->alive == UNIT_ALIVE_ACTIVE && s->hover_state != UNIT_HOVER_NONE)
+        if (s->alive == UNIT_ALIVE_ACTIVE && s->hover_state != UNIT_HOVER_NONE &&
+            s->hover_state < UNIT_RUN_IN)
             s->hover_events |= UNIT_HOVER_EV_LANDED;
     }
     g_shot_tally.on = 0;
@@ -8405,6 +8416,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         (int16_t)TDF_ReadInt(tdf, "hoverattackdistance", 0);
     out->hover_attack_alt =
         (int16_t)TDF_ReadInt(tdf, "hoverattackaltitude", out->cruise_alt);
+    out->attack_run_length = (int16_t)TDF_ReadInt(tdf, "attackrunlength", 0);
     out->floater        = TDF_ReadInt(tdf, "floater", 0);
     out->can_hover      = (uint8_t)(TDF_ReadInt(tdf, "canhover", 0) & 1);
     out->upright        = (uint8_t)(TDF_ReadInt(tdf, "upright", 0) & 1);
@@ -8710,10 +8722,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
             w->mind_control = UNIT_SPELL_STONE;
         /* Only `type = Ballistic` gets the gravity behaviour; Guided,
          * Line of Sight and Wandering fly flat (legacy:249725-249983).
-         * `subtype = Dropped` is its own legacy behaviour object
-         * (legacy:249743) that derives the horizontal run from the fall
-         * time instead of solving a launch; until that lands the egg
-         * bombs keep flying flat. */
+         * `subtype = Dropped` is its own behaviour object (legacy:249743)
+         * that falls without a launch solve, spawn_projectile's branch. */
         w->is_gravity     = (ascii_contains_ci(w->type, "ballistic") &&
                              !w->dropped) ? 1 : 0;
         /* Resolve the art once: model 3DO, else weaponart GAF, else the
@@ -8890,6 +8900,28 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
 /* Recursive prim probe (debug diagnostic). Prints every prim with its
  * resolved atlas pointer and UV rect. Used to figure out what specific
  * geometry corresponds to visual artifacts. */
+/* The colours a model's untextured faces take: those of its side's
+ * palette, the one its textures are drawn in (legacy:164721-164729), not
+ * the map's. A model with no side takes the first side's, which every
+ * shipped side shares. The map's is the last resort. */
+static const uint32_t *flat_palette(const char *side_prefix) {
+    /* Without game files or a canvas format a palette would be cached
+     * empty, and the textures decoded from it later too. */
+    int ready = VFS_IsInitialized() && UI_RGBAFormat();
+    int side = ready && side_prefix && side_prefix[0] ? Sides_FindByPrefix(side_prefix) : -1;
+    const TakSideInfo *si = ready ? Sides_Get(side >= 0 ? side : 0) : NULL;
+    if (si && si->palette[0]) {
+        char pcx[40];
+        snprintf(pcx, sizeof(pcx), "%s", si->palette);
+        char *dot = strrchr(pcx, '.');
+        if (dot && strlen(dot) == 4) memcpy(dot, ".pcx", 4);
+        const uint32_t *pal = TexAtlas_Palette(pcx);
+        if (pal) return pal;
+    }
+    const GameWorld *w = World_Get();
+    return w ? w->terrain_rgba : NULL;
+}
+
 static void zon_probe(const Obj3DNode *n, int depth, int color_idx) {
     char indent[64] = {0};
     int ind = depth * 2;
@@ -8927,7 +8959,7 @@ typedef struct BakeState {
     int          v_writer[UNIT_MESH_MAX_BATCHES];
     int          i_writer[UNIT_MESH_MAX_BATCHES];
     int          batch_count;
-    const uint32_t *palette;     /* terrain_rgba, color_idx -> RGBA */
+    const uint32_t *palette;     /* flat_palette, color_idx -> RGBA */
     int          team_color_idx; /* 0..11; selects atlas variant */
     /* A statue's paint: every face takes this texture (legacy:197875-197886). */
     const char  *paint;
@@ -9315,11 +9347,7 @@ static int ensure_mesh_baked(UnitDef *def, int color_idx) {
         return -1;
     }
 
-    /* Faction palette for FLAT_COLOR fallbacks. World should always
-     * exist by the time we get here (we're in a skirmish), but
-     * tolerate NULL — flat-color verts will end up black. */
-    GameWorld *world = World_Get();
-    const uint32_t *palette = world ? world->terrain_rgba : NULL;
+    const uint32_t *palette = flat_palette(def->side);
 
     /* Diagnostic prim probe: set TAK_PRIM_PROBE=<unitname> to dump a
      * unit's full prim/texture/color resolution at bake time. */
@@ -13779,6 +13807,27 @@ static void start_fire_script(Unit *u, int slot) {
     Cob_StartThreadByName(u->cob, name, args, 1);
 }
 
+/* Whether the weapon's FireWeapon script, or what it called, is still
+ * playing: a thread of the unit stands inside that script's code. */
+static int fire_script_running(const Unit *u, int slot) {
+    const CobEngine *e = u->cob;
+    if (!e || !e->script) return 0;
+    char name[32];
+    if (!resolve_weapon_script_name(u, "FireWeapon", slot, name, sizeof(name)))
+        return 0;
+    int idx = Cob_FindScript(e->script, name);
+    if (idx < 0) return 0;
+    uint32_t lo = e->script->script_offsets[idx], hi = e->script->num_code_words;
+    for (int i = 0; i < e->script->num_scripts; i++) {
+        uint32_t o = e->script->script_offsets[i];
+        if (o > lo && o < hi) hi = o;
+    }
+    for (int t = 0; t < COB_THREADS_PER_UNIT; t++)
+        if (e->threads[t].alive && e->threads[t].pc >= lo && e->threads[t].pc < hi)
+            return 1;
+    return 0;
+}
+
 /* aim_key names what is being aimed at so a change restarts the aim:
  * a unit handle, or -2 for the ground point of an attack-ground order.
  * The original aims at a ground point exactly like a unit; only the
@@ -13837,8 +13886,13 @@ static int weapon_aim_ready(Unit *u, int slot, int aim_key,
     if (ws->aim_ready) return 1;
     /* An aim the script never answers is asked again, but one still
      * running after 120 ticks with the unit stopped in reach counts as
-     * aimed (D-042). */
+     * aimed (D-042). An aim held while the last shot's FireWeapon plays
+     * waits for it, as the original's always does (legacy:249328-249338). */
     if (++ws->aim_ticks > 120) {
+        if (fire_script_running(u, slot)) {
+            ws->aim_ticks = 120;
+            return 0;
+        }
         if (u->velocity == 0 && ws->aim_thread_slot >= 0 &&
             Cob_IsThreadAlive(u->cob, ws->aim_thread_slot))
             return 1;
@@ -14394,8 +14448,8 @@ static int hover_attack_alt(const Unit *u, const UnitDef *def);
 /* The height a flyer in the air makes for: its cruise height, or its
  * hover attack's while it holds a point (legacy:30367, 30443). */
 static float flyer_height(const Unit *u, const UnitDef *def) {
-    return u->hover_state >= UNIT_HOVER_PICK ? (float)hover_attack_alt(u, def)
-                                             : (float)def->cruise_alt;
+    return u->hover_state >= UNIT_HOVER_PICK && u->hover_state < UNIT_RUN_IN
+         ? (float)hover_attack_alt(u, def) : (float)def->cruise_alt;
 }
 
 /* A flyer holds its fire on the ground and while it climbs. Standby
@@ -14814,10 +14868,11 @@ static int flyer_air_tick(Unit *u, int h, const UnitDef *def,
                    u->cmd_kind == UNIT_CMD_NONE && u->target < 0;
         int limit = flyer_crowd_limit(u);
         /* A hover attack steps out by its own rule once it is near
-         * (legacy:30636-30705, D-039). */
+         * (legacy:30636-30705, D-039), and an attack run by its own on
+         * the way in (legacy:29039-29117). */
         if (limit >= 0 && u->air_crowd > limit &&
             (u->hover_state == UNIT_HOVER_NONE ||
-             (u->hover_events & UNIT_HOVER_FAR))) {
+             (u->hover_state < UNIT_RUN_IN && (u->hover_events & UNIT_HOVER_FAR)))) {
             int fx, fz;
             unit_occ_fp(u, &fx, &fz);
             flyer_step_out(u, h, ((int)World_Rand(15) + fx) * 16);
@@ -14838,6 +14893,32 @@ static int flyer_air_tick(Unit *u, int h, const UnitDef *def,
     *goal_x = u->air_x;
     *goal_y = u->air_y;
     return 1;
+}
+
+/* A patrol on to its next point. Shift gave it more points: on to the
+ * next, and the one it came from goes round to the back of the route,
+ * which is the patrol points at the head of the queue and nothing
+ * queued after them. */
+static void patrol_next_leg(Unit *u) {
+    int32_t next_x = u->patrol_x;
+    int32_t next_y = u->patrol_y;
+    if (u->leg_count > 0 && u->legs[0].kind == UNIT_LEG_PATROL) {
+        int run = 1;
+        while (run < u->leg_count && u->legs[run].kind == UNIT_LEG_PATROL) run++;
+        UnitMoveLeg back = u->legs[0];
+        next_x = back.x;
+        next_y = back.y;
+        for (int k = 1; k < run; k++)
+            u->legs[k - 1] = u->legs[k];
+        back.x = u->patrol_x;
+        back.y = u->patrol_y;
+        u->legs[run - 1] = back;
+    }
+    u->patrol_x = u->cmd_x;
+    u->patrol_y = u->cmd_y;
+    u->cmd_x = next_x;
+    u->cmd_y = next_y;
+    unit_clear_path(u);
 }
 
 /* ── Hover attack ─────────────────────────────────────────────────────
@@ -15118,6 +15199,203 @@ static void hover_attack_tick(Unit *u, int h, const UnitDef *def,
     unit_face_toward(u, def, dx, dy);
 }
 
+/* ── Attack run ───────────────────────────────────────────────────────
+ *
+ * A flyer without hoverattack attacks a target on the ground in runs:
+ * it flies at the target, on past it, off to one side, and round at it
+ * again, its weapons firing whenever they reach (legacy:28491-29118). */
+
+/* The run's leg reach draw lives in hover_events, a re-pick in its top
+ * bit. */
+#define RUN_REPICK 0x80u
+
+/* A flyer without hoverattack attacks this way once it is up, unless
+ * the weapon in hand is `dropped` or the target is a flyer
+ * (legacy:28524-28545). */
+static int run_attacks(const Unit *u, const UnitDef *def, const Unit *t) {
+    if (!def->can_fly || def->hover_attack || def->num_weapons <= 0)
+        return 0;
+    const UnitWeapon *wp = &def->weapons[hover_slot(u, def)];
+    if (wp->drop_key || weapon_effective_range(wp) <= 0) return 0;
+    if (t) {
+        const UnitDef *td = Units_GetDef(t->def_idx);
+        if (!td || td->can_fly || !weapon_can_target_unit(wp, t)) return 0;
+    }
+    return u->flying;
+}
+
+/* The run's point, kept its turning circle and 32 px inside the map: a
+ * flyer flies on about that far while it turns, so a point at the edge
+ * would carry it off the map. Ours, the original pushes a flyer near the
+ * edge back in (legacy:28854-28924). */
+static void run_point(const Unit *u, const UnitDef *def, int32_t *x, int32_t *y) {
+    *x = u->hover_x;
+    *y = u->hover_y;
+    const GameWorld *w = World_Get();
+    if (!w || w->map_pixels_w <= 64 || w->map_pixels_h <= 64) return;
+    int32_t m = 32;
+    if (def->turn_rate > 0.0f && def->max_velocity > 0.0f)
+        m += (int32_t)(def->max_velocity * 65536.0f / (def->turn_rate * 6.2831853f));
+    int32_t mw = m < w->map_pixels_w / 4 ? m : w->map_pixels_w / 4;
+    int32_t mh = m < w->map_pixels_h / 4 ? m : w->map_pixels_h / 4;
+    if (*x < mw) *x = mw;
+    if (*y < mh) *y = mh;
+    if (*x > w->map_pixels_w - mw) *x = w->map_pixels_w - mw;
+    if (*y > w->map_pixels_h - mh) *y = w->map_pixels_h - mh;
+}
+
+/* Stages 2 and 3: at the target's point, a move that ends within half
+ * the run length, or half the weapon's range without one, looked at
+ * again in 15 frames (legacy:28661-28716). */
+static void run_in(Unit *u, int32_t tx, int32_t ty) {
+    u->hover_state = UNIT_RUN_IN;
+    u->hover_x = tx;
+    u->hover_y = ty;
+    u->hover_events = 0;
+    u->hover_wait = 15;
+}
+
+/* Stage 5: a point past the target, the run length and 128 + rand(128)
+ * px beyond it, or three times the weapon's range without a run length,
+ * reached within 128 + rand(128) px. On its first pass a flyer still
+ * further than half its range from the target picks again in 15 frames
+ * or once there (legacy:28717-28790). */
+static void run_past(Unit *u, const UnitDef *def, int32_t tx, int32_t ty) {
+    int range = weapon_effective_range(&def->weapons[hover_slot(u, def)]);
+    int arl = def->attack_run_length;
+    float dx = (float)(u->world_x - tx), dy = (float)(u->world_y - ty);
+    uint16_t bearing = Units_TurnFromHeading(tak_atan2f(dx, -dy));
+    uint8_t reach = (uint8_t)World_Rand(128);
+    int d = arl ? (int)World_Rand(128) + 128 + arl : range * 3;
+    hover_set_point(u, tx, ty, (uint16_t)(bearing + 0x8000), d);
+    u->hover_state = UNIT_RUN_PAST;
+    u->hover_events = reach;
+    u->hover_wait = 0;
+    int64_t half = range / 2;
+    int64_t ix = (int64_t)u->world_x - tx, iy = (int64_t)u->world_y - ty;
+    if (u->hover_steps < 1) {
+        if (ix * ix + iy * iy > half * half) {
+            u->hover_events |= RUN_REPICK;
+            u->hover_wait = 15;
+        } else {
+            u->hover_steps = 1;
+        }
+    }
+}
+
+/* Stage 6: a quarter turn either way, the weapon's range on, or
+ * rand(128) plus half the run length, reached within 64 + rand(128) px
+ * (legacy:28791-28853). */
+static void run_turn(Unit *u, const UnitDef *def) {
+    int range = weapon_effective_range(&def->weapons[hover_slot(u, def)]);
+    int arl = def->attack_run_length;
+    uint16_t hd = Units_TurnFromHeading(u->heading);
+    hd = (uint16_t)(World_Rand(2) == 0u ? hd - 0x4000 : hd + 0x4000);
+    int d = arl ? (int)World_Rand(128) + arl / 2 : range;
+    uint8_t reach = (uint8_t)World_Rand(128);
+    hover_set_point(u, u->world_x, u->world_y, hd, d);
+    u->hover_state = UNIT_RUN_TURN;
+    u->hover_events = reach;
+    u->hover_wait = 0;
+}
+
+/* Crowded at a look on the way in: one that took its own target may,
+ * one time in two, turn on another enemy. Otherwise it steps out
+ * (rand(10) + rand(10) + rand(10) + footprint) * 16 px and comes round
+ * again (legacy:29039-29117). */
+static void run_crowded(Unit *u, int h, const UnitDef *def,
+                        int32_t tx, int32_t ty) {
+    if (!u->attack_explicit && u->aggro_mode == UNIT_AGGRO_OFFENSIVE &&
+        u->cmd_kind != UNIT_CMD_ATTACK_GROUND && World_Rand(2) == 0u) {
+        int64_t radius = unit_search_radius(u, def);
+        int pick = ugrid_nearest_enemy(u, h, radius,
+                                       &def->weapons[hover_slot(u, def)]);
+        if (pick >= 0 && pick != u->target) {
+            u->target = (int16_t)pick;
+            hover_reset(u);
+            return;
+        }
+    }
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    int d = (int)World_Rand(10);
+    d += (int)World_Rand(10);
+    d += (int)World_Rand(10);
+    flyer_step_out(u, h, (d + fx) * 16);
+    run_in(u, tx, ty);
+}
+
+/* The run's decisions, once a frame. A step out leg is flown first. */
+static void run_frame(Unit *u, int h, const UnitDef *def,
+                      int32_t tx, int32_t ty) {
+    if (u->air_mode == UNIT_AIR_STEP) return;
+    if (u->hover_wait) u->hover_wait--;
+    int32_t px, py;
+    run_point(u, def, &px, &py);
+    int64_t ex = (int64_t)px - u->world_x, ey = (int64_t)py - u->world_y;
+    int64_t e2 = ex * ex + ey * ey;
+    switch (u->hover_state) {
+    case UNIT_RUN_IN: {
+        int arl = def->attack_run_length;
+        int64_t r = arl ? arl / 2
+                  : weapon_effective_range(&def->weapons[hover_slot(u, def)]) / 2;
+        if (e2 <= r * r) {
+            run_past(u, def, tx, ty);
+        } else if (!u->hover_wait) {
+            /* Stage 4: crowded, it steps out, else it makes again for
+             * where the target is now (legacy:29040-29047). */
+            if (u->air_crowd >= 5) run_crowded(u, h, def, tx, ty);
+            else run_in(u, tx, ty);
+        }
+    } break;
+    case UNIT_RUN_PAST: {
+        int64_t r = 128 + (u->hover_events & 0x7fu);
+        int repick = (u->hover_events & RUN_REPICK) != 0;
+        if (repick && (!u->hover_wait || e2 <= r * r)) run_past(u, def, tx, ty);
+        else if (!repick && e2 <= r * r) run_turn(u, def);
+    } break;
+    case UNIT_RUN_TURN: {
+        int64_t r = 64 + (u->hover_events & 0x7fu);
+        /* Stage 7: round at the target again (legacy:28854-28924). */
+        if (e2 <= r * r) {
+            u->hover_steps = 1;
+            run_in(u, tx, ty);
+        }
+    } break;
+    default:
+        break;
+    }
+}
+
+/* The attack run on unit t, or on the ground at (tx, ty) when t is
+ * NULL: the point it flies at and whether its weapon reaches. */
+static void run_attack_tick(Unit *u, int h, const UnitDef *def,
+                            const Unit *t, int32_t tx, int32_t ty,
+                            UnitAnimState *desired,
+                            int32_t *goal_x, int32_t *goal_y,
+                            int *in_range) {
+    if (u->hover_state < UNIT_RUN_IN) {
+        /* Stages 0 to 3: a new run has made no pass (legacy:28642-28716). */
+        hover_reset(u);
+        run_in(u, tx, ty);
+    }
+    if ((g_sim_tick & 1u) == 0) run_frame(u, h, def, tx, ty);
+    if (u->hover_state == UNIT_HOVER_NONE) {
+        /* Turned on another target this frame. */
+        *desired = UNIT_ANIM_IDLE;
+        return;
+    }
+    const UnitWeapon *wp = &def->weapons[hover_slot(u, def)];
+    int64_t range = weapon_effective_range(wp);
+    int64_t min_range = weapon_min_range(wp);
+    int64_t dx = (int64_t)tx - u->world_x, dy = (int64_t)ty - u->world_y;
+    int64_t d2 = t ? unit_reach_d2(u, t) : dx * dx + dy * dy;
+    *in_range = range > 0 && d2 <= range * range &&
+                (min_range <= 0 || d2 >= min_range * min_range);
+    *desired = UNIT_ANIM_MOVING;
+    run_point(u, def, goal_x, goal_y);
+}
+
 /* A shot from weapon slot at unit tgt or the attack-ground point, once
  * its reload, its aim and its mana allow. */
 static void unit_fire_slot(Unit *u, int i, const UnitDef *def, int slot,
@@ -15176,7 +15454,7 @@ static void unit_fire_slot(Unit *u, int i, const UnitDef *def, int slot,
 
         if (may_fire) {
             ws->cooldown_ticks = wp->reload_ticks;
-            if (u->hover_state != UNIT_HOVER_NONE)
+            if (u->hover_state != UNIT_HOVER_NONE && u->hover_state < UNIT_RUN_IN)
                 u->hover_events |= UNIT_HOVER_EV_FIRED;
             /* A shot that leaves now has the script aim again for the
              * next (legacy:249457). A drawn one does as it is let go. */
@@ -16437,6 +16715,12 @@ static void Units_TickCombat(void) {
             hovering = 1;
             hover_attack_tick(u, i, def, t, t->world_x, t->world_y,
                               &desired, &goal_x, &goal_y, &target_in_range);
+        } else if (u->target >= 0 &&
+                   run_attacks(u, def, &g_units[u->target])) {
+            const Unit *t = &g_units[u->target];
+            hovering = 1;
+            run_attack_tick(u, i, def, t, t->world_x, t->world_y,
+                            &desired, &goal_x, &goal_y, &target_in_range);
         } else if (u->target >= 0) {
             Unit *t = &g_units[u->target];
             int64_t dx = (int64_t)(t->world_x - u->world_x);
@@ -16483,6 +16767,11 @@ static void Units_TickCombat(void) {
             hovering = 1;
             hover_attack_tick(u, i, def, NULL, u->cmd_x, u->cmd_y,
                               &desired, &goal_x, &goal_y, &target_in_range);
+        } else if (u->cmd_kind == UNIT_CMD_ATTACK_GROUND &&
+                   def->num_weapons > 0 && run_attacks(u, def, NULL)) {
+            hovering = 1;
+            run_attack_tick(u, i, def, NULL, u->cmd_x, u->cmd_y,
+                            &desired, &goal_x, &goal_y, &target_in_range);
         } else if (u->cmd_kind == UNIT_CMD_ATTACK_GROUND &&
                    def->num_weapons > 0) {
             /* Fire at a map point until a new order (legacy attack-
@@ -16674,6 +16963,25 @@ static void Units_TickCombat(void) {
                 int arrived = walk_tick(u, def, goal_x, goal_y);
                 g_walk_face_on = 0;
                 g_walk_creep = 0;
+                /* A flyer's patrol leg ends within 128 px of its point and
+                 * the next starts at speed, as the original's flyer patrol
+                 * legs end within 128 px (legacy:26275, D-049). */
+                if (!arrived && !air_leg_on && u->flying &&
+                    u->cmd_kind == UNIT_CMD_PATROL && u->target < 0 &&
+                    u->post_set != UNIT_POST_FIGHT) {
+                    int64_t px = (int64_t)u->cmd_x - u->world_x;
+                    int64_t py = (int64_t)u->cmd_y - u->world_y;
+                    int32_t nx = u->patrol_x, ny = u->patrol_y;
+                    if (u->leg_count > 0 && u->legs[0].kind == UNIT_LEG_PATROL) {
+                        nx = u->legs[0].x;
+                        ny = u->legs[0].y;
+                    }
+                    int64_t qx = (int64_t)nx - u->world_x, qy = (int64_t)ny - u->world_y;
+                    /* Not when the next point is as near, or the legs flip
+                     * each tick. */
+                    if (px * px + py * py <= 128 * 128 && qx * qx + qy * qy > 128 * 128)
+                        patrol_next_leg(u);
+                }
                 /* The weapon stays on its target through the walk, and
                  * fires when the walk happens to face it
                  * (legacy:249255-249310, legacy:249328-249338). */
@@ -16732,32 +17040,7 @@ static void Units_TickCombat(void) {
                          * reverse the route (legacy keeps the standing
                          * patrol order untouched while the sub-order
                          * runs, legacy:11565). */
-                        int32_t next_x = u->patrol_x;
-                        int32_t next_y = u->patrol_y;
-                        if (u->leg_count > 0 &&
-                            u->legs[0].kind == UNIT_LEG_PATROL) {
-                            /* Shift gave it more points: on to the
-                             * next, and the one it came from goes
-                             * round to the back of the route, which
-                             * is the patrol points at the head of the
-                             * queue and nothing queued after them. */
-                            int run = 1;
-                            while (run < u->leg_count &&
-                                   u->legs[run].kind == UNIT_LEG_PATROL) run++;
-                            UnitMoveLeg back = u->legs[0];
-                            next_x = back.x;
-                            next_y = back.y;
-                            for (int k = 1; k < run; k++)
-                                u->legs[k - 1] = u->legs[k];
-                            back.x = u->patrol_x;
-                            back.y = u->patrol_y;
-                            u->legs[run - 1] = back;
-                        }
-                        u->patrol_x = u->cmd_x;
-                        u->patrol_y = u->cmd_y;
-                        u->cmd_x = next_x;
-                        u->cmd_y = next_y;
-                        unit_clear_path(u);
+                        patrol_next_leg(u);
                     }
                     /* Don't clear target — combat will pick up on next
                      * tick when we transition to ATTACKING in range.
@@ -20393,9 +20676,7 @@ static const UnitMesh *proj_model_mesh(int model_idx, int color_idx) {
         fprintf(stderr, "Projectiles: no model %s\n", path);
         return NULL;
     }
-    GameWorld *world = World_Get();
-    const uint32_t *palette = world ? world->terrain_rgba : NULL;
-    UnitMesh *m = Mesh_Bake(obj, palette, color_idx);
+    UnitMesh *m = Mesh_Bake(obj, flat_palette(NULL), color_idx);
     Obj3D_Close(obj);
     if (!m) { pm->failed[color_idx] = 1; return NULL; }
     pm->mesh_per_color[color_idx] = m;
@@ -20684,9 +20965,7 @@ static const UnitMesh *corpse_model_mesh(int feat_idx, int color_idx) {
         fprintf(stderr, "Corpses: no model %s\n", path);
         return NULL;
     }
-    GameWorld *world = World_Get();
-    const uint32_t *palette = world ? world->terrain_rgba : NULL;
-    UnitMesh *m = Mesh_BakePainted(obj, palette, color_idx,
+    UnitMesh *m = Mesh_BakePainted(obj, flat_palette(NULL), color_idx,
                                    Units_FeaturePaint(fd));
     Obj3D_Close(obj);
     if (!m) { ca->failed[color_idx] = 1; return NULL; }
@@ -22423,9 +22702,7 @@ UnitMesh *Units_BakeObjectMeshPainted(const char *object_name, int color_idx,
     snprintf(path, sizeof(path), "objects3d/%s.3do", obj_lc);
     Obj3DFile *obj = NULL;
     if (Obj3D_Load(&obj, path) != 0 || !obj) return NULL;
-    GameWorld *world = World_Get();
-    UnitMesh *m = Mesh_BakePainted(obj, world ? world->terrain_rgba : NULL,
-                                   color_idx, paint);
+    UnitMesh *m = Mesh_BakePainted(obj, flat_palette(NULL), color_idx, paint);
     Obj3D_Close(obj);
     return m;
 }

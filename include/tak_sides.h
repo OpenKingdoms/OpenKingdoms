@@ -24,6 +24,7 @@ typedef struct TakSideInfo {
     char resurrectsparkle[32];      /* resurrectsparklygaf */
     char resurrectsparkle_anim[32]; /* resurrectsparklyanim */
     char buildpalette[32];          /* the Intangible Mass colours, "arabipal.pcx" */
+    char palette[32];               /* its models' colours, "ara_textures.pal" */
     /* The pictures a statue of the side is painted with, entries of
      * stonegaf and frozengaf, "" without both keys (legacy:164739-164756). */
     char stoneanim[32];             /* "basiliskstone" */

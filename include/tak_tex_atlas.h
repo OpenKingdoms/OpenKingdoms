@@ -61,6 +61,10 @@ void TexAtlas_Shutdown(TAK_Platform *plat);
  * table maps each (level, pixel-index) → effective palette index,
  * letting one base palette produce many light tones.
  * Valid range: 0..31. Default: 15 (per decomp). */
+/* A palette from data/palettes/ by file name, shaded as the textures
+ * are, loaded on first use. NULL when it cannot be read. */
+const uint32_t *TexAtlas_Palette(const char *pcx_name);
+
 int  TexAtlas_GetLightLevel(void);
 void TexAtlas_SetLightLevel(int level);
 

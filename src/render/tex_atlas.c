@@ -153,6 +153,10 @@ static const uint32_t *get_or_load_palette(const char *pcx_name) {
     return e ? e->rgba_shaded : NULL;
 }
 
+const uint32_t *TexAtlas_Palette(const char *pcx_name) {
+    return get_or_load_palette(pcx_name);
+}
+
 #define ATLAS_W 1024
 #define ATLAS_H 1024
 
