@@ -32,30 +32,6 @@ int Terrain_SampleHeight(const struct GameWorld *world,
 static uint8_t *g_feat_block;
 static int g_feat_block_w, g_feat_block_h;
 
-/* The slope part of the test below, which the planner's bad ground reads. */
-int Terrain_SlopeAllows(const struct GameWorld *world,
-                        int32_t world_x, int32_t world_y, int max_slope) {
-    if (!world || world_x < 0 || world_y < 0 ||
-        world_x >= world->map_pixels_w || world_y >= world->map_pixels_h) {
-        return 0;
-    }
-    if (max_slope <= 0) max_slope = 12;
-    int h0 = Terrain_SampleHeight(world, world_x, world_y);
-    static const int off[4][2] = { {16,0}, {-16,0}, {0,16}, {0,-16} };
-    for (int i = 0; i < 4; i++) {
-        int32_t sx = world_x + off[i][0];
-        int32_t sy = world_y + off[i][1];
-        if (sx < 0 || sy < 0 || sx >= world->map_pixels_w ||
-            sy >= world->map_pixels_h) {
-            continue;
-        }
-        int dh = Terrain_SampleHeight(world, sx, sy) - h0;
-        if (dh < 0) dh = -dh;
-        if (dh > max_slope) return 0;
-    }
-    return 1;
-}
-
 int Terrain_IsWalkable(const struct GameWorld *world,
                        int32_t world_x, int32_t world_y,
                        int max_slope) {

@@ -2633,11 +2633,12 @@ Format per entry:
 ## D-048: A ranged unit turns on a flyer hitting a friend
 
 - Change: when a flyer hits a ground unit, every ranged unit of that
-  unit's side within 640 px of the flyer whose weapon in hand reaches it
-  and can hurt it, and that is in a fight against a unit on the ground
-  that it picked for itself or its computer player sent it to, takes
-  the flyer as its target instead. A fight a human player or a mission
-  script ordered is left alone, and so is a unit holding fire.
+  unit's side or an allied side within 640 px of the flyer whose weapon
+  in hand reaches it and can hurt it, and that is in a fight against a
+  unit on the ground that it picked for itself or its computer player
+  sent it to, takes the flyer as its target instead. The new fight is
+  one it picked, so its leash holds. A fight a human player or a
+  mission script ordered is left alone, and so is a unit holding fire.
 - Why: a playtester asked for archers to help against flyers attacking
   the units round them while they have targets of their own (#503).
 - Citation: none. The original's target search scores what it finds by

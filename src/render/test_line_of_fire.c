@@ -2762,6 +2762,43 @@ TEST(a_tower_fires_both_its_bows_each_at_its_own_target) {
     ASSERT_EQ_INT(0, sw_dummy);
 }
 
+/* A tower on hold fire told to attack shoots with both bows, as a
+ * structure's attack heeds no fire order (legacy:9092-9158), and one
+ * standing by lets a bow's target go once it walks out of reach and
+ * takes another in reach (legacy:9166-9213). */
+TEST(a_tower_on_hold_fire_attacks_with_both_bows) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int a = lf_spawn(LF_TWOBOW, 1, LF_SX, LF_ROW);
+    int dummy = lf_spawn(LF_TARGET, 2, LF_SX + 300, LF_ROW);
+    ASSERT(a >= 0 && dummy >= 0);
+    ASSERT(Units_OrderAttack(a, dummy));
+    for (int i = 0; i < 600; i++) Units_TickEngines();
+    int harm = lf_unit(dummy)->max_health - lf_unit(dummy)->health;
+    lf_end();
+    printf("(harm %d) ", harm);
+    ASSERT_EQ_INT(80, harm);
+}
+
+TEST(a_bow_lets_go_of_what_walks_out_of_reach) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int a = lf_spawn(LF_TWOBOW, 1, LF_SX, LF_ROW);
+    int stone = lf_spawn(LF_STONE, 2, LF_SX + 150, LF_ROW);
+    int away = lf_spawn(LF_TARGET, 2, LF_SX + 300, LF_ROW + 250);
+    ASSERT(a >= 0 && stone >= 0 && away >= 0);
+    Units_DebugSetAggro(a, UNIT_AGGRO_DEFENSIVE);
+    for (int i = 0; i < 60; i++) Units_TickEngines();
+    ASSERT_EQ_INT((int)lf_unit(away)->stable_id, (int)lf_unit(a)->slot_id[1]);
+    ASSERT(Units_OrderMove(away, LF_SX + 1300, LF_ROW + 250));
+    for (int i = 0; i < 2000; i++) Units_TickEngines();
+    int near = lf_spawn(LF_TARGET, 2, LF_SX - 300, LF_ROW + 200);
+    ASSERT(near >= 0);
+    for (int i = 0; i < 900; i++) Units_TickEngines();
+    int harm = lf_unit(near)->max_health - lf_unit(near)->health;
+    lf_end();
+    printf("(harm to the one in reach %d) ", harm);
+    ASSERT(harm > 0);
+}
+
 /* An archer sent at a target far off is shot at by a tower beside its
  * way. Its weapon takes the tower while the target is out of reach and
  * fires as it walks, and the attack goes on (legacy:15187-15215). */
@@ -4683,6 +4720,8 @@ int main(int argc, char **argv) {
     RUN(a_walker_on_a_move_order_fires_at_what_it_passes);
     RUN(hold_fire_drops_what_a_walker_took);
     RUN(a_tower_fires_both_its_bows_each_at_its_own_target);
+    RUN(a_tower_on_hold_fire_attacks_with_both_bows);
+    RUN(a_bow_lets_go_of_what_walks_out_of_reach);
     RUN(a_unit_walking_to_its_target_answers_what_shoots_it);
     RUN(an_archer_turns_on_a_flyer_hitting_a_friend);
     RUN(a_walker_whose_shots_stop_short_finds_a_place_to_shoot_from);

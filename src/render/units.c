@@ -2005,7 +2005,18 @@ static int unit_slot_target(const Unit *u, const UnitDef *d, int slot) {
  * legacy:9820-9846). A structure's attack arms them all (legacy:9141-9158). */
 static void unit_slots_tick(Unit *u, int i, const UnitDef *d) {
     int hand = unit_pass_slot(u, d);
-    int all = unit_fires_all(d) && u->aggro_mode != UNIT_AGGRO_PASSIVE;
+    /* A structure's attack takes no heed of the fire order (legacy:9092-9158). */
+    int armed = d->bmcode == 0 && u->cmd_kind == UNIT_CMD_ATTACK &&
+                u->target >= 0 && u->target < g_unit_count;
+    int all = unit_fires_all(d) &&
+              (u->aggro_mode != UNIT_AGGRO_PASSIVE || (armed && u->attack_explicit));
+    /* Standing by, building, or a structure in its attack, a weapon lets go
+     * of what it no longer reaches (legacy:9166-9213, callers at legacy:9135,
+     * 9228, 9312, 9855), there every 7 to 22 frames, here every 30 ticks. */
+    int idle = (u->cmd_kind == UNIT_CMD_NONE || u->cmd_kind == UNIT_CMD_BUILD ||
+                u->cmd_kind == UNIT_CMD_REPAIR || u->cmd_kind == UNIT_CMD_RECLAIM ||
+                d->bmcode == 0) &&
+               (g_sim_tick + u->stable_id) % 30u == 0u;
     int turn = -1;
     for (int s = 0; s < 3; s++) {
         if (!all || s == hand || s >= d->num_weapons) {
@@ -2014,12 +2025,16 @@ static void unit_slots_tick(Unit *u, int i, const UnitDef *d) {
         }
         if (u->slot_id[s]) {
             int t = Units_FindByStableId(u->slot_id[s]);
-            if (t < 0 || !unit_slot_holds(u, d, s, &g_units[t])) u->slot_id[s] = 0;
+            if (t < 0 || !unit_slot_holds(u, d, s, &g_units[t]) ||
+                (idle && !unit_weapon_reaches(u, d, s, &g_units[t])))
+                u->slot_id[s] = 0;
         }
-        if (d->bmcode == 0 && u->cmd_kind == UNIT_CMD_ATTACK &&
-            u->target >= 0 && u->target < g_unit_count &&
-            unit_slot_holds(u, d, s, &g_units[u->target])) {
+        if (armed && unit_slot_holds(u, d, s, &g_units[u->target])) {
             u->slot_id[s] = g_units[u->target].stable_id;
+            continue;
+        }
+        if (u->aggro_mode == UNIT_AGGRO_PASSIVE) {
+            u->slot_id[s] = 0;
             continue;
         }
         if (u->slot_id[s] || d->weapons[s].drop_key ||
@@ -2074,7 +2089,8 @@ static void unit_pass_answer(Unit *u, const Unit *shooter) {
 static int unit_attack_own(const Unit *u);
 
 /* D-048, ours: a flyer hitting a ground unit draws the ranged units of
- * its side near it that reach it and are in a fight of their own. */
+ * its side and its allies near it that reach it and are in a fight of
+ * their own, which the switch makes a fight it picked. */
 #define UNIT_ALLY_ANSWER_PX 640
 static void unit_allies_answer_flyer(const Unit *victim, int shooter_handle) {
     const Unit *shooter = &g_units[shooter_handle];
@@ -2107,7 +2123,9 @@ static void unit_allies_answer_flyer(const Unit *victim, int shooter_handle) {
             !unit_weapon_reaches(u, d, slot, shooter))
             continue;
         u->target = (int16_t)shooter_handle;
+        u->attack_explicit = 0;
         u->pass_id = 0;
+        unit_post_take(u, d);
         unit_clear_path(u);
     }
 }
@@ -15140,7 +15158,8 @@ static void unit_slots_fire(Unit *u, int i, const UnitDef *def) {
     for (int s = 0; s < def->num_weapons && s < 3; s++) {
         if (s == hand || !u->slot_id[s]) continue;
         int t = Units_FindByStableId(u->slot_id[s]);
-        if (t >= 0 && unit_weapon_reaches(u, def, s, &g_units[t]))
+        if (t >= 0 && g_units[t].alive == UNIT_ALIVE_ACTIVE &&
+            unit_weapon_reaches(u, def, s, &g_units[t]))
             unit_fire_slot(u, i, def, s, t, 0);
     }
 }

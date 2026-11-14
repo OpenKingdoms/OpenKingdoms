@@ -417,15 +417,76 @@ static uint8_t cell_bits(const uint8_t *plain, int tw, int th,
  * step of ten that is six, three at each end so it costs the same both ways. */
 #define PATH_BAD_HALF 3
 
-/* The depth the class crosses at full pace, inside its bad depths
- * (legacy:219739-219743). */
-static int water_good(const struct GameWorld *world, const MoveClassDef *mc,
-                      int32_t wx, int32_t wy) {
-    if (!mc || world->water_height <= 0) return 1;
-    int depth = world->water_height - Terrain_SampleHeight(world, wx, wy);
-    if (depth < 0) depth = 0;
-    if (depth > mc->bad_max_water_depth) return 0;
-    return mc->bad_min_water_depth <= 0 || depth >= mc->bad_min_water_depth;
+/* Whether tile (tx, ty) is ground the class crosses, and crosses at full
+ * pace: inside its slope and depths and inside its bad slope and bad
+ * depths (legacy:219720-219743). Off the map it is neither. */
+static void tile_ground(const struct GameWorld *world, const MoveClassDef *mc,
+                        int slope, int tw, int th, int tx, int ty,
+                        int *walk, int *good) {
+    *walk = *good = 0;
+    if (tx < 0 || ty < 0 || tx >= tw || ty >= th) return;
+    if (slope <= 0) slope = 12;
+    int span = 0;
+    const TNTFile *t = &world->tnt;
+    if (t->heightmap && t->height_w > 1 && t->height_h > 1) {
+        int hx = tx >= t->height_w - 1 ? t->height_w - 2 : tx;
+        int hz = ty >= t->height_h - 1 ? t->height_h - 2 : ty;
+        const uint8_t *row = t->heightmap + (size_t)hz * t->height_w + hx;
+        int a = row[0], b = row[1], c = row[t->height_w], d = row[t->height_w + 1];
+        int lo = a < b ? a : b, hi = a < b ? b : a;
+        if (c < lo) lo = c;
+        if (c > hi) hi = c;
+        if (d < lo) lo = d;
+        if (d > hi) hi = d;
+        span = hi - lo;
+    }
+    if (span > slope) return;
+    int depth = 0, wet = 0;
+    if (world->water_height > 0) {
+        depth = world->water_height -
+                Terrain_SampleHeight(world, tile_to_world(tx), tile_to_world(ty));
+        wet = depth > 0;
+        if (depth < 0) depth = 0;
+        if (mc && (depth > mc->max_water_depth ||
+                   (mc->min_water_depth > 0 && depth < mc->min_water_depth)))
+            return;
+    }
+    *walk = 1;
+    int bad = mc ? (wet ? mc->bad_water_slope : mc->bad_slope) : slope / 2;
+    if (span > bad) return;
+    if (mc && world->water_height > 0 &&
+        (depth > mc->bad_max_water_depth ||
+         (mc->bad_min_water_depth > 0 && depth < mc->bad_min_water_depth)))
+        return;
+    *good = 1;
+}
+
+/* Bad ground at one path cell: every placement it has stands on or
+ * beside a tile not crossed at full pace (the ring at
+ * legacy:219761-219791). Half the step surcharge, or 0. */
+static int cell_bad_direct(const struct GameWorld *world, const MoveClassDef *mc,
+                           int slope, int fx, int fz, int cx, int cy) {
+    int tw = (world->map_pixels_w + TAK_OCC_TILE_PX - 1) / TAK_OCC_TILE_PX;
+    int th = (world->map_pixels_h + TAK_OCC_TILE_PX - 1) / TAK_OCC_TILE_PX;
+    int ptx[FP_PLACEMENTS], pty[FP_PLACEMENTS];
+    cell_fp_placements(cx, cy, fx, fz, ptx, pty);
+    int open = 0;
+    for (int p = 0; p < FP_PLACEMENTS; p++) {
+        int ok = 1, fine = 1, walk, good;
+        for (int y = pty[p] - 1; y <= pty[p] + fz && ok; y++) {
+            for (int x = ptx[p] - 1; x <= ptx[p] + fx; x++) {
+                tile_ground(world, mc, slope, tw, th, x, y, &walk, &good);
+                int inside = x >= ptx[p] && x < ptx[p] + fx &&
+                             y >= pty[p] && y < pty[p] + fz;
+                if (inside && !walk) { ok = 0; break; }
+                if (!good) fine = 0;
+            }
+        }
+        if (!ok) continue;
+        if (fine) return 0;
+        open = 1;
+    }
+    return open ? PATH_BAD_HALF : 0;
 }
 
 /* Tiles of [x0, x1] by [y0, y1] set in a prefix sum of tw by th, any
@@ -438,25 +499,23 @@ static int prefix_any(const int32_t *ps, int tw, int th,
            ps[(y1 + 1) * w + x0] + ps[y0 * w + x0] != 0;
 }
 
-/* Bad ground per path cell: every placement on a tile past badslope or
- * the bad depths, or beside one, read off the heightmap and the sea alone
- * (legacy:219720-219743, the ring legacy:219761-219791). */
+/* cell_bad_direct for every cell, read off prefix sums of the tiles. */
 static void cell_bad_fill(const struct GameWorld *world, const MoveClassDef *mc,
                           int fallback_slope, int fx, int fz, int cw, int ch,
                           uint8_t *out) {
-    memset(out, 0, (size_t)cw * ch);
+    int slope = movement_max_slope(mc, fallback_slope);
     int tw = (world->map_pixels_w + TAK_OCC_TILE_PX - 1) / TAK_OCC_TILE_PX;
     int th = (world->map_pixels_h + TAK_OCC_TILE_PX - 1) / TAK_OCC_TILE_PX;
-    if (tw <= 0 || th <= 0) return;
-    int slope = movement_max_slope(mc, fallback_slope);
-    int bad = mc ? mc->bad_slope : slope / 2;
-    int bad_wet = mc ? mc->bad_water_slope : bad;
-    size_t pn = (size_t)(tw + 1) * (th + 1);
+    size_t pn = (size_t)(tw > 0 ? tw + 1 : 1) * (size_t)(th > 0 ? th + 1 : 1);
     int32_t *nwalk = (int32_t *)tak_malloc(pn * sizeof(int32_t));
     int32_t *ngood = (int32_t *)tak_malloc(pn * sizeof(int32_t));
-    if (!nwalk || !ngood) {
+    if (!nwalk || !ngood || tw <= 0 || th <= 0) {
         if (nwalk) tak_free(nwalk);
         if (ngood) tak_free(ngood);
+        for (int cy = 0; cy < ch; cy++)
+            for (int cx = 0; cx < cw; cx++)
+                out[cy * cw + cx] = (uint8_t)cell_bad_direct(world, mc, slope,
+                                                             fx, fz, cx, cy);
         return;
     }
     memset(nwalk, 0, pn * sizeof(int32_t));
@@ -464,13 +523,8 @@ static void cell_bad_fill(const struct GameWorld *world, const MoveClassDef *mc,
     int w = tw + 1;
     for (int ty = 0; ty < th; ty++) {
         for (int tx = 0; tx < tw; tx++) {
-            int32_t x = tile_to_world(tx), y = tile_to_world(ty);
-            int walk = Terrain_SlopeAllows(world, x, y, slope) &&
-                       water_ok(world, mc, x, y);
-            int wet = world->water_height > 0 &&
-                      Terrain_SampleHeight(world, x, y) < world->water_height;
-            int good = walk && water_good(world, mc, x, y) &&
-                       Terrain_SlopeAllows(world, x, y, wet ? bad_wet : bad);
+            int walk, good;
+            tile_ground(world, mc, slope, tw, th, tx, ty, &walk, &good);
             int i = (ty + 1) * w + tx + 1;
             nwalk[i] = nwalk[i - 1] + nwalk[i - w] - nwalk[i - w - 1] + !walk;
             ngood[i] = ngood[i - 1] + ngood[i - w] - ngood[i - w - 1] + !good;
@@ -1893,7 +1947,9 @@ static int plan_h(const PlanCtx *c, int cell, int gx, int gy) {
 
 /* Half what a step onto or off the cell adds for bad ground. */
 static int plan_bad(const PlanCtx *c, int cell) {
-    return c->cellbad ? c->cellbad[cell] : 0;
+    if (c->cellbad) return c->cellbad[cell];
+    return cell_bad_direct(c->world, c->mc, c->slope, c->fx, c->fz,
+                           cell % c->cw, cell / c->cw);
 }
 
 /* Keys are read from f as it stands, so a cell whose f falls while it
