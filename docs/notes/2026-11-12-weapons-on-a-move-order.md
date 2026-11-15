@@ -49,6 +49,13 @@ is only for a unit standing by or on patrol. With fire on, each free
 weapon that reaches the shooter takes it, unless it already holds
 something it reaches (legacy:15187-15215).
 
+The same rule holds in a fight (2026-11-14). An attack puts its target
+on the weapon only while the target is in reach (legacy:11137-11141),
+so a unit walking to a target out of reach that is hit takes the
+shooter with its weapon if it reaches it, and fires at it as it walks
+when its body allows. The attack goes on, and the weapon goes back to
+the attack's target once that is in reach.
+
 ## Stances
 
 The stance buttons set the original's fire and move orders together
@@ -69,5 +76,27 @@ as the idle search does.
 
 Not done here: a fight move, which looks with the order's own search at
 each wait and turns aside to fight (legacy:10359-10504, the MoveFight
-key at legacy:151239-151244), and a weapon per slot, since the engine
-fires only the weapon in hand.
+key at legacy:151239-151244).
+
+## A target per weapon (2026-11-14)
+
+A unit without `weaponswitching` fires every weapon. The original
+starts such a unit in the mode that lets all three slots fire, and one
+with it in the slot `defaultweapon` names (legacy:226586-226598). A
+weapon may take a target only in a slot the mode allows
+(legacy:233882-233896). So the gods, the two bow towers, the Rolling
+Tower, the Dirigible, the Aerial Juggernaut and the Iron Clad fire all
+their weapons, each at a target of its own. Every shipped caster and
+monarch, the Fallen Angel among them, carries `weaponswitching` and
+fires only the weapon picked.
+
+An order puts its target on the first weapon only (legacy:11141). The
+others look for themselves as described above, under any order, keep
+what they took, answer a hit as a free weapon does, and fire when what
+they hold is in reach. A structure's attack is the exception: it puts
+its target on every weapon (legacy:9141-9158), so both bows of a tower
+shoot what the tower was told to shoot.
+
+In the engine `Unit.slot_id` holds what each weapon but the one in hand
+took, by stable id. It is in the save (unit record version 21) and the
+state hash.

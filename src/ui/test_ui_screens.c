@@ -26417,9 +26417,10 @@ done:
     VFS_Shutdown();
 }
 
-/* An AI raider that has reached the enemy start and sees nothing goes
- * for the nearest enemy unit wherever it stands (legacy:15365), so a
- * last lodestone out of sight cannot stall the battle. */
+/* A last lodestone out of a raider's sight cannot stall the battle: the
+ * computer picks it as its wave's target wherever it stands
+ * (legacy:15365), gathers the raider at home and strikes
+ * (legacy:16187, legacy:18250). */
 TEST(ai_hunts_the_last_structure_out_of_sight) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -26468,7 +26469,7 @@ TEST(ai_hunts_the_last_structure_out_of_sight) {
     ASSERT_EQ_INT(0, world->skirmish_game_over);
     int raider = Units_Spawn(sword_def, 2, cfg.players[1].color, sx + 32, sy + 32);
     ASSERT(raider >= 0);
-    for (int t = 0; t < 120 && !world->skirmish_game_over; t++) {
+    for (int t = 0; t < 600 && !world->skirmish_game_over; t++) {
         InGame_DebugRunSimTicks(30);
     }
     units = Units_GetActive(&n);

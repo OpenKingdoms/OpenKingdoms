@@ -200,7 +200,7 @@ static struct {
     int       clear_dirty;      /* features changed tiles cx0..cx1 by cy0..cy1 */
     int       cx0, cy0, cx1, cy1;
     int       tw, th;
-    int16_t  *cellh;      /* terrain height at each cell centre */
+    uint8_t  *cellbad;    /* per cell: half the surcharge of bad ground */
     int32_t  *field[PATH_FIELD_MARKS];  /* cost to a mark, -1 out of reach */
     int       mark[PATH_FIELD_MARKS];
     int32_t  *seed_dist;  /* cost to the cell nearest the middle */
@@ -338,8 +338,8 @@ void TAK_PathDebugGetCounters(TAK_PathDebugCounters *out) {
         if (g_pcache[i].clear) {
             bytes += (uint32_t)(g_pcache[i].tw * g_pcache[i].th);
         }
-        if (g_pcache[i].cellh) {
-            bytes += (uint32_t)(g_pcache[i].cw * g_pcache[i].ch * 2);
+        if (g_pcache[i].cellbad) {
+            bytes += (uint32_t)(g_pcache[i].cw * g_pcache[i].ch);
         }
         bytes += (uint32_t)(g_pcache[i].field_n * g_pcache[i].cw *
                             g_pcache[i].ch * 4);
@@ -358,7 +358,7 @@ void TAK_PathCacheReset(void) {
         tak_free(g_pcache[i].bits);
         if (g_pcache[i].plain) tak_free(g_pcache[i].plain);
         if (g_pcache[i].clear) tak_free(g_pcache[i].clear);
-        if (g_pcache[i].cellh) tak_free(g_pcache[i].cellh);
+        if (g_pcache[i].cellbad) tak_free(g_pcache[i].cellbad);
         for (int m = 0; m < PATH_FIELD_MARKS; m++) {
             if (g_pcache[i].field[m]) tak_free(g_pcache[i].field[m]);
         }
@@ -412,6 +412,143 @@ static uint8_t cell_bits(const uint8_t *plain, int tw, int th,
     return (uint8_t)mask;
 }
 
+/* Bad ground costs 48 to the original's 24 on a step of 16
+ * (legacy:22210-22222, legacy:22988-22990, legacy:23535-23543). On our
+ * step of ten that is six, three at each end so it costs the same both ways. */
+#define PATH_BAD_HALF 3
+
+/* Whether tile (tx, ty) is ground the class crosses, and crosses at full
+ * pace: inside its slope and depths and inside its bad slope and bad
+ * depths (legacy:219720-219743). Off the map it is neither. */
+static void tile_ground(const struct GameWorld *world, const MoveClassDef *mc,
+                        int slope, int tw, int th, int tx, int ty,
+                        int *walk, int *good) {
+    *walk = *good = 0;
+    if (tx < 0 || ty < 0 || tx >= tw || ty >= th) return;
+    if (slope <= 0) slope = 12;
+    int span = 0;
+    const TNTFile *t = &world->tnt;
+    if (t->heightmap && t->height_w > 1 && t->height_h > 1) {
+        int hx = tx >= t->height_w - 1 ? t->height_w - 2 : tx;
+        int hz = ty >= t->height_h - 1 ? t->height_h - 2 : ty;
+        const uint8_t *row = t->heightmap + (size_t)hz * t->height_w + hx;
+        int a = row[0], b = row[1], c = row[t->height_w], d = row[t->height_w + 1];
+        int lo = a < b ? a : b, hi = a < b ? b : a;
+        if (c < lo) lo = c;
+        if (c > hi) hi = c;
+        if (d < lo) lo = d;
+        if (d > hi) hi = d;
+        span = hi - lo;
+    }
+    if (span > slope) return;
+    int depth = 0, wet = 0;
+    if (world->water_height > 0) {
+        depth = world->water_height -
+                Terrain_SampleHeight(world, tile_to_world(tx), tile_to_world(ty));
+        wet = depth > 0;
+        if (depth < 0) depth = 0;
+        if (mc && (depth > mc->max_water_depth ||
+                   (mc->min_water_depth > 0 && depth < mc->min_water_depth)))
+            return;
+    }
+    *walk = 1;
+    int bad = mc ? (wet ? mc->bad_water_slope : mc->bad_slope) : slope / 2;
+    if (span > bad) return;
+    if (mc && world->water_height > 0 &&
+        (depth > mc->bad_max_water_depth ||
+         (mc->bad_min_water_depth > 0 && depth < mc->bad_min_water_depth)))
+        return;
+    *good = 1;
+}
+
+/* Bad ground at one path cell: every placement it has stands on or
+ * beside a tile not crossed at full pace (the ring at
+ * legacy:219761-219791). Half the step surcharge, or 0. */
+static int cell_bad_direct(const struct GameWorld *world, const MoveClassDef *mc,
+                           int slope, int fx, int fz, int cx, int cy) {
+    int tw = (world->map_pixels_w + TAK_OCC_TILE_PX - 1) / TAK_OCC_TILE_PX;
+    int th = (world->map_pixels_h + TAK_OCC_TILE_PX - 1) / TAK_OCC_TILE_PX;
+    int ptx[FP_PLACEMENTS], pty[FP_PLACEMENTS];
+    cell_fp_placements(cx, cy, fx, fz, ptx, pty);
+    int open = 0;
+    for (int p = 0; p < FP_PLACEMENTS; p++) {
+        int ok = 1, fine = 1, walk, good;
+        for (int y = pty[p] - 1; y <= pty[p] + fz && ok; y++) {
+            for (int x = ptx[p] - 1; x <= ptx[p] + fx; x++) {
+                tile_ground(world, mc, slope, tw, th, x, y, &walk, &good);
+                int inside = x >= ptx[p] && x < ptx[p] + fx &&
+                             y >= pty[p] && y < pty[p] + fz;
+                if (inside && !walk) { ok = 0; break; }
+                if (!good) fine = 0;
+            }
+        }
+        if (!ok) continue;
+        if (fine) return 0;
+        open = 1;
+    }
+    return open ? PATH_BAD_HALF : 0;
+}
+
+/* Tiles of [x0, x1] by [y0, y1] set in a prefix sum of tw by th, any
+ * tile off the map counting as set. */
+static int prefix_any(const int32_t *ps, int tw, int th,
+                      int x0, int y0, int x1, int y1) {
+    if (x0 < 0 || y0 < 0 || x1 >= tw || y1 >= th) return 1;
+    int w = tw + 1;
+    return ps[(y1 + 1) * w + x1 + 1] - ps[y0 * w + x1 + 1] -
+           ps[(y1 + 1) * w + x0] + ps[y0 * w + x0] != 0;
+}
+
+/* cell_bad_direct for every cell, read off prefix sums of the tiles. */
+static void cell_bad_fill(const struct GameWorld *world, const MoveClassDef *mc,
+                          int fallback_slope, int fx, int fz, int cw, int ch,
+                          uint8_t *out) {
+    int slope = movement_max_slope(mc, fallback_slope);
+    int tw = (world->map_pixels_w + TAK_OCC_TILE_PX - 1) / TAK_OCC_TILE_PX;
+    int th = (world->map_pixels_h + TAK_OCC_TILE_PX - 1) / TAK_OCC_TILE_PX;
+    size_t pn = (size_t)(tw > 0 ? tw + 1 : 1) * (size_t)(th > 0 ? th + 1 : 1);
+    int32_t *nwalk = (int32_t *)tak_malloc(pn * sizeof(int32_t));
+    int32_t *ngood = (int32_t *)tak_malloc(pn * sizeof(int32_t));
+    if (!nwalk || !ngood || tw <= 0 || th <= 0) {
+        if (nwalk) tak_free(nwalk);
+        if (ngood) tak_free(ngood);
+        for (int cy = 0; cy < ch; cy++)
+            for (int cx = 0; cx < cw; cx++)
+                out[cy * cw + cx] = (uint8_t)cell_bad_direct(world, mc, slope,
+                                                             fx, fz, cx, cy);
+        return;
+    }
+    memset(nwalk, 0, pn * sizeof(int32_t));
+    memset(ngood, 0, pn * sizeof(int32_t));
+    int w = tw + 1;
+    for (int ty = 0; ty < th; ty++) {
+        for (int tx = 0; tx < tw; tx++) {
+            int walk, good;
+            tile_ground(world, mc, slope, tw, th, tx, ty, &walk, &good);
+            int i = (ty + 1) * w + tx + 1;
+            nwalk[i] = nwalk[i - 1] + nwalk[i - w] - nwalk[i - w - 1] + !walk;
+            ngood[i] = ngood[i - 1] + ngood[i - w] - ngood[i - w - 1] + !good;
+        }
+    }
+    for (int cy = 0; cy < ch; cy++) {
+        for (int cx = 0; cx < cw; cx++) {
+            int ptx[FP_PLACEMENTS], pty[FP_PLACEMENTS];
+            cell_fp_placements(cx, cy, fx, fz, ptx, pty);
+            int open = 0, fine = 0;
+            for (int p = 0; p < FP_PLACEMENTS && !fine; p++) {
+                int x0 = ptx[p], y0 = pty[p];
+                if (prefix_any(nwalk, tw, th, x0, y0, x0 + fx - 1, y0 + fz - 1))
+                    continue;
+                open = 1;
+                fine = !prefix_any(ngood, tw, th, x0 - 1, y0 - 1, x0 + fx, y0 + fz);
+            }
+            out[cy * cw + cx] = (uint8_t)(open && !fine ? PATH_BAD_HALF : 0);
+        }
+    }
+    tak_free(nwalk);
+    tak_free(ngood);
+}
+
 /* The mask is a set of footprint placements, so the footprint the
  * caller resolved is part of the key. A query may name one of its own
  * and a def whose move class carries none falls back to the def, so
@@ -456,18 +593,8 @@ static int pcache_find(const struct GameWorld *world, int cw, int ch,
                 bits[y * cw + x] = (uint8_t)cell_fp_mask_slow(
                     world, x, y, cw, ch, mc, fallback_slope, fx, fz);
     }
-    /* Height at every cell centre, sampled once. The search read it
-     * nine times per expanded cell and the distance field would read
-     * it again. */
-    int16_t *cellh = (int16_t *)tak_malloc((size_t)cw * ch * sizeof(int16_t));
-    if (cellh) {
-        for (int y = 0; y < ch; y++) {
-            for (int x = 0; x < cw; x++) {
-                cellh[y * cw + x] = (int16_t)Terrain_SampleHeight(
-                    world, cell_to_world(x), cell_to_world(y));
-            }
-        }
-    }
+    uint8_t *cellbad = (uint8_t *)tak_malloc((size_t)cw * ch);
+    if (cellbad) cell_bad_fill(world, mc, fallback_slope, fx, fz, cw, ch, cellbad);
     g_dbg_rebuilds++;
     g_dbg_rebuild_clock += dbg_now() - build_t0;
     int i = g_pcache_n++;
@@ -486,7 +613,7 @@ static int pcache_find(const struct GameWorld *world, int cw, int ch,
     g_pcache[i].comp = NULL;
     g_pcache[i].tw = plain ? tw : 0;
     g_pcache[i].th = plain ? th : 0;
-    g_pcache[i].cellh = cellh;
+    g_pcache[i].cellbad = cellbad;
     return i;
 }
 
@@ -603,12 +730,13 @@ static const uint8_t *clearance_get(int ci) {
  * dropped with it, so a destroyed blocking feature takes it too.
  *
  * Steps cost what the search charges: ten straight, fourteen
- * diagonal, twice the height step, and no cutting a blocked corner. */
+ * diagonal, more onto or off bad ground, and no cutting a blocked
+ * corner. */
 
-/* The dearest step the sweep charges: fourteen plus twice the largest
- * height step a byte heightmap can hold. Capping a dearer step only
- * lowers a measured distance, which keeps it under the live one. */
-#define PATH_FIELD_MAX_EDGE 525
+/* The dearest step the sweep charges: a diagonal between two cells of
+ * bad ground. Capping a dearer step only lowers a measured distance,
+ * which keeps it under the live one. */
+#define PATH_FIELD_MAX_EDGE (14 + 2 * PATH_BAD_HALF)
 /* Below this many cells of straight line, a plan is short enough that
  * the flat search opens few cells and the field is not worth it. */
 #define PATH_FIELD_MIN_CELLS 32
@@ -711,7 +839,7 @@ static const int g_fdirs[8][3] = {
 
 /* The cost of the step from (x, y) in direction di, or -1 off the map,
  * onto closed ground or past a blocked corner. Same both ways. */
-static int field_step(const uint8_t *bits, const int16_t *cellh,
+static int field_step(const uint8_t *bits, const uint8_t *cellbad,
                       int cw, int ch, int x, int y, int di, int *out_n) {
     int nx = x + g_fdirs[di][0], ny = y + g_fdirs[di][1];
     if (nx < 0 || ny < 0 || nx >= cw || ny >= ch) return -1;
@@ -720,9 +848,7 @@ static int field_step(const uint8_t *bits, const int16_t *cellh,
     if (g_fdirs[di][0] && g_fdirs[di][1]) {
         if (!bits[y * cw + nx] || !bits[ny * cw + x]) return -1;
     }
-    int dh = cellh[ni] - cellh[y * cw + x];
-    if (dh < 0) dh = -dh;
-    int w = g_fdirs[di][2] + dh * 2;
+    int w = g_fdirs[di][2] + cellbad[ni] + cellbad[y * cw + x];
     if (w > PATH_FIELD_MAX_EDGE) w = PATH_FIELD_MAX_EDGE;
     *out_n = ni;
     return w;
@@ -741,7 +867,7 @@ static int field_far(const int32_t *dist, int cells, int src) {
  * bitmap. Fills dist with -1 where the cell cannot be reached, and
  * returns the reached cell that is furthest away, lowest index first,
  * which is the next mark to measure from, or -1 out of scratch. */
-static int field_sweep(const uint8_t *bits, const int16_t *cellh,
+static int field_sweep(const uint8_t *bits, const uint8_t *cellbad,
                        int cw, int ch, int src, int32_t *dist) {
     int cells = cw * ch;
     for (int i = 0; i < cells; i++) dist[i] = -1;
@@ -763,7 +889,7 @@ static int field_sweep(const uint8_t *bits, const int16_t *cellh,
             int cx = cur % cw, cy = cur / cw;
             for (int di = 0; di < 8; di++) {
                 int ni;
-                int w = field_step(bits, cellh, cw, ch, cx, cy, di, &ni);
+                int w = field_step(bits, cellbad, cw, ch, cx, cy, di, &ni);
                 if (w < 0) continue;
                 int32_t nd = d + w;
                 if (dist[ni] >= 0 && nd >= dist[ni]) continue;
@@ -781,7 +907,7 @@ static int field_sweep(const uint8_t *bits, const int16_t *cellh,
 }
 
 /* Settle what a patch pushed, over the whole bitmap. */
-static void field_settle(const uint8_t *bits, const int16_t *cellh,
+static void field_settle(const uint8_t *bits, const uint8_t *cellbad,
                          int cw, int ch, int32_t *dist) {
     FieldHeap *h = &g_fs.heap;
     while (h->n > 0) {
@@ -791,7 +917,7 @@ static void field_settle(const uint8_t *bits, const int16_t *cellh,
         int cx = cur % cw, cy = cur / cw;
         for (int di = 0; di < 8; di++) {
             int ni;
-            int w = field_step(bits, cellh, cw, ch, cx, cy, di, &ni);
+            int w = field_step(bits, cellbad, cw, ch, cx, cy, di, &ni);
             if (w < 0) continue;
             int32_t nd = d + w;
             if (dist[ni] >= 0 && nd >= dist[ni]) continue;
@@ -803,14 +929,14 @@ static void field_settle(const uint8_t *bits, const int16_t *cellh,
 
 /* The cheapest way into open cell v from a reached neighbour that is
  * not skipped, or -1. */
-static int32_t field_best_in(const uint8_t *bits, const int16_t *cellh,
+static int32_t field_best_in(const uint8_t *bits, const uint8_t *cellbad,
                              int cw, int ch, const int32_t *dist, int v,
                              const uint8_t *skip) {
     int vx = v % cw, vy = v / cw;
     int32_t best = -1;
     for (int di = 0; di < 8; di++) {
         int u;
-        int w = field_step(bits, cellh, cw, ch, vx, vy, di, &u);
+        int w = field_step(bits, cellbad, cw, ch, vx, vy, di, &u);
         if (w < 0 || dist[u] < 0 || (skip && skip[u])) continue;
         int32_t d = dist[u] + w;
         if (best < 0 || d < best) best = d;
@@ -820,7 +946,7 @@ static int32_t field_best_in(const uint8_t *bits, const int16_t *cellh,
 
 /* A sweep brought up to date after cells closed: a cell no neighbour
  * still gives its distance is measured again. 0 when out of scratch. */
-static int field_patch_closed(const uint8_t *bits, const int16_t *cellh,
+static int field_patch_closed(const uint8_t *bits, const uint8_t *cellbad,
                               int cw, int ch, int src, int32_t *dist,
                               const int *closed, int nclosed) {
     uint8_t *orphan = g_fs.flag;
@@ -844,7 +970,7 @@ static int field_patch_closed(const uint8_t *bits, const int16_t *cellh,
         int vx = v % cw, vy = v / cw, held = 0;
         for (int di = 0; di < 8 && !held; di++) {
             int u;
-            int w = field_step(bits, cellh, cw, ch, vx, vy, di, &u);
+            int w = field_step(bits, cellbad, cw, ch, vx, vy, di, &u);
             if (w < 0 || dist[u] < 0 || orphan[u]) continue;
             if (dist[u] + w == dist[v]) held = 1;
         }
@@ -869,18 +995,18 @@ static int field_patch_closed(const uint8_t *bits, const int16_t *cellh,
     g_fs.heap.n = 0;
     for (int k = 0; k < nlist; k++) {
         int v = list[k];
-        int32_t best = field_best_in(bits, cellh, cw, ch, dist, v, orphan);
+        int32_t best = field_best_in(bits, cellbad, cw, ch, dist, v, orphan);
         if (best < 0) continue;
         dist[v] = best;
         fheap_push(&g_fs.heap, best, v);
     }
     for (int k = 0; k < nlist; k++) orphan[list[k]] = 0;
-    field_settle(bits, cellh, cw, ch, dist);
+    field_settle(bits, cellbad, cw, ch, dist);
     return 1;
 }
 
 /* The same after cells opened: what a new step improves spreads. */
-static void field_patch_opened(const uint8_t *bits, const int16_t *cellh,
+static void field_patch_opened(const uint8_t *bits, const uint8_t *cellbad,
                                int cw, int ch, int32_t *dist,
                                const int *opened, int nopened) {
     g_fs.heap.n = 0;
@@ -893,13 +1019,13 @@ static void field_patch_opened(const uint8_t *bits, const int16_t *cellh,
             if (nx < 0 || ny < 0 || nx >= cw || ny >= ch) continue;
             int v = ny * cw + nx;
             if (!bits[v]) continue;
-            int32_t best = field_best_in(bits, cellh, cw, ch, dist, v, NULL);
+            int32_t best = field_best_in(bits, cellbad, cw, ch, dist, v, NULL);
             if (best < 0 || (dist[v] >= 0 && best >= dist[v])) continue;
             dist[v] = best;
             fheap_push(&g_fs.heap, best, v);
         }
     }
-    field_settle(bits, cellh, cw, ch, dist);
+    field_settle(bits, cellbad, cw, ch, dist);
 }
 
 /* Seed at the open cell nearest the middle. */
@@ -954,11 +1080,11 @@ static void field_drop(int ci) {
  * sweep from the middle is kept for patching. */
 static int field_build(int ci) {
     const uint8_t *bits = g_pcache[ci].bits;
-    const int16_t *cellh = g_pcache[ci].cellh;
+    const uint8_t *cellbad = g_pcache[ci].cellbad;
     int cw = g_pcache[ci].cw, ch = g_pcache[ci].ch;
     int cells = cw * ch;
     g_pcache[ci].field_tried = 1;
-    if (!bits || !cellh || cells <= 0) return 0;
+    if (!bits || !cellbad || cells <= 0) return 0;
 
     int seed = field_seed(bits, cw, ch);
     if (seed < 0) return 0;
@@ -975,12 +1101,12 @@ static int field_build(int ci) {
     if (g_pcache[ci].fsnap)
         for (int i = 0; i < cells; i++) g_pcache[ci].fsnap[i] = bits[i] != 0;
     g_pcache[ci].fpend_n = 0;
-    int mark = field_sweep(bits, cellh, cw, ch, seed, seed_dist);
+    int mark = field_sweep(bits, cellbad, cw, ch, seed, seed_dist);
     int kept = 0;
     for (int m = 0; m < PATH_FIELD_MARKS && mark >= 0; m++) {
         int32_t *f = (int32_t *)tak_malloc((size_t)cells * sizeof(int32_t));
         if (!f) break;
-        int next = field_sweep(bits, cellh, cw, ch, mark, f);
+        int next = field_sweep(bits, cellbad, cw, ch, mark, f);
         g_pcache[ci].mark[kept] = mark;
         g_pcache[ci].field[kept++] = f;
         if (next < 0) { mark = -1; break; }
@@ -1005,16 +1131,16 @@ static int field_refresh(int ci, int32_t *dist, int old_src, int src,
                          const uint8_t *mid, const int *closed, int nclosed,
                          const int *opened, int nopened) {
     const uint8_t *bits = g_pcache[ci].bits;
-    const int16_t *cellh = g_pcache[ci].cellh;
+    const uint8_t *cellbad = g_pcache[ci].cellbad;
     int cw = g_pcache[ci].cw, ch = g_pcache[ci].ch;
     /* Closing runs on mid, the ground open before and after, so the
      * closing and the opening each patch a sweep that was exact. */
     if (src != old_src ||
-        (nclosed > 0 && !field_patch_closed(mid ? mid : bits, cellh, cw, ch,
+        (nclosed > 0 && !field_patch_closed(mid ? mid : bits, cellbad, cw, ch,
                                             src, dist, closed, nclosed)))
-        return field_sweep(bits, cellh, cw, ch, src, dist);
+        return field_sweep(bits, cellbad, cw, ch, src, dist);
     if (nopened > 0)
-        field_patch_opened(bits, cellh, cw, ch, dist, opened, nopened);
+        field_patch_opened(bits, cellbad, cw, ch, dist, opened, nopened);
     return field_far(dist, cw * ch, src);
 }
 
@@ -1463,9 +1589,9 @@ typedef struct PlanCtx {
     /* Cells whose pmask this plan filled, for the next plan to reset. */
     int *memo_dirty;
     int *memo_dirty_n;
-    /* Height at each cell centre, and the long route field: the marks
-     * this plan may use and each mark's distance to the goal cell. */
-    const int16_t *cellh;
+    /* Bad ground per cell, and the long route field: the marks this
+     * plan may use and each mark's distance to the goal cell. */
+    const uint8_t *cellbad;
     const int32_t *field[PATH_FIELD_MARKS];
     int32_t field_goal[PATH_FIELD_MARKS];
     int field_n;
@@ -1819,12 +1945,11 @@ static int plan_h(const PlanCtx *c, int cell, int gx, int gy) {
     return best;
 }
 
-/* Terrain height at a cell centre, from the cached per cell array
- * when the map was big enough to build one. */
-static int plan_height(const PlanCtx *c, int cell) {
-    if (c->cellh) return c->cellh[cell];
-    return Terrain_SampleHeight(c->world, cell_to_world(cell % c->cw),
-                                cell_to_world(cell / c->cw));
+/* Half what a step onto or off the cell adds for bad ground. */
+static int plan_bad(const PlanCtx *c, int cell) {
+    if (c->cellbad) return c->cellbad[cell];
+    return cell_bad_direct(c->world, c->mc, c->slope, c->fx, c->fz,
+                           cell % c->cw, cell / c->cw);
 }
 
 /* Keys are read from f as it stands, so a cell whose f falls while it
@@ -2063,7 +2188,7 @@ static int plan_ctx_setup(PlanCtx *c, const struct GameWorld *world,
         c->clear = clearance_get(ci);
         c->tw = g_pcache[ci].tw;
         c->th = g_pcache[ci].th;
-        c->cellh = g_pcache[ci].cellh;
+        c->cellbad = g_pcache[ci].cellbad;
     }
     return ci;
 }
@@ -2116,9 +2241,8 @@ static void plan_link_init(void) {
 
 /* One step of the search onto ni from cur, as the loop takes it. */
 static void plan_relax(PlanCtx *c, PlanBuffers *b, int cur, int gcur, int ni,
-                       int base, int ch0, int gx, int gy, int *heap_n) {
-    int nh = plan_height(c, ni);
-    int step = base + iabs32(nh - ch0) * 2;
+                       int base, int bad0, int gx, int gy, int *heap_n) {
+    int step = base + bad0 + plan_bad(c, ni);
     int ng = gcur + step;
     if (ng >= b->g[ni]) return;
     if (b->g[ni] == PATH_G_UNSET) b->dirty[b->dirty_n++] = ni;
@@ -2247,7 +2371,7 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
             best_h = cur_h;
             best = cur;
         }
-        int ch0 = plan_height(&c, cur);
+        int bad0 = plan_bad(&c, cur);
         if (!pinched) {
             /* The loop below without crossings, each neighbour's mask
              * asked once. */
@@ -2267,13 +2391,13 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
                     if (closed[ni]) continue;
                     if (A && !((A & lk->a0) && (B & lk->b0) &&
                                (C & lk->c) && (D & lk->d))) continue;
-                    plan_relax(&c, b, cur, gcur, ni, dirs[di][2], ch0, gx, gy, &heap_n);
+                    plan_relax(&c, b, cur, gcur, ni, dirs[di][2], bad0, gx, gy, &heap_n);
                 } else {
                     int ni = cur + lk->offset_y * c.cw + dirs[di][0];
                     if (closed[ni]) continue;
                     if (A && !(((A & lk->a0) && (B & lk->b0)) ||
                                ((A & lk->a1) && (B & lk->b1)))) continue;
-                    plan_relax(&c, b, cur, gcur, ni, dirs[di][2], ch0, gx, gy, &heap_n);
+                    plan_relax(&c, b, cur, gcur, ni, dirs[di][2], bad0, gx, gy, &heap_n);
                 }
             }
             continue;
@@ -2301,8 +2425,7 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
             if (!extra && plan_mask(&c, cx, cy) &&
                 !cells_link(&c, cx, cy, dirs[di][0], dirs[di][1], -1,
                             NULL, NULL)) continue;
-            int nh = plan_height(&c, ni);
-            int step = dirs[di][2] + iabs32(nh - ch0) * 2 + extra;
+            int step = dirs[di][2] + bad0 + plan_bad(&c, ni) + extra;
             int ng = g[cur] + step;
             if (ng < g[ni]) {
                 /* A cell's first route makes it this plan's to put back. */
@@ -2400,8 +2523,8 @@ static void flow_reset_all(void) {
 
 /* Distance to the goal from every cell a route may stand on, over the
  * steps a search takes: a slide between placements, no cutting past a
- * blocked corner, ten straight, fourteen diagonal and twice the height
- * step. The walk is from the goal out, so each step is taken from the
+ * blocked corner, ten straight, fourteen diagonal and more onto or off
+ * bad ground. The walk is from the goal out, so each step is taken from the
  * far cell into the near one, which is the way a member walks it. */
 /* A frontier push that grows rather than drops, so a sweep never loses
  * an entry however it is paused. */
@@ -2449,7 +2572,7 @@ static int flow_sweep(PlanCtx *c, FlowField *f, int until) {
         f->closed[cur] = 1;
         g_dbg_flow_settled++;
         int cx = cur % c->cw, cy = cur / c->cw;
-        int hc = plan_height(c, cur);
+        int bad0 = plan_bad(c, cur);
         for (int di = 0; di < 8; di++) {
             int nx = cx + dirs[di][0], ny = cy + dirs[di][1];
             if (nx < 0 || ny < 0 || nx >= c->cw || ny >= c->ch) continue;
@@ -2462,7 +2585,7 @@ static int flow_sweep(PlanCtx *c, FlowField *f, int until) {
             }
             if (!cells_link(c, nx, ny, sx, sy, -1, NULL, NULL)) continue;
             int ni = ny * c->cw + nx;
-            int step = dirs[di][2] + iabs32(plan_height(c, ni) - hc) * 2;
+            int step = dirs[di][2] + bad0 + plan_bad(c, ni);
             int nd = d + step;
             if (dist[ni] < 0 || nd < dist[ni]) {
                 dist[ni] = nd;

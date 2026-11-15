@@ -420,7 +420,10 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 /* Version 20 on: what a unit's weapons took on a move order, by stable
  * id. An older record reads back nothing taken. */
 #define U_PASS_ID       (U_MAGIC_FADE + 1u)
-#define U_END           (U_PASS_ID + 4u)
+/* Version 21 on: what each weapon of a unit that fires them all took for
+ * itself. An older record reads back nothing taken. */
+#define U_SLOT_ID       (U_PASS_ID + 4u)
+#define U_END           (U_SLOT_ID + 12u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -637,7 +640,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 20
+#define VER_UNIT 21
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 4
@@ -1261,6 +1264,8 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_u8(r + U_DEATH_DONE, u->death_finished);
     tak_put_u8(r + U_MAGIC_FADE, u->magic_death_fade);
     tak_put_u32(r + U_PASS_ID, u->pass_id);
+    for (int s = 0; s < 3; s++)
+        tak_put_u32(r + U_SLOT_ID + 4u * (unsigned)s, u->slot_id[s]);
     /* Bits 3-4 hold a held order's facing. */
     tak_put_u8(r + U_BUILD_ENDLESS, (uint8_t)((u->build_endless ? 1u : 0u) |
                                               (u->build_held ? 2u : 0u) |
@@ -1539,6 +1544,8 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->death_finished = tak_get_u8(r + U_DEATH_DONE);
     u->magic_death_fade = tak_get_u8(r + U_MAGIC_FADE);
     u->pass_id = tak_get_u32(r + U_PASS_ID);
+    for (int s = 0; s < 3; s++)
+        u->slot_id[s] = tak_get_u32(r + U_SLOT_ID + 4u * (unsigned)s);
     uint8_t summons = tak_get_u8(r + U_BUILD_ENDLESS);
     u->build_endless = (summons & 1u) ? 1 : 0;
     u->build_held = (summons & 2u) ? 1 : 0;

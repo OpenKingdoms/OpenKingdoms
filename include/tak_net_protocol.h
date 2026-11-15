@@ -188,8 +188,10 @@
  * monarch keeps home when its fall ends the game, and its units switch
  * to the attack that serves the fight. 71: a mission's seats take their
  * own colours, its animals are left alone, its roster bars other units,
- * and its kill keys count down from their number. */
-#define TAK_ENGINE_BUILD_ID           71
+ * and its kill keys count down from their number. 72: a unit without
+ * weaponswitching fires every weapon at a target of its own, and routes
+ * go over a hill they can climb and round bad ground. */
+#define TAK_ENGINE_BUILD_ID           72
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

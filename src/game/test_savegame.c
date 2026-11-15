@@ -615,6 +615,8 @@ static int setup(const char *map_name) {
         u->research_wait = (uint8_t)(i == 1 ? 17 : 0);
         /* One unit on a move order whose weapon took a target. */
         u->pass_id = (uint32_t)(i == 1 ? 102 : 0);
+        /* Its third weapon took a target of its own. */
+        u->slot_id[2] = (uint32_t)(i == 1 ? 103 : 0);
         /* One unit still owes its death blast. */
         u->death_blast = (uint8_t)(i == 4 ? 1 : 0);
         /* ARAGUARD appears on the dead slot only, so the definition
@@ -1747,8 +1749,9 @@ static uint32_t rec_u32(const uint8_t *r, int at) {
  * count at 1047, version 15 what hit it last at 1049, version 16 the
  * cloak at 1057, version 17 a paralyzer's hold at 1060, version 18
  * a magic death at 1062, version 19 a hover point on the map rather
- * than off its target, in the same bytes, and version 20 what a moving
- * unit's weapon took at 1065. */
+ * than off its target, in the same bytes, version 20 what a moving
+ * unit's weapon took at 1065, and version 21 what each weapon of a unit
+ * that fires them all took at 1069. */
 TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
@@ -1760,8 +1763,8 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
-    ASSERT_EQ_INT(20, (int)version);
-    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24 + 12 + 11 + 2 + 8 + 3 + 2 + 3 + 4,
+    ASSERT_EQ_INT(21, (int)version);
+    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24 + 12 + 11 + 2 + 8 + 3 + 2 + 3 + 4 + 12,
                   (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;
     /* The bowman's formation group at 487 and its second leg at 520. */
@@ -1844,6 +1847,9 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     /* What its weapon took on a move order at 1065. */
     ASSERT_EQ_INT(102, (int)rec_u32(r1, 1065));
     ASSERT_EQ_INT(0, (int)rec_u32(r0, 1065));
+    /* What its third weapon took at 1077. */
+    ASSERT_EQ_INT(103, (int)rec_u32(r1, 1077));
+    ASSERT_EQ_INT(0, (int)rec_u32(r1, 1069));
     ASSERT_EQ_INT(0, r0[1036]);
     Save_Close(r);
 }

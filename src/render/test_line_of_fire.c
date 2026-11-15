@@ -44,7 +44,8 @@ enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_SWEEPER, LF_BOMBER, LF_STURDY, LF_TWISTER, LF_TORNADO,
        LF_ROVEROAM, LF_HAWK, LF_MASON, LF_FREEZER, LF_ICEMAN, LF_BREATHER,
        LF_TURRET, LF_STUNNER, LF_RADAR, LF_JAMMER, LF_PRIEST, LF_PATIENT, LF_SHAMAN, LF_FIRE,
-       LF_SLOWBLADE, LF_BLADEROAM, LF_PICKY, LF_STONE, LF_TRACKER, LF_DEF_COUNT };
+       LF_SLOWBLADE, LF_BLADEROAM, LF_PICKY, LF_STONE, LF_TRACKER, LF_TWOBOW,
+       LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
 #define LF_SX   800
@@ -304,6 +305,12 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     wp->damage_scale_count = 1;
     lf_fill(&defs[LF_STONE], "TESTSTONE", 0.0f, 1000);
     strncpy(defs[LF_STONE].damage_category, "STONE", sizeof(defs[LF_STONE].damage_category) - 1);
+    /* A tower with two bows, the second no use on stone. */
+    lf_fill(&defs[LF_TWOBOW], "TESTTWOBOW", 0.0f, 2000);
+    lf_weapon(&defs[LF_TWOBOW], "TESTTWOB1", "Line of Sight", 500, 500, 40);
+    wp = lf_weapon(&defs[LF_TWOBOW], "TESTTWOB2", "Line of Sight", 500, 500, 40);
+    strncpy(wp->damage_scales[0].category, "STONE", sizeof(wp->damage_scales[0].category) - 1);
+    wp->damage_scale_count = 1;
     /* A bolt on a unit that turns its body onto what it shoots. */
     lf_fill(&defs[LF_TRACKER], "TESTTRACK", 1.2f, 1000);
     defs[LF_TRACKER].turn_in_place_rate = 2300.0f;
@@ -2723,6 +2730,125 @@ TEST(a_search_passes_over_what_its_weapon_cannot_hurt) {
     ASSERT_EQ_INT(walker, took);
 }
 
+/* The two bow tower against a stone beside it and a dummy further off
+ * and clear of it, with or without weaponswitching. The harm done to each in 10 s. */
+static int lf_twobow_run(int switching, int *stone_harm, int *dummy_harm) {
+    if (!lf_world(0, 0)) return -1;
+    UnitDef *d = (UnitDef *)Units_GetDef(LF_TWOBOW);
+    if (switching) d->cap_flags |= UNIT_CAP_W_SWITCH;
+    int a = lf_spawn(LF_TWOBOW, 1, LF_SX, LF_ROW);
+    int stone = lf_spawn(LF_STONE, 2, LF_SX + 150, LF_ROW);
+    int dummy = lf_spawn(LF_TARGET, 2, LF_SX + 300, LF_ROW + 250);
+    if (a < 0 || stone < 0 || dummy < 0) return -1;
+    Units_DebugSetAggro(a, UNIT_AGGRO_DEFENSIVE);
+    for (int i = 0; i < 600; i++) Units_TickEngines();
+    *stone_harm = lf_unit(stone)->max_health - lf_unit(stone)->health;
+    *dummy_harm = lf_unit(dummy)->max_health - lf_unit(dummy)->health;
+    lf_end();
+    return 0;
+}
+
+/* Without weaponswitching every weapon fires, each at a target of its
+ * own, and with it only the weapon in hand (legacy:19247-19285,
+ * legacy:233882-233896). */
+TEST(a_tower_fires_both_its_bows_each_at_its_own_target) {
+    int stone = 0, dummy = 0, sw_stone = 0, sw_dummy = 0;
+    ASSERT_EQ_INT(0, lf_twobow_run(0, &stone, &dummy));
+    ASSERT_EQ_INT(0, lf_twobow_run(1, &sw_stone, &sw_dummy));
+    printf("(stone %d dummy %d, switching %d %d) ", stone, dummy, sw_stone, sw_dummy);
+    ASSERT(stone > 0);
+    ASSERT(dummy > 0);
+    ASSERT(sw_stone > 0);
+    ASSERT_EQ_INT(0, sw_dummy);
+}
+
+/* A tower on hold fire told to attack shoots with both bows, as a
+ * structure's attack heeds no fire order (legacy:9092-9158), and one
+ * standing by lets a bow's target go once it walks out of reach and
+ * takes another in reach (legacy:9166-9213). */
+TEST(a_tower_on_hold_fire_attacks_with_both_bows) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int a = lf_spawn(LF_TWOBOW, 1, LF_SX, LF_ROW);
+    int dummy = lf_spawn(LF_TARGET, 2, LF_SX + 300, LF_ROW);
+    ASSERT(a >= 0 && dummy >= 0);
+    ASSERT(Units_OrderAttack(a, dummy));
+    for (int i = 0; i < 600; i++) Units_TickEngines();
+    int harm = lf_unit(dummy)->max_health - lf_unit(dummy)->health;
+    lf_end();
+    printf("(harm %d) ", harm);
+    ASSERT_EQ_INT(80, harm);
+}
+
+TEST(a_bow_lets_go_of_what_walks_out_of_reach) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int a = lf_spawn(LF_TWOBOW, 1, LF_SX, LF_ROW);
+    int stone = lf_spawn(LF_STONE, 2, LF_SX + 150, LF_ROW);
+    int away = lf_spawn(LF_TARGET, 2, LF_SX + 300, LF_ROW + 250);
+    ASSERT(a >= 0 && stone >= 0 && away >= 0);
+    Units_DebugSetAggro(a, UNIT_AGGRO_DEFENSIVE);
+    for (int i = 0; i < 60; i++) Units_TickEngines();
+    ASSERT_EQ_INT((int)lf_unit(away)->stable_id, (int)lf_unit(a)->slot_id[1]);
+    ASSERT(Units_OrderMove(away, LF_SX + 1300, LF_ROW + 250));
+    for (int i = 0; i < 2000; i++) Units_TickEngines();
+    int near = lf_spawn(LF_TARGET, 2, LF_SX - 300, LF_ROW + 200);
+    ASSERT(near >= 0);
+    for (int i = 0; i < 900; i++) Units_TickEngines();
+    int harm = lf_unit(near)->max_health - lf_unit(near)->health;
+    lf_end();
+    printf("(harm to the one in reach %d) ", harm);
+    ASSERT(harm > 0);
+}
+
+/* An archer sent at a target far off is shot at by a tower beside its
+ * way. Its weapon takes the tower while the target is out of reach and
+ * fires as it walks, and the attack goes on (legacy:15187-15215). */
+TEST(a_unit_walking_to_its_target_answers_what_shoots_it) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int a = lf_spawn(LF_ARCHER, 1, LF_SX, LF_ROW);
+    int far = lf_spawn(LF_STURDY, 2, LF_SX + 1600, LF_ROW);
+    int tower = lf_spawn(LF_TOWER, 2, LF_SX + 200, LF_ROW - 300);
+    ASSERT(a >= 0 && far >= 0 && tower >= 0);
+    Units_DebugSetAggro(a, UNIT_AGGRO_OFFENSIVE);
+    Units_DebugSetAggro(tower, UNIT_AGGRO_DEFENSIVE);
+    ASSERT(Units_OrderAttack(a, far));
+    for (int i = 0; i < 1800; i++) Units_TickEngines();
+    int harm = lf_unit(tower)->max_health - lf_unit(tower)->health;
+    int cmd = lf_unit(a)->cmd_kind, target = lf_unit(a)->target;
+    lf_end();
+    printf("(tower took %d) ", harm);
+    ASSERT(harm > 0);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, cmd);
+    ASSERT_EQ_INT(far, target);
+}
+
+/* Ours (#503): an archer in a fight it picked turns on a flyer that hits
+ * a friend within its reach. */
+TEST(an_archer_turns_on_a_flyer_hitting_a_friend) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    UnitDef *fd = (UnitDef *)Units_GetDef(LF_HAWK);
+    fd->weapons[0] = Units_GetDef(LF_ARCHER)->weapons[0];
+    fd->num_weapons = 1;
+    int a = lf_spawn(LF_ARCHER, 1, LF_SX, LF_ROW);
+    int foe = lf_spawn(LF_STURDY, 2, LF_SX + 300, LF_ROW);
+    int friend_ = lf_spawn(LF_STURDY, 1, LF_SX + 450, LF_ROW + 250);
+    int hawk = lf_spawn(LF_HAWK, 2, LF_SX + 300, LF_ROW + 400);
+    ASSERT(a >= 0 && foe >= 0 && friend_ >= 0 && hawk >= 0);
+    Units_DebugSetAggro(a, UNIT_AGGRO_DEFENSIVE);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    ASSERT_EQ_INT(foe, lf_unit(a)->target);
+    Units_DebugSetAggro(hawk, UNIT_AGGRO_OFFENSIVE);
+    int hit = 0, turned = 0;
+    for (int i = 0; i < 1800 && !turned; i++) {
+        Units_TickEngines();
+        if (lf_unit(friend_)->health < lf_unit(friend_)->max_health) hit = 1;
+        turned = lf_unit(a)->target == hawk;
+    }
+    lf_end();
+    printf("(friend hit %d, turned %d) ", hit, turned);
+    ASSERT_EQ_INT(1, hit);
+    ASSERT_EQ_INT(1, turned);
+}
+
 /* Tracking a walker is no turn to a script: under a degree a frame the
  * original sends no TurnDirection, and scripts walk the legs while one
  * is set (legacy:183163-183172). */
@@ -4593,6 +4719,11 @@ int main(int argc, char **argv) {
     RUN(a_blade_on_its_way_takes_what_walks_past);
     RUN(a_walker_on_a_move_order_fires_at_what_it_passes);
     RUN(hold_fire_drops_what_a_walker_took);
+    RUN(a_tower_fires_both_its_bows_each_at_its_own_target);
+    RUN(a_tower_on_hold_fire_attacks_with_both_bows);
+    RUN(a_bow_lets_go_of_what_walks_out_of_reach);
+    RUN(a_unit_walking_to_its_target_answers_what_shoots_it);
+    RUN(an_archer_turns_on_a_flyer_hitting_a_friend);
     RUN(a_walker_whose_shots_stop_short_finds_a_place_to_shoot_from);
     RUN(a_walker_whose_shots_land_does_not_move);
     RUN(a_walker_that_can_find_no_place_gives_up_only_on_its_own_target);

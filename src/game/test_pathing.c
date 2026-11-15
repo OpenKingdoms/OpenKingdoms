@@ -94,20 +94,16 @@ static int g_failures = 0;
 /* ── The long route bench ──────────────────────────────────────────
  * Node counts and milliseconds for one plan on a synthetic map. The
  * same map and the same order every run, so two builds are comparable.
- * The cost is the search's own: ten a straight cell, fourteen a
- * diagonal, twice the height step. */
+ * The cost is the search's own on open ground: ten a straight cell and
+ * fourteen a diagonal. */
 
 static int bench_step_cost(const GameWorld *w, int cx, int cy,
                            int nx, int ny) {
+    (void)w;
     int dx = nx - cx, dy = ny - cy;
     if (dx < 0) dx = -dx;
     if (dy < 0) dy = -dy;
-    int base = (dx && dy) ? 14 : 10;
-    int h0 = Terrain_SampleHeight(w, cx * 32 + 16, cy * 32 + 16);
-    int h1 = Terrain_SampleHeight(w, nx * 32 + 16, ny * 32 + 16);
-    int dh = h1 - h0;
-    if (dh < 0) dh = -dh;
-    return base + dh * 2;
+    return (dx && dy) ? 14 : 10;
 }
 
 /* Walk a compressed route and add up what the search paid for it.
@@ -1646,7 +1642,63 @@ static void test_a_patched_cache_is_a_fresh_one(void) {
     occ_world_free(&w);
 }
 
+/* How far a route strays from the straight line over a gentle hill, or
+ * past a steep band with a gap beside it. A step costs by kind of ground,
+ * not by climb, and bad ground costs more (legacy:22210-22222). */
+static int hill_route_wander(int band) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    memset(&world, 0, sizeof(world));
+    world.map_pixels_w = 40 * 32;
+    world.map_pixels_h = 30 * 32;
+    world.tnt.height_w = world.map_pixels_w / 16 + 1;
+    world.tnt.height_h = world.map_pixels_h / 16 + 1;
+    size_t n = (size_t)world.tnt.height_w * (size_t)world.tnt.height_h;
+    world.tnt.heightmap = (uint8_t *)calloc(n, 1);
+    if (!world.tnt.heightmap) return -1;
+    memset(world.tnt.heightmap, 32, n);
+    int mid_y = 15 * 32 + 16;
+    int cx = 40, cy = 30;   /* the hill's top, in tiles */
+    for (int ty = 0; ty < world.tnt.height_h; ty++) {
+        for (int tx = 0; tx < world.tnt.height_w; tx++) {
+            int dx = tx - cx, dy = ty - cy;
+            int d = dx < 0 ? -dx : dx;
+            if ((dy < 0 ? -dy : dy) > d) d = dy < 0 ? -dy : dy;
+            int h = 32;
+            if (band) {
+                /* Rising 8 a tile, past the bad 6 and under the
+                 * limit of 12, with a gap 4 tiles off the line. */
+                if (tx >= 36 && tx <= 44 && (ty < 33 || ty > 37))
+                    h = 32 + 8 * (tx - 36 < 44 - tx ? tx - 36 : 44 - tx);
+            } else if (d < 20) {
+                h = 32 + 3 * (20 - d);
+            }
+            world.tnt.heightmap[ty * world.tnt.height_w + tx] = (uint8_t)h;
+        }
+    }
+    TAK_Path path;
+    int count = TAK_PathPlan(&world, 2 * 32 + 16, mid_y, 38 * 32 + 16, mid_y,
+                             12, 0, &path);
+    int wander = count > 0 ? 0 : -1;
+    for (int i = 0; i < path.count && count > 0; i++) {
+        int off = path.y[i] - mid_y;
+        if (off < 0) off = -off;
+        if (off > wander) wander = off;
+    }
+    free(world.tnt.heightmap);
+    return wander;
+}
+
+static void test_a_route_goes_over_a_hill_and_round_bad_ground(void) {
+    int hill = hill_route_wander(0);
+    int band = hill_route_wander(1);
+    printf("hill route strays %d px, band route %d px\n", hill, band);
+    EXPECT(hill >= 0 && hill <= 32);
+    EXPECT(band >= 48 && band <= 160);
+}
+
 int main(void) {
+    test_a_route_goes_over_a_hill_and_round_bad_ground();
     test_routes_through_height_gap();
     test_a_patched_cache_is_a_fresh_one();
     test_move_class_slope_changes_pathability();

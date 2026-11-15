@@ -1887,17 +1887,27 @@ int Units_CanAnswer(int victim, int shooter) {
     return unit_would_answer(v, s);
 }
 
-/* On a move order the walk goes on and the weapons look for themselves
- * (legacy:10354-10356, legacy:19247-19285). What they took, or -1. */
+/* An attack or a patrol's pick, on an enemy. */
+static int unit_in_fight(const Unit *u) {
+    return u->target >= 0 && u->target < g_unit_count &&
+           (u->cmd_kind == UNIT_CMD_ATTACK || u->cmd_kind == UNIT_CMD_PATROL) &&
+           unit_players_are_enemies(u->player_id, g_units[u->target].player_id);
+}
+
+/* What the weapon in hand took for itself, or -1: on a move order
+ * (legacy:10354-10356, legacy:19247-19285), or in a fight while its
+ * target is out of reach and something hits it (legacy:15187-15215). */
 static int unit_pass_target(const Unit *u) {
-    if (u->cmd_kind != UNIT_CMD_MOVE || u->pass_id == 0) return -1;
+    if (u->pass_id == 0 || (u->cmd_kind != UNIT_CMD_MOVE && !unit_in_fight(u)))
+        return -1;
     return Units_FindByStableId(u->pass_id);
 }
 
-/* What the weapons fire at: the unit's own target, or on a move order
- * what they took on the way. */
+/* What the weapon in hand fires at: what it took for itself, or the
+ * unit's own target. */
 static int unit_fire_target(const Unit *u) {
-    return u->target >= 0 ? u->target : unit_pass_target(u);
+    int pt = unit_pass_target(u);
+    return pt >= 0 ? pt : u->target;
 }
 
 static int unit_pass_slot(const Unit *u, const UnitDef *d) {
@@ -1905,10 +1915,11 @@ static int unit_pass_slot(const Unit *u, const UnitDef *d) {
     return slot >= 0 && slot < d->num_weapons ? slot : 0;
 }
 
-/* The weapon keeps what it took while it can still take it, in reach
+/* A weapon keeps what it took while it can still take it, in reach
  * or not (legacy:19262-19284). */
-static int unit_pass_holds(const Unit *u, const UnitDef *d, const Unit *t) {
-    const UnitWeapon *wp = &d->weapons[unit_pass_slot(u, d)];
+static int unit_slot_holds(const Unit *u, const UnitDef *d, int slot,
+                           const Unit *t) {
+    const UnitWeapon *wp = &d->weapons[slot];
     if (t->alive != UNIT_ALIVE_ACTIVE ||
         !unit_players_are_enemies(u->player_id, t->player_id) ||
         Units_HoldsFireOn(u->player_id, t->player_id) ||
@@ -1917,6 +1928,10 @@ static int unit_pass_holds(const Unit *u, const UnitDef *d, const Unit *t) {
         return 0;
     const UnitDef *td = Units_GetDef(t->def_idx);
     return weapon_damage_for_category(wp, td ? td->damage_category : "") > 0;
+}
+
+static int unit_pass_holds(const Unit *u, const UnitDef *d, const Unit *t) {
+    return unit_slot_holds(u, d, unit_pass_slot(u, d), t);
 }
 
 /* Live built units per side, counted at the top of the combat tick. */
@@ -1937,8 +1952,8 @@ static int unit_pass_turn(const Unit *u) {
 
 /* A ranged weapon takes only what it reaches, a blade anything inside
  * its range key (legacy:21113-21118, legacy:21141-21144). */
-static int unit_pass_search(const Unit *u, int i, const UnitDef *d) {
-    const UnitWeapon *wp = &d->weapons[unit_pass_slot(u, d)];
+static int unit_slot_search(const Unit *u, int i, const UnitDef *d, int slot) {
+    const UnitWeapon *wp = &d->weapons[slot];
     int64_t radius = weapon_is_melee(wp) ? wp->range : weapon_effective_range(wp);
     return d->fire_at_will_random ? ugrid_random_enemy(u, i, radius, wp)
                                   : ugrid_nearest_enemy(u, i, radius, wp);
@@ -1947,35 +1962,172 @@ static int unit_pass_search(const Unit *u, int i, const UnitDef *d) {
 /* With fire on, a weapon with nothing it holds looks once on its turn.
  * Hold fire drops what it held (legacy:9820-9846). */
 static void unit_pass_tick(Unit *u, int i, const UnitDef *d) {
-    if (u->cmd_kind != UNIT_CMD_MOVE || d->num_weapons <= 0 ||
+    int fight = unit_in_fight(u);
+    if ((u->cmd_kind != UNIT_CMD_MOVE && !fight) || d->num_weapons <= 0 ||
         u->aggro_mode == UNIT_AGGRO_PASSIVE) {
         u->pass_id = 0;
         return;
     }
     int t = unit_pass_target(u);
     if (t < 0 || !unit_pass_holds(u, d, &g_units[t])) u->pass_id = 0;
+    /* The fight takes its weapon back once its target is in reach
+     * (legacy:11137-11141). */
+    if (fight) {
+        if (u->pass_id &&
+            unit_weapon_reaches(u, d, unit_pass_slot(u, d), &g_units[u->target]))
+            u->pass_id = 0;
+        return;
+    }
     if (u->pass_id != 0 || u->target >= 0) return;
     if (d->weapons[unit_pass_slot(u, d)].drop_key || !unit_pass_turn(u)) return;
-    int pick = unit_pass_search(u, i, d);
+    int pick = unit_slot_search(u, i, d, unit_pass_slot(u, d));
     if (pick >= 0) u->pass_id = g_units[pick].stable_id;
 }
 
-/* Hit on a move order, the weapon takes the shooter if it reaches it
- * and reaches nothing it holds (legacy:15187-15215). */
+/* Without weaponswitching a unit fires every weapon, each at a target of
+ * its own. With it only the weapon picked fires (legacy:226586-226598,
+ * legacy:233882-233896). */
+static int unit_fires_all(const UnitDef *d) {
+    return d->num_weapons > 1 && !(d->cap_flags & UNIT_CAP_W_SWITCH);
+}
+
+/* What weapon slot fires at: the one in hand at the unit's target or
+ * what it took on the way, any other at what it took for itself. */
+static int unit_slot_target(const Unit *u, const UnitDef *d, int slot) {
+    if (slot == unit_pass_slot(u, d)) return unit_fire_target(u);
+    if (slot < 0 || slot >= 3 || !u->slot_id[slot] || !unit_fires_all(d))
+        return -1;
+    return Units_FindByStableId(u->slot_id[slot]);
+}
+
+/* The other weapons keep what they took and look on the unit's turn
+ * with fire on, a dropped one never (legacy:19247-19285, hold fire
+ * legacy:9820-9846). A structure's attack arms them all (legacy:9141-9158). */
+static void unit_slots_tick(Unit *u, int i, const UnitDef *d) {
+    int hand = unit_pass_slot(u, d);
+    /* A structure's attack takes no heed of the fire order (legacy:9092-9158). */
+    int armed = d->bmcode == 0 && u->cmd_kind == UNIT_CMD_ATTACK &&
+                u->target >= 0 && u->target < g_unit_count;
+    int all = unit_fires_all(d) &&
+              (u->aggro_mode != UNIT_AGGRO_PASSIVE || (armed && u->attack_explicit));
+    /* Standing by, building, or a structure in its attack, a weapon lets go
+     * of what it no longer reaches (legacy:9166-9213, callers at legacy:9135,
+     * 9228, 9312, 9855), there every 7 to 22 frames, here every 30 ticks. */
+    int idle = (u->cmd_kind == UNIT_CMD_NONE || u->cmd_kind == UNIT_CMD_BUILD ||
+                u->cmd_kind == UNIT_CMD_REPAIR || u->cmd_kind == UNIT_CMD_RECLAIM ||
+                d->bmcode == 0) &&
+               (g_sim_tick + u->stable_id) % 30u == 0u;
+    int turn = -1;
+    for (int s = 0; s < 3; s++) {
+        if (!all || s == hand || s >= d->num_weapons) {
+            u->slot_id[s] = 0;
+            continue;
+        }
+        if (u->slot_id[s]) {
+            int t = Units_FindByStableId(u->slot_id[s]);
+            if (t < 0 || !unit_slot_holds(u, d, s, &g_units[t]) ||
+                (idle && !unit_weapon_reaches(u, d, s, &g_units[t])))
+                u->slot_id[s] = 0;
+        }
+        if (armed && unit_slot_holds(u, d, s, &g_units[u->target])) {
+            u->slot_id[s] = g_units[u->target].stable_id;
+            continue;
+        }
+        if (u->aggro_mode == UNIT_AGGRO_PASSIVE) {
+            u->slot_id[s] = 0;
+            continue;
+        }
+        if (u->slot_id[s] || d->weapons[s].drop_key ||
+            u->anim_state == UNIT_ANIM_BUILDING)
+            continue;
+        if (turn < 0) turn = unit_pass_turn(u);
+        if (!turn) continue;
+        int pick = unit_slot_search(u, i, d, s);
+        if (pick >= 0) u->slot_id[s] = g_units[pick].stable_id;
+    }
+}
+
+/* Hit, each of those weapons takes the shooter if it reaches it and
+ * reaches nothing it holds (legacy:15187-15215). */
+static void unit_slots_answer(Unit *u, const Unit *shooter) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d || !unit_fires_all(d) || u->aggro_mode == UNIT_AGGRO_PASSIVE) return;
+    int hand = unit_pass_slot(u, d);
+    for (int s = 0; s < d->num_weapons && s < 3; s++) {
+        if (s == hand || !unit_slot_holds(u, d, s, shooter) ||
+            !unit_weapon_reaches(u, d, s, shooter))
+            continue;
+        int t = u->slot_id[s] ? Units_FindByStableId(u->slot_id[s]) : -1;
+        if (t >= 0 && unit_slot_holds(u, d, s, &g_units[t]) &&
+            unit_weapon_reaches(u, d, s, &g_units[t]))
+            continue;
+        u->slot_id[s] = shooter->stable_id;
+    }
+}
+
+/* Hit on a move order or in a fight, the weapon in hand takes the
+ * shooter if it reaches it and reaches nothing it holds
+ * (legacy:15187-15215). */
 static void unit_pass_answer(Unit *u, const Unit *shooter) {
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (!d || d->num_weapons <= 0 || u->aggro_mode == UNIT_AGGRO_PASSIVE ||
-        u->target >= 0)
+        (u->target >= 0 && !unit_in_fight(u)))
         return;
     int slot = unit_pass_slot(u, d);
     if (!weapon_can_target_unit(&d->weapons[slot], shooter) ||
         !unit_weapon_reaches(u, d, slot, shooter))
+        return;
+    if (u->target >= 0 && unit_weapon_reaches(u, d, slot, &g_units[u->target]))
         return;
     int t = unit_pass_target(u);
     if (t >= 0 && unit_pass_holds(u, d, &g_units[t]) &&
         unit_weapon_reaches(u, d, slot, &g_units[t]))
         return;
     u->pass_id = shooter->stable_id;
+}
+
+static int unit_attack_own(const Unit *u);
+
+/* D-048, ours: a flyer hitting a ground unit draws the ranged units of
+ * its side and its allies near it that reach it and are in a fight of
+ * their own, which the switch makes a fight it picked. */
+#define UNIT_ALLY_ANSWER_PX 640
+static void unit_allies_answer_flyer(const Unit *victim, int shooter_handle) {
+    const Unit *shooter = &g_units[shooter_handle];
+    static int cand[512];
+    int n = ugrid_candidates(shooter->world_x - UNIT_ALLY_ANSWER_PX,
+                             shooter->world_y - UNIT_ALLY_ANSWER_PX,
+                             shooter->world_x + UNIT_ALLY_ANSWER_PX,
+                             shooter->world_y + UNIT_ALLY_ANSWER_PX,
+                             cand, (int)(sizeof(cand) / sizeof(cand[0])));
+    int all = n < 0;
+    int count = all ? g_unit_count : n;
+    for (int k = 0; k < count; k++) {
+        int j = all ? k : cand[k];
+        Unit *u = &g_units[j];
+        int64_t dx = (int64_t)u->world_x - shooter->world_x;
+        int64_t dy = (int64_t)u->world_y - shooter->world_y;
+        if (dx * dx + dy * dy > (int64_t)UNIT_ALLY_ANSWER_PX * UNIT_ALLY_ANSWER_PX)
+            continue;
+        if (u == victim || u->alive != UNIT_ALIVE_ACTIVE || u->under_construction ||
+            u->aggro_mode == UNIT_AGGRO_PASSIVE || !unit_attack_own(u) ||
+            !unit_in_fight(u) || g_units[u->target].flying || u->target == shooter_handle ||
+            unit_players_are_enemies(u->player_id, victim->player_id) ||
+            !unit_players_are_enemies(u->player_id, shooter->player_id))
+            continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || d->num_weapons <= 0) continue;
+        int slot = unit_pass_slot(u, d);
+        if (weapon_is_melee(&d->weapons[slot]) ||
+            !unit_slot_holds(u, d, slot, shooter) ||
+            !unit_weapon_reaches(u, d, slot, shooter))
+            continue;
+        u->target = (int16_t)shooter_handle;
+        u->attack_explicit = 0;
+        u->pass_id = 0;
+        unit_post_take(u, d);
+        unit_clear_path(u);
+    }
 }
 
 /* Return fire: a damaged unit with no current target engages its
@@ -2003,11 +2155,16 @@ static void unit_on_damaged(Unit *victim, int shooter_handle) {
      * (legacy:15101-15103, legacy:177742). */
     if (Units_HoldsFireOn(victim->player_id, shooter->player_id) &&
         unit_mission_seat_plans(victim->player_id)) return;
+    unit_slots_answer(victim, shooter);
+    if (shooter->flying && !victim->flying) unit_allies_answer_flyer(victim, shooter_handle);
     if (victim->cmd_kind == UNIT_CMD_MOVE) {
         unit_pass_answer(victim, shooter);
         return;
     }
-    if (victim->target >= 0) return;
+    if (victim->target >= 0) {
+        if (unit_in_fight(victim)) unit_pass_answer(victim, shooter);
+        return;
+    }
     if (victim->cmd_kind != UNIT_CMD_NONE &&
         victim->cmd_kind != UNIT_CMD_PATROL) return;
     if (!unit_would_answer(victim, shooter)) return;
@@ -5415,7 +5572,10 @@ int Units_OrderSetAggro(int handle, int aggro_mode) {
         u->target = -1;
     }
     /* Hold fire drops what a walker's weapons took (legacy:9820-9846). */
-    if (aggro_mode == UNIT_AGGRO_PASSIVE) u->pass_id = 0;
+    if (aggro_mode == UNIT_AGGRO_PASSIVE) {
+        u->pass_id = 0;
+        memset(u->slot_id, 0, sizeof(u->slot_id));
+    }
     return 1;
 }
 
@@ -10463,7 +10623,8 @@ static void cob_host_set_unit_value(void *user, int port, int32_t value) {
                     return;
                 }
                 if (ws->draw_target == -1) {
-                    int ft = unit_fire_target(u);
+                    const UnitDef *pd = Units_GetDef(u->def_idx);
+                    int ft = pd ? unit_slot_target(u, pd, value) : unit_fire_target(u);
                     ws->draw_target = ft >= 0 ? (int16_t)ft
                                     : u->cmd_kind == UNIT_CMD_ATTACK_GROUND ? UNIT_DRAW_GROUND : -1;
                 }
@@ -14080,7 +14241,7 @@ static void tick_weapon_draw(Unit *u, int shooter_idx, int slot,
     int ground = t == UNIT_DRAW_GROUND;
     if (ground ? u->cmd_kind != UNIT_CMD_ATTACK_GROUND ||
                  !ground_point_in_reach(u, &def->weapons[slot]) :
-        (t < 0 || t >= g_unit_count || t != unit_fire_target(u) ||
+        (t < 0 || t >= g_unit_count || t != unit_slot_target(u, def, slot) ||
          g_units[t].alive != UNIT_ALIVE_ACTIVE ||
          !unit_can_see_target(u, &g_units[t]))) {
         ws->draw = UNIT_DRAW_LOST;
@@ -14888,19 +15049,11 @@ static void hover_attack_tick(Unit *u, int h, const UnitDef *def,
     unit_face_toward(u, def, dx, dy);
 }
 
-/* A shot from the weapon in hand at the unit's target or its ground
- * point, once its reload, its aim and its mana allow. */
-static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
-    if (def->num_weapons <= 0) return;
-    /* Fire whichever weapon the user picked via the
-     * Primary/Secondary/Special button row. Slot is
-     * clamped to [0, num_weapons) so a unit with only
-     * one weapon still works regardless of weapon_slot. */
-    int slot = u->weapon_slot;
-    if (slot < 0 || slot >= def->num_weapons) slot = 0;
+/* A shot from weapon slot at unit tgt or the attack-ground point, once
+ * its reload, its aim and its mana allow. */
+static void unit_fire_slot(Unit *u, int i, const UnitDef *def, int slot,
+                           int tgt, int ground) {
     UnitWeaponState *ws = &u->weapon_state[slot];
-    int ground = (u->cmd_kind == UNIT_CMD_ATTACK_GROUND);
-    int tgt = unit_fire_target(u);
     /* Attack-ground aims at the clicked point the same
      * way a unit target is aimed at. */
     int aim_key = ground ? -2 : tgt;
@@ -14986,6 +15139,28 @@ static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
              * half a second rather than every tick. */
             ws->cooldown_ticks = 30;
         }
+    }
+}
+
+/* The weapon in hand: the one the Primary/Secondary/Special row picked,
+ * or the first. */
+static void unit_fire_tick(Unit *u, int i, const UnitDef *def) {
+    if (def->num_weapons <= 0) return;
+    unit_fire_slot(u, i, def, unit_pass_slot(u, def), unit_fire_target(u),
+                   u->cmd_kind == UNIT_CMD_ATTACK_GROUND);
+}
+
+/* The other weapons of a unit that fires them all, each at what it holds
+ * once that is in its reach (legacy:19247-19285, legacy:249255-249338). */
+static void unit_slots_fire(Unit *u, int i, const UnitDef *def) {
+    if (!unit_fires_all(def) || u->alive != UNIT_ALIVE_ACTIVE) return;
+    int hand = unit_pass_slot(u, def);
+    for (int s = 0; s < def->num_weapons && s < 3; s++) {
+        if (s == hand || !u->slot_id[s]) continue;
+        int t = Units_FindByStableId(u->slot_id[s]);
+        if (t >= 0 && g_units[t].alive == UNIT_ALIVE_ACTIVE &&
+            unit_weapon_reaches(u, def, s, &g_units[t]))
+            unit_fire_slot(u, i, def, s, t, 0);
     }
 }
 
@@ -15972,6 +16147,7 @@ static void Units_TickCombat(void) {
         }
 
         unit_pass_tick(u, i, def);
+        unit_slots_tick(u, i, def);
 
         /* Auto-acquire when idle (no manual command + no target). Per
          * recon, TAK fires `Unit_FindTargetById` searches within sight
@@ -16224,6 +16400,9 @@ static void Units_TickCombat(void) {
                 desired = UNIT_ANIM_MOVING;
                 goal_x = t->world_x;
                 goal_y = t->world_y;
+                int pt = unit_pass_target(u);
+                passing = pt >= 0 &&
+                          unit_weapon_reaches(u, def, unit_pass_slot(u, def), &g_units[pt]);
             }
             /* Turn onto the target only once in reach: on the approach
              * the walker owns the heading. A unit with no turn in place
@@ -16770,10 +16949,7 @@ static void Units_TickCombat(void) {
 
             case UNIT_ANIM_ATTACKING: {
                 u->velocity = 0; u->cur_speed_ppt = 0.0f;
-                /* Multi-weapon: each slot fires independently when its
-                 * own cooldown is ready. For now we only have target
-                 * info for slot 0 (range tracking); future Phase G
-                 * extends per-weapon target acquisition. */
+                /* The weapon in hand. The others fire after the switch. */
                 if (target_in_range) unit_fire_tick(u, i, def);
             } break;
 
@@ -16792,6 +16968,7 @@ static void Units_TickCombat(void) {
                 u->velocity = 0; u->cur_speed_ppt = 0.0f;
                 break;
         }
+        unit_slots_fire(u, i, def);
         CMB_MARK(3);
         /* Locomotion signals, both edge-triggered on a cached value the
          * way legacy caches them (legacy:184448, legacy:183171). */

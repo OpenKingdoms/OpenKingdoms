@@ -44,8 +44,9 @@ still returns a cheapest route. That is the whole reason this was
 chosen over the two textbook answers:
 
 - Jump point search prunes straight runs by assuming every step of a
-  kind costs the same. Ours do not: a step is charged twice the height
-  it climbs, so the symmetry the pruning rests on is not there.
+  kind costs the same. Ours do not: a step onto or off bad ground costs
+  more (2026-11-14-what-a-route-step-costs.md), so the symmetry the
+  pruning rests on is not there.
 - A block graph with entrances, the shape sketched in the clearance
   grid note, returns a route through the blocks it searched rather
   than the cheapest route, and its intra block distances have to be
