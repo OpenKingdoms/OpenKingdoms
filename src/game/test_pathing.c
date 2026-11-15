@@ -1875,6 +1875,28 @@ static void test_a_turn_at_the_first_point_is_kept(void) {
     occ_world_free(&world);
 }
 
+/* A turn judged from where the unit stands. The line from its cell's
+ * nearest placement passes a shut tile's corner. Its own crosses it. */
+static void test_a_first_point_is_judged_from_the_unit(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
+    strip_land(&world, 0, 0, 48, 32);
+    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
+    strip_shut(21, 18);
+    MoveClassDef mc;
+    strip_class(&mc, 1);
+    TAK_PathQuery q;
+    strip_query(&q, &mc, 1);
+    int32_t sx = 337, sy = 287;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&world, sx, sy, 360, 296, &q, &path);
+    EXPECT(n > 0);
+    if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
+    strip_marks_free();
+    occ_world_free(&world);
+}
+
 /* How far a route strays from the straight line over a gentle hill, or
  * past a steep band with a gap beside it. A step costs by kind of ground,
  * not by climb, and bad ground costs more (legacy:22210-22222). */
@@ -1967,6 +1989,38 @@ static void test_a_unit_in_a_pocket_walks_out(void) {
     occ_world_free(&world);
 }
 
+/* A pocket beside a sealed goal, on a map too big to search whole. The
+ * search out of the pocket runs out of budget, and the route goes as
+ * near as that search got, not as near as the pocket got. */
+static void test_a_pocket_beside_a_sealed_goal_still_walks_out(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 100, 100)) { EXPECT(0); return; }
+    strip_land(&world, 0, 0, 200, 200);
+    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
+    for (int ty = 10; ty <= 60; ty++)
+        for (int tx = 10; tx <= 60; tx++)
+            if (!(tx >= 40 && tx <= 43 && ty >= 30 && ty <= 33) &&
+                !(tx >= 44 && ty == 32) &&
+                !(tx >= 32 && tx <= 35 && ty >= 30 && ty <= 33))
+                strip_shut(tx, ty);
+    MoveClassDef mc;
+    strip_class(&mc, 2);
+    TAK_PathQuery q;
+    strip_query(&q, &mc, 1);
+    int32_t sx = 40 * 16 + 2, sy = 32 * 16;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&world, sx, sy, 34 * 16, 32 * 16, &q, &path);
+    EXPECT(n > 0);
+    if (n > 0) {
+        EXPECT(path.x[n - 1] >= 61 * 16 || path.x[n - 1] < 10 * 16 ||
+               path.y[n - 1] >= 61 * 16 || path.y[n - 1] < 10 * 16);
+        EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
+    }
+    strip_marks_free();
+    occ_world_free(&world);
+}
+
 int main(void) {
     test_a_route_goes_over_a_hill_and_round_bad_ground();
     test_routes_through_height_gap();
@@ -1989,7 +2043,9 @@ int main(void) {
     test_a_unit_in_a_door_leaves_the_short_way();
     test_a_walk_out_never_crosses_water();
     test_a_unit_in_a_pocket_walks_out();
+    test_a_pocket_beside_a_sealed_goal_still_walks_out();
     test_a_turn_at_the_first_point_is_kept();
+    test_a_first_point_is_judged_from_the_unit();
     test_a_long_route_is_not_a_flood();
     test_a_field_swept_as_far_as_its_members_routes_them_the_same();
     test_connected_ground_separates_an_island();

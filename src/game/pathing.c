@@ -2046,6 +2046,27 @@ static int esc_lay(const PlanCtx *c, const EscSeed *s, int *px, int *py,
     return n + 1;
 }
 
+/* Does a centre walking the line from a to b stay on ground, as the
+ * step asks of the centre alone? The tile under a is not asked: the
+ * step lets a unit off ground it already stands on. */
+static int centre_line_ok(const PlanCtx *c, int32_t ax, int32_t ay,
+                          int32_t bx, int32_t by) {
+    int64_t dx = (int64_t)bx - ax, dy = (int64_t)by - ay;
+    int64_t adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
+    int64_t steps = adx > ady ? adx : ady;
+    int lx = Occ_TileOf(ax), ly = Occ_TileOf(ay);
+    for (int64_t s = 1; s <= steps; s++) {
+        int32_t x = ax + (int32_t)(dx * s / steps);
+        int32_t y = ay + (int32_t)(dy * s / steps);
+        int tx = Occ_TileOf(x), ty = Occ_TileOf(y);
+        if (tx == lx && ty == ly) continue;
+        lx = tx;
+        ly = ty;
+        if (!esc_ground(c, tx, ty)) return 0;
+    }
+    return 1;
+}
+
 /* Does a body walking the line from a to b stand wholly on ground the
  * class crosses, with nothing built under it, at every pixel? */
 static int body_line_ok(const PlanCtx *c, int32_t ax, int32_t ay,
@@ -2353,15 +2374,17 @@ static void route_lay(TAK_Path *out, PlanCtx *c, int start, int start_bit,
     if (!compress || n == 0) return;
 
     /* Keep a point where the chain turns, and the last. The first is
-     * kept only when a body walking past it, from where the route
-     * begins, would leave the ground it may stand on. */
+     * kept when skipping it would take the body off its ground, or the
+     * unit's centre, from where it stands, off ground the step allows. */
     int first = 0;
-    if (n > 1 && (px[0] - ox != px[1] - px[0] || py[0] - oy != py[1] - py[0])) {
+    if (n > 1) {
         int k = 1;
         while (k < n - 1 && px[k] - px[k - 1] == px[k + 1] - px[k] &&
                py[k] - py[k - 1] == py[k + 1] - py[k])
             k++;
-        first = !body_line_ok(c, ox, oy, px[k], py[k]);
+        int turn = px[0] - ox != px[1] - px[0] || py[0] - oy != py[1] - py[0];
+        first = (turn && !body_line_ok(c, ox, oy, px[k], py[k])) ||
+                !centre_line_ok(c, unit_x, unit_y, px[k], py[k]);
     }
     for (int i = 0; i < n; i++) {
         int keep = i == n - 1 || (i == 0 && first);
@@ -2649,6 +2672,9 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
         int seeds = esc_flood(&c, start_x, start_y, closed);
         if (seeds > 0) {
             c.allow_pinch = 1;
+            /* Nearest the goal by this search, as a trapped start's. */
+            best = -1;
+            best_h = INT_MAX;
             out_path->start_x = start_x;
             out_path->start_y = start_y;
             for (int i = 0; i < seeds; i++) {

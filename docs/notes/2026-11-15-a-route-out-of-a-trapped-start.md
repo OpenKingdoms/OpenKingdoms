@@ -68,13 +68,32 @@ the walk's first tile and its turns.
 A pocket is walked out of the same way. When a search runs out within
 64 cells and the unit's body at its real position is partly off its
 ground, the walk runs from the unit's tile to placements outside the
-cells the search reached, and the search goes on from there. A unit
-whose body is all on its ground is not walked, so two shelves that
-touch where nothing fits stay no route, as #96 has it.
+cells the search reached, and the search goes on from there. When
+that search runs out of budget, the route goes to the cell it got
+nearest the goal, not to the pocket's nearest. A unit whose body is
+all on its ground is not walked, so two shelves that touch where
+nothing fits stay no route, as #96 has it.
 
 Compression keeps the first point when the line past it, from where
-the route begins, would take the body off ground it may stand on, and
-drops it otherwise as before.
+the route begins, would take the body off ground it may stand on. It
+also keeps it when the unit's centre, on the line from where the unit
+really stands, would enter a tile the step refuses. The unit's own
+tile is not judged, since the step lets a unit off ground it already
+stands on. It drops the point otherwise as before.
+
+The body check alone missed such crossings for two reasons. It starts
+at the placement nearest the unit, not at the unit. For a one tile
+class that is at most half a tile away when the unit's own tile is a
+legal placement, and can be further when it is not. And for a one
+tile class it tests the tile under x - 8, y - 8, which is not the tile
+under the centre whenever x or y is less than 8 past a multiple of 16.
+So it could miss a crossing even with the unit standing exactly on its
+placement.
+
+Two limits remain. Structures under the unit's real body are still
+judged from the placement's body line, so a unit off its placement
+can still meet the corner of a building and slide along it. When the
+first point is kept, the leg from the unit to it is not checked.
 
 The walk settles at most 4096 tiles in a window 128 tiles each way, and
 what it settles counts against the tick's search budget.
@@ -84,12 +103,15 @@ what it settles counts against the tick's search budget.
 `test_pathing` holds each case on synthetic ground: the ridge corner,
 the same ridge from edge to edge with no way round, a walk out that
 turns, a unit in a one tile door that leaves the short way, a walk out
-that never crosses water, a pocket with a one tile corridor, and a
-first point that turns. The ridge, the turn, the pocket and the first
-point fail on the search as it was. On open ground nothing changes: no
-start is trapped and the first point is dropped as before, and
-`SIM_PROBE_HASH` does not move. `test_path_buffers` holds the planner
-to its reference copy with no mismatch.
+that never crosses water, a pocket with a one tile corridor, a pocket
+beside a sealed goal on a map too big to search whole, a first point
+that turns, and a first point judged from where the unit stands. The
+ridge, the turn, the pocket and the first point that turns fail on the
+search as it was. The pocket beside a sealed goal and the first point
+judged from the unit fail without their own checks. On open ground
+nothing changes: no start is trapped and the first point is dropped as
+before, and `SIM_PROBE_HASH` does not move. `test_path_buffers` holds
+the planner to its reference copy with no mismatch.
 
 ## Not done
 

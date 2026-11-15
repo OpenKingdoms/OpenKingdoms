@@ -375,12 +375,17 @@ Format per entry:
   each found legal. A compressed route keeps a point where that chain
   turns and the last. The first point is kept when the line past it,
   from where the route begins, would take the body off ground it may
-  stand on. A unit whose body fits no placement of its own cell is
-  walked out first, tile by tile under its centre by the step's own
-  rule, to the tiles that centre a legal placement, and the route
-  begins with that walk at its turns. Water is never crossed on it,
-  shut ground only within two tiles of the unit, and what is built
-  only while the body already stands on some, as the mover allows. A
+  stand on, or the unit's centre, from where it really stands, into a
+  tile the step refuses past its own. Structures under the unit's real
+  body are still judged from the placement's body line, so a unit off
+  its placement can still meet the corner of a building and slide. A
+  leg from the unit to a first point that is kept is not checked. A
+  unit whose body fits no placement of its own cell is walked out
+  first, tile by tile under its centre by the step's own rule, to the
+  tiles that centre a legal placement, and the route begins with that
+  walk at its turns. Water is never crossed on it, shut ground only
+  within two tiles of the unit, and what is built only while the body
+  already stands on some, as the mover allows. A
   tile of it in a cell with no legal placement costs a cell's worth of
   detour, half of PATH_PINCH_COST, as the crossings of 32 pixel cells
   it replaced did, and the cell it starts the search from adds its half
