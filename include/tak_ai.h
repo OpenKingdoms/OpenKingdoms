@@ -47,6 +47,7 @@ enum {
     TAK_AI_COUNT_REGROUPED, TAK_AI_COUNT_FERRIES, TAK_AI_COUNT_LANDINGS,
     TAK_AI_COUNT_RIDES, TAK_AI_COUNT_ASHORE, TAK_AI_COUNT_MONARCH_HOME,
     TAK_AI_COUNT_ARMED_SECONDARY, TAK_AI_COUNT_ARMED_SPECIAL,
+    TAK_AI_COUNT_SCOUTS, TAK_AI_COUNT_FORGOTTEN,
     TAK_AI_COUNT_KINDS
 };
 int  TAK_AI_DebugCount(int player_id, int kind);
@@ -55,13 +56,17 @@ int  TAK_AI_DebugCount(int player_id, int kind);
  * wave went ashore over water, -1 before it has. */
 int  TAK_AI_DebugFerryStage(int player_id);
 int  TAK_AI_DebugFirstLanding(int player_id);
+/* How many enemy units a seat remembers seeing, and whether it remembers
+ * unit `handle` and where it last saw it (A-019). */
+int  TAK_AI_DebugSeen(int player_id);
+int  TAK_AI_DebugSeenAt(int player_id, int handle, int32_t *x, int32_t *y);
 /* The unit a seat cut off by water would ferry a wave to, -1 when not. */
 int  TAK_AI_DebugFerryAim(int player_id);
 /* The method the seat's army was last planned by, "" before any. */
 const char *TAK_AI_DebugWaveReason(int player_id);
 /* Which of the army's behaviours of A-007 a seat uses, for measuring
  * one against another. None of them is the wave of A-006 alone. Every
- * seat has all of them after TAK_AI_BeginMatch. */
+ * seat has all of them but MEMORY and SCOUT after TAK_AI_BeginMatch. */
 #define TAK_AI_TACTIC_STRENGTH  1   /* weigh strength before striking */
 #define TAK_AI_TACTIC_BREAK_OFF 2   /* outmatched members come home */
 #define TAK_AI_TACTIC_RAID      4   /* raid while gathering */
@@ -78,7 +83,9 @@ const char *TAK_AI_DebugWaveReason(int player_id);
 #define TAK_AI_TACTIC_RIDE      8192 /* a builder rides to a hard pad (A-016) */
 #define TAK_AI_TACTIC_MONARCH   16384 /* a monarch the game rides on keeps home (A-017) */
 #define TAK_AI_TACTIC_WEAPONS   32768 /* the original's choice of attack (legacy:19008) */
-#define TAK_AI_TACTIC_ALL       65535
+#define TAK_AI_TACTIC_MEMORY    65536 /* knows only the enemies it has seen (A-019) */
+#define TAK_AI_TACTIC_SCOUT     131072 /* a flyer looks at what it has not seen (A-019) */
+#define TAK_AI_TACTIC_ALL       262143
 void TAK_AI_DebugSetTactics(int player_id, int mask);
 /* The attack choice a computer's unit makes, run for one unit whatever
  * seat owns it, for a measuring run. */
@@ -143,7 +150,9 @@ unsigned int TAK_AI_DebugStateHash(void);
  * The influence maps are not here. They are rebuilt on the AI's next
  * think and are not in the hash. */
 
-/* How many bytes TAK_AI_SaveState writes. Constant for a build. */
+/* How many bytes TAK_AI_SaveState writes for the state as it stands. What
+ * the seats remember (A-019) varies, with a think or a hit, so ask right
+ * before the save. */
 unsigned int TAK_AI_StateBytes(void);
 
 /* Serialise into `out`, which must hold TAK_AI_StateBytes(). */

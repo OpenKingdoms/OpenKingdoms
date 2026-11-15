@@ -19,6 +19,7 @@ typedef enum {
     AI_GOAL_CLEAR,      /* sweep the rubble the seat's units are stuck at */
     AI_GOAL_FERRY,      /* a transport to carry the army over water (A-013) */
     AI_GOAL_FLEET,      /* warships for a seat cut off by water (A-015) */
+    AI_GOAL_SCOUT,      /* a flyer to look at what the seat has not seen (A-019) */
     AI_GOAL_COUNT
 } AiGoal;
 
@@ -34,6 +35,7 @@ typedef enum {
     AI_ACT_BUILD_YARD,       /* a structure that makes a transport */
     AI_ACT_TRAIN_TRANSPORT,
     AI_ACT_TRAIN_WARSHIP,
+    AI_ACT_TRAIN_SCOUT,
     AI_ACT_COUNT
 } AiAction;
 
@@ -94,6 +96,11 @@ typedef struct AiPlanState {
     int     fleet_makers_idle;
     int     sea_lost;
     int     foothold;
+    /* A seat that knows only what it has seen wants a scout up, and the
+     * producers free to train one (A-019). */
+    int     scout_wanted;
+    int     scouts;
+    int     scout_makers_idle;
 } AiPlanState;
 
 typedef struct AiPlanCosts {

@@ -420,6 +420,12 @@ int Fog_IsVisibleForPlayer(const struct GameWorld *world, int player_id,
     return ((world_x >> 9) + (world_y >> 9) + player_id) % 4 != 0;
 }
 
+/* Ground in sight, or ground seen before. */
+int Fog_StateAtForPlayer(const struct GameWorld *world, int player_id,
+                         int32_t world_x, int32_t world_y) {
+    return Fog_IsVisibleForPlayer(world, player_id, world_x, world_y) ? 2 : 1;
+}
+
 /* ── The populations ──────────────────────────────────────────────── */
 
 static uint32_t g_rng;

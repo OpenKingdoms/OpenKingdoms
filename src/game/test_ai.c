@@ -432,13 +432,23 @@ int Units_OrderBuild(int builder_handle, int def_idx, int32_t world_x,
                                       world_y) >= 0;
 }
 
+/* With g_sight_box set, sight is that box alone. */
+static int g_sight_box;
+static int32_t g_sight_x0, g_sight_y0, g_sight_x1, g_sight_y1;
 int Fog_IsVisibleForPlayer(const struct GameWorld *world, int player_id,
                            int32_t world_x, int32_t world_y) {
-    (void)world;
     (void)player_id;
-    (void)world_x;
-    (void)world_y;
+    if (world && !world->cfg.line_of_sight) return 1;
+    if (g_sight_box)
+        return world_x >= g_sight_x0 && world_x <= g_sight_x1 &&
+               world_y >= g_sight_y0 && world_y <= g_sight_y1;
     return g_visible;
+}
+
+/* Ground in sight, or ground seen before. */
+int Fog_StateAtForPlayer(const struct GameWorld *world, int player_id,
+                         int32_t world_x, int32_t world_y) {
+    return Fog_IsVisibleForPlayer(world, player_id, world_x, world_y) ? 2 : 1;
 }
 
 #define ASSERT_EQ_INT(exp, got) do { \
@@ -484,6 +494,7 @@ static void reset_mock(GameWorld *w) {
     g_last_move_x = 0;
     g_last_move_y = 0;
     g_visible = 1;
+    g_sight_box = 0;
     g_can_answer = 1;
     g_mock_mana = 0;
     g_mock_share = 1.0f;
@@ -1355,6 +1366,12 @@ static int test_ai_wave_target_moves_on_when_it_dies(void) {
     for (int h = 0; h < g_unit_count; h++) {
         if (g_units[h].player_id == first) g_units[h].alive = 0;
     }
+    /* Seen to fall, which a seat that remembers must see (A-019). */
+    g_sight_box = 1;
+    g_sight_x0 = hf_start_x[first] * 16 - 200;
+    g_sight_y0 = hf_start_z[first] * 16 - 200;
+    g_sight_x1 = hf_start_x[first] * 16 + 200;
+    g_sight_y1 = hf_start_z[first] * 16 + 200;
     g_units[hf_troop(2)].cmd_kind = UNIT_CMD_NONE;
     hf_run_ticks(&w, 120, 1);
     int second = TAK_AI_DebugAttackPlayer(2);
@@ -2665,6 +2682,9 @@ static int test_ai_remembers_a_site_its_builder_gave_up_on(void) {
 static int test_ai_failed_sites_are_hashed_and_saved(void) {
     GameWorld w;
     setup_ai_progression_fixture(&w);
+    /* The payloads read here are older than the memory, whose own case is
+     * test_ai_the_memory_is_hashed_and_saved. */
+    TAK_AI_DebugSetTactics(2, TAK_AI_TACTIC_ALL & ~TAK_AI_TACTIC_MEMORY);
     TAK_AI_TickSkirmish(&w);
     uint32_t before = TAK_SimHash_AI(TAK_SIM_HASH_SEED);
     TAK_AI_NotifyGiveUp(0);
@@ -3372,9 +3392,10 @@ static int test_ai_the_pause_between_crossings_is_no_march(void) {
 static int ai_state_round_trips(void) {
     static unsigned char buf[1 << 20];
     uint32_t hash = TAK_SimHash_AI(TAK_SIM_HASH_SEED);
+    unsigned int n = TAK_AI_StateBytes();
     TAK_AI_SaveState(buf);
     TAK_AI_BeginMatch(0);
-    if (TAK_AI_LoadState(buf, TAK_AI_StateBytes()) != 0) return 0;
+    if (TAK_AI_LoadState(buf, n) != 0) return 0;
     return TAK_SimHash_AI(TAK_SIM_HASH_SEED) == hash;
 }
 
@@ -3432,6 +3453,254 @@ static void ride_fixture(GameWorld *w, int monarch, int transport, int *t_out) {
         *t_out = t;
     }
     g_can_carry = 1;
+}
+
+static void hf_sight(int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
+    g_sight_box = 1;
+    g_sight_x0 = x0; g_sight_y0 = y0; g_sight_x1 = x1; g_sight_y1 = y1;
+}
+
+/* A-019. A seat learns an enemy only by seeing it or being shot by it, keeps
+ * it where it last saw it, and forgets it once that spot is in sight with it
+ * gone or its player is out. With Line of Sight off it sees everything. */
+static int test_ai_a_seat_knows_only_what_it_has_seen(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    int32_t x = 0, y = 0;
+    /* Never seen, never a target, over twelve matches. The troop of the
+     * human's out on the plain is the nearest enemy to seat 2's army. */
+    for (int seed = 1; seed <= 12; seed++) {
+        setup_hostility_fixture(&w, ffa);
+        TAK_AI_BeginMatch((uint32_t)seed);
+        for (int p = 1; p <= 4; p++) TAK_AI_DebugSetTactics(p, TAK_AI_TACTIC_ALL);
+        hf_sight(-10, -10, -5, -5);
+        int far = hf_add_unit(1, HF_TROOP, 2600, 600);
+        hf_run_ticks(&w, 60, 1);
+        ASSERT_TRUE(TAK_AI_DebugSeenAt(2, 0, &x, &y));
+        ASSERT_EQ_INT(g_units[0].world_x, x);
+        ASSERT_TRUE(!TAK_AI_DebugSeenAt(2, far, NULL, NULL));
+        ASSERT_TRUE(TAK_AI_DebugWaveTarget(2) != far);
+    }
+    /* Seen, it is remembered where it stood. */
+    int far = g_unit_count - 1;
+    hf_sight(2500, 500, 2700, 700);
+    hf_run_ticks(&w, 120, 1);
+    ASSERT_TRUE(TAK_AI_DebugSeenAt(2, far, &x, &y));
+    ASSERT_EQ_INT(2600, x);
+    /* Out of sight it is kept where it was, and the army marches there. */
+    setup_hostility_fixture(&w, ffa);
+    for (int p = 1; p <= 4; p++) TAK_AI_DebugSetTactics(p, TAK_AI_TACTIC_ALL);
+    hf_sight(-10, -10, -5, -5);
+    far = hf_add_unit(1, HF_TROOP, 1800, 1400);
+    /* Enough of an army to go at one troop. */
+    hf_add_unit(2, HF_TROOP, hf_start_x[2] * 16 + 60, hf_start_z[2] * 16);
+    hf_add_unit(2, HF_TROOP, hf_start_x[2] * 16 + 80, hf_start_z[2] * 16);
+    TAK_AI_DebugSetWaveTarget(2, far);
+    g_units[far].world_x = 1200;
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_TRUE(TAK_AI_DebugSeenAt(2, far, &x, &y));
+    ASSERT_EQ_INT(1800, x);
+    ASSERT_EQ_INT(far, TAK_AI_DebugWaveTarget(2));
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[hf_troop(2)].cmd_kind);
+    ASSERT_EQ_INT(1800, g_units[hf_troop(2)].cmd_x);
+    /* Its spot in sight with it gone, it is forgotten. */
+    hf_sight(1700, 1300, 1900, 1500);
+    hf_run_ticks(&w, 120, 1);
+    ASSERT_TRUE(!TAK_AI_DebugSeenAt(2, far, NULL, NULL));
+    ASSERT_TRUE(TAK_AI_DebugWaveTarget(2) != far);
+    /* One that dies unseen is kept until its spot is seen. */
+    int lode = hf_lode(3);
+    ASSERT_TRUE(TAK_AI_DebugSeenAt(2, lode, &x, &y));
+    g_units[lode].alive = UNIT_ALIVE_DEAD;
+    hf_sight(-10, -10, -5, -5);
+    hf_run_ticks(&w, 180, 1);
+    ASSERT_TRUE(TAK_AI_DebugSeenAt(2, lode, NULL, NULL));
+    hf_sight(x - 10, y - 10, x + 10, y + 10);
+    hf_run_ticks(&w, 240, 1);
+    ASSERT_TRUE(!TAK_AI_DebugSeenAt(2, lode, NULL, NULL));
+    /* A shot gives its shooter away, out of sight or not. */
+    hf_sight(-10, -10, -5, -5);
+    int sniper = hf_add_unit(4, HF_TROOP, 2900, 300);
+    ASSERT_TRUE(!TAK_AI_DebugSeenAt(2, sniper, NULL, NULL));
+    TAK_AI_NotifyDamage(hf_troop(2), sniper);
+    ASSERT_TRUE(TAK_AI_DebugSeenAt(2, sniper, &x, &y));
+    ASSERT_EQ_INT(2900, x);
+    /* A player out of the game is forgotten. */
+    w.stats[4].eliminated = 1;
+    hf_run_ticks(&w, 300, 1);
+    ASSERT_TRUE(!TAK_AI_DebugSeenAt(2, sniper, NULL, NULL));
+    ASSERT_TRUE(!TAK_AI_DebugSeenAt(2, hf_troop(4), NULL, NULL));
+    w.stats[4].eliminated = 0;
+    /* Line of Sight off, everything. */
+    w.cfg.line_of_sight = 0;
+    hf_run_ticks(&w, 360, 1);
+    ASSERT_TRUE(TAK_AI_DebugSeenAt(2, far, &x, &y));
+    ASSERT_EQ_INT(1200, x);
+    return 0;
+}
+
+/* A-019. A seat that knows of no enemy and has no scout sends one fighter
+ * from home to look, and only one at a time. */
+static int test_ai_a_seat_that_knows_nothing_sends_one_to_look(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    for (int p = 1; p <= 4; p++) TAK_AI_DebugSetTactics(p, TAK_AI_TACTIC_ALL);
+    hf_sight(-10, -10, -5, -5);
+    for (int h = 0; h < g_unit_count; h++)
+        if (g_units[h].player_id != 2) { g_units[h].world_x = 1600 + h; g_units[h].world_y = 1600; }
+    int32_t bx = hf_start_x[2] * 16, by = hf_start_z[2] * 16;
+    for (int k = 0; k < 3; k++) hf_add_unit(2, HF_TROOP, bx + 60 + 16 * k, by + 20);
+    for (int t = 0; t < 3; t++) {
+        hf_run_ticks(&w, 60 + 60 * t, 1);
+        ASSERT_EQ_INT(-1, TAK_AI_DebugWaveTarget(2));
+        int out = 0;
+        for (int h = 0; h < g_unit_count; h++) {
+            const Unit *u = &g_units[h];
+            if (u->player_id != 2 || u->cmd_kind != UNIT_CMD_MOVE) continue;
+            int64_t dx = u->cmd_x - bx, dy = u->cmd_y - by;
+            if (dx * dx + dy * dy > 1280 * 1280) {
+                out++;
+                ASSERT_EQ_INT(0, TAK_AI_DebugGroupOf(h));
+            }
+        }
+        ASSERT_EQ_INT(1, out);
+    }
+    return 0;
+}
+
+/* A-019. A remembering group whose target falls presses on at a building it
+ * saw, though it cannot see it now, as it would at one in sight. */
+static int test_ai_a_remembering_group_presses_on_at_what_it_saw(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    for (int p = 1; p <= 4; p++) TAK_AI_DebugSetTactics(p, TAK_AI_TACTIC_ALL);
+    int32_t bx = hf_start_x[2] * 16, by = hf_start_z[2] * 16;
+    int m[3];
+    m[0] = hf_troop(2);
+    for (int k = 1; k < 3; k++) m[k] = hf_add_unit(2, HF_TROOP, bx + 40 + 16 * k, by + 16);
+    int lode = hf_lode(3);
+    for (int h = 0; h < g_unit_count; h++)
+        if (g_units[h].player_id != 2 && h != lode) g_units[h].alive = UNIT_ALIVE_DEAD;
+    int foe = hf_add_unit(3, HF_TROOP, 1600, 1600);
+    /* The lodestone is seen once, then out of sight. */
+    hf_sight(g_units[lode].world_x - 20, g_units[lode].world_y - 20,
+             g_units[lode].world_x + 20, g_units[lode].world_y + 20);
+    TAK_AI_DebugSetWaveTarget(2, foe);
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_TRUE(TAK_AI_DebugSeenAt(2, lode, NULL, NULL));
+    ASSERT_EQ_INT(2, TAK_AI_DebugGroupMode(2, 21));
+    for (int k = 0; k < 3; k++) {
+        g_units[m[k]].world_x = 1600 + 16 * k;
+        g_units[m[k]].world_y = 1640;
+        g_units[m[k]].cmd_kind = UNIT_CMD_NONE;
+    }
+    g_units[foe].alive = UNIT_ALIVE_DEAD;
+    hf_sight(1500, 1500, 1700, 1700);
+    hf_run_ticks(&w, 120, 1);
+    ASSERT_EQ_INT(2, TAK_AI_DebugGroupMode(2, 21));
+    ASSERT_EQ_INT(1, TAK_AI_DebugCount(2, TAK_AI_COUNT_PRESSED));
+    return 0;
+}
+
+/* A-019. What a seat remembers is simulation state: it reaches the hash
+ * and comes back from a save, and a save from before it loads with
+ * nothing remembered and begins the memory again on the next think. */
+static int test_ai_the_memory_is_hashed_and_saved(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    for (int p = 1; p <= 4; p++) TAK_AI_DebugSetTactics(p, TAK_AI_TACTIC_ALL);
+    hf_sight(-10, -10, -5, -5);
+    int far = hf_add_unit(1, HF_TROOP, 2600, 600);
+    hf_run_ticks(&w, 60, 1);
+    hf_sight(2500, 500, 2700, 700);
+    hf_run_ticks(&w, 120, 1);
+    ASSERT_TRUE(TAK_AI_DebugSeenAt(2, far, NULL, NULL));
+    int seen = TAK_AI_DebugSeen(2);
+    ASSERT_TRUE(seen >= 4);
+    uint32_t hash = TAK_SimHash_AI(TAK_SIM_HASH_SEED);
+    int total = 0;
+    for (int p = 0; p <= 8; p++) total += TAK_AI_DebugSeen(p);
+    unsigned int n = TAK_AI_StateBytes();
+    unsigned char *buf = (unsigned char *)malloc(n);
+    ASSERT_TRUE(buf != NULL);
+    TAK_AI_SaveState(buf);
+    TAK_AI_BeginMatch(0);
+    for (int p = 1; p <= 4; p++) TAK_AI_DebugSetTactics(p, TAK_AI_TACTIC_ALL);
+    ASSERT_EQ_INT(0, TAK_AI_DebugSeen(2));
+    ASSERT_EQ_INT(0, TAK_AI_LoadState(buf, n));
+    ASSERT_EQ_INT(seen, TAK_AI_DebugSeen(2));
+    ASSERT_TRUE(TAK_AI_DebugSeenAt(2, far, NULL, NULL));
+    ASSERT_TRUE(TAK_SimHash_AI(TAK_SIM_HASH_SEED) == hash);
+    /* The memory is the tail: before it, the scouting and the points, nine
+     * seats of them, then six words a unit remembered. */
+    unsigned int before = n - (unsigned int)total * 24u - 9u * (4u + 64u) * 4u;
+    ASSERT_EQ_INT(0, TAK_AI_LoadState(buf, before));
+    ASSERT_EQ_INT(0, TAK_AI_DebugSeen(2));
+    ASSERT_TRUE(TAK_SimHash_AI(TAK_SIM_HASH_SEED) != hash);
+    hf_sight(-10, -10, -5, -5);
+    hf_run_ticks(&w, 180, 1);
+    ASSERT_TRUE(TAK_AI_DebugSeenAt(2, 0, NULL, NULL));
+    ASSERT_TRUE(!TAK_AI_DebugSeenAt(2, far, NULL, NULL));
+    free(buf);
+    return 0;
+}
+
+/* A-019. A seat that knows only what it has seen trains one scout, flies it
+ * at a target it cannot see and after losing it waits two minutes before
+ * the next. With Line of Sight off it has nothing to look for. */
+static int test_ai_a_seat_keeps_a_scout_up(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    enum { KEEP = 8, PARROT = 9 };
+    for (int los = 1; los >= 0; los--) {
+        setup_hostility_fixture(&w, ffa);
+        for (int p = 1; p <= 4; p++) TAK_AI_DebugSetTactics(p, TAK_AI_TACTIC_ALL);
+        g_visible = 0;
+        w.cfg.line_of_sight = los;
+        strcpy(g_defs[KEEP].unitname, "VERKEEP");
+        strcpy(g_defs[KEEP].category, "VER FACTORY");
+        g_defs[KEEP].cap_flags = UNIT_CAP_BUILDER;
+        g_defs[KEEP].worker_time = 10.0f;
+        strcpy(g_defs[PARROT].unitname, "VERPAR");
+        strcpy(g_defs[PARROT].category, "VER FLY");
+        g_defs[PARROT].can_fly = 1;
+        g_defs[PARROT].max_velocity = 5.0f;
+        g_defs[PARROT].build_cost = 250;
+        g_buildable_counts[KEEP] = 1;
+        g_buildables[KEEP][0] = PARROT;
+        int32_t bx = hf_start_x[2] * 16, by = hf_start_z[2] * 16;
+        hf_add_unit(2, KEEP, bx, by + 300);
+        for (int k = 0; k < 6; k++) hf_add_unit(2, HF_TROOP, bx + 60 + 16 * k, by);
+        TAK_AI_DebugSetWaveTarget(2, 0);
+        g_begin_calls = 0;
+        g_last_build_def = -1;
+        hf_run_ticks(&w, 60, 1);
+        if (!los) {
+            ASSERT_TRUE(g_last_build_def != PARROT);
+            break;
+        }
+        ASSERT_EQ_INT(PARROT, g_last_build_def);
+        int scout = hf_add_unit(2, PARROT, bx, by + 330);
+        hf_run_ticks(&w, 120, 1);
+        ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[scout].cmd_kind);
+        ASSERT_EQ_INT(g_units[0].world_x, g_units[scout].cmd_x);
+        g_units[g_last_builder].cmd_kind = UNIT_CMD_NONE;
+        g_units[g_last_builder].build_target = -1;
+        g_begin_calls = 0;
+        hf_run_ticks(&w, 180, 3);
+        ASSERT_EQ_INT(0, g_begin_calls);
+        /* Shot down: none for two minutes. */
+        g_units[scout].alive = UNIT_ALIVE_DEAD;
+        hf_run_ticks(&w, 360, 1);
+        ASSERT_EQ_INT(0, g_begin_calls);
+        hf_run_ticks(&w, 360 + 7200, 1);
+        ASSERT_EQ_INT(PARROT, g_last_build_def);
+        ASSERT_EQ_INT(1, g_begin_calls);
+    }
+    return 0;
 }
 
 static int test_ai_a_builder_rides_to_a_pad_it_cannot_walk_to(void) {
@@ -3702,9 +3971,10 @@ static int ferries_for_walkers(int walkers, int convoy) {
     static unsigned char buf[1 << 20];
     int n = TAK_AI_DebugFerries(2);
     uint32_t hash = TAK_SimHash_AI(TAK_SIM_HASH_SEED);
+    unsigned int bytes = TAK_AI_StateBytes();
     TAK_AI_SaveState(buf);
     TAK_AI_BeginMatch(0);
-    if (TAK_AI_LoadState(buf, TAK_AI_StateBytes()) != 0) return -1;
+    if (TAK_AI_LoadState(buf, bytes) != 0) return -1;
     if (TAK_AI_DebugFerries(2) != n || TAK_SimHash_AI(TAK_SIM_HASH_SEED) != hash) return -2;
     return n;
 }
@@ -4193,7 +4463,8 @@ static int test_ai_ferry_aims_where_the_guard_is_thin(void) {
     GameWorld w;
     static const int loner[5] = { 0, 2, 0, 2, 2 };
     setup_hostility_fixture(&w, loner);
-    g_visible = 0;
+    /* The seat sees the guards it weighs (A-019). */
+    g_visible = 1;
     g_conn_split = 1;
     g_conn_x = 3100;
     g_conn_y = 1000;
@@ -5525,6 +5796,10 @@ static int test_ai_a_group_that_wins_holds_or_presses_on(void) {
     }
     g_units[foe].alive = 0;
     TAK_AI_ForgetUnit(foe);
+    /* Where they stand they see it fall, and nothing else (A-019). */
+    g_sight_box = 1;
+    g_sight_x0 = 1500; g_sight_y0 = 1500;
+    g_sight_x1 = 1700; g_sight_y1 = 1700;
     hf_run_ticks(&w, 120, 1);
     ASSERT_EQ_INT(3, TAK_AI_DebugGroupMode(2, 21));
     for (int k = 0; k < 3; k++) {
@@ -5533,6 +5808,7 @@ static int test_ai_a_group_that_wins_holds_or_presses_on(void) {
     }
 
     /* Once it can see an enemy it is strong enough for, it goes. */
+    g_sight_box = 0;
     g_visible = 1;
     hf_run_ticks(&w, 180, 1);
     ASSERT_EQ_INT(2, TAK_AI_DebugGroupMode(2, 21));
@@ -5625,6 +5901,11 @@ int main(void) {
     if (test_ai_a_builder_finds_a_shore_near_itself() != 0) return 1;
     if (test_ai_a_large_army_runs_more_than_one_ferry() != 0) return 1;
     if (test_ai_a_builder_rides_to_a_pad_it_cannot_walk_to() != 0) return 1;
+    if (test_ai_a_seat_knows_only_what_it_has_seen() != 0) return 1;
+    if (test_ai_a_seat_that_knows_nothing_sends_one_to_look() != 0) return 1;
+    if (test_ai_a_remembering_group_presses_on_at_what_it_saw() != 0) return 1;
+    if (test_ai_the_memory_is_hashed_and_saved() != 0) return 1;
+    if (test_ai_a_seat_keeps_a_scout_up() != 0) return 1;
     if (test_plan_a_cut_off_seat_trains_the_warships_it_needs() != 0) return 1;
     if (test_htn_the_fleet_table() != 0) return 1;
     if (test_ai_warships_past_the_kept_holds_fight_at_sea() != 0) return 1;

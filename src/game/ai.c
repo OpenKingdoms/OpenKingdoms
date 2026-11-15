@@ -153,11 +153,13 @@ static void ai_profile_load(void) {
 
 /* What a type is over the water (A-013), worked out once a match: a
  * transport of walkers by sea or air, a producer that makes one, a yard
- * (a structure that does), a builder that puts a yard up. */
+ * (a structure that does), a builder that puts a yard up. And a scout
+ * and what trains one (A-019). */
+#define AI_SCOUT_MAX_COST 600
 enum { AI_NAVAL_TRANSPORT = 1, AI_NAVAL_MAKER = 2, AI_NAVAL_YARD = 4,
        AI_NAVAL_YARD_BUILDER = 8, AI_NAVAL_WARSHIP = 16, AI_NAVAL_WARSHIP_MAKER = 32,
-       AI_NAVAL_SHIPS_ONLY = 64 };
-static uint8_t g_ai_def_naval[AI_MAX_DEFS];
+       AI_NAVAL_SHIPS_ONLY = 64, AI_NAVAL_SCOUT = 128, AI_NAVAL_SCOUT_MAKER = 256 };
+static uint16_t g_ai_def_naval[AI_MAX_DEFS];
 static int     g_ai_naval_ready;
 
 /* A mover whose class needs water under it. */
@@ -182,6 +184,11 @@ static void ai_naval_defs(void) {
             g_ai_def_naval[i] |= AI_NAVAL_TRANSPORT;
         if (d && ai_def_is_ship(d) && d->num_weapons > 0 && !(d->cap_flags & UNIT_CAP_BUILDER))
             g_ai_def_naval[i] |= AI_NAVAL_WARSHIP;
+        /* A cheap unarmed flyer, the Spyhawk, Parrot, Gargoyle and Bat (A-019). */
+        if (d && d->can_fly && d->max_velocity > 0.0f && d->num_weapons == 0 &&
+            !d->commander && d->build_cost <= AI_SCOUT_MAX_COST &&
+            !(d->cap_flags & (UNIT_CAP_BUILDER | UNIT_CAP_TRANSPORT)))
+            g_ai_def_naval[i] |= AI_NAVAL_SCOUT;
     }
     for (int pass = 0; pass < 2; pass++) {
         for (int i = 0; i < defs; i++) {
@@ -191,7 +198,7 @@ static void ai_naval_defs(void) {
             int n = Units_GetBuildMenu(i, kids, 32);
             for (int k = 0; k < n; k++) {
                 if (kids[k] < 0 || kids[k] >= AI_MAX_DEFS) continue;
-                uint8_t f = g_ai_def_naval[kids[k]];
+                uint16_t f = g_ai_def_naval[kids[k]];
                 if (pass == 0 && (f & AI_NAVAL_TRANSPORT)) {
                     g_ai_def_naval[i] |= AI_NAVAL_MAKER;
                     if (d->max_velocity <= 0.0f) g_ai_def_naval[i] |= AI_NAVAL_YARD;
@@ -200,6 +207,8 @@ static void ai_naval_defs(void) {
                     g_ai_def_naval[i] |= AI_NAVAL_YARD_BUILDER;
                 if (pass == 0 && (f & AI_NAVAL_WARSHIP))
                     g_ai_def_naval[i] |= AI_NAVAL_WARSHIP_MAKER;
+                if (pass == 0 && (f & AI_NAVAL_SCOUT))
+                    g_ai_def_naval[i] |= AI_NAVAL_SCOUT_MAKER;
             }
             /* What it trains is all ships, so a seat done with the sea has
              * no training for it. */
@@ -1432,9 +1441,41 @@ typedef struct AiPlayer {
      * the sea alone after losing them all (A-015). */
     int      fleet_last;
     int      sea_lost_until;
+    /* Its scouts last think and when it may raise the next, and whether
+     * its memory of the enemy has been begun (A-019). */
+    int      scouts_last;
+    int      scout_next;
+    int      seen_seeded;
 } AiPlayer;
 
 static AiPlayer g_ai_players[TAK_MAX_PLAYERS + 1];
+
+/* ── What a seat has seen of its enemies (A-019) ─────────────────────
+ * Each enemy a seat's units have seen, by unit slot, where and when it was
+ * last seen. Ours: the original's scorer reads every unit (legacy:15365). */
+#define AI_SEEN_CAP TAK_MAX_UNITS
+/* A remembered mover's score falls by one part a minute out of sight. */
+#define AI_SEEN_STALE_TICKS 3600
+typedef struct AiSeen {
+    uint32_t id;          /* 0 for nothing remembered */
+    int32_t  x, y;
+    int32_t  tick;
+    int16_t  def;
+    uint8_t  player;
+    uint8_t  frame;       /* AI_SEEN_FRAME, AI_SEEN_GUESSED */
+} AiSeen;
+/* Seen as a frame, and taken from the map's starts rather than seen. */
+#define AI_SEEN_FRAME   1
+#define AI_SEEN_GUESSED 2
+static AiSeen g_ai_seen[TAK_MAX_PLAYERS + 1][AI_SEEN_CAP];
+/* One past the highest slot each seat remembers. */
+static int    g_ai_seen_n[TAK_MAX_PLAYERS + 1];
+/* The points a scout looks at, the map's starts then its sacred pads, and
+ * when the seat last saw each, as tick + 1 with 0 for never. */
+#define AI_LOOK_POINTS 64
+static int32_t g_ai_look[TAK_MAX_PLAYERS + 1][AI_LOOK_POINTS];
+static int ai_memory_on(int p);
+static void ai_seen_note(int p, int i, const Unit *u, int now, int guessed);
 
 /* Past the base's radius, where a builder needs cover. */
 static int ai_beyond_home(int p, int32_t x, int32_t y) {
@@ -1638,7 +1679,10 @@ static void ai_reset_state(void) {
     }
     memset(g_ai_orders, 0, sizeof(g_ai_orders));
     memset(g_ai_defence_orders, 0, sizeof(g_ai_defence_orders));
-    memset(g_ai_tactics_off, 0, sizeof(g_ai_tactics_off));
+    /* The memory and the scout of A-019 stay off until they play as well
+     * as the whole map does. */
+    for (int p = 0; p <= TAK_MAX_PLAYERS; p++)
+        g_ai_tactics_off[p] = TAK_AI_TACTIC_MEMORY | TAK_AI_TACTIC_SCOUT;
     memset(g_ai_groups, 0, sizeof(g_ai_groups));
     memset(g_ai_member, 0, sizeof(g_ai_member));
     memset(g_ai_counts, 0, sizeof(g_ai_counts));
@@ -1647,6 +1691,9 @@ static void ai_reset_state(void) {
     memset(g_ai_ferry_coming, 0, sizeof(g_ai_ferry_coming));
     memset(g_ai_cut_off, 0, sizeof(g_ai_cut_off));
     memset(g_ai_sea, 0, sizeof(g_ai_sea));
+    memset(g_ai_seen, 0, sizeof(g_ai_seen));
+    memset(g_ai_seen_n, 0, sizeof(g_ai_seen_n));
+    memset(g_ai_look, 0, sizeof(g_ai_look));
     for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
         for (int k = 0; k < AI_FERRIES; k++) {
             g_ai_ferry[p][k].transport = -1;
@@ -1767,6 +1814,26 @@ uint32_t TAK_SimHash_AI(uint32_t h) {
                            ((uint32_t)g_ai_member[i + 2] << 16) |
                            ((uint32_t)g_ai_member[i + 3] << 24));
     }
+    /* What each seat has seen and its scouting (A-019), the slots it
+     * remembers by number. */
+    for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
+        const AiPlayer *a = &g_ai_players[p];
+        h = TAK_HashI32(h, a->scouts_last);
+        h = TAK_HashI32(h, a->scout_next);
+        h = TAK_HashI32(h, a->seen_seeded);
+        for (int k = 0; k < AI_LOOK_POINTS; k++) h = TAK_HashI32(h, g_ai_look[p][k]);
+        for (int i = 0; i < g_ai_seen_n[p]; i++) {
+            const AiSeen *m = &g_ai_seen[p][i];
+            if (!m->id) continue;
+            h = TAK_HashI32(h, i);
+            h = TAK_HashU32(h, m->id);
+            h = TAK_HashI32(h, m->x);
+            h = TAK_HashI32(h, m->y);
+            h = TAK_HashI32(h, m->tick);
+            h = TAK_HashI32(h, (int32_t)m->def | (int32_t)m->player << 16 |
+                               (int32_t)m->frame << 24);
+        }
+    }
     return h;
 }
 
@@ -1807,8 +1874,25 @@ uint32_t TAK_SimHash_AI(uint32_t h) {
                                AI_FERRIES * 4u * 4u)
 #define AI_SAVE_FULL_BYTES    (AI_SAVE_FERRY_BYTES + \
                                (uint32_t)AI_SAVE_PLAYERS * AI_SAVE_SEA_PER_SEAT)
+/* And what each seat has seen (A-019): its scouting, how many it
+ * remembers and where it last looked at each point, then the remembered,
+ * six words each. A save from before them remembers nothing. */
+#define AI_SAVE_SEEN_PER_SEAT ((4u + AI_LOOK_POINTS) * 4u)
+#define AI_SAVE_SEEN_BYTES    (AI_SAVE_FULL_BYTES + \
+                               (uint32_t)AI_SAVE_PLAYERS * AI_SAVE_SEEN_PER_SEAT)
+#define AI_SAVE_SEEN_ENTRY    24u
 
-unsigned int TAK_AI_StateBytes(void) { return (unsigned int)AI_SAVE_FULL_BYTES; }
+static uint32_t ai_seen_count(int p) {
+    uint32_t n = 0;
+    for (int i = 0; i < g_ai_seen_n[p]; i++) n += g_ai_seen[p][i].id != 0;
+    return n;
+}
+
+unsigned int TAK_AI_StateBytes(void) {
+    uint32_t n = 0;
+    for (int q = 0; q < AI_SAVE_PLAYERS; q++) n += ai_seen_count(q);
+    return (unsigned int)(AI_SAVE_SEEN_BYTES + n * AI_SAVE_SEEN_ENTRY);
+}
 unsigned int TAK_AI_DebugStateBytesBeforeSea(void) { return (unsigned int)AI_SAVE_FERRY_BYTES; }
 
 static void ai_save_group(uint8_t *p, const AiGroup *g) {
@@ -1952,6 +2036,29 @@ void TAK_AI_SaveState(unsigned char *out) {
             p += 16;
         }
     }
+    for (int q = 0; q < AI_SAVE_PLAYERS; q++) {
+        const AiPlayer *a = &g_ai_players[q];
+        tak_put_i32(p + 0, a->scouts_last);
+        tak_put_i32(p + 4, a->scout_next);
+        tak_put_i32(p + 8, a->seen_seeded);
+        tak_put_u32(p + 12, ai_seen_count(q));
+        p += 16;
+        for (int k = 0; k < AI_LOOK_POINTS; k++, p += 4) tak_put_i32(p, g_ai_look[q][k]);
+    }
+    for (int q = 0; q < AI_SAVE_PLAYERS; q++) {
+        for (int i = 0; i < g_ai_seen_n[q]; i++) {
+            const AiSeen *m = &g_ai_seen[q][i];
+            if (!m->id) continue;
+            tak_put_i32(p + 0, i);
+            tak_put_u32(p + 4, m->id);
+            tak_put_i32(p + 8, m->x);
+            tak_put_i32(p + 12, m->y);
+            tak_put_i32(p + 16, m->tick);
+            tak_put_i32(p + 20, (int32_t)m->def | (int32_t)m->player << 16 |
+                                (int32_t)m->frame << 24);
+            p += AI_SAVE_SEEN_ENTRY;
+        }
+    }
 }
 
 int TAK_AI_LoadState(const unsigned char *in, unsigned int len) {
@@ -2084,6 +2191,54 @@ int TAK_AI_LoadState(const unsigned char *in, unsigned int len) {
             }
         }
     }
+    /* A save from before the memory has seen nothing and begins it on its
+     * next think (A-019). */
+    memset(g_ai_seen, 0, sizeof(g_ai_seen));
+    memset(g_ai_seen_n, 0, sizeof(g_ai_seen_n));
+    memset(g_ai_look, 0, sizeof(g_ai_look));
+    for (int q = 0; q < AI_SAVE_PLAYERS; q++) {
+        g_ai_players[q].scouts_last = 0;
+        g_ai_players[q].scout_next = 0;
+        g_ai_players[q].seen_seeded = 0;
+    }
+    if (len >= AI_SAVE_SEEN_BYTES) {
+        const uint8_t *f8 = (const uint8_t *)in + AI_SAVE_FULL_BYTES;
+        uint32_t counts[AI_SAVE_PLAYERS];
+        for (int q = 0; q < AI_SAVE_PLAYERS; q++) {
+            g_ai_players[q].scouts_last = tak_get_i32(f8 + 0);
+            g_ai_players[q].scout_next = tak_get_i32(f8 + 4);
+            g_ai_players[q].seen_seeded = tak_get_i32(f8 + 8);
+            counts[q] = tak_get_u32(f8 + 12);
+            f8 += 16;
+            for (int k = 0; k < AI_LOOK_POINTS; k++, f8 += 4) g_ai_look[q][k] = tak_get_i32(f8);
+        }
+        const uint8_t *end = (const uint8_t *)in + len;
+        int live_n = 0;
+        const Unit *live = Units_GetActive(&live_n);
+        for (int q = 0; q < AI_SAVE_PLAYERS; q++) {
+            for (uint32_t k = 0; k < counts[q]; k++) {
+                if ((size_t)(end - f8) < AI_SAVE_SEEN_ENTRY) return -1;
+                int32_t i = tak_get_i32(f8 + 0);
+                if (i >= 0 && i < AI_SEEN_CAP) {
+                    AiSeen *m = &g_ai_seen[q][i];
+                    int32_t kind = tak_get_i32(f8 + 20);
+                    m->id = tak_get_u32(f8 + 4);
+                    m->x = tak_get_i32(f8 + 8);
+                    m->y = tak_get_i32(f8 + 12);
+                    m->tick = tak_get_i32(f8 + 16);
+                    m->def = (int16_t)(kind & 0xFFFF);
+                    m->player = (uint8_t)((kind >> 16) & 0xFF);
+                    m->frame = (uint8_t)((kind >> 24) & 0xFF);
+                    /* A live unit's kind by its own record, which a save
+                     * carries by name. */
+                    if (i < live_n && live && live[i].stable_id == m->id)
+                        m->def = (int16_t)live[i].def_idx;
+                    if (m->id && i + 1 > g_ai_seen_n[q]) g_ai_seen_n[q] = i + 1;
+                }
+                f8 += AI_SAVE_SEEN_ENTRY;
+            }
+        }
+    }
     /* The influence maps are rebuilt on the next think and are not in
      * the file. Dropping the stale ones keeps a load from planning
      * against ground it read a session ago. */
@@ -2203,6 +2358,11 @@ void TAK_AI_DebugSetWaveTarget(int player_id, int handle) {
     ap->target_x = units[handle].world_x;
     ap->target_y = units[handle].world_y;
     ap->target_reachable = 1;
+    /* A seat that knows only what it has seen has seen this one (A-019). */
+    if (ai_memory_on(player_id) && handle < AI_SEEN_CAP) {
+        const GameWorld *w = World_Get();
+        ai_seen_note(player_id, handle, &units[handle], w ? w->skirmish_elapsed_ticks : 0, 0);
+    }
 }
 
 static int ai_valid_player(const GameWorld *world, int p) {
@@ -2305,6 +2465,106 @@ static int ai_def_is_mobile_combat(const UnitDef *def) {
            ai_def_is_combat_unit(def);
 }
 
+/* ── The seat's memory of the enemy (A-019) ───────────────────────── */
+
+static int ai_memory_on(int p) {
+    return p >= 1 && p <= TAK_MAX_PLAYERS && !(g_ai_tactics_off[p] & TAK_AI_TACTIC_MEMORY);
+}
+
+/* Whether seat p remembers the unit in slot h it took for id, and where. */
+static int ai_seen_has(int p, int h, uint32_t id, int32_t *x, int32_t *y) {
+    if (p < 0 || p > TAK_MAX_PLAYERS || h < 0 || h >= AI_SEEN_CAP || !id) return 0;
+    const AiSeen *m = &g_ai_seen[p][h];
+    if (m->id != id) return 0;
+    if (x) *x = m->x;
+    if (y) *y = m->y;
+    return 1;
+}
+
+/* What a remembering seat presses on at: a building it remembers, or a mover
+ * seen within the minute a seen strength is believed (A-019). */
+#define AI_SEEN_FRESH_TICKS 3600
+static int ai_seen_fresh(const GameWorld *world, int p, int h, uint32_t id) {
+    if (!ai_seen_has(p, h, id, NULL, NULL)) return 0;
+    const AiSeen *m = &g_ai_seen[p][h];
+    const UnitDef *d = Units_GetDef(m->def);
+    if (m->frame & AI_SEEN_GUESSED) return 0;
+    return (d && d->max_velocity <= 0.0f) ||
+           world->skirmish_elapsed_ticks - m->tick <= AI_SEEN_FRESH_TICKS;
+}
+
+/* Seat p sees the unit in slot h now, the one it took for id. */
+static int ai_sees_now(const GameWorld *world, const Unit *units, int unit_count, int p,
+                       int h, uint32_t id) {
+    return h >= 0 && h < unit_count && units[h].alive == UNIT_ALIVE_ACTIVE &&
+           units[h].stable_id == id && ai_visible_to(world, p, &units[h]);
+}
+
+static void ai_seen_note(int p, int i, const Unit *u, int now, int guessed) {
+    AiSeen *m = &g_ai_seen[p][i];
+    m->id = u->stable_id;
+    m->x = u->world_x;
+    m->y = u->world_y;
+    m->tick = now;
+    m->def = (int16_t)u->def_idx;
+    m->player = (uint8_t)u->player_id;
+    m->frame = (uint8_t)((u->under_construction ? AI_SEEN_FRAME : 0) |
+                         (guessed ? AI_SEEN_GUESSED : 0));
+    if (i + 1 > g_ai_seen_n[p]) g_ai_seen_n[p] = i + 1;
+}
+
+/* Refreshed each think from the seat's own sight. It begins knowing what
+ * stands by each enemy's start, as a player knows the map's starts, but not
+ * its strength: those are guesses, dated old and weighed as no arms. */
+#define AI_SEEN_START_PX 768
+#define AI_SEEN_GUESS_AGE 7201
+static void ai_seen_update(const GameWorld *world, const Unit *units, int unit_count,
+                           int p, int now) {
+    if (!ai_memory_on(p)) return;
+    AiPlayer *ap = &g_ai_players[p];
+    int n = unit_count < AI_SEEN_CAP ? unit_count : AI_SEEN_CAP;
+    for (int i = 0; i < n; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE) continue;
+        int q = u->player_id;
+        if (q < 1 || q > TAK_MAX_PLAYERS || !Units_PlayersAreEnemies(p, q)) continue;
+        if (ai_visible_to(world, p, u)) {
+            ai_seen_note(p, i, u, now, 0);
+        } else if (!ap->seen_seeded && !u->cloaked && g_ai_players[q].base_known &&
+                   ai_within(u->world_x, u->world_y, g_ai_players[q].base_x,
+                             g_ai_players[q].base_y, AI_SEEN_START_PX)) {
+            ai_seen_note(p, i, u, now - AI_SEEN_GUESS_AGE, 1);
+        }
+    }
+    ap->seen_seeded = 1;
+    int top = 0;
+    for (int i = 0; i < g_ai_seen_n[p]; i++) {
+        AiSeen *m = &g_ai_seen[p][i];
+        if (!m->id) continue;
+        /* A player out of the game, which every player is told of, is gone. */
+        int out = m->player >= 1 && m->player <= TAK_MAX_PLAYERS &&
+                  (world->stats[m->player].eliminated || world->resigned[m->player]);
+        if (out || (m->tick != now && Fog_IsVisibleForPlayer(world, p, m->x, m->y))) {
+            memset(m, 0, sizeof(*m));
+            g_ai_counts[p][TAK_AI_COUNT_FORGOTTEN]++;
+            continue;
+        }
+        top = i + 1;
+    }
+    g_ai_seen_n[p] = top;
+}
+
+int TAK_AI_DebugSeen(int player_id) {
+    if (player_id < 0 || player_id > TAK_MAX_PLAYERS) return 0;
+    return (int)ai_seen_count(player_id);
+}
+
+int TAK_AI_DebugSeenAt(int player_id, int handle, int32_t *x, int32_t *y) {
+    if (player_id < 0 || player_id > TAK_MAX_PLAYERS || handle < 0 || handle >= AI_SEEN_CAP)
+        return 0;
+    return ai_seen_has(player_id, handle, g_ai_seen[player_id][handle].id, x, y);
+}
+
 /* Home is the start position: the map datum the AI builds around.
  * Without one (mission maps) fall back to the monarch, then any
  * structure. */
@@ -2387,6 +2647,9 @@ void TAK_AI_NotifyDamage(int victim_handle, int shooter_handle) {
     int ai_seat = w && w->loaded && w->mission.objective_count == 0 &&
                   w->mission.placement_count == 0 &&
                   w->cfg.players[p - 1].kind == TAK_SLOT_AI;
+    /* Shots tell a remembering seat where they came from (A-019). */
+    if (ai_seat && ai_memory_on(p) && !s->cloaked && shooter_handle < AI_SEEN_CAP)
+        ai_seen_note(p, shooter_handle, s, w->skirmish_elapsed_ticks, 0);
     if (ai_seat && vd && vd->commander) {
         ap->freeze_pending = 1;
         /* With the build dropped, the return fire that follows answers
@@ -2575,48 +2838,94 @@ static void ai_add_prober(const Unit *units, int i, const UnitDef *ud,
  * pathfinder answers for the attacker (legacy:15473), so a target the
  * army cannot walk to never raises the best. With nothing reachable
  * the best of the rest is given with *reachable 0, -1 with no enemy. */
-static int ai_walker_reaches(const GameWorld *world, const Unit *units, int i,
-                             const UnitDef *def, const Unit *t);
+static int ai_walker_reaches_at(const GameWorld *world, const Unit *units, int i,
+                                const UnitDef *def, const UnitDef *td, int32_t tx, int32_t ty);
+
+/* What a pick named: the unit's slot and id, its owner, and where the seat
+ * takes it to be. */
+typedef struct AiPick {
+    int      handle, player;
+    uint32_t id;
+    int32_t  x, y;
+} AiPick;
 
 static int ai_score_targets(const GameWorld *world, const Unit *units,
                             int unit_count, int p, int32_t cx, int32_t cy,
                             int32_t rx, int32_t ry, const int *probers,
-                            int n_probers, int *reachable) {
+                            int n_probers, int *reachable, AiPick *pick) {
+    /* With the memory on the candidates are the enemies the seat
+     * remembers, where it last saw them (A-019). */
+    int mem = ai_memory_on(p);
     int counts[TAK_MAX_PLAYERS + 1] = { 0 };
     int total = 0;
     for (int i = 0; i < unit_count; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE) continue;
         if (u->player_id >= 1 && u->player_id <= TAK_MAX_PLAYERS) {
+            if (mem && Units_PlayersAreEnemies(p, u->player_id)) continue;
             counts[u->player_id]++;
             total++;
         }
+    }
+    for (int i = 0; mem && i < g_ai_seen_n[p]; i++) {
+        const AiSeen *m = &g_ai_seen[p][i];
+        if (!m->id || m->player < 1 || m->player > TAK_MAX_PLAYERS) continue;
+        counts[m->player]++;
+        total++;
     }
     int best = -1;
     int32_t best_score = 0;
     int alt = -1;
     int32_t alt_score = 0;
-    for (int i = 0; i < unit_count; i++) {
-        const Unit *t = &units[i];
-        if (t->alive != UNIT_ALIVE_ACTIVE) continue;
-        int q = t->player_id;
+    AiPick best_pick = { -1, 0, 0, 0, 0 }, alt_pick = { -1, 0, 0, 0, 0 };
+    int span = mem ? g_ai_seen_n[p] : unit_count;
+    for (int i = 0; i < span; i++) {
+        AiPick at = { i, 0, 0, 0, 0 };
+        const UnitDef *td;
+        int frame, seen_now;
+        if (mem) {
+            const AiSeen *m = &g_ai_seen[p][i];
+            if (!m->id) continue;
+            at.player = m->player;
+            at.id = m->id;
+            at.x = m->x;
+            at.y = m->y;
+            td = Units_GetDef(m->def);
+            frame = m->frame & AI_SEEN_FRAME;
+        } else {
+            const Unit *t = &units[i];
+            if (t->alive != UNIT_ALIVE_ACTIVE) continue;
+            at.player = t->player_id;
+            at.id = t->stable_id;
+            at.x = t->world_x;
+            at.y = t->world_y;
+            td = Units_GetDef(t->def_idx);
+            frame = t->under_construction;
+        }
+        int q = at.player;
         if (!ai_valid_player(world, q) || !Units_PlayersAreEnemies(p, q)) continue;
-        const UnitDef *td = Units_GetDef(t->def_idx);
         if (!td) continue;
         /* A wall scores nothing (legacy:20042). */
         if (td->is_feature) continue;
-        uint32_t d1 = (uint32_t)ai_approx_dist((int64_t)t->world_x - cx,
-                                               (int64_t)t->world_y - cy);
-        uint32_t d2 = (uint32_t)ai_approx_dist((int64_t)t->world_x - rx,
-                                               (int64_t)t->world_y - ry);
+        uint32_t d1 = (uint32_t)ai_approx_dist((int64_t)at.x - cx,
+                                               (int64_t)at.y - cy);
+        uint32_t d2 = (uint32_t)ai_approx_dist((int64_t)at.x - rx,
+                                               (int64_t)at.y - ry);
         int32_t a = (int32_t)((ai_rand(d1 / 8) + ai_rand(d1 / 8)) / 4) + 1;
         int32_t b = (int32_t)((ai_rand(d2 / 2) + ai_rand(d2 / 2)) / 4) + 1;
         int32_t score = (INT32_MAX / a) / b;
-        if (!ai_visible_to(world, p, t))
+        seen_now = mem ? ai_sees_now(world, units, unit_count, p, i, at.id)
+                       : ai_visible_to(world, p, &units[i]);
+        if (!seen_now)
             score /= (int32_t)(ai_rand(10) + 1 + ai_rand(10));
+        /* A mover remembered long out of sight is likely gone from there. */
+        if (mem && !seen_now && td->max_velocity > 0.0f) {
+            int32_t age = world->skirmish_elapsed_ticks - g_ai_seen[p][i].tick;
+            if (age > 0) score /= 1 + age / AI_SEEN_STALE_TICKS;
+        }
         if (td->num_weapons <= 0)
             score /= (int32_t)(ai_rand(5) + 1 + ai_rand(5));
-        if (t->under_construction)
+        if (frame)
             score /= (int32_t)(ai_rand(3) + 1);
         if (td->max_velocity <= 0.0f)
             score /= (int32_t)(ai_rand(3) + 1);
@@ -2625,27 +2934,29 @@ static int ai_score_targets(const GameWorld *world, const Unit *units,
         score /= (int32_t)(ai_rand((uint32_t)share) + 1);
         /* A-002: tilt toward cells where the enemy is weak and
          * valuable, a quarter to four times the original's score. */
-        int32_t tilt = AI_Influence_Weakness(p, t->world_x, t->world_y) / 8;
+        int32_t tilt = AI_Influence_Weakness(p, at.x, at.y) / 8;
         if (tilt < -6) tilt = -6;
         if (tilt > 24) tilt = 24;
         int64_t tilted = (int64_t)score * (8 + tilt) / 8;
         score = tilted > INT32_MAX ? INT32_MAX : (int32_t)tilted;
-        if (score > alt_score) { alt_score = score; alt = i; }
+        if (score > alt_score) { alt_score = score; alt = i; alt_pick = at; }
         if (score <= best_score) continue;
-        if (!ai_wave_route_ok(units, probers, n_probers,
-                              t->world_x, t->world_y)) continue;
+        if (!ai_wave_route_ok(units, probers, n_probers, at.x, at.y)) continue;
         if (n_probers > 0) {
             int any = 0;
             for (int k = 0; k < n_probers && !any; k++)
-                any = ai_walker_reaches(world, units, probers[k],
-                                        Units_GetDef(units[probers[k]].def_idx), t);
+                any = ai_walker_reaches_at(world, units, probers[k],
+                                           Units_GetDef(units[probers[k]].def_idx), td,
+                                           at.x, at.y);
             if (!any) continue;
         }
         best_score = score;
         best = i;
+        best_pick = at;
     }
     *reachable = 1;
-    if (best < 0) { best = alt; *reachable = 0; }
+    if (best < 0) { best = alt; best_pick = alt_pick; *reachable = 0; }
+    if (pick) *pick = best_pick;
     return best;
 }
 
@@ -2686,19 +2997,20 @@ static void ai_pick_wave_target(const GameWorld *world, const Unit *units,
         }
     }
     int reachable = 1;
+    AiPick pk;
     int best = ai_score_targets(world, units, unit_count, p, cx, cy, rx, ry,
-                                probers, n_probers, &reachable);
+                                probers, n_probers, &reachable, &pk);
     if (best < 0) {
         ap->target_player = 0;
         ap->target_handle = -1;
         ap->target_reachable = 1;
         return;
     }
-    ap->target_player = units[best].player_id;
+    ap->target_player = pk.player;
     ap->target_handle = best;
-    ap->target_stable_id = units[best].stable_id;
-    ap->target_x = units[best].world_x;
-    ap->target_y = units[best].world_y;
+    ap->target_stable_id = pk.id;
+    ap->target_x = pk.x;
+    ap->target_y = pk.y;
     ap->target_reachable = reachable;
     if (ai_trace()) {
         fprintf(stderr, "AI %d: wave target player %d unit %d at (%d,%d)"
@@ -2720,9 +3032,12 @@ static void ai_update_wave_target(const GameWorld *world, const Unit *units,
                units[h].alive == UNIT_ALIVE_ACTIVE &&
                units[h].stable_id == ap->target_stable_id &&
                Units_PlayersAreEnemies(p, units[h].player_id);
+    int32_t x = live ? units[h].world_x : 0, y = live ? units[h].world_y : 0;
+    /* With the memory on it is where the seat last saw it (A-019). */
+    if (ai_memory_on(p)) live = ai_seen_has(p, h, ap->target_stable_id, &x, &y);
     if (live && ai_rand(30) != 0) {
-        ap->target_x = units[h].world_x;
-        ap->target_y = units[h].world_y;
+        ap->target_x = x;
+        ap->target_y = y;
         return;
     }
     ai_pick_wave_target(world, units, unit_count, p);
@@ -2765,9 +3080,8 @@ static int ai_class_fits(const GameWorld *world, const MoveClassDef *mc, const U
  * ground it can walk. The original takes no target it has no route to in
  * reach of (legacy:15461-15473), and one ordered at a boat or over the
  * water never stands to be gathered for a crossing. */
-static int ai_walker_reaches(const GameWorld *world, const Unit *units, int i,
-                             const UnitDef *def, const Unit *t) {
-    const UnitDef *td = Units_GetDef(t->def_idx);
+static int ai_walker_reaches_at(const GameWorld *world, const Unit *units, int i,
+                                const UnitDef *def, const UnitDef *td, int32_t tx, int32_t ty) {
     if (!world || !td || def->can_fly || def->max_velocity <= 0.0f || ai_def_is_ship(def))
         return 1;
     const Unit *u = &units[i];
@@ -2775,9 +3089,9 @@ static int ai_walker_reaches(const GameWorld *world, const Unit *units, int i,
                            ? TAK_MoveInfo_Find(&world->moveinfo, def->movement_class) : NULL;
     /* A target on what the walker cannot stand on, a mage on the water or a
      * yard, is no ground to walk to, whatever the nearest ground joins. */
-    if (!td->can_fly && !ai_def_is_ship(td) && Units_CanStandAt(i, t->world_x, t->world_y) &&
+    if (!td->can_fly && !ai_def_is_ship(td) && Units_CanStandAt(i, tx, ty) &&
         TAK_PathGroundConnected(world, mc, def->max_slope, u->world_x, u->world_y,
-                                t->world_x, t->world_y)) return 1;
+                                tx, ty)) return 1;
     int32_t range = 32;
     for (int k = 0; k < def->num_weapons; k++) {
         int32_t wr = def->weapons[k].range;
@@ -2789,20 +3103,26 @@ static int ai_walker_reaches(const GameWorld *world, const Unit *units, int i,
     if (td->max_velocity <= 0.0f)
         range += (td->footprint_x > td->footprint_z ? td->footprint_x : td->footprint_z) * 8;
     /* It already reaches from where it stands. */
-    if (ai_within(u->world_x, u->world_y, t->world_x, t->world_y, range)) return 1;
+    if (ai_within(u->world_x, u->world_y, tx, ty, range)) return 1;
     static const int8_t dirs[8][2] = { { 1, 0 }, { 1, 1 }, { 0, 1 }, { -1, 1 },
                                        { -1, 0 }, { -1, -1 }, { 0, -1 }, { 1, -1 } };
     for (int ring = 0; ring < 2; ring++) {
         /* Diagonals run long by the root of two, so a third off them. */
         int32_t r = ring == 0 ? range * 2 / 3 : range / 3;
         for (int k = 0; k < 8; k++) {
-            int32_t px = t->world_x + dirs[k][0] * r, py = t->world_y + dirs[k][1] * r;
+            int32_t px = tx + dirs[k][0] * r, py = ty + dirs[k][1] * r;
             if (!ai_class_fits(world, mc, def, px, py)) continue;
             if (TAK_PathGroundConnected(world, mc, def->max_slope, u->world_x, u->world_y, px, py))
                 return 1;
         }
     }
     return 0;
+}
+
+static int ai_walker_reaches(const GameWorld *world, const Unit *units, int i,
+                             const UnitDef *def, const Unit *t) {
+    return ai_walker_reaches_at(world, units, i, def, Units_GetDef(t->def_idx),
+                                t->world_x, t->world_y);
 }
 
 /* Combat think (legacy:17624): a unit with no fight on its hands takes
@@ -2905,12 +3225,19 @@ static int ai_defend(const GameWorld *world, const Unit *units,
 static void ai_dispatch_at(const GameWorld *world, const Unit *units,
                            int unit_count, int actor_idx, int p,
                            const UnitDef *def, int target_player, int h,
-                           int32_t tx, int32_t ty) {
+                           uint32_t id, int32_t tx, int32_t ty) {
     if (h < 0 || h >= unit_count) return;
     if (!ai_unit_ground_reaches(&units[actor_idx], def, tx, ty)) return;
-    if (!ai_walker_reaches(world, units, actor_idx, def, &units[h])) return;
+    /* With the memory on the target is where the seat saw it, and is
+     * fought only once it is seen again (A-019). */
+    int mem = ai_memory_on(p);
+    if (mem && g_ai_seen[p][h].id != id) return;
+    if (mem ? !ai_walker_reaches_at(world, units, actor_idx, def,
+                                    Units_GetDef(g_ai_seen[p][h].def), tx, ty)
+            : !ai_walker_reaches(world, units, actor_idx, def, &units[h])) return;
     ai_commit(units, actor_idx);
-    if (ai_visible_to(world, p, &units[h]) &&
+    if ((mem ? ai_sees_now(world, units, unit_count, p, h, id)
+             : ai_visible_to(world, p, &units[h])) &&
         Units_CanAttackTarget(actor_idx, h)) {
         Units_CommandAttackUnit(actor_idx, h);
         ai_count_order(p, target_player, 0);
@@ -2925,8 +3252,8 @@ static void ai_dispatch_wave(const GameWorld *world, const Unit *units,
                              const UnitDef *def) {
     const AiPlayer *ap = &g_ai_players[p];
     ai_dispatch_at(world, units, unit_count, actor_idx, p, def,
-                   ap->target_player, ap->target_handle, ap->target_x,
-                   ap->target_y);
+                   ap->target_player, ap->target_handle, ap->target_stable_id,
+                   ap->target_x, ap->target_y);
 }
 
 /* ── A squad on the march (A-010) ───────────────────────────────────
@@ -3309,6 +3636,7 @@ static void ai_group_next(const GameWorld *world, const Unit *units,
     gs.escorting = g->kind == AI_GROUP_ESCORT && g->mode == AI_GROUP_MARCHING;
     gs.errand_done = errand_done;
     int next = -1, reachable = 1;
+    AiPick pk = { -1, 0, 0, 0, 0 };
     if (!gs.threat && errand_done) {
         int32_t rx = cx, ry = cy;
         int probers[AI_WAVE_PROBERS];
@@ -3320,18 +3648,19 @@ static void ai_group_next(const GameWorld *world, const Unit *units,
             if (pick-- == 0) { rx = units[i].world_x; ry = units[i].world_y; }
         }
         next = ai_score_targets(world, units, unit_count, p, cx, cy, rx, ry,
-                                probers, n_probers, &reachable);
+                                probers, n_probers, &reachable, &pk);
     }
 
     gs.next_known = next >= 0 && reachable;
-    gs.next_seen = gs.next_known && ai_visible_to(world, p, &units[next]);
+    gs.next_seen = gs.next_known &&
+                   (ai_memory_on(p) ? ai_seen_fresh(world, p, next, pk.id)
+                                    : ai_visible_to(world, p, &units[next]));
     gs.value = g_ai_group_value[slot];
     gs.siege_due = ai_wave_due(world, p, now, AI_WAVE_SIEGE);
     if (gs.next_known) {
-        gs.enemy_at_next = AI_Influence_At(p, AI_INF_THREAT, units[next].world_x,
-                                           units[next].world_y);
+        gs.enemy_at_next = AI_Influence_At(p, AI_INF_THREAT, pk.x, pk.y);
         /* What the seat last saw round the same target still counts. */
-        if (ap->target_strength_id == units[next].stable_id &&
+        if (ap->target_strength_id == pk.id &&
             ap->target_strength_tick >= 0 &&
             now - ap->target_strength_tick <= AI_STRENGTH_MEMORY &&
             ap->target_strength > gs.enemy_at_next)
@@ -3352,11 +3681,11 @@ static void ai_group_next(const GameWorld *world, const Unit *units,
     if (task == AI_TASK_STRIKE && gs.next_known) {
         g->mode = AI_GROUP_MARCHING;
         g->kind = AI_GROUP_ATTACK;
-        g->target_player = units[next].player_id;
+        g->target_player = pk.player;
         g->target_handle = next;
-        g->target_stable_id = units[next].stable_id;
-        g->target_x = units[next].world_x;
-        g->target_y = units[next].world_y;
+        g->target_stable_id = pk.id;
+        g->target_x = pk.x;
+        g->target_y = pk.y;
         g_ai_counts[p][TAK_AI_COUNT_PRESSED]++;
         return;
     }
@@ -3513,6 +3842,14 @@ static int ai_groups_update(const GameWorld *world, const Unit *units,
             ai_group_next(world, units, unit_count, p, s, now, 1, home_threat || near);
             continue;
         }
+        /* The enemy it marches at, where the seat takes it to be: with the
+         * memory on, where it last saw it (A-019). */
+        int32_t gx = live ? units[h].world_x : 0, gy = live ? units[h].world_y : 0;
+        const UnitDef *gtd = live ? Units_GetDef(units[h].def_idx) : NULL;
+        if (ai_memory_on(p)) {
+            live = ai_seen_has(p, h, g->target_stable_id, &gx, &gy);
+            gtd = live ? Units_GetDef(g_ai_seen[p][h].def) : NULL;
+        }
         /* A-013: while a boat comes, a walker that cannot reach a target
          * over water, or its shore, goes back to the gathering, and so
          * does a ship sent at one on land. */
@@ -3526,13 +3863,12 @@ static int ai_groups_update(const GameWorld *world, const Unit *units,
                 int ship = ai_def_is_ship(md);
                 const MoveClassDef *mmc = md->movement_class[0]
                     ? TAK_MoveInfo_Find(&world->moveinfo, md->movement_class) : NULL;
-                if (ship ? Units_CanStandAt(i, units[h].world_x, units[h].world_y)
+                if (ship ? Units_CanStandAt(i, gx, gy)
                          : ai_walks_to(world, mmc, md->max_slope, i, units[i].world_x,
-                                       units[i].world_y, units[h].world_x, units[h].world_y))
+                                       units[i].world_y, gx, gy))
                     continue;
                 if (over_water < 0)
-                    over_water = ai_home_cut_off(world, units, unit_count, p,
-                                                 units[h].world_x, units[h].world_y);
+                    over_water = ai_home_cut_off(world, units, unit_count, p, gx, gy);
                 if (!over_water) break;
                 g_ai_member[i] = 0;
                 members[s]--;
@@ -3551,14 +3887,14 @@ static int ai_groups_update(const GameWorld *world, const Unit *units,
                 if (g_ai_member[i] != s + 1 || units[i].player_id != p ||
                     units[i].alive != UNIT_ALIVE_ACTIVE) continue;
                 seen = 1;
-                reached = ai_walker_reaches(world, units, i, Units_GetDef(units[i].def_idx),
-                                            &units[h]);
+                reached = ai_walker_reaches_at(world, units, i, Units_GetDef(units[i].def_idx),
+                                               gtd, gx, gy);
             }
             if (seen && !reached) live = 0;
         }
         if (live) {
-            g->target_x = units[h].world_x;
-            g->target_y = units[h].world_y;
+            g->target_x = gx;
+            g->target_y = gy;
             /* A wave still nearer home than its target turns back when
              * home is hit. */
             if (hold && home_hit && g_ai_group_n[s] > 0) {
@@ -3917,15 +4253,33 @@ static void ai_guard_build(const GameWorld *world, const Unit *units,
     g_ai_guard_w = w < 1 ? 1 : w > AI_INF_MAX_W ? AI_INF_MAX_W : w;
     g_ai_guard_h = h < 1 ? 1 : h > AI_INF_MAX_H ? AI_INF_MAX_H : h;
     memset(g_ai_guard, 0, sizeof(g_ai_guard));
-    for (int i = 0; i < unit_count; i++) {
-        const Unit *u = &units[i];
-        if (u->alive != UNIT_ALIVE_ACTIVE || u->under_construction) continue;
-        if (!ai_valid_player(world, u->player_id) ||
-            !Units_PlayersAreEnemies(p, u->player_id)) continue;
-        const UnitDef *d = Units_GetDef(u->def_idx);
+    /* With the memory on, the arms the seat has seen, each until it is seen
+     * gone from where it was (A-019). */
+    int mem = ai_memory_on(p);
+    int span = mem ? g_ai_seen_n[p] : unit_count;
+    for (int i = 0; i < span; i++) {
+        int32_t ux, uy;
+        const UnitDef *d;
+        if (mem) {
+            const AiSeen *m = &g_ai_seen[p][i];
+            if (!m->id || m->frame) continue;
+            if (!ai_valid_player(world, m->player) || !Units_PlayersAreEnemies(p, m->player))
+                continue;
+            d = Units_GetDef(m->def);
+            ux = m->x;
+            uy = m->y;
+        } else {
+            const Unit *u = &units[i];
+            if (u->alive != UNIT_ALIVE_ACTIVE || u->under_construction) continue;
+            if (!ai_valid_player(world, u->player_id) ||
+                !Units_PlayersAreEnemies(p, u->player_id)) continue;
+            d = Units_GetDef(u->def_idx);
+            ux = u->world_x;
+            uy = u->world_y;
+        }
         if (!d || d->num_weapons <= 0) continue;
         int32_t v = AI_UnitCombatValue(d);
-        int cx = (int)(u->world_x >> AI_INF_CELL_SHIFT), cy = (int)(u->world_y >> AI_INF_CELL_SHIFT);
+        int cx = (int)(ux >> AI_INF_CELL_SHIFT), cy = (int)(uy >> AI_INF_CELL_SHIFT);
         /* Halved for each ring out, three rings. */
         for (int dy = -AI_GUARD_RINGS; dy <= AI_GUARD_RINGS; dy++) {
             int y = cy + dy;
@@ -3975,26 +4329,45 @@ static void ai_ferry_aim(const GameWorld *world, const Unit *units,
     const MoveClassDef *mc = hd->movement_class[0]
                            ? TAK_MoveInfo_Find(&world->moveinfo, hd->movement_class) : NULL;
     int64_t best = -1;
-    for (int i = 0; i < unit_count; i++) {
-        const Unit *t = &units[i];
-        if (t->alive != UNIT_ALIVE_ACTIVE) continue;
-        if (!ai_valid_player(world, t->player_id) ||
-            !Units_PlayersAreEnemies(p, t->player_id)) continue;
-        const UnitDef *td = Units_GetDef(t->def_idx);
+    /* With the memory on, of the assets the seat remembers (A-019). */
+    int mem = ai_memory_on(p);
+    int span = mem ? g_ai_seen_n[p] : unit_count;
+    for (int i = 0; i < span; i++) {
+        AiPick at = { i, 0, 0, 0, 0 };
+        const UnitDef *td;
+        if (mem) {
+            const AiSeen *m = &g_ai_seen[p][i];
+            if (!m->id) continue;
+            at.player = m->player;
+            at.id = m->id;
+            at.x = m->x;
+            at.y = m->y;
+            td = Units_GetDef(m->def);
+        } else {
+            const Unit *t = &units[i];
+            if (t->alive != UNIT_ALIVE_ACTIVE) continue;
+            at.player = t->player_id;
+            at.id = t->stable_id;
+            at.x = t->world_x;
+            at.y = t->world_y;
+            td = Units_GetDef(t->def_idx);
+        }
+        if (!ai_valid_player(world, at.player) ||
+            !Units_PlayersAreEnemies(p, at.player)) continue;
         if (!td || td->is_feature) continue;
         int32_t asset = AI_UnitAssetValue(td, world->cfg.monarch_expendable);
         if (asset <= 0) continue;
-        int32_t guard = ai_guard_at(t->world_x, t->world_y);
+        int32_t guard = ai_guard_at(at.x, at.y);
         int64_t score = (int64_t)asset * 256 / (guard + AI_GUARD_FLOOR);
         if (score <= best) continue;
         if (!ai_walks_to(world, mc, hd->max_slope, h, ap->target_x, ap->target_y,
-                         t->world_x, t->world_y)) continue;
+                         at.x, at.y)) continue;
         best = score;
         a->handle = i;
-        a->player = t->player_id;
-        a->id = t->stable_id;
-        a->x = t->world_x;
-        a->y = t->world_y;
+        a->player = at.player;
+        a->id = at.id;
+        a->x = at.x;
+        a->y = at.y;
         a->guard = guard;
     }
 }
@@ -4218,7 +4591,7 @@ static int ai_ferry_launch(const GameWorld *world, const Unit *units,
         const UnitDef *d = Units_GetDef(units[i].def_idx);
         if (d && d->can_fly && units[i].cmd_kind == UNIT_CMD_NONE)
             ai_dispatch_at(world, units, unit_count, i, p, d, aim->player,
-                           aim->handle, aim->x, aim->y);
+                           aim->handle, aim->id, aim->x, aim->y);
     }
     if (td->can_fly) {
         Units_OrderLoadList(t, riders, n, 0);
@@ -4610,6 +4983,18 @@ static int ai_transport_def_of(const Unit *units, int unit_count, int p,
     return best;
 }
 
+/* The scout a maker of def maker_def trains for the seat, or -1 (A-019). */
+static int ai_scout_def_of(const Unit *units, int unit_count, int p, int maker_def) {
+    int kids[32];
+    int n = Units_GetBuildables(maker_def, kids, 32);
+    for (int k = 0; k < n; k++) {
+        if (!ai_naval_is(kids[k], AI_NAVAL_SCOUT)) continue;
+        if (ai_weight_of(p, kids[k]) <= 0.0f) continue;
+        if (ai_limit_allows(units, unit_count, p, kids[k])) return kids[k];
+    }
+    return -1;
+}
+
 /* A warship a maker of def maker_def can put up for the seat, or -1. With
  * draw set, one drawn by the original's weights (legacy:21300). */
 static int ai_warship_def_of(const Unit *units, int unit_count, int p, int maker_def, int draw) {
@@ -4774,16 +5159,21 @@ static void ai_read_wave(const GameWorld *world, const Unit *units,
     memset(ws, 0, sizeof(*ws));
     memset(rd, 0, sizeof(*rd));
     rd->scout = -1;
+    int mem = ai_memory_on(p);
     ws->target_known = ap->target_handle >= 0 && ap->target_handle < unit_count;
+    if (mem) ws->target_known = ai_seen_has(p, ap->target_handle, ap->target_stable_id,
+                                            NULL, NULL);
     if (ws->target_known)
-        ws->target_seen = ai_visible_to(world, p, &units[ap->target_handle]);
+        ws->target_seen = mem ? ai_sees_now(world, units, unit_count, p, ap->target_handle,
+                                            ap->target_stable_id)
+                              : ai_visible_to(world, p, &units[ap->target_handle]);
     ws->patience_due = ai_wave_due(world, p, now, AI_WAVE_PATIENCE);
     ws->siege_due = ai_wave_due(world, p, now, AI_WAVE_SIEGE);
 
     /* The strength at the target is what can be seen there now, or
      * what was last seen there while that is still believed. */
     if (ws->target_known) {
-        uint32_t id = units[ap->target_handle].stable_id;
+        uint32_t id = mem ? ap->target_stable_id : units[ap->target_handle].stable_id;
         int32_t seen = AI_Influence_At(p, AI_INF_THREAT, ap->target_x,
                                        ap->target_y);
         if (ws->target_seen || seen > 0) {
@@ -4846,12 +5236,17 @@ static void ai_read_field(const Unit *units, int unit_count, int p, int slot,
     int n_cells = 0;
     ws->field = 0;
     ws->field_value = ws->field_threat = 0;
+    /* Ashore over the water a remembering seat's fighters have no way home
+     * to break off to, and fight on (A-019). */
+    int abroad = g_ai_cut_off[p] && ap->base_known && ai_memory_on(p);
     for (int i = 0; i < unit_count; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) continue;
         if (u->under_construction || ai_at_stage(ap, u)) continue;
-        if (!ai_def_is_mobile_combat(Units_GetDef(u->def_idx))) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!ai_def_is_mobile_combat(d)) continue;
         if (ai_member_slot(units, i, p) != slot) continue;
+        if (abroad && !ai_unit_ground_reaches(u, d, ap->base_x, ap->base_y)) continue;
         ws->field++;
         int cx = 0, cy = 0;
         if (!AI_Influence_CellOf(u->world_x, u->world_y, &cx, &cy)) continue;
@@ -5641,6 +6036,47 @@ static void ai_plan_note_on_way(int def_idx, AiPlanState *s) {
         s->factories_pending++;
 }
 
+/* Scouts a seat keeps up and the wait for the next after it loses one (2
+ * minutes at 60 Hz), under line of sight with the memory on (A-019). */
+#define AI_SCOUTS            1
+#define AI_SCOUT_RETRY_TICKS 7200
+
+static int ai_scouting(const GameWorld *world, int p) {
+    return world->cfg.line_of_sight && ai_memory_on(p) &&
+           !(g_ai_tactics_off[p] & TAK_AI_TACTIC_SCOUT);
+}
+
+static void ai_plan_read_scouts(const GameWorld *world, const Unit *units, int unit_count,
+                                int p, int now, AiPlanState *s, AiPlanCosts *c) {
+    if (!ai_scouting(world, p)) return;
+    AiPlayer *ap = &g_ai_players[p];
+    int scout_def = -1;
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) continue;
+        int di = (int)u->def_idx;
+        if (ai_naval_is(di, AI_NAVAL_SCOUT)) s->scouts++;
+        if (u->under_construction || !ai_naval_is(di, AI_NAVAL_SCOUT_MAKER)) continue;
+        const UnitDef *d = Units_GetDef(di);
+        int sd = ai_scout_def_of(units, unit_count, p, di);
+        if (sd < 0 || !d) continue;
+        int idle = d->max_velocity > 0.0f
+                 ? !ai_build_frozen(ap, d, now) && ai_builder_free(u, d)
+                 : u->cmd_kind == UNIT_CMD_NONE && u->build_target < 0;
+        if (idle) s->scout_makers_idle++;
+        if (scout_def < 0) scout_def = sd;
+    }
+    if (ap->scouts_last > 0 && s->scouts < ap->scouts_last)
+        ap->scout_next = now + AI_SCOUT_RETRY_TICKS;
+    ap->scouts_last = s->scouts;
+    s->scout_wanted = s->scouts < AI_SCOUTS && now >= ap->scout_next;
+    if (scout_def >= 0) {
+        const UnitDef *sd = Units_GetDef(scout_def);
+        c->allowed[AI_ACT_TRAIN_SCOUT] = 1;
+        c->cost[AI_ACT_TRAIN_SCOUT] = sd->build_cost > 0 ? sd->build_cost : 1;
+    }
+}
+
 static void ai_plan_read(const GameWorld *world, const Unit *units,
                          int unit_count, int p, int now,
                          AiPlanState *s, AiPlanCosts *c) {
@@ -5894,6 +6330,7 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
     g_ai_ferry_coming[p] = 0;
     g_ai_cut_off[p] = s->cut_off;
     if (s->cut_off) ai_plan_read_naval(world, units, unit_count, p, now, s, c);
+    ai_plan_read_scouts(world, units, unit_count, p, now, s, c);
 }
 
 /* Book a started action so the next actor this tick plans on it. */
@@ -5915,6 +6352,8 @@ static void ai_plan_note(AiPlanState *s, const AiPlanCosts *c, AiAction act) {
         s->ferry_makers_idle--; s->transports++; break;
     case AI_ACT_TRAIN_WARSHIP:
         s->fleet_makers_idle--; s->fleet++; break;
+    case AI_ACT_TRAIN_SCOUT:
+        s->scout_makers_idle--; s->scouts++; s->scout_wanted = 0; break;
     default:
         break;
     }
@@ -5952,6 +6391,11 @@ static int ai_execute_build(const GameWorld *world, const Unit *units,
         int wd = ai_warship_def_of(units, unit_count, p, (int)units[actor_idx].def_idx, 1);
         return wd >= 0 && ai_try_start_on_shore(actor_idx, wd, p);
     }
+    case AI_ACT_TRAIN_SCOUT: {
+        int p = units[actor_idx].player_id;
+        int sd = ai_scout_def_of(units, unit_count, p, (int)units[actor_idx].def_idx);
+        return sd >= 0 && ai_try_start_build_def(actor_idx, sd);
+    }
     default:
         return 0;
     }
@@ -5967,6 +6411,93 @@ static double ai_now_ms(void) {
            (double)SDL_GetPerformanceFrequency();
 }
 #define AI_MARK(k) do { if (g_ai_prof_on) { double t_ = ai_now_ms();     g_ai_prof_ms[k] += t_ - ai_t; ai_t = t_; } } while (0)
+
+/* ── Scouting (A-019) ──────────────────────────────────────────────── */
+
+/* The points a scout looks at: the map's starts, then its sacred pads. */
+static int ai_look_points(const GameWorld *world, int32_t *xs, int32_t *ys) {
+    int n = 0;
+    for (int s = 0; s < world->num_start_positions && n < AI_LOOK_POINTS; s++, n++) {
+        xs[n] = world->start_positions[s].x * 16;
+        ys[n] = world->start_positions[s].z * 16;
+    }
+    for (int i = 0; i < world->feature_count && n < AI_LOOK_POINTS; i++) {
+        const struct MapFeature *mf = &world->features[i];
+        if (mf->global_idx < 0) continue;
+        const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+        if (!fd || fd->sacred_site <= 0.0f) continue;
+        xs[n] = mf->tile_x * 16 + 16;
+        ys[n] = mf->tile_z * 16 + 16;
+        n++;
+    }
+    return n;
+}
+
+/* When the seat last saw each point, read each think. */
+static void ai_look_update(const GameWorld *world, int p, int now) {
+    if (!ai_scouting(world, p)) return;
+    int32_t xs[AI_LOOK_POINTS], ys[AI_LOOK_POINTS];
+    int n = ai_look_points(world, xs, ys);
+    for (int k = 0; k < n; k++)
+        if (Fog_IsVisibleForPlayer(world, p, xs[k], ys[k])) g_ai_look[p][k] = now + 1;
+}
+
+/* A scout goes at the seat's target while it cannot see it, else at the start
+ * or pad seen least lately, and with all of those seen this minute at ground
+ * out of sight drawn at random. A walker goes only where it can walk. */
+#define AI_LOOK_FRESH 3600
+#define AI_LOOK_DRAWS 8
+static void ai_scout_step(const GameWorld *world, const Unit *units, int unit_count,
+                          int i, int p, int now) {
+    const Unit *u = &units[i];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    const AiPlayer *ap = &g_ai_players[p];
+    if (u->cmd_kind != UNIT_CMD_NONE || !d) return;
+    if (ap->target_handle >= 0 &&
+        !ai_sees_now(world, units, unit_count, p, ap->target_handle, ap->target_stable_id) &&
+        !ai_within(u->world_x, u->world_y, ap->target_x, ap->target_y, 64) &&
+        ai_unit_ground_reaches(u, d, ap->target_x, ap->target_y)) {
+        Units_CommandMoveUnit(i, ap->target_x, ap->target_y);
+        g_ai_counts[p][TAK_AI_COUNT_SCOUTS]++;
+        return;
+    }
+    int32_t xs[AI_LOOK_POINTS], ys[AI_LOOK_POINTS];
+    int n = ai_look_points(world, xs, ys);
+    int best = -1;
+    int64_t best_d = 0;
+    for (int k = 0; k < n; k++) {
+        if (ai_within(u->world_x, u->world_y, xs[k], ys[k], 64)) continue;
+        if (!ai_unit_ground_reaches(u, d, xs[k], ys[k])) continue;
+        int64_t dx = (int64_t)xs[k] - u->world_x, dy = (int64_t)ys[k] - u->world_y;
+        int64_t dd = dx * dx + dy * dy;
+        if (best >= 0 && (g_ai_look[p][k] > g_ai_look[p][best] ||
+                          (g_ai_look[p][k] == g_ai_look[p][best] && dd >= best_d))) continue;
+        best = k;
+        best_d = dd;
+    }
+    int32_t gx = 0, gy = 0;
+    int go = best >= 0;
+    if (go) { gx = xs[best]; gy = ys[best]; }
+    if (!go || (g_ai_look[p][best] && now + 1 - g_ai_look[p][best] <= AI_LOOK_FRESH)) {
+        int found = 0;
+        uint32_t w = world->map_pixels_w > 64 ? (uint32_t)world->map_pixels_w - 64 : 1;
+        uint32_t h = world->map_pixels_h > 64 ? (uint32_t)world->map_pixels_h - 64 : 1;
+        for (int k = 0; k < AI_LOOK_DRAWS; k++) {
+            int32_t x = (32 + (int32_t)ai_rand(w)) & ~15, y = (32 + (int32_t)ai_rand(h)) & ~15;
+            if (Fog_IsVisibleForPlayer(world, p, x, y) ||
+                !ai_unit_ground_reaches(u, d, x, y)) continue;
+            int fresh = Fog_StateAtForPlayer(world, p, x, y) == TAK_FOG_UNEXPLORED ? 2 : 1;
+            if (fresh <= found) continue;
+            found = fresh;
+            gx = x;
+            gy = y;
+            go = 1;
+        }
+    }
+    if (!go) return;
+    Units_CommandMoveUnit(i, gx, gy);
+    g_ai_counts[p][TAK_AI_COUNT_SCOUTS]++;
+}
 
 /* ── A cut off seat's warships (A-015) ─────────────────────────────── */
 
@@ -6058,7 +6589,9 @@ static AiTask ai_fleet_read(const GameWorld *world, const Unit *units, int unit_
                                             AI_DEFEND_RADIUS)) fs.near_home = 1;
             if (d2 < best_ship) { best_ship = d2; r->ship = i; }
         } else if (td->max_velocity <= 0.0f && d2 < best_bld &&
-                   AI_UnitAssetValue(td, world->cfg.monarch_expendable) > 0) {
+                   AI_UnitAssetValue(td, world->cfg.monarch_expendable) > 0 &&
+                   (!ai_memory_on(p) || ai_seen_has(p, i, t->stable_id, NULL, NULL))) {
+            /* With the memory on, a building the seat has seen (A-019). */
             int32_t mx, my;
             if (!ai_sea_mark(world, mc, flag->max_slope, lx, ly, t, reach, &mx, &my)) continue;
             best_bld = d2;
@@ -6351,6 +6884,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
         ap->build_freeze_until = now + 2 * (30 + r);
         ap->freeze_pending = 0;
     }
+    ai_look_update(world, p, now);
     ai_update_wave_target(world, units, unit_count, p);
     ai_find_fires(world, p);
     int allied = 0;
@@ -6592,6 +7126,19 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     AiTask fleet_task = ai_fleet_read(world, units, unit_count, p, &fleet);
     AI_MARK(4);
     int ai_cat = 5;
+    /* One loose fighter out on a move past home is the one looking (A-019). */
+    int looking = 0;
+    for (int i = 0; i < unit_count && i < AI_MEMBER_CAP && !looking; i++) {
+        const Unit *u = &units[i];
+        looking = u->alive == UNIT_ALIVE_ACTIVE && u->player_id == p && !g_ai_member[i] &&
+                  u->cmd_kind == UNIT_CMD_MOVE && ai_beyond_home(p, u->cmd_x, u->cmd_y) &&
+                  ai_def_is_mobile_combat(Units_GetDef(u->def_idx));
+    }
+    /* Whether an enemy is still in the game, which every player is told. */
+    int foes_left = 0;
+    for (int q = 1; q <= TAK_MAX_PLAYERS && !foes_left; q++)
+        foes_left = q != p && ai_valid_player(world, q) && Units_PlayersAreEnemies(p, q) &&
+                    !world->stats[q].eliminated && !world->resigned[q];
     for (int i = 0; i < unit_count; i++) {
         const Unit *u = &units[i];
         if (u->player_id != p) continue;
@@ -6640,6 +7187,8 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
                 if (!ferry_maker) own.allowed[AI_ACT_TRAIN_TRANSPORT] = 0;
                 if (!ai_naval_is((int)u->def_idx, AI_NAVAL_WARSHIP_MAKER))
                     own.allowed[AI_ACT_TRAIN_WARSHIP] = 0;
+                if (!ai_naval_is((int)u->def_idx, AI_NAVAL_SCOUT_MAKER))
+                    own.allowed[AI_ACT_TRAIN_SCOUT] = 0;
                 /* A cut off seat's yard trains only what the sea calls for,
                  * and the rest of the mana goes to the army (A-015). */
                 if (ps.cut_off && !(g_ai_tactics_off[p] & TAK_AI_TACTIC_FLEET) &&
@@ -6652,7 +7201,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
                     ai_def_is_mobile_producer((int)u->def_idx))
                     fact = AI_Plan_NextAction(&ps, &own, AI_ACTOR_FACTORY, &goal);
                 if ((fact == AI_ACT_TRAIN || fact == AI_ACT_TRAIN_TRANSPORT ||
-                     fact == AI_ACT_TRAIN_WARSHIP) &&
+                     fact == AI_ACT_TRAIN_WARSHIP || fact == AI_ACT_TRAIN_SCOUT) &&
                     ai_execute_build(world, units, unit_count, i, def, fact)) {
                     act = fact;
                 } else {
@@ -6728,6 +7277,11 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
             ai_fleet_step(world, units, unit_count, i, p, def, fleet_task, &fleet);
             continue;
         }
+        /* A scout looks at what the seat has not seen (A-019). */
+        if (ai_naval_is((int)u->def_idx, AI_NAVAL_SCOUT) && ai_scouting(world, p)) {
+            ai_scout_step(world, units, unit_count, i, p, now);
+            continue;
+        }
         if (!ai_def_is_combat_unit(def)) continue;
         /* A target gone where this walker cannot get at it is given up. */
         if (u->cmd_kind == UNIT_CMD_ATTACK && u->target >= 0 && u->target < unit_count &&
@@ -6771,6 +7325,17 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
             ai_ship_to_berth(world, units, unit_count, p, i, -1);
             continue;
         }
+        /* Knowing of no enemy and with no scout up, one fighter at home goes
+         * to look, so a seat that has lost sight of its enemy finds it (A-019). */
+        if (!looking && foes_left && ai_memory_on(p) && world->cfg.line_of_sight &&
+            (ap->target_handle < 0 || (!ap->target_reachable && !ps.cut_off)) &&
+            ps.scouts == 0 &&
+            at_stage && (slot < 0 || g_ai_groups[p][slot].mode == AI_GROUP_FORMING)) {
+            looking = 1;
+            if (i < AI_MEMBER_CAP) g_ai_member[i] = 0;
+            ai_scout_step(world, units, unit_count, i, p, now);
+            continue;
+        }
         /* Defence plans hold the units at home instead of a wave. */
         if (army_action == AI_ACT_HOLD && ap->base_known &&
             ai_within(u->world_x, u->world_y, ap->base_x, ap->base_y,
@@ -6811,8 +7376,8 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
             /* A member with nothing to do goes on at the group's
              * target, wherever it stands. */
             ai_dispatch_at(world, units, unit_count, i, p, def,
-                           g->target_player, g->target_handle, g->target_x,
-                           g->target_y);
+                           g->target_player, g->target_handle, g->target_stable_id,
+                           g->target_x, g->target_y);
         }
     }
     AI_MARK(ai_cat);
@@ -6884,6 +7449,11 @@ void TAK_AI_TickSkirmish(GameWorld *world) {
      * as in a battle that ran straight through. */
     double ai_t = g_ai_prof_on ? ai_now_ms() : 0.0;
     ai_update_bases(world, units, unit_count);
+    /* A seat about to think first takes in what it sees (A-019). */
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++)
+        if (world->cfg.players[p - 1].kind == TAK_SLOT_AI &&
+            (now % 60) == ai_seat_phase(world, p))
+            ai_seen_update(world, units, unit_count, p, now);
     AI_Influence_Refresh(world);
     AI_MARK(0);
     if (shared) {

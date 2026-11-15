@@ -854,7 +854,7 @@ Format per entry:
   gathered with them strike on their own strength. A ferry goes for the
   enemy asset on the target's ground, a building, lodestone, builder or
   the monarch, that is worth most for the enemy arms round it, counting
-  every enemy unit the way the target choice does. The walkers go
+  the enemy units the target choice counts (A-019). The walkers go
   aboard once a full hold, or as many as the seat has, is gathered with
   the strength a strike needs against those arms, or with a launch's
   worth of at least half their strength when the long wait of A-007 is
@@ -905,14 +905,8 @@ Format per entry:
   whose leader has no route does not march (legacy:18385), so an AI on
   an island sits. All of this is ours, beyond the original, and the
   owner agreed to it. The Dark Mason riding a Ghost Ship is A-016, and
-  warships and fighting at sea are A-015. The issue's birds sent out in
-  place of seeing the whole map are not done. The target choice still
-  takes every enemy unit, seen or not, as the original does
-  (legacy:21137-21168). A seat that kept one scout up, which only added
-  sight, did worse in duels against one without, because what it saw fed
-  the strength tests and it held back more. Choosing only from what was
-  seen would want a memory of the enemy per seat in the save and a new
-  balance for those tests.
+  warships and fighting at sea are A-015, and the issue's birds sent out
+  in place of seeing the whole map are A-019.
 - Measured: in duels of 20 minutes, each seed played twice with the
   seats swapped, a seat with A-013 against one with everything else.
   Over 48 games on Varro Passage and Cairbray Coast Landing, the two
@@ -1129,6 +1123,71 @@ Format per entry:
   the build score's brake on dear types, and its once a think draw did
   not lift Zhon off 0 in 15 games without this.
 - Citation: the manual describes no AI rule at this level.
+
+## A-019: A computer can know only the enemies it has seen, and send a scout to look
+
+- Change: off by default, for measuring. Under `TAK_AI_TACTIC_MEMORY` a
+  computer seat remembers each enemy unit its own units have seen: its
+  kind, its owner, whether it was a frame, and where and when it was last
+  seen. Seen again it is kept up to date. Out of sight it stays where it
+  was last seen, and once that spot is in the seat's sight with the unit
+  gone the seat forgets it. A unit that dies out of sight is remembered
+  until its spot is seen, a unit that shoots at the seat's units is noted
+  where it fired from, and a player out of the game is forgotten. The
+  seat begins a match knowing what stands by each enemy's start, as a
+  player knows a map's starts, but not how strong it is. The wave target,
+  a group's next target, the asset a ferry goes for and the buildings a
+  fleet shells come from this memory, at the remembered spot, and a target
+  is attacked once it is seen again. A group whose target falls presses on
+  at a building the seat remembers or a mover it saw in the last minute, as
+  it does at one in sight. The arms round a landing count each
+  enemy arm the seat has seen until it is seen gone. The strength a wave
+  weighs at its target is still what the seat sees there and what it last
+  saw there (A-007). A remembered mover's score falls by one more part for
+  each minute it has been out of sight. A wave ashore over the water,
+  where it has no way home, does not break off, and a seat that knows of
+  no enemy it can walk to and has no scout sends one fighter from home to
+  look. With Line of Sight off the seat sees everything and plays as
+  before. Under `TAK_AI_TACTIC_SCOUT`, with Line of Sight on, the seat
+  keeps one cheap unarmed flyer up, the Spyhawk, Parrot, Gargoyle or Bat,
+  trained by whatever makes one when that producer is free. It flies at
+  the seat's target while that is out of sight, otherwise at the start or
+  sacred pad the seat has seen least lately, and with all of those seen
+  in the last minute at ground out of sight drawn at random. After losing
+  one the seat waits two minutes before the next. The memory is in the
+  save and the simulation hash.
+- Why: issue #454 asks for a computer that does not see the whole map but
+  sends its birds out to find what to attack. The original's target
+  scorer reads every enemy unit, seen or not, and only divides an unseen
+  one's score by 2 to 20 (legacy:15411-15415), so it sees the whole map
+  when it picks a target. All of this is ours. It stays off until a seat
+  with it plays as well as one that sees the whole map, and no lobby
+  option turns it on yet.
+- Measured: duels of 20 minutes, every kingdom against itself, seeds 1
+  and 2 with the seats swapped, a seat with both tactics against today's
+  computer, on Two Castles, Tarosian Plain, Varro Passage and Meredoc Keys
+  (starts 1 and 3, and 1 and 5), 80 games. The bars, set before
+  measuring, were to win or be ahead at the end at least as often, within
+  one standard error, and on the island maps to land in 90 percent as
+  many seats with 90 percent as many walkers ashore. On main at 4e9dd74
+  the seat with them won or was ahead in 27 against 52, 7 against 25 on
+  land and 20 against 27 on the islands. It landed in 27 seats against
+  30, in 62 landings against 95, with 279 walkers ashore against 692, and
+  its monarch fell in 14 games against 5, so both bars are missed. A
+  group that presses on at what it remembers is the one fix kept from a
+  pass at the land losses. Before it the seat's groups held the ground
+  where the other seat's followed their target. With it, on ddce9d0 under
+  an earlier draft of the castle and leash rules of A-018, it won or was
+  ahead in 36 against 44, and before it in 28 against 52 on 9113c49.
+  A first version also fed what it remembered into the maps the
+  strength tests read. It held its waves at home against what it
+  remembered round the target, where the other seat held none, and in 36
+  games won or was ahead in 10 against 26. So it stays off. With both off
+  the computer plays as before to the unit: a 20 minute duel on Varro
+  Passage printed the same figures as main, and the pinned simulation
+  hashes match main's once the new fields are left out of the hash.
+- Citation: the manual describes no AI rule at this level. Behaviour note
+  `docs/notes/2026-09-04-legacy-ai.md`, "Target choice".
 
 ## T-001: Flying transports load and unload by the ground rules
 
