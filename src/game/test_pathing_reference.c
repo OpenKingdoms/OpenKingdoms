@@ -1,7 +1,8 @@
 /* src/game/pathing.c at 0835251, before plan buffers were kept, for
  * test_path_buffers to hold the planner to. Below the renames it is that
- * revision unchanged but for the step cost, which follows the live
- * planner's bad ground. */
+ * revision, with the walk out of a trapped start and the first point of
+ * a compressed route taken in as the planner has them, and the step cost
+ * following the live planner's bad ground. */
 
 #define TAK_PathDebugSetClock         Ref_PathDebugSetClock
 #define TAK_PathDebugResetEvery       Ref_PathDebugResetEvery
@@ -935,10 +936,6 @@ typedef struct PlanCtx {
     /* Set for a flow field: ground and what is built, and no one parked
      * on it, since a group's own members stand all over its start. */
     int ignore_live;
-    /* One byte per cell, 0 not asked yet, 1 no, 2 yes. Crossability
-     * costs a terrain sample and four occupancy reads, and a pinched
-     * search asks about the same cell from several neighbours. */
-    uint8_t *cross_memo;
     /* One byte per cell: PMASK_UNASKED, or which placements are legal
      * there with the live layer on, after mask_connected(). */
     uint8_t *pmask;
@@ -1131,96 +1128,296 @@ static void cell_waypoint(const PlanCtx *c, int cell,
     *wy = placement_centre(ty, c->fz);
 }
 
-/* Ground the unit can physically cross, footprint or no footprint:
- * the single point terrain and water test the mover applies per step,
- * plus nothing else standing on the cell. A unit wedged on a spit its
- * footprint does not fit still walks along it, and this is the ground
- * a pinched search is allowed to use. */
-static int cell_crossable(const PlanCtx *c, int x, int y) {
-    if (x < 0 || y < 0 || x >= c->cw || y >= c->ch) return 0;
-    /* TERRAIN is what a crossing relaxes, and only terrain. One
-     * walkable tile in the cell is enough: the unit walks a line
-     * through it, not a footprint on its centre, and a cell holds two
-     * tiles per axis so a 16 px band lies on one of them. */
-    int tx0 = x * OCC_PER_PATH_CELL, ty0 = y * OCC_PER_PATH_CELL;
-    int any = 0;
-    for (int dy = 0; dy < OCC_PER_PATH_CELL && !any; dy++) {
-        for (int dx = 0; dx < OCC_PER_PATH_CELL; dx++) {
-            int tx = tx0 + dx, ty = ty0 + dy;
-            if (c->plain) {
-                if (tx < c->tw && ty < c->th && c->plain[ty * c->tw + tx]) {
-                    any = 1;
-                    break;
-                }
-            } else {
-                int32_t px = tile_to_world(tx), py = tile_to_world(ty);
-                if (Terrain_IsWalkable(c->world, px, py, c->slope) &&
-                    water_ok(c->world, c->mc, px, py)) {
-                    any = 1;
-                    break;
-                }
-            }
-        }
-    }
-    if (!any) return 0;
+/* ── The way out of a trapped start ─────────────────────────────────
+ * A unit whose body fits no placement of its cell walks out by the
+ * step's own rule, 16 px tiles under its centre, to tiles that centre
+ * a legal placement. Each is a start for the cell search. */
+#define ESC_SEEDS 256
+#define ESC_R 128                       /* tiles each way from the unit */
+#define ESC_W (2 * ESC_R + 1)
+#define ESC_TILES (ESC_W * ESC_W)
+#define ESC_SETTLE_MAX 4096
+#define ESC_HEAP (ESC_SETTLE_MAX * 8 + 8)
+/* Shut ground is crossed only this near the unit, as the mover's
+ * escape hatch lets a centre on it step out. */
+#define ESC_SHUT_R 2
+/* A tile in its own cell or in a cell a route may stand in costs what
+ * open ground does. One in a cell with no placement costs, a cell of
+ * it, PATH_PINCH_COST more, the price the cell crossings had. */
+#define ESC_NEAR 5
+#define ESC_NEAR_DIAG 7
+#define ESC_FAR ((PATH_PINCH_COST + 10) / 2)
+#define ESC_FAR_DIAG ((PATH_PINCH_COST + 14) / 2)
+/* A search that runs out within this many cells, from a unit whose body
+ * is partly off its ground, began in a pocket the step let its centre
+ * into and no slide leads out of. It is walked out the same way, to
+ * placements outside the pocket. */
+#define PATH_POCKET_CELLS 64
+
+typedef struct EscSeed { int cell, bit, tile, cost; } EscSeed;
+
+static const int g_esc_d8[8][2] = {
+    { 1, 0 }, {-1, 0 }, { 0, 1 }, { 0,-1 },
+    { 1, 1 }, {-1, 1 }, { 1,-1 }, {-1,-1 }
+};
+#define ESC_NONE 0xFF
+
+static struct {
+    int ox, oy;                         /* the window's top left tile */
+    int settled;
+    int32_t dist[ESC_TILES];
+    uint8_t from[ESC_TILES];            /* the step that reached it */
+    uint8_t seen[ESC_TILES];            /* 1 queued, 2 settled */
+    int32_t hkey[ESC_HEAP], hnode[ESC_HEAP];
+    int hn;
+    EscSeed seed[ESC_SEEDS];
+    int nseed;
+    int chain[ESC_SETTLE_MAX + 1];
+} g_esc;
+
+/* Terrain and water at the tile, as the placement mask reads them. */
+static int esc_ground(const PlanCtx *c, int tx, int ty) {
+    if (tx < 0 || ty < 0 || tx >= c->mtw || ty >= c->mth) return 0;
+    if (c->plain) return tx < c->tw && ty < c->th && c->plain[ty * c->tw + tx];
+    int32_t px = tile_to_world(tx), py = tile_to_world(ty);
+    return Terrain_IsWalkable(c->world, px, py, c->slope) &&
+           water_ok(c->world, c->mc, px, py);
+}
+
+/* Water alone. The mover never relaxes it (unit_step_refused). */
+static int esc_dry(const PlanCtx *c, int tx, int ty) {
+    if (esc_ground(c, tx, ty)) return 1;
+    return water_ok(c->world, c->mc, tile_to_world(tx), tile_to_world(ty));
+}
+
+/* Nothing built or parked under the body of a unit centred on this
+ * tile, the tiles the step stamps (Occ_TileOf(centre - fx * 8)). */
+static int esc_body_clear(const PlanCtx *c, int tx, int ty) {
     if (!c->world->occ) return 1;
-    /* OCCUPANCY is never relaxed, and it is asked of the whole
-     * footprint, not of the cell. The mover's escape hatch relaxes
-     * slope and features so a unit can leave illegal ground and never
-     * relaxes what is built (occ_step_blocked in units.c), so a
-     * crossing that puts a four tile unit's body through a one tile
-     * gap between two buildings is a route it could never walk. The
-     * terrain test above cannot catch that: a gap can be walkable,
-     * dry and unoccupied at its own tiles and still be a gap the unit
-     * does not fit in. */
-    int fx = c->fx < OCC_PER_PATH_CELL ? OCC_PER_PATH_CELL : c->fx;
-    int fz = c->fz < OCC_PER_PATH_CELL ? OCC_PER_PATH_CELL : c->fz;
-    int bx0 = cell_fp_anchor(x, fx), by0 = cell_fp_anchor(y, fz);
-    for (int dy = 0; dy < fz; dy++) {
-        for (int dx = 0; dx < fx; dx++) {
-            if (Occ_QueryTilePlan(c->world, bx0 + dx, by0 + dy,
-                                  c->player_id, c->self_plus1) == 1) {
+    int bx = tx - c->fx / 2, by = ty - c->fz / 2;
+    for (int dy = 0; dy < c->fz; dy++)
+        for (int dx = 0; dx < c->fx; dx++)
+            if (Occ_QueryTilePlan(c->world, bx + dx, by + dy,
+                                  c->player_id, c->self_plus1) == 1)
                 return 0;
+    return 1;
+}
+
+/* Is this tile the centre tile of a legal placement, and which? That
+ * placement's centre lies in the tile, so it is one of its cell's. */
+static int esc_exit(const PlanCtx *c, int tx, int ty, int *cell, int *bit) {
+    int ax = tx - c->fx / 2, ay = ty - c->fz / 2;
+    int cx = world_to_cell(placement_centre(ax, c->fx));
+    int cy = world_to_cell(placement_centre(ay, c->fz));
+    if (ax < 0 || ay < 0 || cx < 0 || cy < 0 || cx >= c->cw || cy >= c->ch)
+        return 0;
+    int ptx[FP_PLACEMENTS], pty[FP_PLACEMENTS];
+    cell_fp_placements(cx, cy, c->fx, c->fz, ptx, pty);
+    for (int p = 0; p < FP_PLACEMENTS; p++) {
+        if (ptx[p] != ax || pty[p] != ay) continue;
+        if (!((plan_mask(c, cx, cy) >> p) & 1)) return 0;
+        *cell = cell_index(cx, cy, c->cw);
+        *bit = p;
+        return 1;
+    }
+    return 0;
+}
+
+/* Ties go to the lower tile index, so every machine settles alike. */
+static int esc_less(int ka, int na, int kb, int nb) {
+    return ka < kb || (ka == kb && na < nb);
+}
+
+static void esc_push(int key, int node) {
+    int i = g_esc.hn++;
+    while (i > 0) {
+        int up = (i - 1) / 2;
+        if (!esc_less(key, node, g_esc.hkey[up], g_esc.hnode[up])) break;
+        g_esc.hkey[i] = g_esc.hkey[up];
+        g_esc.hnode[i] = g_esc.hnode[up];
+        i = up;
+    }
+    g_esc.hkey[i] = key;
+    g_esc.hnode[i] = node;
+}
+
+static int esc_pop(int *node) {
+    if (g_esc.hn <= 0) return -1;
+    int key = g_esc.hkey[0];
+    *node = g_esc.hnode[0];
+    int lk = g_esc.hkey[--g_esc.hn], ln = g_esc.hnode[g_esc.hn];
+    int i = 0;
+    for (;;) {
+        int l = 2 * i + 1, r = l + 1, m = i;
+        int mk = lk, mn = ln;
+        if (l < g_esc.hn && esc_less(g_esc.hkey[l], g_esc.hnode[l], mk, mn)) {
+            m = l;
+            mk = g_esc.hkey[l];
+            mn = g_esc.hnode[l];
+        }
+        if (r < g_esc.hn && esc_less(g_esc.hkey[r], g_esc.hnode[r], mk, mn))
+            m = r;
+        if (m == i) break;
+        g_esc.hkey[i] = g_esc.hkey[m];
+        g_esc.hnode[i] = g_esc.hnode[m];
+        i = m;
+    }
+    g_esc.hkey[i] = lk;
+    g_esc.hnode[i] = ln;
+    return key;
+}
+
+/* Walk out from the unit's tile, to no start in a skip cell. Water is
+ * never crossed. From ground
+ * only onto ground, past no corner either side of which is shut, and
+ * from shut ground near the unit anywhere near it. What is built or
+ * parked is crossed only while the body already stands on some, as
+ * the mover's occ_escape allows, and never beside a diagonal. Gives
+ * how many starts were found, the cheapest for each cell. */
+static int esc_flood(const PlanCtx *c, int32_t x, int32_t y,
+                     const uint8_t *skip) {
+    int t0x = (int)(x / TAK_OCC_TILE_PX), t0y = (int)(y / TAK_OCC_TILE_PX);
+    g_esc.ox = t0x - ESC_R;
+    g_esc.oy = t0y - ESC_R;
+    g_esc.hn = 0;
+    g_esc.nseed = 0;
+    g_esc.settled = 0;
+    memset(g_esc.seen, 0, sizeof(g_esc.seen));
+    int scx = t0x / OCC_PER_PATH_CELL, scy = t0y / OCC_PER_PATH_CELL;
+    int n0 = ESC_R * ESC_W + ESC_R;
+    g_esc.dist[n0] = 0;
+    g_esc.from[n0] = ESC_NONE;
+    g_esc.seen[n0] = 1;
+    esc_push(0, n0);
+    int node, key;
+    while (g_esc.settled < ESC_SETTLE_MAX && (key = esc_pop(&node)) >= 0) {
+        if (g_esc.seen[node] == 2 || key != g_esc.dist[node]) continue;
+        g_esc.seen[node] = 2;
+        g_esc.settled++;
+        int wx = node % ESC_W, wy = node / ESC_W;
+        int tx = g_esc.ox + wx, ty = g_esc.oy + wy;
+        int cell = 0, bit = 0;
+        if (node != n0 && esc_exit(c, tx, ty, &cell, &bit) &&
+            !(skip && skip[cell])) {
+            int dup = 0;
+            for (int i = 0; i < g_esc.nseed && !dup; i++)
+                dup = g_esc.seed[i].cell == cell;
+            if (!dup && g_esc.nseed < ESC_SEEDS) {
+                EscSeed *s = &g_esc.seed[g_esc.nseed++];
+                s->cell = cell;
+                s->bit = bit;
+                s->tile = node;
+                s->cost = key;
             }
+            continue;
+        }
+        int on_ground = esc_ground(c, tx, ty);
+        int body_clear = esc_body_clear(c, tx, ty);
+        for (int di = 0; di < 8; di++) {
+            int ddx = g_esc_d8[di][0], ddy = g_esc_d8[di][1];
+            int nwx = wx + ddx, nwy = wy + ddy;
+            if (nwx < 0 || nwy < 0 || nwx >= ESC_W || nwy >= ESC_W) continue;
+            int ni = nwy * ESC_W + nwx;
+            if (g_esc.seen[ni] == 2) continue;
+            int ntx = tx + ddx, nty = ty + ddy;
+            if (ntx < 0 || nty < 0 || ntx >= c->mtw || nty >= c->mth) continue;
+            if (!esc_dry(c, ntx, nty)) continue;
+            int diag = ddx && ddy;
+            if (on_ground) {
+                if (!esc_ground(c, ntx, nty)) continue;
+                if (diag && (!esc_ground(c, ntx, ty) || !esc_ground(c, tx, nty)))
+                    continue;
+            } else if (!esc_ground(c, ntx, nty)) {
+                int rx = ntx - t0x, ry = nty - t0y;
+                if (rx < -ESC_SHUT_R || rx > ESC_SHUT_R ||
+                    ry < -ESC_SHUT_R || ry > ESC_SHUT_R) continue;
+            }
+            if (body_clear) {
+                if (!esc_body_clear(c, ntx, nty)) continue;
+                if (diag && (!esc_body_clear(c, ntx, ty) ||
+                             !esc_body_clear(c, tx, nty))) continue;
+            }
+            int ncx = ntx / OCC_PER_PATH_CELL, ncy = nty / OCC_PER_PATH_CELL;
+            int near = (ncx == scx && ncy == scy) || plan_mask(c, ncx, ncy);
+            int nk = key + (near ? (diag ? ESC_NEAR_DIAG : ESC_NEAR)
+                                 : (diag ? ESC_FAR_DIAG : ESC_FAR));
+            if (g_esc.seen[ni] && g_esc.dist[ni] <= nk) continue;
+            if (g_esc.hn >= ESC_HEAP) continue;
+            g_esc.seen[ni] = 1;
+            g_esc.dist[ni] = nk;
+            g_esc.from[ni] = (uint8_t)di;
+            esc_push(nk, ni);
         }
     }
-    return 1;
+    return g_esc.nseed;
 }
 
-/* Can the search step onto this cell, and what does it cost over the
- * plain move? A cell a route may start and stand on is free.
- *
- * A cell the unit can only walk across, not plan on, is offered ONLY
- * while the search is still on the trapped ground it began in:
- * from_pinch says the cell being expanded is the start or is itself
- * one of those. That is a rule, not a price. Charging a price alone
- * and allowing the crossing anywhere meant that once a legal detour
- * ran past a hundred cells the search would rather squeeze a four
- * tile unit through a one tile gap, which is the clearance guarantee
- * inverted. The price is still there, so even inside the pinch the
- * route leaves it at the first opportunity. */
-static int cell_step_cost(PlanCtx *c, int x, int y, int from_pinch,
-                          int *extra) {
-    *extra = 0;
-    if (cell_ok(c, x, y)) return 1;
-    if (!c->allow_pinch || !from_pinch) return 0;
-    if (x < 0 || y < 0 || x >= c->cw || y >= c->ch) return 0;
-    int cross;
-    if (c->cross_memo) {
-        uint8_t *m = &c->cross_memo[y * c->cw + x];
-        if (!*m) *m = (uint8_t)(cell_crossable(c, x, y) ? 2 : 1);
-        cross = (*m == 2);
-    } else {
-        cross = cell_crossable(c, x, y);
+static const EscSeed *esc_seed_of(int cell) {
+    for (int i = 0; i < g_esc.nseed; i++)
+        if (g_esc.seed[i].cell == cell) return &g_esc.seed[i];
+    return NULL;
+}
+
+/* The walk out to a start as raw route points: its first tile, the
+ * tiles where it turns, then the start placement's centre. Gives how
+ * many, or -1 when they do not fit in cap. */
+static int esc_lay(const PlanCtx *c, const EscSeed *s, int *px, int *py,
+                   int cap) {
+    int *chain = g_esc.chain;
+    int len = 0;
+    for (int t = s->tile;;) {
+        if (len > ESC_SETTLE_MAX) return -1;
+        chain[len++] = t;
+        int d = g_esc.from[t];
+        if (d == ESC_NONE) break;
+        t -= g_esc_d8[d][1] * ESC_W + g_esc_d8[d][0];
     }
-    if (!cross) return 0;
-    *extra = PATH_PINCH_COST;
-    return 1;
+    /* chain runs exit first, the unit's own tile last. */
+    int n = 0;
+    for (int i = len - 2; i >= 1; i--) {
+        int prev = chain[i + 1], t = chain[i], next = chain[i - 1];
+        if (i < len - 2 && t - prev == next - t) continue;
+        if (n + 1 >= cap) return -1;
+        px[n] = tile_to_world(g_esc.ox + t % ESC_W);
+        py[n] = tile_to_world(g_esc.oy + t / ESC_W);
+        n++;
+    }
+    int ptx[FP_PLACEMENTS], pty[FP_PLACEMENTS];
+    cell_fp_placements(s->cell % c->cw, s->cell / c->cw, c->fx, c->fz, ptx, pty);
+    if (n + 1 >= cap) return -1;
+    px[n] = placement_centre(ptx[s->bit], c->fx);
+    py[n] = placement_centre(pty[s->bit], c->fz);
+    return n + 1;
 }
 
-static int cell_steppable(PlanCtx *c, int x, int y, int from_pinch) {
-    int extra;
-    return cell_step_cost(c, x, y, from_pinch, &extra);
+/* Does a body walking the line from a to b stand wholly on ground the
+ * class crosses, with nothing built under it, at every pixel? */
+static int body_line_ok(const PlanCtx *c, int32_t ax, int32_t ay,
+                        int32_t bx, int32_t by) {
+    int64_t dx = (int64_t)bx - ax, dy = (int64_t)by - ay;
+    int64_t adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
+    int64_t steps = adx > ady ? adx : ady;
+    int lx = INT_MIN, ly = INT_MIN;
+    for (int64_t s = 0; s <= steps; s++) {
+        int32_t x = steps ? ax + (int32_t)(dx * s / steps) : ax;
+        int32_t y = steps ? ay + (int32_t)(dy * s / steps) : ay;
+        int32_t bxp = x - c->fx * 8, byp = y - c->fz * 8;
+        if (bxp < 0 || byp < 0) return 0;
+        int tx = (int)(bxp / TAK_OCC_TILE_PX), ty = (int)(byp / TAK_OCC_TILE_PX);
+        if (tx == lx && ty == ly) continue;
+        lx = tx;
+        ly = ty;
+        if (tx + c->fx > c->mtw || ty + c->fz > c->mth) return 0;
+        if (c->clear) {
+            if (tx >= c->tw || ty >= c->th || c->clear[ty * c->tw + tx] < c->need)
+                return 0;
+            continue;
+        }
+        for (int r = 0; r < c->fz; r++)
+            for (int k = 0; k < c->fx; k++)
+                if (!esc_ground(c, tx + k, ty + r)) return 0;
+    }
+    return 1;
 }
 
 /* Shift a goal off ground no route can end on. ignore_live skips the
@@ -1374,18 +1571,22 @@ static void lay_anchor(const PlanCtx *c, int cell, int bit, int *tx, int *ty) {
     *ty = pty[bit];
 }
 
-static void route_lay(TAK_Path *out, PlanCtx *c, int start,
+static void route_lay(TAK_Path *out, PlanCtx *c, int start, int start_bit,
                       const int *chain, int chain_len,
                       int32_t unit_x, int32_t unit_y, int compress,
-                      int *px, int *py, int cap) {
-    int n = 0;                  /* raw points, in world pixels */
+                      int *px, int *py, int n0, int cap) {
+    int n = n0;                 /* raw points, in world pixels */
     int have = 0, cur = 0;      /* the placement the chain stands on */
     int prev = start;
     /* Where each cell's last raw point is, for the uncompressed form. */
-    int last_of_cell_from = 0;
+    int last_of_cell_from = n0;
+    int32_t ox = unit_x, oy = unit_y;
 
     int smask = plan_mask(c, start % c->cw, start / c->cw);
-    if (smask) {
+    if (start_bit >= 0) {
+        cur = start_bit;
+        have = 1;
+    } else if (smask) {
         /* The placement nearest where the unit really stands. */
         int64_t best = -1;
         for (int p = 0; p < FP_PLACEMENTS; p++) {
@@ -1398,9 +1599,20 @@ static void route_lay(TAK_Path *out, PlanCtx *c, int start,
             if (best < 0 || d2 < best) { best = d2; cur = p; }
         }
         have = 1;
+        int tx, ty;
+        lay_anchor(c, start, cur, &tx, &ty);
+        ox = placement_centre(tx, c->fx);
+        oy = placement_centre(ty, c->fz);
     }
 
     out->count = 0;
+    if (!compress) {
+        for (int i = 0; i < n0 && out->count < TAK_PATH_MAX_WAYPOINTS; i++) {
+            out->x[out->count] = px[i];
+            out->y[out->count] = py[i];
+            out->count++;
+        }
+    }
     for (int i = 0; i < chain_len && n + 3 < cap; i++) {
         int cell = chain[i];
         int dx = cell % c->cw - prev % c->cw;
@@ -1471,14 +1683,23 @@ static void route_lay(TAK_Path *out, PlanCtx *c, int start,
     }
     if (!compress || n == 0) return;
 
-    /* Keep a point where the chain turns, and the last. */
+    /* Keep a point where the chain turns, and the last. The first is
+     * kept only when a body walking past it, from where the route
+     * begins, would leave the ground it may stand on. */
+    int first = 0;
+    if (n > 1 && (px[0] - ox != px[1] - px[0] || py[0] - oy != py[1] - py[0])) {
+        int k = 1;
+        while (k < n - 1 && px[k] - px[k - 1] == px[k + 1] - px[k] &&
+               py[k] - py[k - 1] == py[k + 1] - py[k])
+            k++;
+        first = !body_line_ok(c, ox, oy, px[k], py[k]);
+    }
     for (int i = 0; i < n; i++) {
-        int keep = (i == n - 1);
-        if (!keep) {
-            int fx = i > 0 ? px[i] - px[i - 1] : 0;
-            int fy = i > 0 ? py[i] - py[i - 1] : 0;
+        int keep = i == n - 1 || (i == 0 && first);
+        if (!keep && i > 0) {
+            int fx = px[i] - px[i - 1], fy = py[i] - py[i - 1];
             int tx = px[i + 1] - px[i], ty = py[i + 1] - py[i];
-            keep = i > 0 && (fx != tx || fy != ty);
+            keep = fx != tx || fy != ty;
         }
         if (!keep) continue;
         if (out->count >= TAK_PATH_MAX_WAYPOINTS) break;
@@ -1574,27 +1795,17 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
     int *g = (int *)tak_malloc((size_t)cells * sizeof(int));
     int *f = (int *)tak_malloc((size_t)cells * sizeof(int));
     int *parent = (int *)tak_malloc((size_t)cells * sizeof(int));
-    int *heap = (int *)tak_malloc((size_t)cells * 8u * sizeof(int));
+    int *heap = (int *)tak_malloc(((size_t)cells * 8u + ESC_SEEDS) * sizeof(int));
     uint8_t *closed = (uint8_t *)tak_malloc((size_t)cells);
     c.pmask = (uint8_t *)tak_malloc((size_t)cells);
     if (c.pmask) memset(c.pmask, PMASK_UNASKED, (size_t)cells);
-    uint8_t *pinched = NULL;
-    if (c.allow_pinch) {
-        c.cross_memo = (uint8_t *)tak_malloc((size_t)cells);
-        if (c.cross_memo) memset(c.cross_memo, 0, (size_t)cells);
-        pinched = (uint8_t *)tak_malloc((size_t)cells);
-        if (pinched) memset(pinched, 0, (size_t)cells);
-    }
-    if (!g || !f || !parent || !heap || !closed ||
-        (c.allow_pinch && !pinched)) {
+    if (!g || !f || !parent || !heap || !closed || !c.pmask) {
         if (g) tak_free(g);
         if (f) tak_free(f);
         if (parent) tak_free(parent);
         if (heap) tak_free(heap);
         if (closed) tak_free(closed);
-        if (c.cross_memo) tak_free(c.cross_memo);
         if (c.pmask) tak_free(c.pmask);
-        if (pinched) tak_free(pinched);
         return 0;
     }
     for (int i = 0; i < cells; i++) {
@@ -1606,10 +1817,9 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
 
     int start = cell_index(sx, sy, c.cw);
     int goal = cell_index(gx, gy, c.cw);
-    /* A long enough order gets the field. A pinched one does not: it
-     * may cross cells the field never measured, and a heuristic that
-     * jumps where it runs out would cost the route its guarantee. */
-    if (g_use_field && ci >= 0 && c.bits && !c.allow_pinch &&
+    /* A long enough order gets the field. Every cell the search opens
+     * is ground a route may stand on, so its estimate holds. */
+    if (g_use_field && ci >= 0 && c.bits &&
         heuristic(sx, sy, gx, gy) >= PATH_FIELD_MIN_CELLS * 10) {
         int marks = field_get(ci);
         for (int m = 0; m < marks; m++) {
@@ -1621,9 +1831,25 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
         }
     }
     int heap_n = 0;
-    g[start] = 0;
-    f[start] = plan_h(&c, start, gx, gy);
-    heap_push(heap, &heap_n, f, start);
+    int best = -1;
+    int best_h = INT_MAX;
+    int seeds = 0;
+    if (c.allow_pinch) {
+        seeds = esc_flood(&c, start_x, start_y, NULL);
+        for (int i = 0; i < seeds; i++) {
+            const EscSeed *s = &g_esc.seed[i];
+            int cost = s->cost + plan_bad(&c, s->cell);
+            g[s->cell] = cost;
+            f[s->cell] = cost + plan_h(&c, s->cell, gx, gy);
+            heap_push(heap, &heap_n, f, s->cell);
+        }
+    } else {
+        g[start] = 0;
+        f[start] = plan_h(&c, start, gx, gy);
+        heap_push(heap, &heap_n, f, start);
+        best = start;
+        best_h = plan_h(&c, start, gx, gy);
+    }
 
     static const int dirs[8][3] = {
         { 1, 0,10 }, {-1, 0,10 }, { 0, 1,10 }, { 0,-1,10 },
@@ -1639,8 +1865,8 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
      * units.c bounds total cost. */
     int max_expanded = cells;
     if (max_expanded > 8192) max_expanded = 8192;
-    int best = start;
-    int best_h = plan_h(&c, start, gx, gy);
+    int walked = c.allow_pinch;
+    for (int pass = 0;; pass++) {
     while (heap_n > 0) {
         int cur = heap_pop(heap, &heap_n, f);
         if (closed[cur]) continue;
@@ -1658,61 +1884,80 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
             best = cur;
         }
         int bad0 = plan_bad(&c, cur);
-        /* Still on the ground the unit is trapped on? Only then may
-         * the next step be a crossing rather than a route cell. */
-        int from_pinch = pinched && (cur == start || pinched[cur]);
+        int free_start = !plan_mask(&c, cx, cy) && cur == start && !c.allow_pinch;
+        if (!plan_mask(&c, cx, cy) && !free_start) continue;
         for (int di = 0; di < 8; di++) {
             int nx = cx + dirs[di][0];
             int ny = cy + dirs[di][1];
-            int extra = 0;
-            if (!cell_step_cost(&c, nx, ny, from_pinch, &extra)) continue;
+            if (!cell_ok(&c, nx, ny)) continue;
             /* No corner cutting past a blocked cell. */
             if (dirs[di][0] != 0 && dirs[di][1] != 0) {
-                if (!cell_steppable(&c, cx + dirs[di][0], cy, from_pinch))
-                    continue;
-                if (!cell_steppable(&c, cx, cy + dirs[di][1], from_pinch))
-                    continue;
+                if (!cell_ok(&c, cx + dirs[di][0], cy)) continue;
+                if (!cell_ok(&c, cx, cy + dirs[di][1])) continue;
             }
             int ni = cell_index(nx, ny, c.cw);
             if (closed[ni]) continue;
-            /* Between two cells a route may stand in, the step has to
-             * be a slide between placements. A crossing, in or out, is
-             * the pinch's business and keeps its own rule. */
-            if (!extra && plan_mask(&c, cx, cy) &&
+            if (!free_start &&
                 !cells_link(&c, cx, cy, dirs[di][0], dirs[di][1], -1,
                             NULL, NULL)) continue;
-            int step = dirs[di][2] + bad0 + plan_bad(&c, ni) + extra;
+            int step = dirs[di][2] + bad0 + plan_bad(&c, ni);
             int ng = g[cur] + step;
             if (ng < g[ni]) {
                 parent[ni] = cur;
                 g[ni] = ng;
                 f[ni] = ng + plan_h(&c, ni, gx, gy);
-                if (pinched) pinched[ni] = (uint8_t)(extra != 0);
                 heap_push(heap, &heap_n, f, ni);
             }
         }
     }
-
-    g_dbg_work += (uint64_t)expanded;
-    if (found || (capped && best != start)) {
-        int end = found ? goal : best;
-        int chain_len = 0;
-        for (int p = end; p >= 0 && p != start; p = parent[p]) {
-            chain_len++;
-            if (chain_len > cells) { chain_len = 0; break; }
+    if (pass == 0 && !found && !capped && !c.allow_pinch &&
+        expanded <= PATH_POCKET_CELLS &&
+        !body_line_ok(&c, start_x, start_y, start_x, start_y)) {
+        walked = 1;
+        seeds = esc_flood(&c, start_x, start_y, closed);
+        if (seeds > 0) {
+            c.allow_pinch = 1;
+            out_path->start_x = start_x;
+            out_path->start_y = start_y;
+            for (int i = 0; i < seeds; i++) {
+                const EscSeed *s = &g_esc.seed[i];
+                int cost = s->cost + plan_bad(&c, s->cell);
+                g[s->cell] = cost;
+                f[s->cell] = cost + plan_h(&c, s->cell, gx, gy);
+                parent[s->cell] = -1;
+                heap_push(heap, &heap_n, f, s->cell);
+            }
+            continue;
         }
-        /* The heap is free now: hold the chain in it, start first. */
-        for (int p = end, i = chain_len - 1; i >= 0 && p >= 0;
-             p = parent[p], i--) {
+    }
+    break;
+    }
+
+    if (walked) expanded += g_esc.settled;
+    g_dbg_work += (uint64_t)expanded;
+    if (found || (capped && best >= 0 && best != start)) {
+        int end = found ? goal : best;
+        int root = end, chain_len = 0;
+        while (parent[root] >= 0 && chain_len <= cells) {
+            root = parent[root];
+            chain_len++;
+        }
+        for (int p = end, i = chain_len - 1; i >= 0; p = parent[p], i--) {
             heap[i] = p;
         }
-        if (chain_len == 0) {
-            /* Already in the goal cell: one point, so a caller can
-             * tell "here" from "no route". */
+        int n0 = 0, sbit = -1;
+        const EscSeed *s = c.allow_pinch ? esc_seed_of(root) : NULL;
+        if (c.allow_pinch) {
+            n0 = s ? esc_lay(&c, s, g, f, cells / 2) : -1;
+            sbit = s ? s->bit : -1;
+        }
+        if (n0 < 0 || chain_len > cells) {
+            /* no route */
+        } else if (chain_len == 0 && n0 == 0) {
             path_put(out_path, &c, end);
         } else {
-            route_lay(out_path, &c, start, heap, chain_len, start_x,
-                      start_y, query->compress, g, f, cells);
+            route_lay(out_path, &c, root, sbit, heap, chain_len, start_x,
+                      start_y, query->compress, g, f, n0, cells);
         }
     }
 
@@ -1721,9 +1966,7 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
     tak_free(parent);
     tak_free(heap);
     tak_free(closed);
-    if (c.cross_memo) tak_free(c.cross_memo);
     if (c.pmask) tak_free(c.pmask);
-    if (pinched) tak_free(pinched);
     return out_path->count;
 }
 
@@ -1963,8 +2206,8 @@ int TAK_PathPlanFlow(const struct GameWorld *world,
         if (p == goal) break;
     }
     if (len == 0 || chain[len - 1] != goal) goto done;
-    route_lay(out_path, &c, start, chain, len, start_x, start_y,
-              query->compress, px, py, cells);
+    route_lay(out_path, &c, start, -1, chain, len, start_x, start_y,
+              query->compress, px, py, 0, cells);
     n = out_path->count > 0 ? out_path->count : -1;
 done:
     if (c.pmask) tak_free(c.pmask);
