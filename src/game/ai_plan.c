@@ -11,7 +11,7 @@
 /* Goals in the order ties are broken. */
 static const AiGoal k_goal_order[] = {
     AI_GOAL_ECONOMY, AI_GOAL_DEFEND, AI_GOAL_CLEAR, AI_GOAL_ATTACK, AI_GOAL_FERRY,
-    AI_GOAL_ARMY, AI_GOAL_FLEET, AI_GOAL_EXPAND
+    AI_GOAL_ARMY, AI_GOAL_SCOUT, AI_GOAL_FLEET, AI_GOAL_EXPAND
 };
 
 /* The planner's world, one integer each. */
@@ -40,6 +40,8 @@ enum {
     V_YARDS_PENDING,
     V_FLEET,                /* armed ships */
     V_FLEET_MAKERS_IDLE,
+    V_SCOUTS,               /* unarmed flyers looking for the seat */
+    V_SCOUT_MAKERS_IDLE,
     V_COUNT
 };
 
@@ -158,6 +160,15 @@ static const GoapAction k_actions[AI_ACT_COUNT - 1] = {
                  AI_EFFECT(V_FLEET, AI_EFF_ADD, 1) },
         .tag = AI_ACTOR_FACTORY,
     },
+    /* And a flyer to look with, on the training gate (A-019). */
+    [ACT(AI_ACT_TRAIN_SCOUT)] = {
+        .name = "train scout",
+        .pre = { AI_COND(V_SCOUT_MAKERS_IDLE, AI_OP_GT, 0),
+                 AI_COND(V_BUILD_EFF, AI_OP_GE, 23) },
+        .eff = { AI_EFFECT(V_SCOUT_MAKERS_IDLE, AI_EFF_SUB, 1),
+                 AI_EFFECT(V_SCOUTS, AI_EFF_ADD, 1) },
+        .tag = AI_ACTOR_FACTORY,
+    },
 };
 
 static const GoapDomain k_domain = {
@@ -196,6 +207,9 @@ static const GoapGoal k_goals[AI_GOAL_COUNT] = {
     [AI_GOAL_FLEET] = {
         .want = { AI_COND_START(V_FLEET, AI_OP_GT, V_FLEET) },
     },
+    [AI_GOAL_SCOUT] = {
+        .want = { AI_COND_START(V_SCOUTS, AI_OP_GT, V_SCOUTS) },
+    },
 };
 
 static void plan_world(const AiPlanState *s, const AiPlanCosts *c,
@@ -224,6 +238,8 @@ static void plan_world(const AiPlanState *s, const AiPlanCosts *c,
     w[V_YARDS_PENDING]     = s->yards_pending;
     w[V_FLEET]             = s->fleet;
     w[V_FLEET_MAKERS_IDLE] = s->fleet_makers_idle;
+    w[V_SCOUTS]            = s->scouts;
+    w[V_SCOUT_MAKERS_IDLE] = s->scout_makers_idle;
 }
 
 AiActorClass AI_Plan_ActorOf(AiAction action) {
@@ -290,6 +306,9 @@ int AI_Plan_GoalPriority(const AiPlanState *s, AiGoal goal) {
          * the sea is lost or a wave is ashore (A-015). */
         if (!s->cut_off || s->transports <= 0 || s->sea_lost || s->foothold) return 0;
         return s->fleet < s->fleet_want && s->fleet_makers_idle > 0 ? 50 : 0;
+    case AI_GOAL_SCOUT:
+        /* After an army in need, and only with a producer free for it. */
+        return s->scout_wanted && s->scout_makers_idle > 0 ? 55 : 0;
     default:
         return 0;
     }
@@ -339,7 +358,7 @@ AiAction AI_Plan_NextAction(const AiPlanState *s, const AiPlanCosts *c,
     for (size_t i = 0; i < sizeof(k_goal_order) / sizeof(k_goal_order[0]); i++) {
         /* What only a producer can answer gives the army no posture. */
         if (actor == AI_ACTOR_ARMY &&
-            k_goal_order[i] == AI_GOAL_FLEET) continue;
+            (k_goal_order[i] == AI_GOAL_FLEET || k_goal_order[i] == AI_GOAL_SCOUT)) continue;
         /* A goal that cannot outrank the one in hand is not searched. */
         if (AI_Plan_GoalPriority(s, k_goal_order[i]) <= best_priority) continue;
         AiPlan plan;

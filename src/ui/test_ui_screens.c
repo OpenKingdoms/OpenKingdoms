@@ -8411,6 +8411,9 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_FIRE_STEPS));
         fprintf(stderr, "duel:   seat %d rides %d, %d set ashore\n", p,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_RIDES), TAK_AI_DebugCount(p, TAK_AI_COUNT_ASHORE));
+        fprintf(stderr, "duel:   seat %d scout flights %d, forgotten %d, remembers %d at the end\n",
+                p, TAK_AI_DebugCount(p, TAK_AI_COUNT_SCOUTS),
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_FORGOTTEN), TAK_AI_DebugSeen(p));
         fprintf(stderr, "duel:   seat %d monarch %s, %lld s past 1280 px of home, sent home %d, "
                 "took secondary %d special %d\n", p,
                 tally->monarch_lost[p] ? "lost" : "standing",
