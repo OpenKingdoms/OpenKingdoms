@@ -121,6 +121,10 @@ int  HUD_IsTargetingMode(int mode);
  * clicked. Returns 1 when the mode is one the HUD dispatches. */
 int  HUD_TriggerCommand(int mode);
 
+/* An order's key presses its action button as a click would. 0 and
+ * nothing done when the selection has no such button. */
+int  HUD_PressOrder(int mode);
+
 /* Returns 1 if (win_x, win_y) hit an action button and the mode
  * was changed/issued; the caller (ingame.c click handler) should
  * treat the click as consumed. Stop is fired immediately and the

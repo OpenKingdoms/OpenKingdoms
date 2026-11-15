@@ -82,6 +82,10 @@ static struct {
     uint8_t mm_look;
     /* A dialog is up and the clock has stopped. */
     uint8_t paused;
+    /* What the briefing found when F2 raised it, to leave as it was. */
+    uint8_t brief_resume_paused;
+    /* Camera bookmarks, F5 to F8. They last the battle and are not saved. */
+    struct { int32_t x, y; uint8_t set; } bookmark[4];
     /* Ctrl+D's question is up, and whether the clock ran before it. */
     uint8_t sd_ask;
     uint8_t sd_was_paused;
@@ -1138,7 +1142,10 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
             return;
         }
     }
-    /* M held on the drag leaves out what Ctrl+M would take. */
+    /* M held on the drag leaves out what Ctrl+M would take. Its press
+     * also armed Move, which a box drag has no use for. */
+    if ((mods & IG_DRAG_NO_MONARCH) && HUD_GetCommandMode() == HUD_CMD_MOVE)
+        HUD_ClearCommandMode();
     int n = Units_SelectInRectExcept(x0, y0, x1, y1, shift_held,
                                      (mods & IG_DRAG_NO_MONARCH) ? "MONARCH" : NULL);
     /* Shift adds to the selection without a voice (legacy:237803). */
@@ -1367,12 +1374,12 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
  * The tick scales it by the frame's scroll distance. */
 static void ig_scroll_dir(const Uint8 *keys, int *out_dx, int *out_dy) {
     int dx = 0, dy = 0;
-    /* With Ctrl down W, A, S and D are select keys, not the camera. */
-    int wasd = !keys[SDL_SCANCODE_LCTRL] && !keys[SDL_SCANCODE_RCTRL];
-    if (keys[SDL_SCANCODE_LEFT]  || (wasd && keys[SDL_SCANCODE_A])) dx -= 1;
-    if (keys[SDL_SCANCODE_RIGHT] || (wasd && keys[SDL_SCANCODE_D])) dx += 1;
-    if (keys[SDL_SCANCODE_UP]    || (wasd && keys[SDL_SCANCODE_W])) dy -= 1;
-    if (keys[SDL_SCANCODE_DOWN]  || (wasd && keys[SDL_SCANCODE_S])) dy += 1;
+    /* The arrows only. The original pans on no letter, and A, S and D
+     * are order keys (Keys.TDF). */
+    if (keys[SDL_SCANCODE_LEFT])  dx -= 1;
+    if (keys[SDL_SCANCODE_RIGHT]) dx += 1;
+    if (keys[SDL_SCANCODE_UP])    dy -= 1;
+    if (keys[SDL_SCANCODE_DOWN])  dy += 1;
     *out_dx = dx;
     *out_dy = dy;
 }
@@ -1494,7 +1501,7 @@ static void ig_debug_keys(const uint8_t *frame_keys, const char *text_in) {
     if (Briefing_IsOpen()) {
         if (ig_briefing_keys(1, frame_keys)) {
             Briefing_Close();
-            InGame_SetPaused(0);
+            InGame_SetPaused(ig.brief_resume_paused);
         }
         memcpy(ig.prev_keys, frame_keys, sizeof(ig.prev_keys));
         return;
@@ -1687,15 +1694,17 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
 
 /* Centre the view on a map point, kept on the map (legacy:120800-120815,
  * legacy:120384-120400). The 3D view follows the classic camera. */
-static void ig_center_camera(GameWorld *world, int32_t x, int32_t y) {
-    int32_t cx = x - world->viewport_w / 2;
-    int32_t cy = y - world->viewport_h / 2;
+static void ig_set_camera(GameWorld *world, int32_t cx, int32_t cy) {
     if (cx < 0) cx = 0;
     if (cy < 0) cy = 0;
     if (cx > world->map_pixels_w - world->viewport_w) cx = world->map_pixels_w - world->viewport_w;
     if (cy > world->map_pixels_h - world->viewport_h) cy = world->map_pixels_h - world->viewport_h;
     world->cam_x = cx;
     world->cam_y = cy;
+}
+
+static void ig_center_camera(GameWorld *world, int32_t x, int32_t y) {
+    ig_set_camera(world, x - world->viewport_w / 2, y - world->viewport_h / 2);
 }
 
 /* The minimap under the original's left click interface. The right
@@ -1827,6 +1836,71 @@ static void ig_world_click_rest(GameWorld *world, int32_t world_x, int32_t world
             TAK_Cmd_EmitSelection(TAK_CMD_MOVE, gx, gy, -1, 0, q);
             ig_play_order_ack(world, "Move");
             fprintf(stderr, "Move -> (%d,%d)\n", gx, gy);
+        }
+    }
+}
+
+/* An order letter presses its sidebar button, so a key and a click cannot
+ * differ. O presses whichever of the gate pair is not lit, as K does. */
+static void ig_order_key(InGameOrderKey k) {
+    int mode = HUD_CMD_NONE;
+    switch (k) {
+    case IG_ORDER_MOVE:   mode = HUD_CMD_MOVE;   break;
+    case IG_ORDER_ATTACK: mode = HUD_CMD_ATTACK; break;
+    case IG_ORDER_GUARD:  mode = HUD_CMD_GUARD;  break;
+    case IG_ORDER_PATROL: mode = HUD_CMD_PATROL; break;
+    case IG_ORDER_LOAD:   mode = HUD_CMD_LOAD;   break;
+    case IG_ORDER_UNLOAD: mode = HUD_CMD_UNLOAD; break;
+    case IG_ORDER_HEAL:   mode = HUD_CMD_HEAL;   break;
+    case IG_ORDER_CLEAR:  mode = HUD_CMD_CLEAR;  break;
+    case IG_ORDER_STOP:   mode = HUD_CMD_STOP;   break;
+    case IG_ORDER_GATE:
+        mode = Units_SelectedOnOffState() == 1 ? HUD_CMD_DEACTIVATE : HUD_CMD_ACTIVATE;
+        break;
+    case IG_ORDER_NONE:
+    default: return;
+    }
+    (void)HUD_PressOrder(mode);
+}
+
+/* Keys.TDF's other keys. Pause is not bound in a live match (N-004), and
+ * a replay keeps its own. */
+static void ig_fn_keys(const GameWorld *world, const Uint8 *keys) {
+    int live = TAK_Match_IsLive();
+    switch (InGame_FnKey(keys, ig.prev_keys)) {
+    case IG_FN_PAUSE:
+        if (!live && !Replay_IsPlaying()) InGame_SetPaused(!InGame_IsPaused());
+        break;
+    case IG_FN_BRIEFING:
+        if (!live && !Briefing_IsOpen()) {
+            ig.brief_resume_paused = (uint8_t)InGame_IsPaused();
+            InGame_OpenBriefing(world);
+        }
+        break;
+    case IG_FN_CLEAR_CHAT:
+        Chat_Reset();
+        break;
+    case IG_FN_SAVE:
+        (void)InGameMenu_OpenBrowser(0);
+        break;
+    case IG_FN_LOAD:
+        (void)InGameMenu_OpenBrowser(1);
+        break;
+    case IG_FN_NONE:
+    default: break;
+    }
+    int w = InGame_WeaponKey(keys, ig.prev_keys);
+    if (w >= 0) (void)HUD_PressOrder(HUD_CMD_W_PRIMARY + w);
+    int store = 0;
+    int b = InGame_BookmarkKey(keys, ig.prev_keys, &store);
+    if (b >= 0 && b < 4) {
+        GameWorld *mw = World_Get();
+        if (store) {
+            ig.bookmark[b].x = mw->cam_x;
+            ig.bookmark[b].y = mw->cam_y;
+            ig.bookmark[b].set = 1;
+        } else if (ig.bookmark[b].set) {
+            ig_set_camera(mw, ig.bookmark[b].x, ig.bookmark[b].y);
         }
     }
 }
@@ -1983,6 +2057,8 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
             if (cloak >= 0)
                 HUD_TriggerCommand(cloak == 1 ? HUD_CMD_CLOAK_OFF : HUD_CMD_CLOAK_ON);
         }
+        ig_order_key(InGame_OrderKey(keys, ig.prev_keys));
+        ig_fn_keys(world, keys);
     }
 #undef IG_PRESSED
 }
@@ -2218,8 +2294,8 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     /* Ctrl+D's question takes Enter, which would open a chat line. */
     int console_keys = ig.sd_ask ? 0 : ig_console_keys(platform->has_focus, keys,
                                                        platform->text_in);
-    if (platform->has_focus && !console_keys && keys[SDL_SCANCODE_F1] &&
-        !ig.prev_keys[SDL_SCANCODE_F1] && !InGameMenu_IsOpen() && !ig.sd_ask) {
+    if (platform->has_focus && !console_keys && InGame_MenuKey(keys, ig.prev_keys) &&
+        !InGameMenu_IsOpen() && !ig.sd_ask) {
         (void)InGameMenu_Open();
     }
     /* A campaign mission opens under its briefing, and the clock waits
@@ -2229,7 +2305,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         uint32_t bbuttons = platform->has_focus ? SDL_GetMouseState(&bmx, &bmy) : 0u;
         int dismiss = ig_briefing_keys(platform->has_focus, keys);
         if (Briefing_Tick(bmx, bmy, (bbuttons & SDL_BUTTON_LMASK) != 0, dismiss)) {
-            InGame_SetPaused(0);
+            InGame_SetPaused(ig.brief_resume_paused);
         }
         SDL_ShowCursor(SDL_ENABLE);
         UI_Present(platform);
@@ -2303,7 +2379,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * module-global CameraConfig (tak_camera.h) — a future options UI
      * tweaks that struct and all of this automatically follows.
      * Keyboard and mouse-edge contributions add to each other, so
-     * holding A at the left edge scrolls at 2× speed. */
+     * holding Left at the left edge scrolls at 2× speed. */
     const CameraConfig *cc = Camera_GetConfig();
     float scroll_px = cc->scroll_px_per_sec * (float)Timer_GetFrameDT(timer);
     if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT])
@@ -2331,7 +2407,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         right = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
         if (DebugPanel_HandleInput(platform, wx, wy, left)) {
             dp_active = 1;
-            dx = dy = 0;     /* panel wins over WASD this frame */
+            dx = dy = 0;     /* panel wins over the keys this frame */
         }
     }
 

@@ -44,7 +44,7 @@
 
 enum { OQ_BUILDER = 0, OQ_SOLDIER, OQ_ARCHER, OQ_BARRACKS, OQ_HELPER, OQ_GATE,
        OQ_HALL, OQ_BOW, OQ_CANNON, OQ_FLYER, OQ_LIMITED, OQ_SPY, OQ_KING,
-       OQ_DEF_COUNT };
+       OQ_OFFICER, OQ_DEF_COUNT };
 
 static void oq_fill(UnitDef *d, const char *name, float velocity, int fx, int fz) {
     memset(d, 0, sizeof(*d));
@@ -153,6 +153,13 @@ static GameWorld *oq_world(void) {
     defs[OQ_SPY].min_cloak_distance = 80;
     defs[OQ_SPY].cap_flags |= UNIT_CAP_CLOAK;
     oq_fill(&defs[OQ_KING], "TESTKING", 1.4f, 1, 1);
+    /* Every button of the order bar, for the order letters. */
+    oq_fill(&defs[OQ_OFFICER], "TESTOFFICER", 1.4f, 1, 1);
+    defs[OQ_OFFICER].cap_flags |= UNIT_CAP_GUARD | UNIT_CAP_PATROL | UNIT_CAP_REPAIR |
+                                  UNIT_CAP_RECLAIM | UNIT_CAP_LOAD | UNIT_CAP_TRANSPORT;
+    defs[OQ_OFFICER].num_weapons = 1;
+    defs[OQ_OFFICER].weapons[0].range = 400;
+    defs[OQ_OFFICER].weapons[0].damage = 10;
     /* FBI category lines, for the select keys. */
     strcpy(defs[OQ_BUILDER].category, "TEST BUILDER");
     strcpy(defs[OQ_HELPER].category, "TEST BUILDER");
@@ -2010,7 +2017,7 @@ TEST(ctrl_letters_select_by_category_and_ctrl_a_takes_all) {
     oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_A);
     ASSERT_EQ_INT(5, oq_selection_count());
     ASSERT(!oq_selected(foe));
-    /* Ctrl holds W, A, S and D off the camera. */
+    /* Ctrl with a letter is a select key, and no letter moves the camera. */
     oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_W);
     ASSERT_EQ_INT(cam_x, w->cam_x);
     ASSERT_EQ_INT(cam_y, w->cam_y);
@@ -2058,11 +2065,258 @@ TEST(m_on_a_box_drag_leaves_the_monarch_out) {
     oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_M);
     ASSERT_EQ_INT(1, oq_selection_count());
     ASSERT(oq_selected(king));
+    /* A plain M tap is Move, armed on the press and nothing else. */
     oq_chord(0, SDL_SCANCODE_M);
     ASSERT_EQ_INT(1, oq_selection_count());
-    ASSERT_EQ_INT(0, HUD_GetCommandMode());
+    ASSERT_EQ_INT(HUD_CMD_MOVE, HUD_GetCommandMode());
     ASSERT_EQ_INT(cam_x, w->cam_x);
     ASSERT_EQ_INT(cam_y, w->cam_y);
+    /* M held through a box drag is the box key, and drops that Move. */
+    InGame_WorldDrag(OQ_CX - 100, y0, OQ_CX + 100, y1, IG_DRAG_NO_MONARCH);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+    ASSERT(oq_selected(sword) && oq_selected(bow) && !oq_selected(king));
+    /* A drag with no M keeps an armed Move, as a drag always has. */
+    HUD_SetCommandMode(HUD_CMD_MOVE);
+    InGame_WorldDrag(OQ_CX - 100, y0, OQ_CX + 100, y1, 0);
+    ASSERT_EQ_INT(HUD_CMD_MOVE, HUD_GetCommandMode());
+    oq_end();
+}
+
+/* ── the order letters ─────────────────────────────────────────── */
+
+static InGameOrderKey oq_order(int key, int ctrl, int alt) {
+    uint8_t keys[SDL_NUM_SCANCODES], prev[SDL_NUM_SCANCODES];
+    memset(keys, 0, sizeof keys);
+    memset(prev, 0, sizeof prev);
+    keys[key] = 1;
+    if (ctrl) keys[SDL_SCANCODE_LCTRL] = 1;
+    if (alt) keys[SDL_SCANCODE_RALT] = 1;
+    return InGame_OrderKey(keys, prev);
+}
+
+/* Keys.TDF binds the letters in lower and upper case pairs to the
+ * UnitCommand each names. Ctrl and Alt make a letter something else,
+ * and a key held down gives its order once. */
+TEST(each_order_letter_decodes_to_its_order) {
+    static const struct { int key; InGameOrderKey order; } k[] = {
+        { SDL_SCANCODE_M, IG_ORDER_MOVE },   { SDL_SCANCODE_A, IG_ORDER_ATTACK },
+        { SDL_SCANCODE_G, IG_ORDER_GUARD },  { SDL_SCANCODE_P, IG_ORDER_PATROL },
+        { SDL_SCANCODE_L, IG_ORDER_LOAD },   { SDL_SCANCODE_U, IG_ORDER_UNLOAD },
+        { SDL_SCANCODE_H, IG_ORDER_HEAL },   { SDL_SCANCODE_C, IG_ORDER_CLEAR },
+        { SDL_SCANCODE_S, IG_ORDER_STOP },   { SDL_SCANCODE_O, IG_ORDER_GATE },
+    };
+    for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+        ASSERT_EQ_INT(k[i].order, oq_order(k[i].key, 0, 0));
+        ASSERT_EQ_INT(IG_ORDER_NONE, oq_order(k[i].key, 1, 0));
+        ASSERT_EQ_INT(IG_ORDER_NONE, oq_order(k[i].key, 0, 1));
+    }
+    /* Letters Keys.TDF leaves empty, and K, which is the cloak's. */
+    ASSERT_EQ_INT(IG_ORDER_NONE, oq_order(SDL_SCANCODE_W, 0, 0));
+    ASSERT_EQ_INT(IG_ORDER_NONE, oq_order(SDL_SCANCODE_D, 0, 0));
+    ASSERT_EQ_INT(IG_ORDER_NONE, oq_order(SDL_SCANCODE_E, 0, 0));
+    ASSERT_EQ_INT(IG_ORDER_NONE, oq_order(SDL_SCANCODE_K, 0, 0));
+    /* Shift is the upper case and gives the same order. */
+    uint8_t keys[SDL_NUM_SCANCODES], prev[SDL_NUM_SCANCODES];
+    memset(keys, 0, sizeof keys);
+    memset(prev, 0, sizeof prev);
+    keys[SDL_SCANCODE_LSHIFT] = 1;
+    keys[SDL_SCANCODE_S] = 1;
+    ASSERT_EQ_INT(IG_ORDER_STOP, InGame_OrderKey(keys, prev));
+    /* Held across frames it fires on the first only. */
+    memcpy(prev, keys, sizeof prev);
+    ASSERT_EQ_INT(IG_ORDER_NONE, InGame_OrderKey(keys, prev));
+}
+
+/* A letter presses the sidebar button for its order, so a unit that
+ * has no such button takes nothing, and W, A, S and D move no camera. */
+TEST(an_order_letter_arms_or_gives_what_the_button_would) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    int32_t cam_x = w->cam_x, cam_y = w->cam_y;
+    int soldier = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX, OQ_CY);
+    int officer = Units_Spawn(OQ_OFFICER, 1, 0, OQ_CX + 60, OQ_CY);
+    int gate = Units_Spawn(OQ_GATE, 1, 0, OQ_CX, OQ_CY + 300);
+    int foe = Units_Spawn(OQ_OFFICER, 2, 1, OQ_CX + 120, OQ_CY);
+    ASSERT(soldier >= 0 && officer >= 0 && gate >= 0 && foe >= 0);
+
+    /* A walker with no weapon can move and stop, and nothing else. */
+    Units_SelectSingle(soldier);
+    oq_chord(0, SDL_SCANCODE_A);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+    oq_chord(0, SDL_SCANCODE_G);
+    oq_chord(0, SDL_SCANCODE_P);
+    oq_chord(0, SDL_SCANCODE_H);
+    oq_chord(0, SDL_SCANCODE_C);
+    oq_chord(0, SDL_SCANCODE_L);
+    oq_chord(0, SDL_SCANCODE_U);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+    oq_chord(0, SDL_SCANCODE_M);
+    ASSERT_EQ_INT(HUD_CMD_MOVE, HUD_GetCommandMode());
+    /* The same key again disarms, as a second click on the button does. */
+    oq_chord(0, SDL_SCANCODE_M);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+
+    /* A unit with every button takes each letter in turn. */
+    Units_SelectSingle(officer);
+    static const struct { int key; int mode; } arm[] = {
+        { SDL_SCANCODE_M, HUD_CMD_MOVE },   { SDL_SCANCODE_A, HUD_CMD_ATTACK },
+        { SDL_SCANCODE_G, HUD_CMD_GUARD },  { SDL_SCANCODE_P, HUD_CMD_PATROL },
+        { SDL_SCANCODE_L, HUD_CMD_LOAD },   { SDL_SCANCODE_U, HUD_CMD_UNLOAD },
+        { SDL_SCANCODE_H, HUD_CMD_HEAL },   { SDL_SCANCODE_C, HUD_CMD_CLEAR },
+    };
+    for (size_t i = 0; i < sizeof(arm) / sizeof(arm[0]); i++) {
+        oq_chord(0, arm[i].key);
+        ASSERT_EQ_INT(arm[i].mode, HUD_GetCommandMode());
+    }
+
+    /* S gives Stop at once and drops whatever was armed. */
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, officer, OQ_CX + 400, OQ_CY, -1, -1, 0));
+    oq_ticks(5);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, oq_unit(officer)->cmd_kind);
+    oq_chord(0, SDL_SCANCODE_S);
+    oq_ticks(5);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+    /* It may take a shot at the foe beside it, but it no longer walks. */
+    ASSERT(oq_unit(officer)->cmd_kind != UNIT_CMD_MOVE);
+
+    /* O presses whichever of the gate's two buttons is not lit. */
+    Units_SelectSingle(gate);
+    int before = Units_SelectedOnOffState();
+    ASSERT(before == 0 || before == 1);
+    oq_chord(0, SDL_SCANCODE_O);
+    oq_ticks(2);
+    ASSERT_EQ_INT(1 - before, Units_SelectedOnOffState());
+    oq_chord(0, SDL_SCANCODE_O);
+    oq_ticks(2);
+    ASSERT_EQ_INT(before, Units_SelectedOnOffState());
+    /* A unit with no switch ignores it. */
+    Units_SelectSingle(officer);
+    oq_chord(0, SDL_SCANCODE_O);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+
+    /* A unit held up to look at belongs to the other side. */
+    Units_SelectForInspect(foe);
+    oq_chord(0, SDL_SCANCODE_M);
+    oq_chord(0, SDL_SCANCODE_A);
+    oq_chord(0, SDL_SCANCODE_S);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+
+    /* The letters that used to pan do not. */
+    Units_SelectSingle(-1);
+    oq_chord(0, SDL_SCANCODE_W);
+    oq_chord(0, SDL_SCANCODE_A);
+    oq_chord(0, SDL_SCANCODE_S);
+    oq_chord(0, SDL_SCANCODE_D);
+    ASSERT_EQ_INT(cam_x, w->cam_x);
+    ASSERT_EQ_INT(cam_y, w->cam_y);
+    oq_end();
+}
+
+/* ── Keys.TDF's other keys ─────────────────────────────────────── */
+
+static void oq_press(uint8_t *keys, int a, int b) {
+    memset(keys, 0, SDL_NUM_SCANCODES);
+    keys[a] = 1;
+    if (b) keys[b] = 1;
+}
+
+TEST(the_function_keys_decode_and_ctrl_or_alt_changes_them) {
+    uint8_t keys[SDL_NUM_SCANCODES], prev[SDL_NUM_SCANCODES];
+    memset(prev, 0, sizeof prev);
+    oq_press(keys, SDL_SCANCODE_PAUSE, 0);
+    ASSERT_EQ_INT(IG_FN_PAUSE, InGame_FnKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_F2, 0);
+    ASSERT_EQ_INT(IG_FN_BRIEFING, InGame_FnKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_F12, 0);
+    ASSERT_EQ_INT(IG_FN_CLEAR_CHAT, InGame_FnKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_S, SDL_SCANCODE_LCTRL);
+    ASSERT_EQ_INT(IG_FN_SAVE, InGame_FnKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_L, SDL_SCANCODE_RCTRL);
+    ASSERT_EQ_INT(IG_FN_LOAD, InGame_FnKey(keys, prev));
+    /* Plain S is Stop, and Alt takes all of them. */
+    oq_press(keys, SDL_SCANCODE_S, 0);
+    ASSERT_EQ_INT(IG_FN_NONE, InGame_FnKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_F12, SDL_SCANCODE_LALT);
+    ASSERT_EQ_INT(IG_FN_NONE, InGame_FnKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_PAUSE, 0);
+    memcpy(prev, keys, sizeof prev);
+    ASSERT_EQ_INT(IG_FN_NONE, InGame_FnKey(keys, prev));
+    memset(prev, 0, sizeof prev);
+    /* Shift with a function key or Pause does nothing, seen in the
+     * original. Ctrl+Shift+S and L still save and load. */
+    oq_press(keys, SDL_SCANCODE_F2, SDL_SCANCODE_LSHIFT);
+    ASSERT_EQ_INT(IG_FN_NONE, InGame_FnKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_F12, SDL_SCANCODE_RSHIFT);
+    ASSERT_EQ_INT(IG_FN_NONE, InGame_FnKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_PAUSE, SDL_SCANCODE_LSHIFT);
+    ASSERT_EQ_INT(IG_FN_NONE, InGame_FnKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_S, SDL_SCANCODE_LCTRL);
+    keys[SDL_SCANCODE_LSHIFT] = 1;
+    ASSERT_EQ_INT(IG_FN_SAVE, InGame_FnKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_L, SDL_SCANCODE_RCTRL);
+    keys[SDL_SCANCODE_RSHIFT] = 1;
+    ASSERT_EQ_INT(IG_FN_LOAD, InGame_FnKey(keys, prev));
+    /* F1 alone opens the menu, and neither Ctrl nor Shift with it does. */
+    oq_press(keys, SDL_SCANCODE_F1, 0);
+    ASSERT_EQ_INT(1, InGame_MenuKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_F1, SDL_SCANCODE_LSHIFT);
+    ASSERT_EQ_INT(0, InGame_MenuKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_F1, SDL_SCANCODE_LCTRL);
+    ASSERT_EQ_INT(0, InGame_MenuKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_F1, 0);
+    memcpy(prev, keys, sizeof prev);
+    ASSERT_EQ_INT(0, InGame_MenuKey(keys, prev));
+
+    memset(prev, 0, sizeof prev);
+    oq_press(keys, SDL_SCANCODE_F2, SDL_SCANCODE_LCTRL);
+    ASSERT_EQ_INT(1, InGame_WeaponKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_F3, SDL_SCANCODE_LCTRL);
+    ASSERT_EQ_INT(2, InGame_WeaponKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_F1, 0);
+    ASSERT_EQ_INT(-1, InGame_WeaponKey(keys, prev));
+
+    int store = -1;
+    oq_press(keys, SDL_SCANCODE_F7, 0);
+    ASSERT_EQ_INT(2, InGame_BookmarkKey(keys, prev, &store));
+    ASSERT_EQ_INT(0, store);
+    oq_press(keys, SDL_SCANCODE_F8, SDL_SCANCODE_LCTRL);
+    ASSERT_EQ_INT(3, InGame_BookmarkKey(keys, prev, &store));
+    ASSERT_EQ_INT(1, store);
+    oq_press(keys, SDL_SCANCODE_F4, 0);
+    ASSERT_EQ_INT(-1, InGame_BookmarkKey(keys, prev, &store));
+}
+
+/* Ctrl+F5 stores the camera in a slot, F5 puts it back, and a slot
+ * nothing was stored in does nothing. Pause toggles the clock. */
+TEST(a_camera_bookmark_stores_and_recalls_and_pause_toggles) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    w->cam_x = 300;
+    w->cam_y = 200;
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_F5);
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_F7);
+    w->cam_x = 900;
+    w->cam_y = 700;
+    oq_chord(0, SDL_SCANCODE_F6);
+    ASSERT_EQ_INT(900, w->cam_x);
+    oq_chord(0, SDL_SCANCODE_F5);
+    ASSERT_EQ_INT(300, w->cam_x);
+    ASSERT_EQ_INT(200, w->cam_y);
+    w->cam_x = 50;
+    oq_chord(0, SDL_SCANCODE_F7);
+    ASSERT_EQ_INT(300, w->cam_x);
+    /* A new store replaces the old one. */
+    w->cam_x = 1000;
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_F5);
+    w->cam_x = 0;
+    oq_chord(0, SDL_SCANCODE_F5);
+    ASSERT_EQ_INT(1000, w->cam_x);
+
+    ASSERT_EQ_INT(0, InGame_IsPaused());
+    oq_chord(0, SDL_SCANCODE_PAUSE);
+    ASSERT_EQ_INT(1, InGame_IsPaused());
+    oq_chord(0, SDL_SCANCODE_PAUSE);
+    ASSERT_EQ_INT(0, InGame_IsPaused());
     oq_end();
 }
 
@@ -2912,6 +3166,10 @@ int main(int argc, char **argv) {
     RUN(ctrl_z_selects_every_unit_of_a_type_the_selection_holds);
     RUN(ctrl_letters_select_by_category_and_ctrl_a_takes_all);
     RUN(m_on_a_box_drag_leaves_the_monarch_out);
+    RUN(each_order_letter_decodes_to_its_order);
+    RUN(an_order_letter_arms_or_gives_what_the_button_would);
+    RUN(the_function_keys_decode_and_ctrl_or_alt_changes_them);
+    RUN(a_camera_bookmark_stores_and_recalls_and_pause_toggles);
     RUN(ctrl_shift_digit_adds_a_group_to_the_selection);
     RUN(ctrl_u_selects_your_units_in_the_view);
     RUN(ctrl_on_a_builders_unit_button_summons_without_end);

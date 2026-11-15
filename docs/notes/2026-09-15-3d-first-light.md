@@ -42,7 +42,7 @@ beside it, and that is its own change rather than part of this one.
 
 ## Keys
 
-The classic bindings all still work: WASD and the arrows scroll, edge
+The classic bindings all still work: the arrows scroll, edge
 scrolling scrolls, the minimap click jumps, digits recall squads, and
 so on. The 3D view adds these, on keys the original leaves unbound in
 its keys file (LOWER_Q, LOWER_E, LOWER_R, LOWER_F, LOWER_V, LOWER_X,
@@ -57,7 +57,7 @@ LOWER_Z are empty there, and Home is not bound).
 | Mouse wheel | Zoom |
 | Middle button drag | Orbit and tilt |
 | Home | Snap back to the classic angle and height over the same spot |
-| WASD, arrows, screen edges | Scroll, in the camera's own directions |
+| Arrows, screen edges | Scroll, in the camera's own directions |
 
 The camera is bounded to the map, to a tilt between 12 and 89 degrees,
 to a distance between 48 and 6000 pixels, and to twenty pixels above
