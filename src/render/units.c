@@ -5719,8 +5719,8 @@ int Units_FightMayTake(int handle, int target_handle) {
         d->can_fly) return 1;
     int slot = u->weapon_slot;
     if (slot < 0 || slot >= d->num_weapons) slot = 0;
-    int64_t far = (int64_t)d->leash_length + weapon_effective_range(&d->weapons[slot]);
-    return unit_reach_d2(u, t) <= far * far;
+    int64_t reach = (int64_t)d->leash_length + weapon_effective_range(&d->weapons[slot]);
+    return unit_reach_d2(u, t) <= reach * reach;
 }
 
 int Units_CommandFightUnit(int handle, int target_handle) {
