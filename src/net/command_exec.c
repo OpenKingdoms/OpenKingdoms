@@ -230,6 +230,7 @@ static int exec_seat_control(const TAK_GameCommand *cmd, GameWorld *w) {
         case TAK_SEAT_TO_HUMAN:
             if (slot->kind != TAK_SLOT_AI) return 0;
             slot->kind = TAK_SLOT_HUMAN;
+            Units_EndComputerFights(seat);
             return 1;
         case TAK_SEAT_ARMY_REMOVED:
             /* The original took a departed player's army off the map. */

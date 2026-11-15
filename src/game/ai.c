@@ -349,6 +349,31 @@ static int ai_player_stalling(const GameWorld *world, int player_id) {
            (diff == 0 && Economy_GetMana(&world->economy, player_id) <= 0);
 }
 
+static uint32_t g_ai_think_serial;
+
+/* Every unit the seat has, the original's per-player count, counted once
+ * a think for every seat. */
+static int ai_units_of(int player_id) {
+    static int counts[TAK_MAX_PLAYERS + 1];
+    static uint32_t at_think;
+    static int at_count = -1;
+    static const Unit *at_units;
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    if (at_think != g_ai_think_serial || count != at_count || units != at_units) {
+        memset(counts, 0, sizeof(counts));
+        for (int i = 0; units && i < count; i++)
+            if ((units[i].alive == UNIT_ALIVE_ACTIVE ||
+                 units[i].alive == UNIT_ALIVE_TRANSPORTED) &&
+                units[i].player_id <= TAK_MAX_PLAYERS)
+                counts[units[i].player_id]++;
+        at_think = g_ai_think_serial;
+        at_count = count;
+        at_units = units;
+    }
+    return player_id >= 0 && player_id <= TAK_MAX_PLAYERS ? counts[player_id] : 0;
+}
+
 /* The original's build score for one type (legacy:19944-20054): 1, or
  * 21 armed. A type with the FBI builder key and none in the yard adds
  * a band by what the seat owns against the profile limit, cut while
@@ -515,6 +540,7 @@ static int ai_player_has_pending_production_structure(const Unit *units,
 }
 
 static int ai_try_start_build_def(int actor_idx, int build_def);
+static int ai_def_is_mobile_producer(int def_idx);
 
 static int ai_try_start_economy_build(const Unit *units,
                                       int unit_count,
@@ -1005,8 +1031,26 @@ static int ai_begin_building(int actor_idx, int build_def,
     return took;
 }
 
+/* A walking producer of the seat's under construction or on its way. */
+static int ai_producer_pending(const Unit *units, int player_id) {
+    int count = 0;
+    (void)Units_GetActive(&count);
+    for (int i = 0; i < count; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != player_id) continue;
+        int def = u->under_construction ? (int)u->def_idx : ai_on_way_def(u);
+        if (def >= 0 && ai_def_is_mobile_producer(def)) return 1;
+    }
+    return 0;
+}
+
+/* Set when the last start was refused by the seat's mana, which ends
+ * the look: the original draws once a think (legacy:17991-18010). */
+static int g_ai_gate_refused;
+
 static int ai_try_start_build_def(int actor_idx, int build_def) {
     const Unit *units = Units_GetActive(NULL);
+    g_ai_gate_refused = 0;
     if (!units) return 0;
     if (ai_trace()) {
         const UnitDef *tb = Units_GetDef(build_def);
@@ -1021,22 +1065,31 @@ static int ai_try_start_build_def(int actor_idx, int build_def) {
      * Units_BeginBuildingForUnit handles the in-yard spawn. */
     const UnitDef *bd = Units_GetDef(build_def);
     const UnitDef *ad = Units_GetDef((int)actor->def_idx);
-    /* A starved seat holds back. A factory trains nothing below 0.7 of
-     * what it asks for (legacy:13147-13155), a walker trains nothing
-     * that earns no income below it (legacy:12121-12129), and a
-     * builder puts up nothing that earns no income below 0.2333
-     * (legacy:9385-9393). */
+    /* A starved seat holds back what earns no income: a factory trains
+     * it down to 0.2333 of what the seat asks for (legacy:9392), a
+     * walking builder starts it down to 0.7 (legacy:12127). */
     if (bd && ad) {
         const GameWorld *sw = World_Get();
         float share = sw ? Economy_GetShare(&sw->economy, actor->player_id) : 1.0f;
         int earns = bd->mogrium_income_per_sec >= 0.01f;
-        if (ad->max_velocity <= 0.0f) {
-            if (share < 0.7f) return 0;
-        } else if (bd->max_velocity > 0.0f) {
-            if (!earns && share < 0.7f) return 0;
-        } else if (!earns && share < 0.23333333f) {
+        int factory = ad->max_velocity <= 0.0f;
+        g_ai_gate_refused = 1;
+        if (!earns && share < (factory ? 0.23333333f : 0.7f))
             return 0;
-        }
+        /* A walking producer is paced as a castle is, at 0.7 and one under
+         * way at a time (legacy:17201, :17271-17290), A-018. */
+        if (ai_def_is_mobile_producer(build_def) &&
+            (share < 0.7f || ai_producer_pending(units, actor->player_id)))
+            return 0;
+        /* Below 0.7 a factory passes over a product dearer than 500, all
+         * but one time in 2 + (cost - 500) / 300, while the seat owns fewer
+         * than 30 to 59 units (legacy:18001-18010, the draw's bound computed
+         * at 0x40dd73-0x40dd8b). */
+        if (factory && share < 0.7f && bd->build_cost > 500 &&
+            ai_rand((uint32_t)((bd->build_cost - 500) / 300 + 2)) != 0 &&
+            ai_units_of(actor->player_id) < 30 + (int)ai_rand(30))
+            return 0;
+        g_ai_gate_refused = 0;
     }
     if (bd && ad && bd->max_velocity > 0.0f && ad->max_velocity <= 0.0f) {
         return ai_begin_building(actor_idx, build_def,
@@ -1050,7 +1103,7 @@ static int ai_try_start_build_def(int actor_idx, int build_def) {
 /* Weighted-random pick over qualifying entries, the original's
  * reservoir draw in whole numbers (legacy:21300, the draw itself at
  * legacy:21338-21341), honoring profile limits; falls back to the
- * rest if the pick can't start. */
+ * rest if the pick can't start, unless the seat's mana refused it. */
 static int ai_try_start_build_from_list(int actor_idx,
                                         const int *buildables,
                                         int buildable_count,
@@ -1076,6 +1129,7 @@ static int ai_try_start_build_from_list(int actor_idx,
     }
     if (pick >= 0 && ai_try_start_build_def(actor_idx, buildables[pick]))
         return 1;
+    if (pick >= 0 && g_ai_gate_refused) return 0;
     for (int i = 0; i < buildable_count; i++) {
         if (i == pick) continue;
         const UnitDef *bd = Units_GetDef(buildables[i]);
@@ -2753,12 +2807,14 @@ static int ai_walker_reaches(const GameWorld *world, const Unit *units, int i,
 
 /* Combat think (legacy:17624): a unit with no fight on its hands takes
  * the nearest seen enemy inside max(sight, range) plus its engagement
- * radius. Marching units divert too, as the original's do. */
+ * radius, as a fight on its leash. Marching units divert too, which is
+ * ours. One holding fire takes none (legacy:181894). */
 static int ai_engage_nearby(const GameWorld *world, const Unit *units,
                             int unit_count, int actor_idx,
                             const UnitDef *def) {
     const Unit *u = &units[actor_idx];
     if (u->cmd_kind != UNIT_CMD_NONE && u->cmd_kind != UNIT_CMD_MOVE) return 0;
+    if (u->aggro_mode == UNIT_AGGRO_PASSIVE) return 0;
     int32_t r = ai_engage_radius(u, def);
     int kept = ai_monarch_kept(world, u->player_id, def);
     int64_t best_d2 = (int64_t)r * r + 1;
@@ -2780,13 +2836,13 @@ static int ai_engage_nearby(const GameWorld *world, const Unit *units,
         if (d2 == best_d2 && best >= 0 && i == best) continue;
         if (!ai_visible_to(world, u->player_id, t)) continue;
         if (!Units_CanAttackTarget(actor_idx, i)) continue;
+        if (!Units_FightMayTake(actor_idx, i)) continue;
         if (kept && !ai_monarch_may_take(u->player_id, u, def, t)) continue;
         if (!ai_walker_reaches(world, units, actor_idx, def, t)) continue;
         best_d2 = d2;
         best = i;
     }
-    if (best < 0) return 0;
-    Units_CommandAttackUnit(actor_idx, best);
+    if (best < 0 || !Units_CommandFightUnit(actor_idx, best)) return 0;
     ai_count_order(u->player_id, units[best].player_id, 0);
     return 1;
 }
@@ -5596,29 +5652,10 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
     s->mana_pct = cap > 0 ? (int32_t)((int64_t)mana * 100 / cap) : 0;
     s->stalling = ai_player_stalling(world, p);
     /* Build efficiency, the measure the original gates its picks on:
-     * the pool over what the frames being fed ask for this tick, and
-     * 1.0 with nothing building (legacy:235975-235983). */
-    float demand = 0.0f;
-    for (int i = 0; i < unit_count; i++) {
-        const Unit *b = &units[i];
-        if (b->alive != UNIT_ALIVE_ACTIVE || b->player_id != p) continue;
-        if (b->cmd_kind != UNIT_CMD_BUILD) continue;
-        if (b->build_target < 0 || b->build_target >= unit_count) continue;
-        const Unit *f = &units[b->build_target];
-        if (f->alive != UNIT_ALIVE_ACTIVE || !f->under_construction) continue;
-        const UnitDef *bd = Units_GetDef(b->def_idx);
-        const UnitDef *fd = Units_GetDef(f->def_idx);
-        if (!bd || !fd || fd->build_cost <= 0) continue;
-        float worker = bd->worker_time > 0.0f ? bd->worker_time : 1.0f;
-        float btime = fd->buildtime > 0.0f ? fd->buildtime : 100.0f;
-        demand += ((float)fd->build_cost * worker) / (btime * 60.0f);
-    }
-    int32_t demand_milli = (int32_t)(demand * 1000.0f);
-    s->build_eff = 100;
-    if (demand_milli > 0) {
-        int64_t eff = (int64_t)mana * 100000 / demand_milli;
-        s->build_eff = eff > 100 ? 100 : (int32_t)eff;
-    }
+     * the pool with this tick's income in it over what the seat's builds
+     * ask for, 1.0 with nothing building (legacy:235959-235983). */
+    float share = Economy_GetShare(&world->economy, p);
+    s->build_eff = share >= 1.0f ? 100 : share > 0.0f ? (int32_t)(share * 100.0f) : 0;
     int lode_def = -1, factory_def = -1, tower_def = -1, train_def = -1;
     int mobile_factory_def = -1;
     int32_t factory_want = 0, mobile_want = 0;

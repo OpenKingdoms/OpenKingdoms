@@ -4002,6 +4002,73 @@ TEST(a_unit_gives_up_a_chase_at_its_leash_and_walks_back) {
     ASSERT(roam > 1000);
 }
 
+/* The computer's engage on a dummy that walks 1400 px off: as a fight it
+ * follows no further than its leash and walks back, holding position or
+ * roaming, where an attack order follows on (legacy:10843-10851, :11020).
+ * ai is the seat's difficulty when the computer plays it, -1 for a player. */
+static int32_t lf_engage_run(int def, int fight, int ai, int32_t *out_x, int *out_target) {
+    GameWorld *w = lf_world(0, 0);
+    if (!w) return -1;
+    if (ai >= 0) {
+        w->cfg.players[0].kind = TAK_SLOT_AI;
+        w->cfg.players[0].ai_difficulty = ai;
+    }
+    int a = Units_Spawn(def, 1, 0, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_SX + 150, LF_ROW);
+    if (a < 0 || t < 0) return -1;
+    if (fight) {
+        if (!Units_CommandFightUnit(a, t)) return -2;
+    } else {
+        Units_CommandAttackUnit(a, t);
+    }
+    Units_CommandMoveUnit(t, LF_SX + 1550, LF_ROW);
+    int32_t far = LF_SX;
+    for (int i = 0; i < 4000; i++) {
+        Units_TickEngines();
+        if (lf_unit(a)->world_x > far) far = lf_unit(a)->world_x;
+    }
+    *out_x = lf_unit(a)->world_x;
+    *out_target = lf_unit(a)->target;
+    lf_end();
+    return far - LF_SX;
+}
+
+TEST(the_computers_engage_gives_up_at_the_leash) {
+    int32_t hx = 0, rx = 0, ox = 0;
+    int ht = 0, rt = 0, ot = 0;
+    for (int ai = -1; ai <= 2; ai++) {
+        int32_t hold = lf_engage_run(LF_HOLDER, 1, ai, &hx, &ht);
+        int32_t roam = lf_engage_run(LF_ROVEROAM, 1, ai, &rx, &rt);
+        printf("(seat %d: holder out %d back at %d on %d, roamer out %d back at %d) ",
+               ai, hold, hx - LF_SX, ht, roam, rx - LF_SX);
+        ASSERT(hold >= 480 && hold <= 520);
+        ASSERT(hx >= LF_SX - 8 && hx <= LF_SX + 8);
+        ASSERT_EQ_INT(-1, ht);
+        ASSERT(roam >= 480 && roam <= 520);
+        ASSERT(rx >= LF_SX - 8 && rx <= LF_SX + 8);
+    }
+    int32_t order = lf_engage_run(LF_HOLDER, 0, 1, &ox, &ot);
+    printf("(ordered out %d) ", order);
+    ASSERT(order > 1000);
+}
+
+/* A fight it could not reach from the end of its leash is not taken: a
+ * dummy past its 500 px leash and 200 px range is passed over, one inside
+ * them is taken. */
+TEST(the_computers_engage_passes_over_what_its_leash_cannot_reach) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int a = Units_Spawn(LF_HOLDER, 1, 0, LF_SX, LF_ROW);
+    int far = lf_spawn(LF_TARGET, 2, LF_SX + 1100, LF_ROW);
+    int near = lf_spawn(LF_TARGET, 2, LF_SX + 650, LF_ROW);
+    ASSERT(a >= 0 && far >= 0 && near >= 0);
+    int took_far = Units_CommandFightUnit(a, far);
+    int took_near = Units_CommandFightUnit(a, near);
+    lf_end();
+    printf("(1100 px: %d, 650 px: %d) ", took_far, took_near);
+    ASSERT_EQ_INT(0, took_far);
+    ASSERT_EQ_INT(1, took_near);
+}
+
 /* Return fire takes the same post: the shooter dead, it walks back. */
 TEST(a_unit_that_answered_a_hit_walks_back_to_its_post) {
     ASSERT_NOT_NULL(lf_world(0, 0));
@@ -4734,6 +4801,8 @@ int main(int argc, char **argv) {
     RUN(a_unit_tracking_a_walker_sends_no_turn_signal);
     RUN(a_unit_looks_again_only_inside_its_leash);
     RUN(a_unit_gives_up_a_chase_at_its_leash_and_walks_back);
+    RUN(the_computers_engage_gives_up_at_the_leash);
+    RUN(the_computers_engage_passes_over_what_its_leash_cannot_reach);
     RUN(a_unit_that_answered_a_hit_walks_back_to_its_post);
     RUN(a_guard_attacks_what_hits_the_unit_it_guards);
     RUN(a_patroller_breaks_off_at_its_leash_and_resumes_its_route);

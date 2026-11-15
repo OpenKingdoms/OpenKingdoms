@@ -3394,11 +3394,17 @@ TEST(a_seat_changes_hands_by_the_relays_command) {
     int theirs = Units_Spawn(CP_DEF_WALKER, 3, 2, 1600, 800);
     int fourth = Units_Spawn(CP_DEF_WALKER, 4, 3, 1600, 1600);
     ASSERT(theirs >= 0 && fourth >= 0);
+    /* The computer's fight goes to the player as the unit's own. */
+    int second = Units_Spawn(CP_DEF_WALKER, 2, 1, 1500, 800);
+    ASSERT(second >= 0);
+    ASSERT_EQ_INT(1, Units_CommandFightUnit(second, theirs));
+    ASSERT_EQ_INT(UNIT_ATTACK_FIGHT, cp_unit(second)->attack_explicit);
 
     cp_cmd(TAK_CMD_SEAT_CONTROL, 2);
     g_cmd.arg = TAK_SEAT_TO_HUMAN;
     ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
     ASSERT_EQ_INT(TAK_SLOT_HUMAN, w->cfg.players[1].kind);
+    ASSERT_EQ_INT(0, cp_unit(second)->attack_explicit);
     ASSERT_EQ_INT(0, TAK_CommandExec_Apply(&g_cmd));
 
     cp_cmd(TAK_CMD_SEAT_CONTROL, 1);

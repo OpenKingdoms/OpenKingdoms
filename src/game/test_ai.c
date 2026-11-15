@@ -245,6 +245,19 @@ void Units_CommandAttackUnit(int handle, int target_handle) {
     g_last_attack_target = target_handle;
 }
 
+int Units_FightMayTake(int handle, int target_handle) {
+    (void)handle; (void)target_handle; return 1;
+}
+
+int Units_CommandFightUnit(int handle, int target_handle) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    if (target_handle < 0 || target_handle >= g_unit_count) return 0;
+    Units_CommandAttackUnit(handle, target_handle);
+    if (g_units[handle].target != target_handle) return 0;
+    g_units[handle].attack_explicit = UNIT_ATTACK_FIGHT;
+    return 1;
+}
+
 /* The weapon buttons' order and the damage table, as units.c gives them
  * for a weapon with no table: its default damage. */
 static int g_weapon_slot_calls;
@@ -450,6 +463,8 @@ static void reset_mock(GameWorld *w) {
     memset(w, 0, sizeof(*w));
     memset(g_defs, 0, sizeof(g_defs));
     memset(g_units, 0, sizeof(g_units));
+    /* Born offensive, as a unit whose file gives no stance. */
+    for (int k = 0; k < MOCK_UNITS; k++) g_units[k].aggro_mode = UNIT_AGGRO_OFFENSIVE;
     memset(g_buildable_counts, 0, sizeof(g_buildable_counts));
     memset(g_buildables, 0, sizeof(g_buildables));
     g_unit_count = 0;
@@ -645,12 +660,72 @@ static int test_ai_mobile_producer_trains_the_army(void) {
     return 0;
 }
 
-/* A seat whose treasury cannot cover what it asks for holds back what
- * earns nothing: a builder puts up no castle below a share of 0.2333
- * but still a lodestone, and a castle trains nothing below 0.7
- * (legacy:9385-9393, legacy:13147-13155). Ours kept every factory
- * queued at any share, so a broke seat spread its trickle over all of
- * them and finished nothing. */
+/* A walking producer is paced as a castle is (A-018): another producer
+ * goes up only at a share of 0.7 and while none is under way. Zhon's
+ * producers earn, so the orders' gates never held them. */
+static int test_ai_a_walking_producer_is_paced_as_a_castle(void) {
+    GameWorld w;
+    int started[2] = { 0, 0 };
+    for (int phase = 0; phase < 2; phase++) {
+        reset_mock(&w);
+        w.cfg.players[1].kind = TAK_SLOT_AI;
+        w.cfg.players[1].team = 2;
+        strcpy(g_defs[0].unitname, "ZONHUNT");
+        strcpy(g_defs[0].category, "ZON Monarch");
+        g_defs[0].cap_flags = UNIT_CAP_BUILDER;
+        g_defs[0].max_velocity = 1.5f;
+        g_defs[0].commander = 1;
+        strcpy(g_defs[1].unitname, "ZONLODE");
+        g_defs[1].mogrium_income_per_sec = 10.0f;
+        strcpy(g_defs[2].unitname, "ZONHAND");
+        strcpy(g_defs[2].category, "ZON BUILDER");
+        g_defs[2].cap_flags = UNIT_CAP_BUILDER;
+        g_defs[2].max_velocity = 1.2f;
+        g_defs[2].worker_time = 10.0f;
+        g_defs[2].mogrium_income_per_sec = 1.0f;
+        strcpy(g_defs[3].unitname, "ZONGOB");
+        strcpy(g_defs[3].category, "ZON MELEE ATTACK");
+        g_defs[3].max_velocity = 1.0f;
+        g_defs[3].num_weapons = 1;
+        g_buildable_counts[2] = 2;
+        g_buildables[2][0] = 2;
+        g_buildables[2][1] = 3;
+        for (int k = 0; k < 3; k++) {
+            g_units[k].alive = UNIT_ALIVE_ACTIVE;
+            g_units[k].player_id = 2;
+            g_units[k].def_idx = (uint16_t)k;
+            g_units[k].build_target = -1;
+            g_units[k].target = -1;
+        }
+        g_unit_count = 3;
+        /* Starved, then fed with a handler frame already up. */
+        g_mock_share = phase ? 1.0f : 0.5f;
+        if (phase) {
+            g_units[3] = g_units[2];
+            g_units[3].under_construction = 1;
+            g_unit_count = 4;
+        }
+        for (int k = 0; k < 20; k++) {
+            g_units[0].cmd_kind = UNIT_CMD_BUILD;
+            g_units[0].build_target = 1;
+            g_units[2].cmd_kind = UNIT_CMD_NONE;
+            g_units[2].build_target = -1;
+            g_last_build_def = -1;
+            w.skirmish_elapsed_ticks = 60 * (k + 1);
+            TAK_AI_TickSkirmish(&w);
+            started[phase] += g_last_build_def == 2;
+        }
+    }
+    printf("[handlers started %d starved, %d with one under way] ", started[0], started[1]);
+    ASSERT_EQ_INT(0, started[0]);
+    ASSERT_EQ_INT(0, started[1]);
+    return 0;
+}
+
+/* A seat whose treasury cannot cover what it asks for holds back: a
+ * builder picks no castle below a share of 0.7 but still a lodestone
+ * (legacy:17201), and a castle trains down to 0.2333 (legacy:9392,
+ * legacy:17991), with its pool spent on a frame. */
 static int test_ai_a_starved_seat_holds_back_what_earns_nothing(void) {
     GameWorld w;
     setup_ai_progression_fixture(&w);
@@ -661,7 +736,7 @@ static int test_ai_a_starved_seat_holds_back_what_earns_nothing(void) {
     ASSERT_EQ_INT(1, g_begin_calls);
     ASSERT_EQ_INT(1, g_last_build_def);
 
-    /* The castle earns nothing: not below 0.2333, then yes. */
+    /* The castle earns nothing: not below 0.7, then yes. */
     g_units[0].cmd_kind = UNIT_CMD_NONE;
     g_units[0].build_target = -1;
     g_units[1].alive = UNIT_ALIVE_ACTIVE;
@@ -670,17 +745,21 @@ static int test_ai_a_starved_seat_holds_back_what_earns_nothing(void) {
     g_units[1].under_construction = 0;
     g_unit_count = 2;
     g_begin_calls = 0;
-    g_mock_share = 0.2f;
+    g_mock_share = 0.6f;
     w.skirmish_elapsed_ticks = 120;
     TAK_AI_TickSkirmish(&w);
     ASSERT_EQ_INT(0, g_begin_calls);
-    g_mock_share = 0.3f;
+    g_mock_share = 0.75f;
     w.skirmish_elapsed_ticks = 180;
     TAK_AI_TickSkirmish(&w);
     ASSERT_EQ_INT(1, g_begin_calls);
     ASSERT_EQ_INT(2, g_last_build_def);
 
-    /* The castle trains nothing below 0.7, then a troop. */
+    /* The castle trains nothing below 0.2333, then a troop, while the
+     * monarch feeds a lodestone frame and the pool stands empty. */
+    g_defs[1].build_cost = 300;
+    g_defs[1].buildtime = 100.0f;
+    g_units[1].under_construction = 1;
     g_units[0].cmd_kind = UNIT_CMD_BUILD;
     g_units[0].build_target = 1;
     g_units[2].alive = UNIT_ALIVE_ACTIVE;
@@ -690,15 +769,86 @@ static int test_ai_a_starved_seat_holds_back_what_earns_nothing(void) {
     g_units[2].build_target = -1;
     g_unit_count = 3;
     g_begin_calls = 0;
-    g_mock_share = 0.6f;
+    g_mock_mana = 0;
+    g_mock_share = 0.2f;
     w.skirmish_elapsed_ticks = 240;
     TAK_AI_TickSkirmish(&w);
     ASSERT_EQ_INT(0, g_begin_calls);
-    g_mock_share = 0.75f;
+    g_mock_share = 0.3f;
     w.skirmish_elapsed_ticks = 300;
     TAK_AI_TickSkirmish(&w);
     ASSERT_EQ_INT(1, g_begin_calls);
     ASSERT_EQ_INT(3, g_last_build_def);
+    return 0;
+}
+
+/* Below a share of 0.7 a castle with few units about passes over a
+ * troop dearer than 500 all but one time in 2 + (cost - 500) / 300, and
+ * at 0.7 trains it every time (legacy:18001-18010). */
+static int test_ai_a_starved_castle_passes_over_a_dear_troop(void) {
+    GameWorld w;
+    int trained[2] = { 0, 0 };
+    for (int fed = 0; fed < 2; fed++) {
+        setup_ai_progression_fixture(&w);
+        g_defs[3].build_cost = 2000;
+        g_units[1].alive = UNIT_ALIVE_ACTIVE;
+        g_units[1].player_id = 2;
+        g_units[1].def_idx = 1;
+        g_units[2].alive = UNIT_ALIVE_ACTIVE;
+        g_units[2].player_id = 2;
+        g_units[2].def_idx = 2;
+        g_units[2].build_target = -1;
+        g_unit_count = 3;
+        g_mock_share = fed ? 0.7f : 0.5f;
+        for (int k = 0; k < 40; k++) {
+            g_units[0].cmd_kind = UNIT_CMD_BUILD;
+            g_units[0].build_target = 1;
+            g_units[2].cmd_kind = UNIT_CMD_NONE;
+            g_units[2].build_target = -1;
+            g_begin_calls = 0;
+            w.skirmish_elapsed_ticks = 60 * (k + 1);
+            TAK_AI_TickSkirmish(&w);
+            trained[fed] += g_begin_calls;
+        }
+    }
+    printf("[dear troop trained %d of 40 starved, %d fed] ", trained[0], trained[1]);
+    ASSERT_TRUE(trained[0] > 0 && trained[0] < 20);
+    ASSERT_EQ_INT(40, trained[1]);
+
+    /* With a cheap troop beside it, a think the dear one is drawn and
+     * passed over trains nothing (legacy:18004-18008). */
+    setup_ai_progression_fixture(&w);
+    g_defs[3].build_cost = 2000;
+    g_defs[6] = g_defs[3];
+    strcpy(g_defs[6].unitname, "TARCHEAP");
+    g_defs[6].build_cost = 100;
+    g_buildable_counts[2] = 2;
+    g_buildables[2][1] = 6;
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 2;
+    g_units[1].def_idx = 1;
+    g_units[2].alive = UNIT_ALIVE_ACTIVE;
+    g_units[2].player_id = 2;
+    g_units[2].def_idx = 2;
+    g_units[2].build_target = -1;
+    g_unit_count = 3;
+    g_mock_share = 0.5f;
+    int idle = 0, cheap = 0;
+    for (int k = 0; k < 40; k++) {
+        g_units[0].cmd_kind = UNIT_CMD_BUILD;
+        g_units[0].build_target = 1;
+        g_units[2].cmd_kind = UNIT_CMD_NONE;
+        g_units[2].build_target = -1;
+        g_begin_calls = 0;
+        g_last_build_def = -1;
+        w.skirmish_elapsed_ticks = 60 * (k + 1);
+        TAK_AI_TickSkirmish(&w);
+        idle += g_begin_calls == 0;
+        cheap += g_last_build_def == 6;
+    }
+    printf("[with a cheap one: %d thinks idle, %d cheap] ", idle, cheap);
+    ASSERT_TRUE(idle > 0);
+    ASSERT_TRUE(cheap > 0);
     return 0;
 }
 
@@ -1526,11 +1676,12 @@ static int test_ai_hit_monarch_that_cannot_answer_builds_on(void) {
 }
 
 /* The original gates a build pick on build efficiency, the pool over
- * what the frames being fed ask for, not on how full the pool is
- * (legacy:17201, :235975-235983). Starved with nothing building and no
- * pad to take a lodestone, the monarch still raises its castle. Once a
- * frame it cannot pay for stands, it starts nothing more, while the
- * castle keeps training on the lower 7/30 gate (legacy:17991). */
+ * what the frames being fed ask for, which the economy keeps as the
+ * share, not on how full the pool is (legacy:17201, :235975-235983).
+ * Starved with nothing building and no pad to take a lodestone, the
+ * monarch still raises its castle. Once a frame it cannot pay for
+ * stands, it starts nothing more, while the castle keeps training on
+ * the lower 7/30 gate (legacy:17991). */
 static int test_ai_build_picks_follow_build_efficiency(void) {
     GameWorld w;
     setup_ai_progression_fixture(&w);
@@ -1585,6 +1736,7 @@ static int test_ai_build_picks_follow_build_efficiency(void) {
     g_units[2].target = -1;
     g_unit_count = 3;
     g_mock_mana = 1800;
+    g_mock_share = 0.6f;
     g_begin_calls = 0;
     w.skirmish_elapsed_ticks = 120;
     TAK_AI_TickSkirmish(&w);
@@ -5445,6 +5597,8 @@ int main(void) {
     if (test_ai_remembers_a_site_its_builder_gave_up_on() != 0) return 1;
     if (test_ai_seats_think_on_ticks_of_their_own() != 0) return 1;
     if (test_ai_a_starved_seat_holds_back_what_earns_nothing() != 0) return 1;
+    if (test_ai_a_starved_castle_passes_over_a_dear_troop() != 0) return 1;
+    if (test_ai_a_walking_producer_is_paced_as_a_castle() != 0) return 1;
     if (test_ai_failed_sites_are_hashed_and_saved() != 0) return 1;
     if (test_ai_expands_to_a_pad_it_can_walk_to() != 0) return 1;
     if (test_ai_factory_trains_a_builder_by_the_originals_weight() != 0) return 1;
