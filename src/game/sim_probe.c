@@ -30,8 +30,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The pinned answer. Every platform in CI has to reach this. */
-#define SIM_PROBE_HASH 0x30ee1166u
+/* The pinned answer. Every platform in CI has to reach this. Retaken
+ * when the heading each aim was asked for joined the hash; the battle
+ * itself did not change. */
+#define SIM_PROBE_HASH 0x06db88b6u
 
 #define PB_TILES   192      /* 16 px tiles per side, so a 3072 px map */
 #define PB_GROUND  64       /* flat height, clear of the water line */

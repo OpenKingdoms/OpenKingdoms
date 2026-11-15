@@ -428,7 +428,10 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
  * end. An older record holds no more than sixteen. */
 #define U_LEGS_MORE     (U_SLOT_ID + 12u)
 #define U_LEG_ENDLESS_HI (U_LEGS_MORE + U_LEG_BYTES * (UNIT_MOVE_LEGS_MAX - U_LEGS_V5))
-#define U_END           (U_LEG_ENDLESS_HI + 2u)
+/* Version 23 on: the heading each weapon's aim was asked for. An older
+ * record reads back 0, and an aim off it is asked again. */
+#define U_AIM_HDG       (U_LEG_ENDLESS_HI + 2u)
+#define U_END           (U_AIM_HDG + 6u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* Where leg i of a unit record starts: the first sixteen in their
@@ -652,7 +655,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 22
+#define VER_UNIT 23
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 4
@@ -1359,6 +1362,7 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
         tak_put_i16(ws + U_WPN_AIM_TGT, s->aim_target);
         tak_put_u8(ws + U_WPN_AIM_SLOT, (uint8_t)s->aim_thread_slot);
         tak_put_u8(ws + U_WPN_AIM_READY, s->aim_ready);
+        tak_put_i16(r + U_AIM_HDG + (size_t)w * 2u, s->aim_heading);
     }
 
     /* The live prefix only: past the length both queues hold whatever
@@ -1653,6 +1657,7 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
         s->aim_target = tak_get_i16(ws + U_WPN_AIM_TGT);
         s->aim_thread_slot = (int8_t)tak_get_u8(ws + U_WPN_AIM_SLOT);
         s->aim_ready = tak_get_u8(ws + U_WPN_AIM_READY);
+        s->aim_heading = tak_get_i16(r + U_AIM_HDG + (size_t)w * 2u);
     }
 
     if (u->load_queue_len > UNIT_LOAD_QUEUE_MAX) {
