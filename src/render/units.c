@@ -269,7 +269,8 @@ static int ugrid_nearest_enemy(const Unit *u, int self_idx, int64_t radius,
             for (int j = g_ugrid_head[c]; j >= 0; j = g_ugrid_next[j]) {
                 const Unit *t = &g_units[j];
                 if (j == self_idx || t->alive != 1) continue;
-                if (!unit_players_are_enemies(u->player_id, t->player_id))
+                if (!unit_players_are_enemies(u->player_id, t->player_id) ||
+                    Units_HoldsFireOn(u->player_id, t->player_id))
                     continue;
                 /* A wall is made carrying the flag that keeps a unit out
                  * of every scan (legacy:39435-39437, legacy:233996). Only
@@ -330,7 +331,8 @@ static int ugrid_random_enemy(const Unit *u, int self_idx, int64_t radius,
             for (int j = g_ugrid_head[c]; j >= 0; j = g_ugrid_next[j]) {
                 const Unit *t = &g_units[j];
                 if (j == self_idx || t->alive != 1) continue;
-                if (!unit_players_are_enemies(u->player_id, t->player_id))
+                if (!unit_players_are_enemies(u->player_id, t->player_id) ||
+                    Units_HoldsFireOn(u->player_id, t->player_id))
                     continue;
                 const UnitDef *td = Units_GetDef(t->def_idx);
                 if (td && td->is_feature) continue;
@@ -398,6 +400,7 @@ static void credit_kill(int shooter_handle, int killer_player, const Unit *victi
 static float build_heading_for_def(const UnitDef *d);
 /* Forwards for the capture hand over, which sits with the shots. */
 static void unit_remove_now(int handle);
+static int unit_def_barred(int def_idx);
 static void unit_riders_die(Unit *t, int t_idx);
 static int unit_holds_commander(const Unit *t, int t_idx);
 static void unit_check_commander_death(const Unit *t, int t_idx);
@@ -471,12 +474,43 @@ static int unit_seat_is_human(int player_id) {
     return w->cfg.players[player_id - 1].kind == TAK_SLOT_HUMAN;
 }
 
+/* A mission seat its PlayerN line makes, or NULL (seats 9 and 10 lie
+ * past the lobby's eight). */
+static const MissionSeat *unit_mission_seat(const GameWorld *w, int p) {
+    if (!w || !w->mission.path[0] || p < 2 || p >= TAK_MISSION_PLAYER_LINES)
+        return NULL;
+    const MissionSeat *s = &w->mission.seats[p];
+    return s->present ? s : NULL;
+}
+
+/* A seat its line calls strategic rather than passive (legacy:177742). */
+static int unit_mission_seat_plans(int p) {
+    const MissionSeat *s = unit_mission_seat(World_Get(), p);
+    return s && s->strategic;
+}
+
+/* An ally seat and the player are allies both ways (legacy:177736-177741). */
+static int unit_mission_allied(const GameWorld *w, int a, int b) {
+    const MissionSeat *sa = unit_mission_seat(w, a), *sb = unit_mission_seat(w, b);
+    return (b == 1 && sa && sa->relation == MISSION_SEAT_ALLY) ||
+           (a == 1 && sb && sb->relation == MISSION_SEAT_ALLY);
+}
+
+/* Every seat's search passes a neutral seat over, while the neutral seat
+ * looks on everyone as fair game and orders still reach it
+ * (legacy:177727-177734, legacy:19267). */
+int Units_HoldsFireOn(int attacker, int target) {
+    const MissionSeat *s = attacker != target ? unit_mission_seat(World_Get(), target) : NULL;
+    return s && s->relation == MISSION_SEAT_NEUTRAL;
+}
+
 static int unit_players_are_enemies(int a, int b) {
     if (a == b) return 0;
     /* An alliance struck in the battle overrides the lobby's teams,
      * and it takes both sides: one player declaring peace cannot stop
      * the other's army. */
     const GameWorld *dw = World_Get();
+    if (dw && unit_mission_allied(dw, a, b)) return 0;
     if (dw && a >= 1 && a <= TAK_MAX_PLAYERS && b >= 1 && b <= TAK_MAX_PLAYERS &&
         dw->allied[a][b] && dw->allied[b][a]) {
         return 0;
@@ -515,8 +549,14 @@ int Units_PlayerSide(int player_id) {
 
 int Units_PlayerColorIndex(int player_id) {
     const GameWorld *w = World_Get();
-    if (!w || player_id < 1 || player_id > TAK_MAX_PLAYERS) return 0;
-    return w->cfg.players[player_id - 1].color;
+    if (!w || player_id < 1) return 0;
+    if (player_id <= TAK_MAX_PLAYERS) return w->cfg.players[player_id - 1].color;
+    /* A mission seat past the lobby's takes its logo, or else its own
+     * number counted from nought (legacy:177743-177749). */
+    if (player_id >= TAK_MISSION_PLAYER_LINES) return 0;
+    const MissionSeat *seat = unit_mission_seat(w, player_id);
+    int logo = seat ? seat->logo : -1;
+    return logo >= 0 ? logo : player_id - 1;
 }
 
 int Units_PlayersAreEnemies(int a, int b) {
@@ -1871,6 +1911,7 @@ static int unit_pass_holds(const Unit *u, const UnitDef *d, const Unit *t) {
     const UnitWeapon *wp = &d->weapons[unit_pass_slot(u, d)];
     if (t->alive != UNIT_ALIVE_ACTIVE ||
         !unit_players_are_enemies(u->player_id, t->player_id) ||
+        Units_HoldsFireOn(u->player_id, t->player_id) ||
         !weapon_can_target_unit(wp, t) || weapon_scan_skips(wp, t) ||
         !unit_can_see_target(u, t))
         return 0;
@@ -1958,6 +1999,10 @@ static void unit_on_damaged(Unit *victim, int shooter_handle) {
         victim->skip_until = 0;
     }
     TAK_AI_NotifyDamage((int)(victim - g_units), shooter_handle);
+    /* A strategic seat does not answer a neutral seat's blows
+     * (legacy:15101-15103, legacy:177742). */
+    if (Units_HoldsFireOn(victim->player_id, shooter->player_id) &&
+        unit_mission_seat_plans(victim->player_id)) return;
     if (victim->cmd_kind == UNIT_CMD_MOVE) {
         unit_pass_answer(victim, shooter);
         return;
@@ -7001,6 +7046,10 @@ static int factory_in_hand(const Unit *f) {
  * started, so a product that cannot be placed is not lost. */
 static int factory_start_next(int fh) {
     Unit *f = &g_units[fh];
+    /* A type the mission bars is never made, so a queue a save from
+     * before the roster holds moves on past it. */
+    while (f->prod_queue_len > 0 && unit_def_barred(f->prod_queue[0]))
+        prod_drop_run(f, 0);
     if (f->prod_queue_len == 0 || f->under_construction) return 0;
     if (factory_in_hand(f) >= 0 || !factory_ready(f)) return 0;
     if (Units_BeginBuildingForUnit(fh, f->prod_queue[0],
@@ -7711,13 +7760,46 @@ static int8_t  g_canbuild_n[CANBUILD_CACHE_DEFS];
 static int     g_canbuild_init;
 static int     g_canbuild_ready;   /* every menu loaded for this match */
 
+static int unit_def_barred(int def_idx) {
+    return def_idx >= 0 && def_idx < g_def_count && g_defs[def_idx].mission_barred;
+}
+
+/* The original clears every type's allowed bit, sets it again for each
+ * type the mission's .tdf names and then for every side's monarch
+ * (legacy:164277-164355). */
+void Units_ApplyMissionRoster(const MissionData *mission) {
+    int barred = 0;
+    for (int i = 0; i < g_def_count; i++) {
+        g_defs[i].mission_barred =
+            (uint8_t)!Mission_RosterAllows(mission, g_defs[i].unitname);
+    }
+    for (int s = 0; s < Sides_Count(); s++) {
+        const TakSideInfo *side = Sides_Get(s);
+        int def = side && side->commander[0] ? Units_FindDefByName(side->commander) : -1;
+        if (def >= 0) g_defs[def].mission_barred = 0;
+    }
+    for (int i = 0; i < g_def_count; i++) barred += g_defs[i].mission_barred;
+    if (barred) fprintf(stderr, "Units: the mission bars %d of %d types\n",
+                        barred, g_def_count);
+}
+
 static void canbuild_cache_clear(void) {
     memset(g_canbuild_n, -1, sizeof(g_canbuild_n));
     g_canbuild_init = 1;
     g_canbuild_ready = 0;
 }
 
+static int unit_buildables(int builder_def_idx, int *out, int max_out, int barring);
+
 int Units_GetBuildables(int builder_def_idx, int *out, int max_out) {
+    return unit_buildables(builder_def_idx, out, max_out, 1);
+}
+
+int Units_GetBuildMenu(int builder_def_idx, int *out, int max_out) {
+    return unit_buildables(builder_def_idx, out, max_out, 0);
+}
+
+static int unit_buildables(int builder_def_idx, int *out, int max_out, int barring) {
     if (!out || max_out <= 0) return 0;
     const UnitDef *bd = Units_GetDef(builder_def_idx);
     if (!bd || !bd->unitname[0]) return 0;
@@ -7726,9 +7808,12 @@ int Units_GetBuildables(int builder_def_idx, int *out, int max_out) {
     if (builder_def_idx >= 0 && builder_def_idx < CANBUILD_CACHE_DEFS &&
         (g_canbuild_n[builder_def_idx] >= 0 || g_canbuild_ready)) {
         int cn = g_canbuild_n[builder_def_idx] > 0 ? g_canbuild_n[builder_def_idx] : 0;
-        if (cn > max_out) cn = max_out;
-        for (int i = 0; i < cn; i++) out[i] = g_canbuild_menu[builder_def_idx][i];
-        return cn;
+        int k = 0;
+        for (int i = 0; i < cn && k < max_out; i++) {
+            int d = g_canbuild_menu[builder_def_idx][i];
+            if (!barring || !unit_def_barred(d)) out[k++] = d;
+        }
+        return k;
     }
 
     /* canbuild dirs are keyed by lower-case unitname. */
@@ -7811,9 +7896,10 @@ int Units_GetBuildables(int builder_def_idx, int *out, int max_out) {
         g_canbuild_n[builder_def_idx] = (int8_t)cn;
     }
 
-    if (n > max_out) n = max_out;
-    for (int i = 0; i < n; i++) out[i] = tmp[i].def_idx;
-    return n;
+    int k = 0;
+    for (int i = 0; i < n && k < max_out; i++)
+        if (!barring || !unit_def_barred(tmp[i].def_idx)) out[k++] = tmp[i].def_idx;
+    return k;
 }
 
 /* The type is on the builder's own build list (legacy:233192-233210). */
@@ -9945,6 +10031,8 @@ static int unit_spawn_facing(int def_idx, int player_id, int color_idx,
 int Units_Spawn(int def_idx, int player_id, int team_color_idx,
                 int32_t world_x, int32_t world_y) {
     if (def_idx < 0 || def_idx >= g_def_count) return -1;
+    /* A type the mission leaves out is never made (legacy:226872-226874). */
+    if (g_defs[def_idx].mission_barred) { g_unit_spawn_fails++; return -1; }
     if (unit_seat_at_limit(player_id)) { g_unit_spawn_fails++; return -1; }
     int slot = unit_free_slot();
     if (slot < 0) { g_unit_spawn_fails++; return -1; }
@@ -11399,12 +11487,22 @@ void Units_RecomputeEconomy(struct GameWorld *world) {
     }
 }
 
+/* A unit's record ends, death or removal alike, which is when the
+ * original tells a mission's kill keys (legacy:227277-227286). */
+static void unit_record_ends(const Unit *u) {
+    GameWorld *w = World_Get();
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (w && d && w->mission.objective_count > 0)
+        Mission_NoteUnitGone(&w->mission, d->unitname, u->player_id);
+}
+
 /* Take a unit off the map with no death sequence: the original's death
  * type 10 skips the Killed script and frees the record at once
  * (legacy:227241-227260). Used when a player is eliminated. */
 static void unit_remove_now(int handle) {
     Unit *u = &g_units[handle];
     if (u->alive == UNIT_ALIVE_DEAD) return;
+    unit_record_ends(u);
     g_selection_count = slot_list_drop(g_selection, g_selection_count, handle);
     if (u->alive == UNIT_ALIVE_ACTIVE) {
         occ_lift(handle);
@@ -11553,6 +11651,7 @@ static void apply_killed_as(Unit *t, int t_idx, int bursts) {
     } else {
         /* No script: nothing asks for a body, so none is left
          * (legacy:227113), and the death ends at once. */
+        unit_record_ends(t);
         t->alive = 0;
         unit_death_blast(t, t_idx);
     }
@@ -11578,6 +11677,7 @@ static void apply_turned(Unit *t, int t_idx, int frozen) {
             tak_free(t->cob);
             t->cob = NULL;
         }
+        unit_record_ends(t);
         t->alive = UNIT_ALIVE_DEAD;
     }
     unit_leave_statue(t, frozen);
@@ -16962,6 +17062,7 @@ static void magic_death_tick(Unit *u, int i) {
     Cob_EngineFree(u->cob);
     tak_free(u->cob);
     u->cob = NULL;
+    unit_record_ends(u);
     u->alive = UNIT_ALIVE_DEAD;
     fprintf(stderr, "Units_TickEngines: unit %d despawned (whiteout done)\n", i);
 }
@@ -17153,6 +17254,7 @@ void Units_TickEngines(void) {
             Cob_EngineFree(u->cob);
             tak_free(u->cob);
             u->cob = NULL;
+            unit_record_ends(u);
             u->alive = UNIT_ALIVE_DEAD;
             fprintf(stderr, "Units_TickEngines: unit %d despawned (Killed done)\n", i);
         }

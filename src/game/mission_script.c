@@ -553,7 +553,7 @@ static int32_t ms_cmd_create(const char *name, int n_args, const int32_t *a) {
     unitname[len] = '\0';
     int def = Units_FindDefByName(unitname);
     if (def < 0 || player < 1) return 0;
-    int handle = Units_Spawn(def, player, (player - 1) % 12,
+    int handle = Units_Spawn(def, player, Units_PlayerColorIndex(player),
                              x * MS_CELL, z * MS_CELL);
     if (handle < 0) return 0;
     if (g_ms_spawn) g_ms_spawn(handle);

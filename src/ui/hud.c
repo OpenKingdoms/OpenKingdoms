@@ -687,6 +687,9 @@ const char *HUD_DialogPath(void) {
 void HUD_Init(TAK_Platform *plat, GameWorld *world) {
     if (!plat || !world) return;
     hud_load_messages();
+    /* A battle's build lists are its own: another mission bars other types. */
+    g_build_list_for_def = -1;
+    g_build_list_n = 0;
 
     /* The legacy araingame.gui was authored for 640x480. Under the Fit
      * scale the canvas stays that size and the platform stretches it

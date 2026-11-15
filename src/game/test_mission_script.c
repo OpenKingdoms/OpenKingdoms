@@ -76,6 +76,10 @@ const UnitDef *Units_GetDef(int idx) {
     return (idx >= 0 && idx < g_def_count) ? &g_defs[idx] : NULL;
 }
 
+int Units_PlayerColorIndex(int player_id) {
+    return player_id > 0 ? player_id - 1 : 0;
+}
+
 int Units_Spawn(int def_idx, int player_id, int team_color_idx,
                 int32_t world_x, int32_t world_y) {
     (void)team_color_idx;

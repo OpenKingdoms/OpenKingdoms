@@ -625,27 +625,30 @@ static void InGame_EvaluateMissionObjectives(GameWorld *world) {
         snapshots[i].commander = unit_is_commander_def(def);
     }
 
+    uint8_t held[TAK_MISSION_MAX_CONDITIONS];
+    memset(held, 0, sizeof(held));
     for (int i = 0; i < world->mission.objective_count; i++) {
         const MissionObjective *obj = &world->mission.objectives[i];
         int met = Mission_ObjectiveSatisfied(obj, snapshots, unit_count, 1,
                                              world->mission_elapsed_seconds);
-        if (met && obj->role == MISSION_ROLE_VICTORY) satisfied++;
+        if (i >= TAK_MISSION_MAX_CONDITIONS) continue;
         /* Met once stays met, and the line goes out once. */
-        if (met && i < TAK_MISSION_MAX_CONDITIONS) {
+        if (met) {
             world->mission_cond_met[i] = 1;
             if (!world->mission_cond_celebrated[i]) {
                 world->mission_cond_celebrated[i] = 1;
                 fprintf(stderr, "Mission condition met: %s\n", obj->key);
             }
         }
+        held[i] = (uint8_t)(met || (world->mission_cond_met[i] &&
+                                    Mission_ConditionLatches(obj->type)));
+        if (held[i] && obj->role == MISSION_ROLE_VICTORY) satisfied++;
     }
     world->mission_objectives_satisfied = satisfied;
-    world->mission_victory =
-        Mission_VictoryMet(&world->mission, snapshots, unit_count, 1,
-                           world->mission_elapsed_seconds);
-    world->mission_defeat =
-        Mission_DefeatMet(&world->mission, snapshots, unit_count, 1,
-                          world->mission_elapsed_seconds);
+    world->mission_victory = Mission_RoleHeld(&world->mission, held,
+                                              MISSION_ROLE_VICTORY);
+    world->mission_defeat = Mission_RoleHeld(&world->mission, held,
+                                             MISSION_ROLE_DEFEAT);
     free(snapshots);
     InGame_ReadMissionVerdict(world, world->mission_victory,
                               world->mission_defeat, world->mission_elapsed_ticks);

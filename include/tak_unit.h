@@ -727,6 +727,9 @@ typedef struct UnitDef {
     /* The script releases the shot itself, by setting port 23 during
      * FireWeapon (legacy:223397-223400). Found by reading the script. */
     uint8_t  script_launches;
+    /* The battle's mission leaves the type off its roster, so no one
+     * may make one (legacy:226872-226874). */
+    uint8_t  mission_barred;
 
     /* COB script bundle (Phase D). Loaded eagerly per-def. */
     CobScript *cob_script;
@@ -2340,6 +2343,11 @@ int               Units_ExpandYardmap(const UnitDef *d,
 int               Units_ExpandYardmapFacing(const UnitDef *d, int facing,
                                              uint8_t *out, int max);
 
+/* Bars every type the mission's roster leaves out, and none without a
+ * roster. Call after the defs load. */
+struct MissionData;
+void              Units_ApplyMissionRoster(const struct MissionData *mission);
+
 /* ── Build menu ──────────────────────────────────────────────────────
  *
  * For a given builder def, enumerate the unit defs it can build.
@@ -2347,10 +2355,15 @@ int               Units_ExpandYardmapFacing(const UnitDef *d, int facing,
  *
  * The legacy data lives at data/canbuild/<builder>/<buildable>.tdf —
  * each TDF carries a [Menu] section with a Priority field. We sort by
- * priority ascending so the menu order matches legacy. */
+ * priority ascending so the menu order matches legacy, and leave out
+ * the types the mission bars. */
 int               Units_GetBuildables(int builder_def_idx,
                                        int *out_def_idxs,
                                        int max_out);
+/* The same menu as the data set has it, whatever the battle bars. */
+int               Units_GetBuildMenu(int builder_def_idx,
+                                     int *out_def_idxs,
+                                     int max_out);
 /* Read every builder's menu now, at match start, so no tick reads a
  * file. Units_FreeDefs clears them with the defs. Returns the number of
  * non-empty menus. */
@@ -2395,6 +2408,9 @@ void              Units_CommandAttackUnitScript(int handle, int target_handle);
  * Two players are enemies when their teams differ. */
 int               Units_PlayerTeamId(int player_id);
 int               Units_PlayersAreEnemies(int a, int b);
+/* 1 when the attacker's own search passes over the target's seat, a
+ * mission's passive neutral seat. Orders still reach it. */
+int               Units_HoldsFireOn(int attacker, int target);
 /* 1 when some weapon of handle may fire on target_handle (air, water
  * and category masks), so an order will not be dropped unfired, and
  * the target is not one its shots were just found not to reach. */

@@ -406,6 +406,9 @@ static void loading_advance_step(TAK_Platform *platform) {
         if (is_campaign_ota && Mission_LoadOTA(ota_path, &world->mission) == 0) {
             /* LS_INIT_WORLD builds the fog from these options. */
             Mission_ApplyVisibility(&world->mission, &world->cfg);
+            /* A save keeps the colours its battle was played in. */
+            if (!World_IsRestoring())
+                Mission_ApplySeatColors(&world->mission, &world->cfg);
             fprintf(stderr,
                     "LS_PARSE_OTA: campaign mission placements parsed: %d\n",
                     world->mission.placement_count);
@@ -758,6 +761,9 @@ static void loading_advance_step(TAK_Platform *platform) {
             fprintf(stderr, "No GameWorld struct? That's not good!");
             return;
         }
+        /* Here, which every load passes, even one whose map had no
+         * terrain to read and so kept the last battle's types. */
+        Units_ApplyMissionRoster(&world->mission);
         /* 16 px per tile — confirmed in the legacy map init at
          * line 224930 which stores W_tiles*16 as the map pixel width.
          * Block size follows: 2 tiles per block × 16 = 32 map pixels. */
@@ -840,7 +846,7 @@ static void loading_advance_step(TAK_Platform *platform) {
             for (int i = 0; i < world->mission.placement_count; i++) {
                 const MissionPlacement *p = &world->mission.placements[i];
                 int def = Units_FindDefByName(p->unitname);
-                int color = p->player > 0 ? (p->player - 1) % 12 : 0;
+                int color = Units_PlayerColorIndex(p->player);
                 if (def < 0) {
                     fprintf(stderr,
                         "LS_FINALIZE: missing mission unit def '%s' in %s; skipping\n",

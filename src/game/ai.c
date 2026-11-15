@@ -82,7 +82,8 @@ static void ai_profile_peers(void) {
     if (defs > AI_MAX_DEFS) defs = AI_MAX_DEFS;
     for (int d = 0; d < defs; d++) {
         int kids[32];
-        int n = Units_GetBuildables(d, kids, 32);
+        /* The data set's menus: the profile outlives a mission's roster. */
+        int n = Units_GetBuildMenu(d, kids, 32);
         int32_t sum = 0;
         int named = 0;
         for (int k = 0; k < n; k++) {
@@ -187,7 +188,7 @@ static void ai_naval_defs(void) {
             const UnitDef *d = Units_GetDef(i);
             if (!d || !(d->cap_flags & UNIT_CAP_BUILDER)) continue;
             int kids[32];
-            int n = Units_GetBuildables(i, kids, 32);
+            int n = Units_GetBuildMenu(i, kids, 32);
             for (int k = 0; k < n; k++) {
                 if (kids[k] < 0 || kids[k] >= AI_MAX_DEFS) continue;
                 uint8_t f = g_ai_def_naval[kids[k]];

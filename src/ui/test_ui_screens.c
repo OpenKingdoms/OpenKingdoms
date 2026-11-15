@@ -3690,7 +3690,9 @@ TEST(every_guided_weapon_unit_fires_at_an_enemy_in_range) {
     GameWorld *world = World_Get();
     ASSERT_NOT_NULL(world);
 
-    /* Nothing else on the map takes part. */
+    /* Nothing else on the map takes part, and its mission's roster
+     * would bar most of the class. */
+    Units_ApplyMissionRoster(NULL);
     int unit_count = 0;
     const Unit *units = Units_GetActive(&unit_count);
     for (int i = 0; i < unit_count; i++)
@@ -5848,6 +5850,123 @@ TEST(the_first_mission_runs_its_script_and_its_orders) {
     VFS_Shutdown();
 }
 
+/* Black Peace from the Book of Deeds: seat colours, the herd left alone,
+ * the roster, and the win on the second seat's army (legacy:177711-177749,
+ * legacy:164277-164355, legacy:240354-240377). */
+TEST(black_peace_follows_its_mission_file) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    int next = Story_StartMissionFile(&platform, "takmission05_dh.ota");
+    ASSERT(next == GAMESTATE_GAME_LOADING || next == GAMESTATE_CREDITS);
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+
+    /* Player1 is "logo 1 taros", Player2 "logo 3 aramon", and seats 9
+     * and 10 name no logo, so they take their own numbers from nought. */
+    const struct { const char *name; int player, color; } want[] = {
+        { "TARCASTL", 1, 1 }, { "ARASWORD", 2, 3 },
+        { "LIFWOLF", 9, 8 },  { "LIFCOW", 10, 9 },
+    };
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    for (size_t k = 0; k < sizeof(want) / sizeof(want[0]); k++) {
+        int def = Units_FindDefByName(want[k].name), seen = 0;
+        for (int i = 0; i < unit_count; i++) {
+            if (units[i].alive != UNIT_ALIVE_ACTIVE || (int)units[i].def_idx != def) continue;
+            ASSERT_EQ_INT(want[k].player, (int)units[i].player_id);
+            ASSERT_EQ_INT(want[k].color, (int)units[i].team_color_idx);
+            seen = 1;
+        }
+        ASSERT(seen);
+    }
+    ASSERT_EQ_INT(1, Units_PlayerColorIndex(1));
+
+    /* Every search passes seat 10's herd over but its own, and an order
+     * still reaches it. Seat 9's wolves are fair game. */
+    ASSERT_EQ_INT(1, Units_HoldsFireOn(1, 10));
+    ASSERT_EQ_INT(1, Units_HoldsFireOn(2, 10));
+    ASSERT_EQ_INT(0, Units_HoldsFireOn(10, 1));
+    ASSERT_EQ_INT(0, Units_HoldsFireOn(1, 9));
+    ASSERT_EQ_INT(1, Units_PlayersAreEnemies(1, 10));
+    int cow = -1;   /* the one out west, clear of the town */
+    for (int i = 0; i < unit_count; i++)
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 10 &&
+            (int)units[i].def_idx == Units_FindDefByName("LIFCOW") &&
+            (cow < 0 || units[i].world_x < units[cow].world_x)) cow = i;
+    ASSERT(cow >= 0);
+    int zombie = Units_Spawn(Units_FindDefByName("TARZOM"), 1, 1,
+                             units[cow].world_x + 32, units[cow].world_y);
+    ASSERT(zombie >= 0);
+    InGame_DebugRunSimTicks(120);
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)units[cow].alive);
+    ASSERT(units[zombie].target != cow);
+    Units_CommandAttackUnit(zombie, cow);
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(cow, (int)units[zombie].target);
+    Units_StopUnit(zombie);
+    /* A strategic seat does not answer a neutral seat's bite. */
+    int sword = -1;
+    for (int i = 0; i < unit_count && sword < 0; i++)
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 2 &&
+            (int)units[i].def_idx == Units_FindDefByName("ARASWORD")) sword = i;
+    ASSERT(sword >= 0);
+    int wolf = Units_Spawn(Units_FindDefByName("LIFWOLF"), 10, 9,
+                           units[sword].world_x + 24, units[sword].world_y);
+    ASSERT(wolf >= 0);
+    Units_CommandAttackUnit(wolf, sword);
+    InGame_DebugRunSimTicks(90);
+    units = Units_GetActive(&unit_count);
+    ASSERT(units[sword].health < units[sword].max_health);
+    ASSERT(units[sword].target != wolf);
+    Units_DebugRemove(wolf);
+
+    /* The monarch lays the castle and the lodestone, not the dungeon or
+     * the hell gate on the way to the dragon, and no dragon is made. */
+    int menu[64];
+    int n = Units_GetBuildables(Units_FindDefByName("TARNECRO"), menu, 64);
+    int castle = 0, hell = 0;
+    for (int i = 0; i < n; i++) {
+        castle |= menu[i] == Units_FindDefByName("TARCASTL");
+        hell |= menu[i] == Units_FindDefByName("TARHELL");
+    }
+    ASSERT_EQ_INT(1, castle);
+    ASSERT_EQ_INT(0, hell);
+    ASSERT_EQ_INT(-1, Units_Spawn(Units_FindDefByName("TARDRAG"), 1, 1,
+                                  128 * 16, 118 * 16));
+
+    /* Every mobile unit of the second seat gone is the win. */
+    InGame_DebugRunSimTicks(30);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    units = Units_GetActive(&unit_count);
+    for (int i = 0; i < unit_count; i++) {
+        const UnitDef *d = Units_GetDef((int)units[i].def_idx);
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 2 &&
+            d && d->max_velocity > 0.0f)
+            Units_DebugRemove(i);
+    }
+    InGame_DebugRunSimTicks(4);
+    ASSERT_EQ_INT(1, world->skirmish_game_over);
+    ASSERT_EQ_INT(1, world->skirmish_local_result);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* Issue #19. "o 1" in a placed unit's orders is its standing orders
  * (legacy:228580), and it comes after the "wa" before it in the list.
  * The fourth mission gives Veruna's three transports "wa, o 1,". Read
@@ -6332,6 +6451,9 @@ TEST(campaign_loading_spawns_units_and_renders) {
     }
     int buildables[32];
     int builder_def_idx = -1;
+    /* The first mission's roster lets no one build, and the economy
+     * check below needs a building, so the roster is lifted. */
+    Units_ApplyMissionRoster(NULL);
     if (builder_handle >= 0) {
         builder_def_idx = (int)units[builder_handle].def_idx;
     } else {
@@ -30343,6 +30465,106 @@ TEST(the_books_load_dialog_is_shown_and_its_escape_stays_with_it) {
     VFS_Shutdown();
 }
 
+/* takmission32_mt is won by KillUnitType=VERSWORD, 17: the second seat
+ * loses seventeen swordsmen, counted through a save and a load
+ * (legacy:239432-239470, legacy:240604-240618). */
+static int kc_swordsmen(int *out, int cap) {
+    int n = 0, count = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count && n < cap; i++)
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 2 &&
+            (int)units[i].def_idx == Units_FindDefByName("VERSWORD")) out[n++] = i;
+    return n;
+}
+
+static void kc_kill(int n) {
+    int h[32];
+    int have = kc_swordsmen(h, 32);
+    for (int i = 0; i < n && i < have; i++) Units_DebugKillHandle(h[i]);
+    InGame_DebugRunSimTicks(300);
+}
+
+TEST(seventeen_swordsmen_win_takmission32_through_a_save) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    sb_clear_saves();
+    int next = Story_StartMissionFile(&platform, "takmission32_mt.ota");
+    ASSERT(next == GAMESTATE_GAME_LOADING || next == GAMESTATE_CREDITS);
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    /* Twenty swordsmen of the second seat, out of everyone's way. */
+    for (int i = 0; i < 20; i++) {
+        int h = Units_Spawn(Units_FindDefByName("VERSWORD"), 2, 0,
+                            (30 + (i % 5) * 3) * 16, (215 + (i / 5) * 3) * 16);
+        ASSERT(h >= 0);
+        Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    }
+    kc_kill(1);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    kc_kill(4);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    int h[32];
+    int saved = kc_swordsmen(h, 32);
+    printf("[%d swordsmen saved] ", saved);
+    ASSERT(saved >= 12);
+
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, sb_open_menu_and_press("SaveGame"));
+    SaveBrowser_SetName("Seventeen");
+    ASSERT_EQ_INT(SAVEBROWSER_SAVED, SaveBrowser_Press("SaveGame"));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_TakeBrowserResult(SAVEBROWSER_SAVED));
+    InGameMenu_Close();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+
+    ASSERT_EQ_INT(0, Story_Init(&platform));
+    ASSERT_EQ_INT(0, SaveBrowser_Open(SAVEBROWSER_LOAD));
+    SaveBrowser_SelectRow(0);
+    ASSERT_EQ_INT(SAVEBROWSER_LOAD_READY, SaveBrowser_Press("LoadGame"));
+    TAK_SaveGame *sg = SaveBrowser_TakeLoad();
+    ASSERT_NOT_NULL(sg);
+    const TAK_SaveInfo *info = Save_Info(sg);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &info->cfg, info->map_name, info->map_kingdom));
+    World_SetRestoring(1);
+    Loading_SetPendingSave(sg);
+    SaveBrowser_Close();
+    Story_Shutdown();
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_STR("", Loading_SaveRefusal());
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    if (Briefing_IsOpen()) InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(saved, kc_swordsmen(h, 32));
+
+    kc_kill(11);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    kc_kill(1);
+    ASSERT_EQ_INT(1, world->skirmish_game_over);
+    ASSERT_EQ_INT(1, world->skirmish_local_result);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    sb_clear_saves();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(a_campaign_save_loaded_from_the_book_takes_orders) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -31476,6 +31698,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(the_briefing_sits_like_the_original_at_1280x600);
     RUN_UI_TEST(the_first_mission_runs_its_script_and_its_orders);
     RUN_UI_TEST(a_mission_order_of_o_is_not_a_change_of_owner);
+    RUN_UI_TEST(black_peace_follows_its_mission_file);
     RUN_UI_TEST(campaign_mapping_off_starts_the_map_explored);
     RUN_UI_TEST(campaign_mapping_on_starts_the_map_black);
     RUN_UI_TEST(campaign_keeps_line_of_sight_whatever_the_file_says);
@@ -31756,6 +31979,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(loading_a_save_reaches_a_running_battle);
     RUN_UI_TEST(a_load_brings_back_one_army_not_two);
     RUN_UI_TEST(a_campaign_save_loaded_from_the_book_takes_orders);
+    RUN_UI_TEST(seventeen_swordsmen_win_takmission32_through_a_save);
     RUN_UI_TEST(a_mission_loaded_from_the_skirmish_screen_plays_on_as_saved);
     RUN_UI_TEST(a_ferry_under_way_plays_on_the_same_after_a_load);
     RUN_UI_TEST(the_books_load_dialog_is_shown_and_its_escape_stays_with_it);
