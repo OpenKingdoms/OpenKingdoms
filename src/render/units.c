@@ -17946,6 +17946,21 @@ static int aura_takes(const Unit *s, const UnitAura *a, const Unit *t, int64_t *
         return 0;
     int64_t dx = (int64_t)t->world_x - s->world_x, dy = (int64_t)t->world_y - s->world_y;
     int64_t d2 = dx * dx + dy * dy;
+    /* Hulls hold two ships end on a hull's length apart where the
+     * original's cells let them close, so between ships it reaches from
+     * hull line to hull line (M-012). */
+    const UnitDef *sh = s->alive == UNIT_ALIVE_ACTIVE ? def_hull(s->def_idx) : NULL;
+    const UnitDef *th = sh && t->alive == UNIT_ALIVE_ACTIVE ? def_hull(t->def_idx) : NULL;
+    if (th) {
+        float lim = (float)a->radius + hull_reach(sh) + hull_reach(th);
+        if ((float)d2 < lim * lim) {
+            ShipHull hs, ht;
+            ship_hull_at(sh, s->world_x, s->world_y, s->heading, &hs);
+            ship_hull_at(th, t->world_x, t->world_y, t->heading, &ht);
+            int64_t l2 = (int64_t)ship_hull_d2(&hs, &ht);
+            if (l2 < d2) d2 = l2;
+        }
+    }
     if (d2 > (int64_t)a->radius * a->radius) return 0;
     int allied = !unit_players_are_enemies(s->player_id, t->player_id);
     if (allied == (a->affects_enemy != 0)) return 0;

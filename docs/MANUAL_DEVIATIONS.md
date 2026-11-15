@@ -1656,6 +1656,11 @@ Format per entry:
   the pad the yard cannot move, another side's, one stopped on an order
   or one with nowhere to go, leaves the pad to the original's test of its
   cells (legacy:9363-9382).
+- Change, auras: an aura between two ships reaches from hull line to
+  hull line where the original measures centre to centre
+  (legacy:237131-237139). A Repair Skiff against a Man of War's bow
+  stands 155 px from its centre, past the 150 px of its AdjustJoy, where
+  the original's cells let it close to about 56 px.
 - Why: the original keeps units apart by the cells of their move
   class alone (legacy:163193-163195, legacy:219329-219340), and a
   ship's class is a square one and a half to three times shorter than

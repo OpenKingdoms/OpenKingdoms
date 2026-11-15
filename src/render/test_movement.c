@@ -201,6 +201,10 @@ static GameWorld *mv_world_with(int sea) {
                  1.8f, 0.18f, 0.036f, 108.0f, 70, 75, 79);
     mv_fill_ship(&sea_defs[MV_DEF_SKIFF], "TESTSKIFF", "TESTWATER3",
                  4.0f, 0.4f, 0.08f, 240.0f, 51, 62, 41);
+    /* The Repair Skiff's mending aura (unitscb/verscout.fbi). */
+    sea_defs[MV_DEF_SKIFF].auras[UNIT_AURA_JOY].adjustment = 45.0f;
+    sea_defs[MV_DEF_SKIFF].auras[UNIT_AURA_JOY].radius = 150;
+    sea_defs[MV_DEF_SKIFF].auras[UNIT_AURA_JOY].edge = 1.0f;
     mv_fill_ship(&sea_defs[MV_DEF_MANOWAR], "TESTMOW", "TESTWATER4",
                  3.1f, 0.31f, 0.062f, 186.0f, 100, 76, 34);
     /* A shipyard that builds in the middle of its own footprint, as one
@@ -1380,6 +1384,30 @@ TEST(a_ship_mending_another_does_not_swing_round) {
            mv_unit(m)->health - hp0);
     ASSERT(mv_unit(m)->health > hp0);
     ASSERT(fabsf(mv_unit(f)->heading - h0) < 0.001f);
+    mv_end();
+}
+
+/* A Repair Skiff against a Man of War's bow mends it, though their
+ * hulls hold their centres further apart than its reach. */
+TEST(a_skiff_bow_to_bow_with_a_ship_mends_it) {
+    ASSERT_NOT_NULL(mv_sea());
+    int m = Units_Spawn(MV_DEF_MANOWAR, 1, 0, 1500, 1500);
+    int k = Units_Spawn(MV_DEF_SKIFF, 1, 0, 1500, 1500 + 155);
+    ASSERT(m >= 0 && k >= 0);
+    Units_DebugSetAggro(m, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetAggro(k, UNIT_AGGRO_PASSIVE);
+    Unit *ku = (Unit *)mv_unit(k);   /* test-only: turned to face the bow */
+    ku->heading = 0.0f;
+    Unit *mu = (Unit *)mv_unit(m);   /* test-only wound */
+    ASSERT(mu->heading > 3.0f);
+    mu->health = mu->max_health / 4;
+    int hp0 = mu->health;
+    mv_run(130);
+    printf("(%d px apart, mended %d hp, overlap %.1f px) ",
+           mv_unit(k)->world_y - mv_unit(m)->world_y, mv_unit(m)->health - hp0,
+           (double)Units_DebugHullOverlap(k, m));
+    ASSERT(mv_unit(k)->world_y - mv_unit(m)->world_y > 150);
+    ASSERT(mv_unit(m)->health > hp0);
     mv_end();
 }
 
@@ -3119,6 +3147,7 @@ int main(int argc, char **argv) {
     RUN(two_ships_caught_bow_to_bow_get_past_each_other);
     RUN(a_shipyard_in_a_corner_launches_its_whole_queue);
     RUN(a_ship_mending_another_does_not_swing_round);
+    RUN(a_skiff_bow_to_bow_with_a_ship_mends_it);
     RUN(a_fleet_sails_a_narrow_strait);
     RUN(a_ground_crowd_packs_as_it_did);
     TEST_SUITE("Flyers");
