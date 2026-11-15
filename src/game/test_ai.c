@@ -660,6 +660,68 @@ static int test_ai_mobile_producer_trains_the_army(void) {
     return 0;
 }
 
+/* A walking producer is paced as a castle is (A-018): another producer
+ * goes up only at a share of 0.7 and while none is under way. Zhon's
+ * producers earn, so the orders' gates never held them. */
+static int test_ai_a_walking_producer_is_paced_as_a_castle(void) {
+    GameWorld w;
+    int started[2] = { 0, 0 };
+    for (int phase = 0; phase < 2; phase++) {
+        reset_mock(&w);
+        w.cfg.players[1].kind = TAK_SLOT_AI;
+        w.cfg.players[1].team = 2;
+        strcpy(g_defs[0].unitname, "ZONHUNT");
+        strcpy(g_defs[0].category, "ZON Monarch");
+        g_defs[0].cap_flags = UNIT_CAP_BUILDER;
+        g_defs[0].max_velocity = 1.5f;
+        g_defs[0].commander = 1;
+        strcpy(g_defs[1].unitname, "ZONLODE");
+        g_defs[1].mogrium_income_per_sec = 10.0f;
+        strcpy(g_defs[2].unitname, "ZONHAND");
+        strcpy(g_defs[2].category, "ZON BUILDER");
+        g_defs[2].cap_flags = UNIT_CAP_BUILDER;
+        g_defs[2].max_velocity = 1.2f;
+        g_defs[2].worker_time = 10.0f;
+        g_defs[2].mogrium_income_per_sec = 1.0f;
+        strcpy(g_defs[3].unitname, "ZONGOB");
+        strcpy(g_defs[3].category, "ZON MELEE ATTACK");
+        g_defs[3].max_velocity = 1.0f;
+        g_defs[3].num_weapons = 1;
+        g_buildable_counts[2] = 2;
+        g_buildables[2][0] = 2;
+        g_buildables[2][1] = 3;
+        for (int k = 0; k < 3; k++) {
+            g_units[k].alive = UNIT_ALIVE_ACTIVE;
+            g_units[k].player_id = 2;
+            g_units[k].def_idx = (uint16_t)k;
+            g_units[k].build_target = -1;
+            g_units[k].target = -1;
+        }
+        g_unit_count = 3;
+        /* Starved, then fed with a handler frame already up. */
+        g_mock_share = phase ? 1.0f : 0.5f;
+        if (phase) {
+            g_units[3] = g_units[2];
+            g_units[3].under_construction = 1;
+            g_unit_count = 4;
+        }
+        for (int k = 0; k < 20; k++) {
+            g_units[0].cmd_kind = UNIT_CMD_BUILD;
+            g_units[0].build_target = 1;
+            g_units[2].cmd_kind = UNIT_CMD_NONE;
+            g_units[2].build_target = -1;
+            g_last_build_def = -1;
+            w.skirmish_elapsed_ticks = 60 * (k + 1);
+            TAK_AI_TickSkirmish(&w);
+            started[phase] += g_last_build_def == 2;
+        }
+    }
+    printf("[handlers started %d starved, %d with one under way] ", started[0], started[1]);
+    ASSERT_EQ_INT(0, started[0]);
+    ASSERT_EQ_INT(0, started[1]);
+    return 0;
+}
+
 /* A seat whose treasury cannot cover what it asks for holds back: a
  * builder picks no castle below a share of 0.7 but still a lodestone
  * (legacy:17201), and a castle trains down to 0.2333 (legacy:9392,
@@ -5536,6 +5598,7 @@ int main(void) {
     if (test_ai_seats_think_on_ticks_of_their_own() != 0) return 1;
     if (test_ai_a_starved_seat_holds_back_what_earns_nothing() != 0) return 1;
     if (test_ai_a_starved_castle_passes_over_a_dear_troop() != 0) return 1;
+    if (test_ai_a_walking_producer_is_paced_as_a_castle() != 0) return 1;
     if (test_ai_failed_sites_are_hashed_and_saved() != 0) return 1;
     if (test_ai_expands_to_a_pad_it_can_walk_to() != 0) return 1;
     if (test_ai_factory_trains_a_builder_by_the_originals_weight() != 0) return 1;

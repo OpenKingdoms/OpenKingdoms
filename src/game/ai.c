@@ -540,6 +540,7 @@ static int ai_player_has_pending_production_structure(const Unit *units,
 }
 
 static int ai_try_start_build_def(int actor_idx, int build_def);
+static int ai_def_is_mobile_producer(int def_idx);
 
 static int ai_try_start_economy_build(const Unit *units,
                                       int unit_count,
@@ -1030,6 +1031,19 @@ static int ai_begin_building(int actor_idx, int build_def,
     return took;
 }
 
+/* A walking producer of the seat's under construction or on its way. */
+static int ai_producer_pending(const Unit *units, int player_id) {
+    int count = 0;
+    (void)Units_GetActive(&count);
+    for (int i = 0; i < count; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != player_id) continue;
+        int def = u->under_construction ? (int)u->def_idx : ai_on_way_def(u);
+        if (def >= 0 && ai_def_is_mobile_producer(def)) return 1;
+    }
+    return 0;
+}
+
 /* Set when the last start was refused by the seat's mana, which ends
  * the look: the original draws once a think (legacy:17991-18010). */
 static int g_ai_gate_refused;
@@ -1061,6 +1075,11 @@ static int ai_try_start_build_def(int actor_idx, int build_def) {
         int factory = ad->max_velocity <= 0.0f;
         g_ai_gate_refused = 1;
         if (!earns && share < (factory ? 0.23333333f : 0.7f))
+            return 0;
+        /* A walking producer is paced as a castle is, at 0.7 and one under
+         * way at a time (legacy:17201, :17271-17290), A-018. */
+        if (ai_def_is_mobile_producer(build_def) &&
+            (share < 0.7f || ai_producer_pending(units, actor->player_id)))
             return 0;
         /* Below 0.7 a factory passes over a product dearer than 500, all
          * but one time in 2 + (cost - 500) / 300, while the seat owns fewer

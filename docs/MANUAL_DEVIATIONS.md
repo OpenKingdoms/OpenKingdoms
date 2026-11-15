@@ -1103,6 +1103,33 @@ Format per entry:
   games on Two Castles, it won or was ahead in 11 against 9.
 - Citation: the manual describes no AI rule at this level.
 
+## A-018: Zhon's walking producers are paced as castles are
+
+- Change: a computer seat starts a walking producer, a builder that
+  walks and trains fighters such as Zhon's Beast Handler, Beast Tamer,
+  Beast Lord and Shaman, only at a build efficiency of 0.7 and while no
+  other is under construction or on its way. A castle or a keep is held
+  to the same by the builder's structure pick (legacy:17201,
+  :17271-17290).
+- Why: the original takes a walking producer as a mobile pick, which
+  waits for nothing, and every one of them carries `mogriumincome = 1`,
+  so the orders' gates on what earns nothing never hold one back
+  (legacy:12127). A Zhon seat started them whatever its mana. A Beast
+  Lord or a Shaman asks about 75 to 100 mana a second while it goes up,
+  more than the seat earns, so its pool sat at nothing, its troops,
+  which the walking producers train only at 0.7, were never started, and
+  it raised a fifth of the fighters of the other kingdoms. On main it
+  lost all 40 of its games against them.
+- Measured: every pair of kingdoms both ways round, 20 minute games with
+  every tactic, Two Castles 3 seeds a pair and Tarosian Plain 2, a game
+  still on at the end going to whoever has more standing. Zhon won or
+  was ahead in 12 of its 40 games against 0 of 40 on main: 6 of 10
+  against Aramon, 3 against Taros, 2 against Veruna and 1 against Creon.
+  No other pair moved by more than 2 games in 10. The original's rule 6,
+  the build score's brake on dear types, and its once a think draw did
+  not lift Zhon off 0 in 15 games without this.
+- Citation: the manual describes no AI rule at this level.
+
 ## T-001: Flying transports load and unload by the ground rules
 
 - Change: The Roc and the Ghost Ship pick up and set down units the way
