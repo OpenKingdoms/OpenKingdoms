@@ -190,8 +190,9 @@
  * own colours, its animals are left alone, its roster bars other units,
  * and its kill keys count down from their number. 72: a unit without
  * weaponswitching fires every weapon at a target of its own, and routes
- * go over a hill they can climb and round bad ground. */
-#define TAK_ENGINE_BUILD_ID           72
+ * go over a hill they can climb and round bad ground. 73: a unit's queue
+ * holds 32 orders, and the Rictus rides the sea surface. */
+#define TAK_ENGINE_BUILD_ID           73
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
