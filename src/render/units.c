@@ -10439,11 +10439,18 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     if (def->cob_script && ((m && m->node_count > 0) || bare)) {
         u->cob = (CobEngine *)tak_malloc(sizeof(CobEngine));
         if (u->cob) {
-            /* Build a temporary array of node-name pointers for binding. */
+            /* Build a temporary array of node-name pointers for binding.
+             * A def with no model binds its script's own pieces. */
             const char *node_names[UNIT_MESH_MAX_NODES];
             int nc = (m && m->node_count > 0) ? m->node_count : 0;
             if (nc > UNIT_MESH_MAX_NODES) nc = UNIT_MESH_MAX_NODES;
             for (int i = 0; i < nc; i++) node_names[i] = m->nodes[i].name;
+            if (bare && def->cob_script->piece_names) {
+                nc = (int)def->cob_script->num_pieces;
+                if (nc > UNIT_MESH_MAX_NODES) nc = UNIT_MESH_MAX_NODES;
+                for (int i = 0; i < nc; i++)
+                    node_names[i] = def->cob_script->piece_names[i];
+            }
             if (Cob_EngineInit(u->cob, def->cob_script, nc, node_names) != 0) {
                 tak_free(u->cob);
                 u->cob = NULL;
@@ -13828,6 +13835,20 @@ static int fire_script_running(const Unit *u, int slot) {
     return 0;
 }
 
+/* Is the aim thread, or a script it called, waiting on a piece it is
+ * turning or moving? Such an aim is still on its way to the target. */
+static int aim_thread_turning(const CobEngine *e, int slot) {
+    for (int depth = 0; depth < COB_THREADS_PER_UNIT; depth++) {
+        if (slot < 0 || slot >= COB_THREADS_PER_UNIT || !e->threads[slot].alive)
+            return 0;
+        const CobThread *t = &e->threads[slot];
+        if (t->wait_kind == COB_WAIT_TURN || t->wait_kind == COB_WAIT_MOVE) return 1;
+        if (t->wait_kind != COB_WAIT_CHILD) return 0;
+        slot = t->wait_child;
+    }
+    return 0;
+}
+
 /* aim_key names what is being aimed at so a change restarts the aim:
  * a unit handle, or -2 for the ground point of an attack-ground order.
  * The original aims at a ground point exactly like a unit; only the
@@ -13887,9 +13908,12 @@ static int weapon_aim_ready(Unit *u, int slot, int aim_key,
     /* An aim the script never answers is asked again, but one still
      * running after 120 ticks with the unit stopped in reach counts as
      * aimed (D-042). An aim held while the last shot's FireWeapon plays
-     * waits for it, as the original's always does (legacy:249328-249338). */
+     * waits for it, as the original's always does (legacy:249328-249338),
+     * and so does one still turning its pieces onto the target. */
     if (++ws->aim_ticks > 120) {
-        if (fire_script_running(u, slot)) {
+        if (fire_script_running(u, slot) ||
+            (ws->aim_thread_slot >= 0 &&
+             aim_thread_turning(u->cob, ws->aim_thread_slot))) {
             ws->aim_ticks = 120;
             return 0;
         }
@@ -17913,6 +17937,18 @@ int Units_DebugSetDefScript(int def_idx, const uint32_t *code, int words,
     if (d->cob_script) Cob_Free(d->cob_script);
     d->cob_script = cs;
     d->script_launches = (uint8_t)cob_sets_launch_port(cs);
+    g_def_gen++;
+    return 0;
+}
+
+int Units_DebugSetDefScriptPieces(int def_idx, const char *const *pieces, int n) {
+    if (def_idx < 0 || def_idx >= g_def_count || !pieces || n <= 0) return -1;
+    CobScript *cs = g_defs[def_idx].cob_script;
+    if (!cs || cs->piece_names) return -1;
+    cs->piece_names = (char **)tak_calloc((size_t)n, sizeof(char *));
+    if (!cs->piece_names) return -1;
+    for (int i = 0; i < n; i++) cs->piece_names[i] = tak_strdup(pieces[i]);
+    cs->num_pieces = (uint16_t)n;
     g_def_gen++;
     return 0;
 }

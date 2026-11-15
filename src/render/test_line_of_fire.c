@@ -11,6 +11,7 @@
 #include "test_framework.h"
 #include "test_hpi_builder.h"
 #include "tak_battle_config.h"
+#include "tak_cob_vm.h"
 #include "tak_features.h"
 #include "tak_fog.h"
 #include "tak_memory.h"
@@ -3458,6 +3459,57 @@ TEST(a_weapon_its_script_never_says_aimed_fires_after_two_seconds_stopped_in_rea
     ASSERT(shots >= 4);
 }
 
+/* An AimWeapon that turns a turret onto the target at 3640 a second,
+ * as the shipped towers' do, waits for the turn, then says the weapon
+ * is aimed on port 22. */
+static const uint32_t LF_AIM_TURN_SCRIPT[] = {
+    0x10021002u, 0u, 0x10021001u, 32768u, 0x10032000u, /* heading - 0x8000 */
+    0x10023002u, 0u,                                   /* into local 0 */
+    0x10021001u, 3640u, 0x10021002u, 0u,               /* speed, angle */
+    0x10002000u, 0u, 1u,                               /* turn turret y */
+    0x10011000u, 0u, 1u,                               /* wait for it */
+    0x10021001u, 22u, 0x10021002u, 2u, 0x10082000u,    /* port 22 = slot */
+    0x10021001u, 0u, 0x10065000u                       /* return 0 */
+};
+
+/* A turret still turning onto its target is aiming, not stuck: the shot
+ * waits for the turn however long it takes, and the two second fallback
+ * of D-042 never fires it half way round. A quarter turn at 3640 a
+ * second takes 270 ticks. */
+TEST(a_turret_fires_only_once_it_has_turned_onto_its_target) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    static const char *const names[] = { "AimWeapon" };
+    static const uint32_t offsets[] = { 0 };
+    static const char *const pieces[] = { "turret" };
+    ASSERT_EQ_INT(0, Units_DebugSetDefScript(LF_QUICK, LF_AIM_TURN_SCRIPT,
+                                             (int)(sizeof LF_AIM_TURN_SCRIPT / 4),
+                                             names, offsets, 1));
+    ASSERT_EQ_INT(0, Units_DebugSetDefScriptPieces(LF_QUICK, pieces, 1));
+    int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_STURDY, 2, LF_SX + 200, LF_ROW);
+    ASSERT(a >= 0 && t >= 0);
+    ASSERT_NOT_NULL(lf_unit(a)->cob);
+    ASSERT_EQ_INT(1, lf_unit(a)->cob->piece_count);
+    ASSERT(Units_OrderAttack(a, t));
+    int first = -1;
+    int32_t turned = 0;
+    for (int i = 0; i < 600 && first < 0; i++) {
+        Units_TickEngines();
+        if (lf_unit(a)->weapon_state[0].cooldown_ticks > 0) {
+            first = i;
+            turned = lf_unit(a)->cob->pieces[0].rot[1];
+        }
+    }
+    lf_end();
+    /* The target stands a quarter turn round from the turret's rest. */
+    int32_t got = (int16_t)(uint16_t)(turned & 0xffff);
+    int32_t off = (got < 0 ? -got : got) - 16384;
+    printf("(the first shot at %d, the turret %d off the target) ", first,
+           off < 0 ? -off : off);
+    ASSERT(first >= 265 && first <= 300);
+    ASSERT((off < 0 ? -off : off) <= 182);
+}
+
 /* An AimWeapon that answers at once, and a FireWeapon that lets the
  * shot go on port 23 half a second in, as an archer's draw does. */
 static const uint32_t LF_DRAW_SCRIPT[] = {
@@ -4772,6 +4824,7 @@ int main(int argc, char **argv) {
     RUN(a_paralyzer_hold_adds_up_to_a_minute_and_is_passed_over);
     RUN(a_weapon_fires_once_its_script_says_aimed_and_aims_while_it_reloads);
     RUN(a_weapon_its_script_never_says_aimed_fires_after_two_seconds_stopped_in_reach);
+    RUN(a_turret_fires_only_once_it_has_turned_onto_its_target);
     RUN(a_shot_at_the_ground_leaves_at_the_scripts_release);
     RUN(an_acolyte_heals_its_side_at_the_originals_rate);
     RUN(a_shamans_auras_scale_armour_and_attack);
