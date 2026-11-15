@@ -24402,15 +24402,38 @@ TEST(a_towers_crew_draws_the_same_beside_a_second_tower) {
     ASSERT_EQ_INT(solo.width,  duo.width);
     ASSERT_EQ_INT(0, diff);
     SDL_FreeSurface(paired);
+
     SDL_FreeSurface(alone);
 
-    /* A tower posed apart from the first finds an order of its own, so it
-     * draws in a run of its own, as a citadel with its doors open does. */
+    /* A twin posed apart, turned or a door open, still shares the run and
+     * takes an order of its own: each draws as it does with the other
+     * taken off the map. */
     Units_SetHeading(twin, 1.0f);
     timer.accumulator = 0.0;
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
-    ASSERT_EQ_INT(1, Units_DebugDrawRunSize(tower));
-    ASSERT_EQ_INT(1, Units_DebugDrawRunSize(twin));
+    ASSERT_EQ_INT(2, Units_DebugDrawRunSize(tower));
+    SDL_Surface *posed = crew_shoot(&platform);
+    ASSERT_NOT_NULL(posed);
+    const int pair_h[2] = { tower, twin };
+    for (int k = 0; k < 2; k++) {
+        float lo[2], hi[2];
+        ASSERT_EQ_INT(0, Units_DebugProjectedBounds(pair_h[k], world, lo, hi));
+        SDL_Rect kb = { (int)lo[0] - 2, (int)lo[1] - 2,
+                        (int)(hi[0] - lo[0]) + 5, (int)(hi[1] - lo[1]) + 5 };
+        Unit *other = (Unit *)&Units_GetActive(&unit_count)[pair_h[1 - k]];
+        int32_t keep_y = other->world_y;
+        other->world_y += 3000;
+        timer.accumulator = 0.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        SDL_Surface *solo_k = crew_shoot(&platform);
+        other->world_y = keep_y;
+        ASSERT_NOT_NULL(solo_k);
+        int dk = crew_rect_diff(solo_k, posed, kb);
+        printf("[posed apart %d: diff %d] ", k, dk);
+        ASSERT_EQ_INT(0, dk);
+        SDL_FreeSurface(solo_k);
+    }
+    SDL_FreeSurface(posed);
 
     InGame_Shutdown();
     Loading_Shutdown();
@@ -24547,8 +24570,8 @@ TEST(a_wrecked_keep_shows_its_timbers_over_its_walls) {
  * to be drawn, not that anything of it reaches the screen, so the test
  * passed while the crew was being buried under the tower's own
  * masonry. It now renders the tower as well, beside a second
- * stronghold, and measures the crew in the frame. The second keeps its
- * plain pieces, so it draws in a run of its own. */
+ * stronghold so the coalesced draw path carries both, and measures
+ * the crew in the frame. */
 TEST(veteran_swap_keeps_the_crew_drawn) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -24642,7 +24665,7 @@ TEST(veteran_swap_keeps_the_crew_drawn) {
     }
     timer.accumulator = 0.0;
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
-    ASSERT_EQ_INT(1, Units_DebugDrawRunSize(tower));
+    ASSERT_EQ_INT(2, Units_DebugDrawRunSize(tower));
     SDL_Surface *paired = crew_shoot(&platform);
     ASSERT_NOT_NULL(paired);
     CrewMark duo = crew_measure(paired, box);
@@ -26108,21 +26131,6 @@ TEST(hud_kill_count_follows_the_selected_units_kills) {
     VFS_Shutdown();
 }
 
-/* Canvas pixels over the portrait that differ from a copy taken
- * earlier. */
-static int rank_canvas_diff(const uint32_t *before) {
-    SDL_Surface *c = UI_Offscreen();
-    const GUIWidget *pic = GUIRuntime_WidgetByName(HUD_DebugRuntime(), "UnitImage");
-    if (!pic) return -1;
-    int diff = 0;
-    for (int y = pic->rect.y; y < pic->rect.y + pic->rect.h && y < c->h; y++) {
-        const uint32_t *row = (const uint32_t *)((const uint8_t *)c->pixels + (size_t)y * c->pitch);
-        for (int x = pic->rect.x; x < pic->rect.x + pic->rect.w && x < c->w; x++)
-            diff += row[x] != before[y * c->w + x];
-    }
-    return diff;
-}
-
 /* The rank shield in the bottom panel: level times three over the cap
  * of ten picks bronze, silver or gold, nothing below level 4, for any
  * unit but a noveteran monarch (legacy:152439-152450,
@@ -26174,7 +26182,16 @@ TEST(hud_rank_shield_follows_the_units_rank) {
             ASSERT_EQ_INT(0, HUD_WidgetHidden("Experience"));
             ASSERT_EQ_INT(frames[i], HUD_WidgetFrame("Experience"));
             /* The shield shows on the portrait's corner, not under it. */
-            ASSERT(rank_canvas_diff(bare) > 40);
+            const GUIWidget *pic = GUIRuntime_WidgetByName(HUD_DebugRuntime(), "UnitImage");
+            ASSERT_NOT_NULL(pic);
+            int diff = 0;
+            for (int y = pic->rect.y; y < pic->rect.y + pic->rect.h && y < canvas->h; y++) {
+                const uint32_t *row = (const uint32_t *)((const uint8_t *)canvas->pixels +
+                                                         (size_t)y * canvas->pitch);
+                for (int x = pic->rect.x; x < pic->rect.x + pic->rect.w && x < canvas->w; x++)
+                    diff += row[x] != bare[y * canvas->w + x];
+            }
+            ASSERT(diff > 40);
         }
     }
     free(bare);

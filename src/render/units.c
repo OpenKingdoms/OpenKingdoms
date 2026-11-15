@@ -9349,10 +9349,14 @@ static int ensure_scratch(int need_verts, int need_idx) {
 static void tall_features_free(void);
 static void tall_tex_release(void);
 static void overlap_order_free(void);
+static void run_orders_free(void);
+static void cmp_free(void);
 
 static void scratch_free(void) {
     tall_features_free();
     overlap_order_free();
+    run_orders_free();
+    cmp_free();
     if (g_scratch_xy)    { tak_free(g_scratch_xy);    g_scratch_xy    = NULL; }
     if (g_scratch_color) { tak_free(g_scratch_color); g_scratch_color = NULL; }
     if (g_scratch_uv)    { tak_free(g_scratch_uv);    g_scratch_uv    = NULL; }
@@ -17480,6 +17484,7 @@ void Units_WarmPathCaches(const GameWorld *w) {
 }
 
 void Units_DropAllMeshCaches(void) {
+    overlap_order_free();   /* its memos name the meshes freed here */
     proj_model_drop_meshes();
     corpse_art_drop_meshes();
     if (!g_defs) return;
@@ -18626,9 +18631,10 @@ static int tri_depth_at(const TriSort *t, float x, float y, float *out) {
 
 /* The middle of the screen area triangles `p` and `q` share: `p` cut by
  * each of `q`'s edges. 0 when they share less than a pixel. */
-static int tri_overlap_centre(const TriSort *p, const TriSort *q, float *cx, float *cy) {
+static int tri_overlap_centre(const TriSort *p, const TriSort *q, float *cx, float *cy,
+                              float px[9], float py[9], int *pn) {
     const uint16_t pv[3] = { p->i0, p->i1, p->i2 }, qv[3] = { q->i0, q->i1, q->i2 };
-    float px[9], py[9], tx[9], ty[9];
+    float tx[9], ty[9];
     int n = 3;
     for (int k = 0; k < 3; k++) {
         px[k] = g_scratch_xy[2 * pv[k]];
@@ -18670,17 +18676,25 @@ static int tri_overlap_centre(const TriSort *p, const TriSort *q, float *cx, flo
     if (fabsf(ar) < 2.0f) return 0;
     *cx = sx / (3.0f * ar);
     *cy = sy / (3.0f * ar);
+    *pn = n;
     return 1;
 }
 
-/* -1 when `p` lies behind `q` where they overlap on screen, 1 when in
- * front, 0 when level there, 2 when they do not overlap. */
+/* Where `p` lies at the middle of its overlap with `q`: -1 behind, 1 in
+ * front, 2 no overlap. Level there: 0 if within OV_LEVEL all over the
+ * overlap, else 3, crossing. */
+#define OV_LEVEL 4.0f
 static int tri_overlap_side(const TriSort *p, const TriSort *q) {
-    float cx, cy, dp, dq;
-    if (!tri_overlap_centre(p, q, &cx, &cy)) return 2;
+    float cx, cy, dp, dq, px[9], py[9];
+    int pn = 0;
+    if (!tri_overlap_centre(p, q, &cx, &cy, px, py, &pn)) return 2;
     if (!tri_depth_at(p, cx, cy, &dp) || !tri_depth_at(q, cx, cy, &dq)) return 2;
     if (dp < dq - 0.5f) return -1;
     if (dp > dq + 0.5f) return 1;
+    for (int i = 0; i < pn; i++) {
+        if (!tri_depth_at(p, px[i], py[i], &dp) || !tri_depth_at(q, px[i], py[i], &dq)) return 2;
+        if (fabsf(dp - dq) > OV_LEVEL) return 3;
+    }
     return 0;
 }
 
@@ -18698,7 +18712,7 @@ static int tri_overlap_side(const TriSort *p, const TriSort *q) {
  * Walkers keep the key order: every step moves most of their faces. */
 /* A triangle's id is its second vertex: a 3DO face is a fan over
  * vertices of its own, so no two triangles share it. */
-#define OV_SLOTS 256
+#define OV_SLOTS 512
 #define OV_HIDDEN 1e30f
 typedef struct OverlapMemo {
     const UnitMesh *m;
@@ -18710,17 +18724,26 @@ typedef struct OverlapMemo {
     int       n_edges, cap_edges;
     uint16_t *order;         /* the last order found, triangle ids */
     int       n_order;
+    uint32_t  made;          /* the frame a ship's order was found */
+    uint32_t  pose;          /* and the pose it was found in */
 } OverlapMemo;
 static OverlapMemo g_ov_memo[OV_SLOTS];
 static uint32_t    g_ov_clock;
-/* The unit the run being emitted starts with and its screen anchor,
- * unit -1 for a draw that keeps the key order. */
+/* The memo the unit being ordered keys and its screen anchor, -1 for a
+ * draw that keeps the key order. */
 static int   g_emit_unit = -1;
 static float g_emit_ax, g_emit_ay, g_emit_ah;
-/* How far a vertex moves before its triangles are looked at again: a
- * hundredth of a pixel for a building, a pixel for a ship, whose turn
- * moves every face a little each frame. */
-static float g_emit_slack = 0.01f;
+/* A ship's order is its type's for its heading, one of OV_BUCKETS a turn,
+ * kept while the same pieces show and found again after about
+ * OV_SHIP_LIFE frames. Its memo is keyed past the unit handles. */
+#define OV_BUCKETS   64
+#define OV_SHIP_LIFE 60u
+static int      g_emit_bucketed;
+static uint32_t g_emit_pose;
+static uint32_t g_ov_frame;
+/* Where the copy being ordered sits in the scratch buffers. Triangle ids
+ * and the memo are the mesh's own, counted from there. */
+static int      g_ov_voff;
 
 /* Scratch for one ordering: per kept triangle a box (x0, x1, y0, y1,
  * low, high), then the sweep, indegree, heads, heap, output and fill. */
@@ -18848,39 +18871,62 @@ static void ov_test_pair(OverlapMemo *o, int a, int b) {
     if (ba[0] == ba[1] || ba[2] == ba[3] || bb[0] == bb[1] || bb[2] == bb[3]) return;
     int side = tri_overlap_side(&g_ov_tri[a], &g_ov_tri[b]);
     if (side == 2) return;
-    /* Level where they meet: the first drawn keeps the pixel, as the
-     * original's textured fill takes only a key above (legacy:265317). */
+    /* Nearly level: the original's whole unit keys mostly tie and its
+     * textured fill keeps the first drawn (legacy:265317). Crossing: the
+     * key order. OV_LEVEL is ours, set by measuring against that rule. */
     if (side == 0) side = g_ov_tri[a].key < g_ov_tri[b].key ? 1 : -1;
-    const int ta = g_ov_tri[a].i1, tb = g_ov_tri[b].i1;
+    if (side == 3) side = a < b ? -1 : 1;
+    const int ta = g_ov_tri[a].i1 - g_ov_voff, tb = g_ov_tri[b].i1 - g_ov_voff;
     ov_add_edge(o, side < 0 ? ta : tb, side < 0 ? tb : ta);
 }
 
-/* Reorders the `n` key sorted triangles at `tri`, the run's first unit's
- * faces toward the eye, so none goes out after one it lies behind where
- * they overlap. A cycle, which faces cutting through each other make,
- * falls back to the key order. */
+/* Orders the `n` triangles at `tri`, one unit's, so none goes out after
+ * one it lies behind where they overlap. A cycle, which faces cutting
+ * through each other make, falls back to the key order. */
 static void order_by_overlap(const UnitMesh *m, TriSort *tri, int n) {
-    if (n < 2 || g_emit_unit < 0) return;
+    const int vo = g_ov_voff;
+    if (n < 2) return;
+    OverlapMemo *o = NULL;
     g_ov_tri = tri;
+    if (g_emit_unit < 0) goto key_order;
     if (n > g_ov_cap) {
         if (g_ov_box) tak_free(g_ov_box);
         if (g_ov_ints) tak_free(g_ov_ints);
         g_ov_box = (float *)tak_malloc(sizeof(float) * 6 * (size_t)n);
         g_ov_ints = (int *)tak_malloc(sizeof(int) * 6 * ((size_t)n + 1));
         g_ov_cap = (g_ov_box && g_ov_ints) ? n : 0;
-        if (!g_ov_cap) return;
+        if (!g_ov_cap) goto key_order;
     }
-    if (!ov_tmp(n)) return;
+    if (!ov_tmp(n)) goto key_order;
     if (m->vert_count > g_ov_pos_cap) {
         if (g_ov_pos) tak_free(g_ov_pos);
         if (g_ov_moved) tak_free(g_ov_moved);
         g_ov_pos = (int *)tak_malloc(sizeof(int) * (size_t)m->vert_count);
         g_ov_moved = (uint8_t *)tak_malloc((size_t)m->vert_count);
         g_ov_pos_cap = (g_ov_pos && g_ov_moved) ? m->vert_count : 0;
-        if (!g_ov_pos_cap) return;
+        if (!g_ov_pos_cap) goto key_order;
     }
-    OverlapMemo *o = ov_memo_for(g_emit_unit, m);
-    if (!o) return;
+    o = ov_memo_for(g_emit_unit, m);
+    if (!o) goto key_order;
+    if (g_emit_bucketed) {
+        /* A ship takes its bucket's order while it is fresh and holds
+         * the same triangles and shown pieces, and else finds it whole. */
+        for (int t = 0; t < m->vert_count; t++) g_ov_pos[t] = -1;
+        for (int k = 0; k < n; k++) g_ov_pos[tri[k].i1 - vo] = k;
+        int ok = o->n_order == n && o->pose == g_emit_pose &&
+                 g_ov_frame - o->made < OV_SHIP_LIFE + ((uint32_t)g_emit_unit & 15u);
+        for (int k = 0; ok && k < n; k++) ok = g_ov_pos[o->order[k]] >= 0;
+        if (ok) {
+            for (int k = 0; k < n; k++) g_ov_tmp[k] = tri[g_ov_pos[o->order[k]]];
+            memcpy(tri, g_ov_tmp, sizeof(TriSort) * (size_t)n);
+            return;
+        }
+        for (int v = 0; v < 3 * m->vert_count; v++) o->rel[v] = -OV_HIDDEN;
+        memset(o->seen, 0, (size_t)m->vert_count);
+        o->n_edges = 0;
+        o->made = g_ov_frame;
+        o->pose = g_emit_pose;
+    }
 
     /* What moved since the last look: a vertex off by more than a
      * hundredth of a pixel, or a triangle turning to or from the eye. */
@@ -18890,25 +18936,24 @@ static void order_by_overlap(const UnitMesh *m, TriSort *tri, int n) {
     for (int v = 0; v < V; v++) {
         /* A hidden piece's vertices sit on the screen origin: hiding one
          * counts as a move, staying hidden does not. */
-        if (g_scratch_color[v] == 0) {
+        if (g_scratch_color[vo + v] == 0) {
             vmoved[v] = o->rel[3 * v] != OV_HIDDEN;
             o->rel[3 * v] = OV_HIDDEN;
             moved_v += vmoved[v];
             continue;
         }
-        const float rx = g_scratch_xy[2 * v] - g_emit_ax;
-        const float ry = g_scratch_xy[2 * v + 1] - g_emit_ay;
-        const float rh = g_scratch_wy[v] - g_emit_ah;
+        const float rx = g_scratch_xy[2 * (vo + v)] - g_emit_ax;
+        const float ry = g_scratch_xy[2 * (vo + v) + 1] - g_emit_ay;
+        const float rh = g_scratch_wy[vo + v] - g_emit_ah;
         float *c = &o->rel[3 * v];
-        vmoved[v] = fabsf(rx - c[0]) > g_emit_slack || fabsf(ry - c[1]) > g_emit_slack ||
-                    fabsf(rh - c[2]) > g_emit_slack;
+        vmoved[v] = fabsf(rx - c[0]) > 0.01f || fabsf(ry - c[1]) > 0.01f || fabsf(rh - c[2]) > 0.01f;
         if (vmoved[v]) { c[0] = rx; c[1] = ry; c[2] = rh; moved_v++; }
     }
     for (int t = 0; t < m->vert_count; t++) g_ov_pos[t] = -1;
     int moved_t = 0;
     for (int k = 0; k < n; k++) {
         const TriSort *tr = &tri[k];
-        g_ov_pos[tr->i1] = k;
+        g_ov_pos[tr->i1 - vo] = k;
     }
     for (int t = 0; t < m->vert_count; t++) {
         const int kept = g_ov_pos[t] >= 0;
@@ -18917,18 +18962,21 @@ static void order_by_overlap(const UnitMesh *m, TriSort *tri, int n) {
     }
     for (int k = 0; k < n; k++) {
         const TriSort *tr = &tri[k];
-        if (moved_v && (vmoved[tr->i0] || vmoved[tr->i1] || vmoved[tr->i2])) g_ov_moved[tr->i1] = 1;
-        if (g_ov_moved[tr->i1]) moved_t++;
+        if (moved_v && (vmoved[tr->i0 - vo] || vmoved[tr->i1 - vo] || vmoved[tr->i2 - vo]))
+            g_ov_moved[tr->i1 - vo] = 1;
+        if (g_ov_moved[tr->i1 - vo]) moved_t++;
     }
     for (int t = 0; t < m->vert_count; t++) if (g_ov_moved[t] && g_ov_pos[t] < 0) moved_t++;
 
-    /* Nothing moved: the same triangles in the same key order, so the
-     * order found last time stands. */
+    /* Nothing moved: the same triangles, so the order found last time
+     * stands. Else the triangles go in key order to be looked at. */
     if (moved_t == 0 && o->n_order == n) {
         for (int k = 0; k < n; k++) g_ov_tmp[k] = tri[g_ov_pos[o->order[k]]];
         memcpy(tri, g_ov_tmp, sizeof(TriSort) * (size_t)n);
         return;
     }
+    qsort(tri, (size_t)n, sizeof(TriSort), tri_cmp_far_first);
+    for (int k = 0; k < n; k++) g_ov_pos[tri[k].i1 - vo] = k;
     o->n_order = 0;
     int *sweep = g_ov_ints, *indeg = sweep + (n + 1), *head = indeg + (n + 1);
     int *heap = head + (n + 1), *out = heap + (n + 1), *fill = out + (n + 1);
@@ -18963,14 +19011,14 @@ static void order_by_overlap(const UnitMesh *m, TriSort *tri, int n) {
                 for (int j = i + 1; j < n; j++) {
                     if (g_ov_box[6 * sweep[j]] >= g_ov_box[6 * sweep[i] + 1]) break;
                     const int a = sweep[i], b = sweep[j];
-                    if (g_ov_moved[tri[a].i1] || g_ov_moved[tri[b].i1])
+                    if (g_ov_moved[tri[a].i1 - vo] || g_ov_moved[tri[b].i1 - vo])
                         ov_test_pair(o, a, b);
                 }
         } else {
             for (int a = 0; a < n; a++) {
-                if (!g_ov_moved[tri[a].i1]) continue;
+                if (!g_ov_moved[tri[a].i1 - vo]) continue;
                 for (int b = 0; b < n; b++) {
-                    if (b == a || (g_ov_moved[tri[b].i1] && b < a)) continue;
+                    if (b == a || (g_ov_moved[tri[b].i1 - vo] && b < a)) continue;
                     ov_test_pair(o, a, b);
                 }
             }
@@ -19040,67 +19088,53 @@ static void order_by_overlap(const UnitMesh *m, TriSort *tri, int n) {
     }
     for (int k = 0; k < n; k++) g_ov_tmp[k] = tri[out[k]];
     memcpy(tri, g_ov_tmp, sizeof(TriSort) * (size_t)n);
-    for (int k = 0; k < n; k++) o->order[k] = tri[k].i1;
+    for (int k = 0; k < n; k++) o->order[k] = (uint16_t)(tri[k].i1 - vo);
     o->n_order = n;
+    return;
+key_order:
+    qsort(tri, (size_t)n, sizeof(TriSort), tri_cmp_far_first);
 }
 
-/* Moves the sorted triangles the first copy shows its back to ahead of
- * the rest, each part in its order. Returns how many went ahead. */
-static int faces_away_first(int n) {
-    if (!ov_tmp(n)) return 0;
-    int away = 0;
-    for (int k = 0; k < n; k++) {
-        const TriSort *t = &g_scratch_tri[k];
-        if (!tri_faces_camera(t->i0, t->i1, t->i2)) g_ov_tmp[away++] = *t;
-    }
-    int w = away;
-    for (int k = 0; k < n; k++) {
-        const TriSort *t = &g_scratch_tri[k];
-        if (tri_faces_camera(t->i0, t->i1, t->i2)) g_ov_tmp[w++] = *t;
-    }
-    memcpy(g_scratch_tri, g_ov_tmp, sizeof(TriSort) * (size_t)n);
-    return away;
+/* A ship: a floater, not a hover, with the naval armour of a hull. A sea
+ * creature's faces move every frame, so it keeps the key order as
+ * walkers do. Our own rule. */
+static int def_is_ship(const UnitDef *d) {
+    return d && d->max_velocity > 0.0f && d->floater && !d->can_hover &&
+           tak_stricmp(d->damage_category, "naval") == 0;
 }
 
-/* Buildings and ships draw in overlap order. A ship's rigging crosses its
- * sails, and its hull is rigid, so its order seldom has to be found
- * again. */
+/* Buildings and ships draw in overlap order. */
 static int unit_overlap_ordered(const Unit *u) {
     const UnitDef *d = Units_GetDef(u->def_idx);
-    return d && (!(d->max_velocity > 0.0f) || d->floater);
-}
-
-/* Two units of one mesh standing and animated alike: one order serves
- * both. */
-static int unit_same_pose(const Unit *a, const Unit *b) {
-    if (a->heading != b->heading || a->pitch != b->pitch || a->roll != b->roll ||
-        a->facing != b->facing || !a->cob != !b->cob)
-        return 0;
-    if (!a->cob) return 1;
-    if (a->cob->piece_count != b->cob->piece_count) return 0;
-    for (int i = 0; i < a->cob->piece_count; i++) {
-        const CobPiece *p = &a->cob->pieces[i], *q = &b->cob->pieces[i];
-        if (memcmp(p->rot, q->rot, sizeof p->rot) || memcmp(p->pos, q->pos, sizeof p->pos) ||
-            p->hidden != q->hidden)
-            return 0;
-    }
-    return 1;
+    return d && (!(d->max_velocity > 0.0f) || def_is_ship(d));
 }
 
 /* Picks the overlap order for the next draw when `handle` is a building
- * or a ship, anchored where it stands on screen; the key order else. */
+ * or a ship, anchored where it stands on screen, else the key order. A
+ * ship's memo is its heading's bucket. */
 static void overlap_order_for(const struct GameWorld *world, int handle) {
     g_emit_unit = -1;
+    g_emit_bucketed = 0;
     if (handle < 0 || handle >= g_unit_count || !world) return;
     const Unit *u = &g_units[handle];
     if (!unit_overlap_ordered(u)) return;
-    const UnitDef *d = Units_GetDef(u->def_idx);
-    g_emit_slack = d && d->max_velocity > 0.0f ? 1.0f : 0.01f;
     g_emit_ah = (float)Terrain_SampleHeight(world, u->world_x, u->world_y) +
                 Units_DrawnAlt(world, u);
     g_emit_ax = (float)(u->world_x - world->cam_x);
     g_emit_ay = (float)(u->world_y - world->cam_y) - g_emit_ah * g_tan_tilt;
     g_emit_unit = handle;
+    if (def_is_ship(Units_GetDef(u->def_idx))) {
+        const float turn = u->heading * (float)OV_BUCKETS / 6.2831853f;
+        const int b = (int)floorf(turn + 0.5f) & (OV_BUCKETS - 1);
+        g_emit_unit = TAK_MAX_UNITS + b;
+        g_emit_bucketed = 1;
+        /* Which of its pieces show, which a bucket's order has to match.
+         * A hidden piece sits at the screen origin and orders nowhere. */
+        uint32_t h = 2166136261u;
+        for (int i = 0; u->cob && i < u->cob->piece_count; i++)
+            h = (h ^ (u->cob->pieces[i].hidden ? 1u : 0u) ^ ((uint32_t)i << 8)) * 16777619u;
+        g_emit_pose = h;
+    }
 }
 
 /* Tall scenery drawn among the units, defined with the features below. */
@@ -19162,13 +19196,73 @@ static int emit_tri(int i0, int i1, int i2, int w, int *nv) {
     return w + 9;
 }
 
+static float    *g_cmp_xy, *g_cmp_uv;
+static uint32_t *g_cmp_color;
+static uint16_t *g_cmp_idx;
+static uint32_t *g_cmp_stamp;
+static uint16_t *g_cmp_map;
+static int       g_cmp_vcap, g_cmp_icap;
+static uint32_t  g_cmp_clock;
+
+static void cmp_free(void) {
+    tak_free(g_cmp_xy); tak_free(g_cmp_uv); tak_free(g_cmp_color);
+    tak_free(g_cmp_idx); tak_free(g_cmp_stamp); tak_free(g_cmp_map);
+    g_cmp_xy = g_cmp_uv = NULL; g_cmp_color = NULL; g_cmp_idx = NULL;
+    g_cmp_stamp = NULL; g_cmp_map = NULL;
+    g_cmp_vcap = g_cmp_icap = 0;
+}
+
+/* Draws the `w` indices at g_scratch_idx over the first `nv` scratch
+ * vertices, handing SDL only the ones they use, as it looks over every
+ * vertex a draw is given. */
+static void draw_used(TAK_Platform *plat, const GPU_Texture *tex, int nv, int w) {
+    if (nv > g_cmp_vcap || w > g_cmp_icap) {
+        const int vc = nv > g_cmp_vcap ? nv * 2 : g_cmp_vcap, ic = w > g_cmp_icap ? w * 2 : g_cmp_icap;
+        cmp_free();
+        g_cmp_xy = (float *)tak_malloc(sizeof(float) * 2 * (size_t)vc);
+        g_cmp_uv = (float *)tak_malloc(sizeof(float) * 2 * (size_t)vc);
+        g_cmp_color = (uint32_t *)tak_malloc(sizeof(uint32_t) * (size_t)vc);
+        g_cmp_stamp = (uint32_t *)tak_calloc((size_t)vc, sizeof(uint32_t));
+        g_cmp_map = (uint16_t *)tak_malloc(sizeof(uint16_t) * (size_t)vc);
+        g_cmp_idx = (uint16_t *)tak_malloc(sizeof(uint16_t) * (size_t)ic);
+        if (!g_cmp_xy || !g_cmp_uv || !g_cmp_color || !g_cmp_stamp || !g_cmp_map || !g_cmp_idx) {
+            cmp_free();
+            GPU_DrawGeometryRaw(plat, tex, g_scratch_xy, g_scratch_color, g_scratch_uv,
+                                nv, g_scratch_idx, w);
+            return;
+        }
+        g_cmp_vcap = vc;
+        g_cmp_icap = ic;
+        g_cmp_clock = 0;
+    }
+    if (++g_cmp_clock == 0) {
+        memset(g_cmp_stamp, 0, sizeof(uint32_t) * (size_t)g_cmp_vcap);
+        g_cmp_clock = 1;
+    }
+    int n = 0;
+    for (int i = 0; i < w; i++) {
+        const int v = g_scratch_idx[i];
+        if (g_cmp_stamp[v] != g_cmp_clock) {
+            g_cmp_stamp[v] = g_cmp_clock;
+            g_cmp_map[v] = (uint16_t)n;
+            g_cmp_xy[2 * n] = g_scratch_xy[2 * v];
+            g_cmp_xy[2 * n + 1] = g_scratch_xy[2 * v + 1];
+            g_cmp_uv[2 * n] = g_scratch_uv[2 * v];
+            g_cmp_uv[2 * n + 1] = g_scratch_uv[2 * v + 1];
+            g_cmp_color[n] = g_scratch_color[v];
+            n++;
+        }
+        g_cmp_idx[i] = g_cmp_map[v];
+    }
+    GPU_DrawGeometryRaw(plat, tex, g_cmp_xy, g_cmp_color, g_cmp_uv, n, g_cmp_idx, w);
+}
+
 /* Draw `n_inst` transformed copies of one mesh, sitting at vertex
  * offsets 0, V, 2V and on in the scratch buffers, in one height
  * ordered pass. The first copy's triangles are sorted by height key
  * with the authored order breaking ties (legacy:265317,
- * legacy:197658), a building's then by where they overlap, and every
- * copy reuses that order, so one draw goes out per contiguous same
- * batch stretch and carries every copy.
+ * legacy:197658), and every copy reuses that order, so one draw goes
+ * out per contiguous same batch stretch and carries every copy.
  * Backfaces are tested per copy (legacy:197804), since copies can face
  * different ways. A lone copy is culled up front, which keeps its
  * stretches as long as they can be. */
@@ -19177,10 +19271,6 @@ static void emit_height_ordered(TAK_Platform *plat, const UnitMesh *m,
     const int V = m->vert_count;
     int kept = build_unit_tri_list_ex(m, 0, n_inst == 1);
     if (kept > 1) qsort(g_scratch_tri, kept, sizeof(TriSort), tri_cmp_far_first);
-    /* The first copy's faces away from the eye go first, so the faces
-     * toward it keep the order a lone copy would give them. */
-    const int away = n_inst > 1 && g_emit_unit >= 0 ? faces_away_first(kept) : 0;
-    order_by_overlap(m, g_scratch_tri + away, kept - away);
     int s = 0;
     int nv = total_verts;
     while (s < kept) {
@@ -19197,14 +19287,147 @@ static void emit_height_ordered(TAK_Platform *plat, const UnitMesh *m,
                 w = emit_tri(i0, i1, i2, w, &nv);
             }
         }
-        if (w > 0) {
-            GPU_DrawGeometryRaw(plat,
-                g_submit_solid_white ? NULL
-                    : m->batches[g_scratch_tri[s].batch].atlas_tex,
-                g_scratch_xy, g_scratch_color, g_scratch_uv,
-                nv, g_scratch_idx, w);
-        }
+        if (w > 0)
+            draw_used(plat, g_submit_solid_white ? NULL : m->batches[g_scratch_tri[s].batch].atlas_tex,
+                      nv, w);
         s = e;
+    }
+}
+
+/* Each copy's own overlap ordered front faces, by local index, end to
+ * end: copy ci's start at g_run_off[ci] and number g_run_n[ci]. */
+static TriSort *g_run_tri;
+static int      g_run_cap;
+static int     *g_run_off, *g_run_n, *g_run_at;
+static int      g_run_copies_cap;
+
+static void run_orders_free(void) {
+    if (g_run_tri) tak_free(g_run_tri);
+    if (g_run_off) tak_free(g_run_off);
+    g_run_tri = NULL;
+    g_run_off = g_run_n = g_run_at = NULL;
+    g_run_cap = g_run_copies_cap = 0;
+}
+
+/* The front faces of the unit transformed at offset v_off, in the order
+ * it draws them, left in g_scratch_tri. Returns how many. */
+static int order_unit_front(const struct GameWorld *world, int handle, const UnitMesh *m,
+                            int v_off) {
+    overlap_order_for(world, handle);
+    /* A ship orders every face, so one order fits its whole bucket. */
+    int kept = build_unit_tri_list_ex(m, v_off, !g_emit_bucketed);
+    g_ov_voff = v_off;
+    order_by_overlap(m, g_scratch_tri, kept);
+    g_ov_voff = 0;
+    int w = 0;
+    for (int k = 0; k < kept; k++) {
+        const TriSort t = g_scratch_tri[k];
+        if (tri_faces_camera(t.i0, t.i1, t.i2)) g_scratch_tri[w++] = t;
+    }
+    g_emit_unit = -1;
+    g_emit_bucketed = 0;
+    return w;
+}
+
+/* Two units of one mesh standing and animated alike draw in one order. */
+static int unit_same_pose(const Unit *a, const Unit *b) {
+    if (a->heading != b->heading || a->pitch != b->pitch || a->roll != b->roll ||
+        a->facing != b->facing || !a->cob != !b->cob)
+        return 0;
+    if (!a->cob) return 1;
+    if (a->cob->piece_count != b->cob->piece_count) return 0;
+    for (int i = 0; i < a->cob->piece_count; i++) {
+        const CobPiece *p = &a->cob->pieces[i], *q = &b->cob->pieces[i];
+        if (memcmp(p->rot, q->rot, sizeof p->rot) || memcmp(p->pos, q->pos, sizeof p->pos) ||
+            p->hidden != q->hidden)
+            return 0;
+    }
+    return 1;
+}
+
+/* Finds each building's or ship's order on its own verts, laid out at
+ * offsets 0, V, 2V and on. A copy posed as an earlier one takes its
+ * order. 0 when there is no room. */
+static int find_copy_orders(const struct GameWorld *world, const UnitMesh *m,
+                            const int *units, int n) {
+    const int T = m->tri_count;
+    if ((size_t)n * (size_t)T > (size_t)g_run_cap) {
+        if (g_run_tri) tak_free(g_run_tri);
+        g_run_tri = (TriSort *)tak_malloc(sizeof(TriSort) * (size_t)n * (size_t)T);
+        g_run_cap = g_run_tri ? n * T : 0;
+        if (!g_run_tri) return 0;
+    }
+    if (n > g_run_copies_cap) {
+        if (g_run_off) tak_free(g_run_off);
+        g_run_off = (int *)tak_malloc(sizeof(int) * 3 * (size_t)n);
+        g_run_copies_cap = g_run_off ? n : 0;
+        if (!g_run_off) return 0;
+    }
+    g_run_n = g_run_off + n;
+    g_run_at = g_run_n + n;
+    const int V = m->vert_count;
+    int w = 0;
+    for (int ci = 0; ci < n; ci++) {
+        const Unit *u = &g_units[units[ci]];
+        int twin = -1;
+        for (int cj = ci - 1; cj >= 0 && twin < 0; cj--)
+            if (unit_same_pose(&g_units[units[cj]], u)) twin = cj;
+        g_run_off[ci] = w;
+        if (twin >= 0) {
+            const int shift = (ci - twin) * V;
+            for (int k = 0; k < g_run_n[twin] && w < g_run_cap; k++) {
+                TriSort t = g_run_tri[g_run_off[twin] + k];
+                t.i0 = (uint16_t)(t.i0 + shift);
+                t.i1 = (uint16_t)(t.i1 + shift);
+                t.i2 = (uint16_t)(t.i2 + shift);
+                g_run_tri[w++] = t;
+            }
+        } else {
+            const int kept = order_unit_front(world, units[ci], m, ci * V);
+            for (int k = 0; k < kept && w < g_run_cap; k++) g_run_tri[w++] = g_scratch_tri[k];
+        }
+        g_run_n[ci] = w - g_run_off[ci];
+    }
+    return 1;
+}
+
+/* Draws the copies laid out at offsets 0, V, 2V and on, each in its own
+ * order. A draw takes the texture the most copies go on to next, or the
+ * backmost one's that has waited OV_RUN_WAIT draws, so none lags far. */
+#define OV_RUN_WAIT 2
+static void emit_copy_orders(TAK_Platform *plat, const UnitMesh *m, int n_inst,
+                             int total_verts) {
+    int nv = total_verts;
+    for (int ci = 0; ci < n_inst; ci++) g_run_at[ci] = 0;
+    static uint8_t waited[65536];
+    for (int ci = 0; ci < n_inst; ci++) waited[ci] = 0;
+    for (;;) {
+        int count[UNIT_MESH_MAX_BATCHES] = { 0 };
+        int best = -1, forced = -1;
+        for (int ci = 0; ci < n_inst; ci++) {
+            if (g_run_at[ci] >= g_run_n[ci]) continue;
+            const int b = g_run_tri[g_run_off[ci] + g_run_at[ci]].batch;
+            if (forced < 0 && waited[ci] >= OV_RUN_WAIT) forced = b;
+            if (++count[b] > (best < 0 ? 0 : count[best])) best = b;
+        }
+        if (best < 0) break;
+        if (forced >= 0) best = forced;
+        int w = 0;
+        for (int ci = 0; ci < n_inst; ci++) {
+            if (g_run_at[ci] >= g_run_n[ci]) continue;
+            if (g_run_tri[g_run_off[ci] + g_run_at[ci]].batch != best) {
+                if (waited[ci] < 255) waited[ci]++;
+                continue;
+            }
+            waited[ci] = 0;
+            const TriSort *t = &g_run_tri[g_run_off[ci]];
+            while (g_run_at[ci] < g_run_n[ci] && t[g_run_at[ci]].batch == best) {
+                const TriSort *u = &t[g_run_at[ci]++];
+                w = emit_tri(u->i0, u->i1, u->i2, w, &nv);
+            }
+        }
+        if (w > 0)
+            draw_used(plat, g_submit_solid_white ? NULL : m->batches[best].atlas_tex, nv, w);
     }
 }
 
@@ -19217,9 +19440,9 @@ static void emit_height_ordered(TAK_Platform *plat, const UnitMesh *m,
  * uint16 indices cap each draw call at 65535 verts, so we sub-chunk
  * the run if N × vert_count exceeds the budget.
  *
- * The triangle order is sorted once per run, from the first unit's
- * transformed verts, and reused for every unit in it. Every unit in a
- * run shares one baked mesh, so one sort covers them all. */
+ * The key order is sorted once per run, from the first unit's
+ * transformed verts, and reused for every unit in it. A building or a
+ * ship takes an overlap order of its own. */
 static void submit_run(TAK_Platform *plat, const struct GameWorld *world,
                        uint16_t def_idx, uint8_t color_idx,
                        const int *unit_indices, int n_units)
@@ -19276,14 +19499,18 @@ static void submit_run(TAK_Platform *plat, const struct GameWorld *world,
          * archer.
          *
          * Every unit in a run shares one baked mesh, so the first
-         * unit's ordering serves the whole run and the coalescing
-         * survives (emit_height_ordered). */
+         * unit's key order serves the whole run and the coalescing
+         * survives (emit_height_ordered). A building or a ship, which a
+         * door open or a turn sets apart, goes in its own overlap order
+         * with its draws shared (emit_copy_orders). */
         const Unit *u0 = &g_units[unit_indices[chunk_start]];
+        const int own = unit_overlap_ordered(u0) && Units_NanoframeBodyShown(u0) &&
+                        find_copy_orders(world, m, unit_indices + chunk_start, chunk_n);
         g_submit_solid_white = u0->magic_death != 0;
-        overlap_order_for(world, unit_indices[chunk_start]);
-        if (Units_NanoframeBodyShown(u0))
+        if (own)
+            emit_copy_orders(plat, m, chunk_n, total_verts);
+        else if (Units_NanoframeBodyShown(u0))
             emit_height_ordered(plat, m, chunk_n, total_verts);
-        g_emit_unit = -1;
         g_submit_solid_white = 0;
         /* A frame is a run of one, so the scratch holds just its verts. */
         if (u0->under_construction)
@@ -19356,11 +19583,13 @@ int Units_DebugSubmitOrder(int handle, const struct GameWorld *world,
     const UnitMesh *m = debug_transform_unit(handle, world);
     if (!m || !out_nodes || max_tris <= 0) return -1;
 
-    int kept = build_unit_tri_list(m, 0);
-    if (kept > 1) qsort(g_scratch_tri, kept, sizeof(TriSort), tri_cmp_far_first);
-    overlap_order_for(world, handle);
-    order_by_overlap(m, g_scratch_tri, kept);
-    g_emit_unit = -1;
+    int kept;
+    if (unit_overlap_ordered(&g_units[handle])) {
+        kept = order_unit_front(world, handle, m, 0);
+    } else {
+        kept = build_unit_tri_list(m, 0);
+        if (kept > 1) qsort(g_scratch_tri, kept, sizeof(TriSort), tri_cmp_far_first);
+    }
     if (kept > max_tris) kept = max_tris;
     for (int t = 0; t < kept; t++) {
         out_nodes[t] = m->vert_node_idx[g_scratch_tri[t].i0];
@@ -19412,11 +19641,13 @@ int Units_DebugOrderMismatch(int handle, const struct GameWorld *world, int *out
     if (out_covered) *out_covered = 0;
     const UnitMesh *m = debug_transform_unit(handle, world);
     if (!m) return -1;
-    int kept = build_unit_tri_list(m, 0);
-    if (kept > 1) qsort(g_scratch_tri, kept, sizeof(TriSort), tri_cmp_far_first);
-    overlap_order_for(world, handle);
-    order_by_overlap(m, g_scratch_tri, kept);
-    g_emit_unit = -1;
+    int kept;
+    if (unit_overlap_ordered(&g_units[handle])) {
+        kept = order_unit_front(world, handle, m, 0);
+    } else {
+        kept = build_unit_tri_list(m, 0);
+        if (kept > 1) qsort(g_scratch_tri, kept, sizeof(TriSort), tri_cmp_far_first);
+    }
     float bx0 = 1e30f, by0 = 1e30f, bx1 = -1e30f, by1 = -1e30f;
     for (int k = 0; k < kept; k++) {
         const uint16_t v[3] = { g_scratch_tri[k].i0, g_scratch_tri[k].i1, g_scratch_tri[k].i2 };
@@ -19880,6 +20111,7 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
     if (!plat || !plat->renderer || !world) return;
     memset(g_debug_run_size, 0, sizeof(g_debug_run_size));
     if (n <= 0) return;
+    g_ov_frame++;
 
     collect_tall_features(world);
     int run_start = 0;
@@ -19897,10 +20129,6 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
             if ((uk->magic_death != 0) != (u0->magic_death != 0)) break;
             /* A frame being built draws its own mass over its body. */
             if (uk->under_construction || u0->under_construction) break;
-            /* The run takes its first unit's overlap order, which fits
-             * only a unit posed the same: a door open or a ship turned
-             * another way draws in a run of its own. */
-            if (unit_overlap_ordered(u0) && !unit_same_pose(u0, uk)) break;
             run_end++;
         }
         int run_len = run_end - run_start;
