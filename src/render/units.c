@@ -400,6 +400,7 @@ static void credit_kill(int shooter_handle, int killer_player, const Unit *victi
 static float build_heading_for_def(const UnitDef *d);
 /* Forwards for the capture hand over, which sits with the shots. */
 static void unit_remove_now(int handle);
+static int unit_def_barred(int def_idx);
 static void unit_riders_die(Unit *t, int t_idx);
 static int unit_holds_commander(const Unit *t, int t_idx);
 static void unit_check_commander_death(const Unit *t, int t_idx);
@@ -480,6 +481,12 @@ static const MissionSeat *unit_mission_seat(const GameWorld *w, int p) {
         return NULL;
     const MissionSeat *s = &w->mission.seats[p];
     return s->present ? s : NULL;
+}
+
+/* A seat its line calls strategic rather than passive (legacy:177742). */
+static int unit_mission_seat_plans(int p) {
+    const MissionSeat *s = unit_mission_seat(World_Get(), p);
+    return s && s->strategic;
 }
 
 /* An ally seat and the player are allies both ways (legacy:177736-177741). */
@@ -1992,6 +1999,10 @@ static void unit_on_damaged(Unit *victim, int shooter_handle) {
         victim->skip_until = 0;
     }
     TAK_AI_NotifyDamage((int)(victim - g_units), shooter_handle);
+    /* A strategic seat does not answer a neutral seat's blows
+     * (legacy:15101-15103, legacy:177742). */
+    if (Units_HoldsFireOn(victim->player_id, shooter->player_id) &&
+        unit_mission_seat_plans(victim->player_id)) return;
     if (victim->cmd_kind == UNIT_CMD_MOVE) {
         unit_pass_answer(victim, shooter);
         return;
@@ -7035,6 +7046,10 @@ static int factory_in_hand(const Unit *f) {
  * started, so a product that cannot be placed is not lost. */
 static int factory_start_next(int fh) {
     Unit *f = &g_units[fh];
+    /* A type the mission bars is never made, so a queue a save from
+     * before the roster holds moves on past it. */
+    while (f->prod_queue_len > 0 && unit_def_barred(f->prod_queue[0]))
+        prod_drop_run(f, 0);
     if (f->prod_queue_len == 0 || f->under_construction) return 0;
     if (factory_in_hand(f) >= 0 || !factory_ready(f)) return 0;
     if (Units_BeginBuildingForUnit(fh, f->prod_queue[0],

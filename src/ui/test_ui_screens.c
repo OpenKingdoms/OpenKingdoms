@@ -5915,6 +5915,21 @@ TEST(black_peace_follows_its_mission_file) {
     units = Units_GetActive(&unit_count);
     ASSERT_EQ_INT(cow, (int)units[zombie].target);
     Units_StopUnit(zombie);
+    /* A strategic seat does not answer a neutral seat's bite. */
+    int sword = -1;
+    for (int i = 0; i < unit_count && sword < 0; i++)
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 2 &&
+            (int)units[i].def_idx == Units_FindDefByName("ARASWORD")) sword = i;
+    ASSERT(sword >= 0);
+    int wolf = Units_Spawn(Units_FindDefByName("LIFWOLF"), 10, 9,
+                           units[sword].world_x + 24, units[sword].world_y);
+    ASSERT(wolf >= 0);
+    Units_CommandAttackUnit(wolf, sword);
+    InGame_DebugRunSimTicks(90);
+    units = Units_GetActive(&unit_count);
+    ASSERT(units[sword].health < units[sword].max_health);
+    ASSERT(units[sword].target != wolf);
+    Units_DebugRemove(wolf);
 
     /* The monarch lays the castle and the lodestone, not the dungeon or
      * the hell gate on the way to the dragon, and no dragon is made. */

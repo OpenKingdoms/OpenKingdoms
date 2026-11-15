@@ -735,7 +735,6 @@ static void loading_advance_step(TAK_Platform *platform) {
         Units_LoadDefsFor(world ? world->cfg.crusades_balance : 0);
         uint64_t t_build = SDL_GetPerformanceCounter();
         Units_LoadAllBuildables();
-        Units_ApplyMissionRoster(world ? &world->mission : NULL);
         uint64_t t_bake = SDL_GetPerformanceCounter();
         Units_ClearInstances();
         /* M6: pre-bake the canonical monarch meshes so the LS_FINALIZE
@@ -762,6 +761,9 @@ static void loading_advance_step(TAK_Platform *platform) {
             fprintf(stderr, "No GameWorld struct? That's not good!");
             return;
         }
+        /* Here, which every load passes, even one whose map had no
+         * terrain to read and so kept the last battle's types. */
+        Units_ApplyMissionRoster(&world->mission);
         /* 16 px per tile — confirmed in the legacy map init at
          * line 224930 which stores W_tiles*16 as the map pixel width.
          * Block size follows: 2 tiles per block × 16 = 32 map pixels. */

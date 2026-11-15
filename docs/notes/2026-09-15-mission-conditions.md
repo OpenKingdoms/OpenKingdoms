@@ -150,9 +150,10 @@ everyone.
 
 The mark is read by the attacker's own target search :19267, so every
 seat passes a neutral seat's cows and townsfolk over while the neutral
-seat's own wolves still go for anyone. A click on a passive seat's unit
-is an attack all the same :186172-186174, and a mission order to attack
-a type asks nothing of the mark :8990-8993.
+seat's own wolves still go for anyone. A strategic seat's unit bitten by
+one does not answer it either :15101-15103. A click on a passive seat's
+unit is an attack all the same :186172-186174, and a mission order to
+attack a type asks nothing of the mark :8990-8993.
 
 ## The units a mission allows
 
