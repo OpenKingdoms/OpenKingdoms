@@ -12639,6 +12639,33 @@ static int unit_stall_progress(int32_t m, int32_t *best, int32_t *mark) {
     return 0;
 }
 
+/* Stopped friends this near are the edge of a crowd that has packed. */
+#define UNIT_PACKED_NEAR_PX 64
+
+/* Is a move the ground can serve kept from the ladder's last rung? Units
+ * jammed at a gap try again later in the original (legacy:191265-191388,
+ * M-006). One at the edge of stopped friends packs there. */
+static int unit_move_kept(const Unit *u, const UnitDef *def,
+                          const GameWorld *w,
+                          int32_t final_x, int32_t final_y) {
+    if (u->cmd_kind != UNIT_CMD_MOVE) return 0;
+    if (!TAK_PathGroundConnected(w, unit_move_class(w, def), def->max_slope,
+                                 u->world_x, u->world_y, final_x, final_y))
+        return 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *o = &g_units[i];
+        if (o == u || o->alive != UNIT_ALIVE_ACTIVE) continue;
+        if (o->player_id != u->player_id || o->cmd_kind != UNIT_CMD_NONE) continue;
+        const UnitDef *od = Units_GetDef(o->def_idx);
+        if (!od || od->can_fly || od->max_velocity <= 0.0f) continue;
+        int64_t dx = (int64_t)o->world_x - u->world_x;
+        int64_t dy = (int64_t)o->world_y - u->world_y;
+        if (dx * dx + dy * dy <= (int64_t)UNIT_PACKED_NEAR_PX * UNIT_PACKED_NEAR_PX)
+            return 0;
+    }
+    return 1;
+}
+
 /* Plan bookkeeping for one tick: replans, the pending hold, and the
  * stall watchdog. */
 static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
@@ -12741,7 +12768,11 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
         }
         if (u->stall_ticks > UNIT_NO_PROGRESS_TICKS) {
             u->stall_ticks = 0;
-            if (u->stall_esc >= UNIT_STALL_ESCALATIONS) return NAV_GIVE_UP;
+            if (u->stall_esc >= UNIT_STALL_ESCALATIONS) {
+                if (!unit_move_kept(u, def, w, final_x, final_y))
+                    return NAV_GIVE_UP;
+                u->stall_esc = 0;
+            }
             u->stall_esc++;
             unit_drop_route(u);
             unit_replan_path(u, def, w, final_x, final_y);

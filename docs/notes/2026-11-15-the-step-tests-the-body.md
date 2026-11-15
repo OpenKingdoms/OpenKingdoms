@@ -134,6 +134,40 @@ ship 200 px east, where it is ordered off neither with the change nor
 without it, and still counts every order. With M-012's rule for ships bound for the rally point
 undone, it is ordered off 11 times there.
 
+## A gap one body wide (2026-11-15)
+
+Seen in the original: twelve swordsmen sent through a gap exactly one
+body wide. Three to six get through. The rest back up and cycle, then
+either find another way or try again later. None stands for good.
+
+With the step testing the body, a 2 by 2 body fits such a gap only with
+its centre in a 16 px window across it, where the centre had 32 px. In
+test_movement's world, with a wall three tiles thick and a gap at tile
+rows 74 and 75, swords that reach the wall face a few pixels outside the
+window stop there. They park, and parked units close the gap to the
+others' searches. A unit with no route walks straight at its point and
+presses square on the wall, and the step slides only when both axes
+move. The stall ladder (M-006) still climbed, since it counts ground
+closed against the best so far whatever the route does. Its last rung
+ended the order, and the units that gave up stood at the face or in the
+gap and held the rest back for good.
+
+The last rung now keeps a move order while the ground joins the unit to
+its point, and the ladder starts over. The original re-runs its search
+on a delay and never moves the unit in the way (legacy:191265-191388).
+A unit at the edge of friends that have already stopped still ends its
+order, which is how a crowd sent to one point packs.
+
+Measured, 2 to 12 swords over ten spawn offsets, at spacings of 32, 40
+and 48 px, with the wall whole and with a second gap eight tiles wide
+far to the north: 660 runs of 4620 units. Before, 104 runs left 191
+units, every one with its order ended. Now no unit is left. 10 go round
+by the second gap, 17 get through after tick 3000, and the last is
+through by tick 5958. In the 12 sword runs, 2 to 12 are through by tick
+1500. The test is a_group_sent_through_a_gap_one_body_wide_all_get_through
+in test_movement: before, 7 of its 12 got through, and now all 12 do, 5
+of them by tick 1500.
+
 ## Not done
 
 - The spots a unit is sent to still judge the centre alone: a factory's

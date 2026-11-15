@@ -1314,7 +1314,9 @@ Format per entry:
 - Change: A unit with a live move order that has not closed 32 pixels
   of ground on its goal for 240 ticks gets a fresh search, and after
   four of those have not moved it on the order is ended as
-  unreachable. The original scales every retry delay by a per def
+  unreachable, unless the ground joins the unit to its point and no
+  friend that has stopped stands within 64 pixels of it. Then the
+  ladder starts over and the order is kept. The original scales every retry delay by a per def
   speed byte derived from maxvelocity (legacy:162838-162851,
   legacy:184656-184658), so a slow unit waits several times longer
   than a fast one.
@@ -1367,22 +1369,33 @@ Format per entry:
   several near miss cases. An owner parity call, not one the reference
   settles.
 - Also: where the way is blocked by another unit and the corridor is
-  too narrow to pass it, there is no other route to take and the order
-  is ended. The original does not command the blocker to move either:
-  legacy:191265-191388 re-runs the search on a delay scaled by that
-  same speed byte and never touches the unit in the way. Making a
-  blocking unit stand aside would be a new behaviour, not parity, and
-  is what issue #60's "or another unit" clause still wants.
+  too narrow to pass it, the order is kept and the ladder starts over,
+  so the unit searches again every 240 ticks. The original does not
+  command the blocker to move either: legacy:191265-191388 re-runs the
+  search on a delay scaled by that same speed byte and never touches
+  the unit in the way. Seen in the original: twelve swordsmen sent
+  through a gap exactly one body wide. Three to six get through, and
+  the rest back up and cycle, then find another way or try again
+  later. None stands for good. Until 2026-11-15 the order was ended
+  here, and on a gap one body wide the units that gave up stood at the
+  wall face or in the gap and held the rest back for good
+  (docs/notes/2026-11-15-the-step-tests-the-body.md). A unit at the
+  edge of friends that have already stopped still ends its order, which
+  is how a crowd sent to one point packs. Making a blocking unit stand
+  aside would be a new behaviour, not parity, and is what issue #60's
+  "or another unit" clause still wants.
 - Measured: on the reported band fixture the ladder is what turns the
   one case a route cannot serve, a monarch bracketed by two of his own
   on a 48 pixel band, from nine thousand ticks of grinding into an
   order that ends. Every other case in that fixture is served by the
   route search alone and never reaches the first rung, so the ladder
   is a safety net and is meant to be one. The data free case is
-  a_unit_that_covers_ground_without_closing_on_its_goal_gives_up in
-  test_movement: a unit pacing a walled pocket for 2023 px with the
-  way out facing away from its goal, which the old ladder never gave
-  up on and this one ends at tick 1592.
+  a_unit_that_covers_ground_without_closing_on_its_goal_climbs_the_ladder
+  in test_movement: a unit pacing a walled pocket with the way out
+  facing away from its goal, which the old ladder never climbed. This
+  one climbs all four rungs, and since the ground joins the pocket to
+  the goal it starts over. Shut at the mouth too, the same pocket ends
+  the order (a_unit_the_ground_shuts_in_gives_its_move_up).
 - Citation: Issue #60. Manual is silent.
 
 ---

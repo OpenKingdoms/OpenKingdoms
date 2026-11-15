@@ -482,15 +482,15 @@ TEST(a_line_abreast_holds_its_lane) {
  * the goal. That is the case the stall ladder is for, and while the
  * ladder measured displacement from a reference point that moved
  * with the unit, each length of the pocket reset it and the last
- * rung, the one that ends an order nothing can serve, was never
- * reached. Measured on the unfixed mover: after 3000 ticks the order
+ * rung was never reached. The ground joins the pocket to the goal, so
+ * the last rung keeps the order and starts the ladder over. Measured on the unfixed mover: after 3000 ticks the order
  * was still live, the unit had paced 2023 px, was no closer to the
  * goal than the 345 px it started at, and the ladder had reset three
  * times and never climbed past its first rung of four.
  */
 #define MV_POCKET_TICKS 3000
 
-TEST(a_unit_that_covers_ground_without_closing_on_its_goal_gives_up) {
+TEST(a_unit_that_covers_ground_without_closing_on_its_goal_climbs_the_ladder) {
     GameWorld *w = mv_world();
     ASSERT_NOT_NULL(w);
     /* The pocket: four tiles of it, so the unit stands legally inside
@@ -521,7 +521,7 @@ TEST(a_unit_that_covers_ground_without_closing_on_its_goal_gives_up) {
     int32_t lx = mv_unit(h)->world_x, ly = mv_unit(h)->world_y;
     int64_t best2 = mv_dist2(mv_unit(h), gx, gy);
     long travelled = 0;
-    int ended = -1, max_esc = 0, resets = 0, last_esc = 0;
+    int ended = -1, max_esc = 0, resets = 0, last_esc = 0, again = 0;
     for (int t = 0; t < MV_POCKET_TICKS && ended < 0; t++) {
         /* The friend keeps its feet moving in the mouth. Two points
          * a tile apart, re-ordered often enough that it never parks. */
@@ -535,6 +535,7 @@ TEST(a_unit_that_covers_ground_without_closing_on_its_goal_gives_up) {
         int e = (int)u->stall_esc;
         if (e > max_esc) max_esc = e;
         if (e < last_esc) resets++;
+        if (last_esc == 4 && e < 4) again++;
         last_esc = e;
         int32_t dx = u->world_x - lx, dy = u->world_y - ly;
         travelled += (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
@@ -546,22 +547,103 @@ TEST(a_unit_that_covers_ground_without_closing_on_its_goal_gives_up) {
     int best = 0;
     while ((int64_t)(best + 1) * (best + 1) <= best2) best++;
     printf("(ended at %d, travelled %ld px, closest %d px, max rung %d, "
-           "%d resets) ", ended, travelled, best, max_esc, resets);
+           "%d resets, %d from the last rung) ", ended, travelled, best,
+           max_esc, resets, again);
     /* It really was pacing, not standing still: the stationary case
      * was already served and proves nothing here. */
     ASSERT(travelled > 1000);
     /* And none of that pacing was progress. The goal is 345 px away
      * through a wall and it never got near it. */
     ASSERT(best > 300);
-    /* So the ladder climbed all four rungs and ended the order. The
-     * two resets it took on the way are the mover really getting
-     * further along its route than it ever had, which is progress and
-     * is meant to start the ladder over. There can only ever be a
-     * bounded number of those, because the best way left to walk only
-     * ever falls. */
+    /* So the ladder climbed all four rungs. The resets it took on the
+     * way are the mover really getting further along its route than it
+     * ever had, which is progress and is meant to start the ladder
+     * over. There can only ever be a bounded number of those, because
+     * the best way left to walk only ever falls. From the last rung it
+     * started over and kept the order. */
     ASSERT_EQ_INT(4, max_esc);
-    ASSERT(resets <= 4);
+    ASSERT(again >= 1);
+    ASSERT(resets <= 4 + again);
+    ASSERT(ended < 0);
+    mv_end();
+}
+
+/* The same pocket shut at its mouth too. No ground joins it to the
+ * goal, so the last rung ends the order. */
+TEST(a_unit_the_ground_shuts_in_gives_its_move_up) {
+    GameWorld *w = mv_world();
+    ASSERT_NOT_NULL(w);
+    for (int tx = 70; tx <= 110; tx++) {
+        w->tnt.heightmap[(size_t)99 * w->tnt.height_w + tx] = 255;
+        w->tnt.heightmap[(size_t)104 * w->tnt.height_w + tx] = 255;
+    }
+    for (int ty = 99; ty <= 104; ty++) {
+        w->tnt.heightmap[(size_t)ty * w->tnt.height_w + 70] = 255;
+        w->tnt.heightmap[(size_t)ty * w->tnt.height_w + 110] = 255;
+    }
+    TAK_PathCacheReset();
+    int32_t cy = 102 * 16, gx = 130 * 16 + 8, gy = cy;
+    int h = Units_Spawn(MV_DEF_WALKER, 1, 0, 108 * 16, cy);
+    ASSERT(h >= 0);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    Units_CommandMoveUnit(h, gx, gy);
+    int ended = -1;
+    for (int t = 0; t < MV_POCKET_TICKS && ended < 0; t++) {
+        Units_TickEngines();
+        if (mv_unit(h)->cmd_kind == UNIT_CMD_NONE) ended = t + 1;
+    }
+    printf("(ended at %d) ", ended);
     ASSERT(ended > 0);
+    mv_end();
+}
+
+/* A wall three tiles thick with a gap one 2 by 2 body wide, tile rows 74
+ * and 75, and twelve swords sent through it together. Seen in the
+ * original: a few get through, the rest back up and try again later.
+ * Here the first stop at the wall face beside the gap, park, and shut
+ * it to the others' searches. With the order ended on the last rung,
+ * six of them stood there for good. */
+TEST(a_group_sent_through_a_gap_one_body_wide_all_get_through) {
+    GameWorld *w = mv_world();
+    ASSERT_NOT_NULL(w);
+    for (int vy = 0; vy < w->tnt.height_h; vy++) {
+        if (vy >= 74 && vy <= 76) continue;
+        for (int vx = 81; vx <= 82; vx++)
+            w->tnt.heightmap[(size_t)vy * w->tnt.height_w + vx] = 255;
+    }
+    TAK_PathCacheReset();
+    #define MV_GAP_N 12
+    int h[MV_GAP_N], at[MV_GAP_N];
+    /* Each a few pixels off a 40 px grid, the offsets fixed. */
+    uint32_t r = 0x9E3779B9u * 2u;
+    for (int i = 0; i < MV_GAP_N; i++) {
+        r = r * 1664525u + 1013904223u;
+        int jx = (int)((r >> 8) % 24) - 12;
+        r = r * 1664525u + 1013904223u;
+        int jy = (int)((r >> 8) % 24) - 12;
+        h[i] = Units_Spawn(MV_DEF_WALKER, 1, 0, 700 + (i % 4) * 40 + jx,
+                           1120 + (i / 4) * 40 + jy);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+        at[i] = -1;
+    }
+    for (int i = 0; i < MV_GAP_N; i++) Units_OrderMove(h[i], 1900, 1200);
+    int through = 0, last = 0;
+    for (int t = 0; t < 6000 && through < MV_GAP_N; t++) {
+        Units_TickEngines();
+        for (int i = 0; i < MV_GAP_N; i++) {
+            if (at[i] >= 0 || mv_unit(h[i])->world_x <= 83 * 16) continue;
+            at[i] = t;
+            last = t;
+            through++;
+        }
+    }
+    int early = 0;
+    for (int i = 0; i < MV_GAP_N; i++) early += at[i] >= 0 && at[i] < 1500;
+    printf("(%d through, %d of them by tick 1500, the last at %d) ", through,
+           early, last);
+    ASSERT_EQ_INT(MV_GAP_N, through);
+    #undef MV_GAP_N
     mv_end();
 }
 
@@ -2940,7 +3022,9 @@ int main(int argc, char **argv) {
     RUN(two_units_walking_into_each_other_give_way);
     RUN(two_files_of_units_walk_through_each_other);
     RUN(a_line_abreast_holds_its_lane);
-    RUN(a_unit_that_covers_ground_without_closing_on_its_goal_gives_up);
+    RUN(a_unit_that_covers_ground_without_closing_on_its_goal_climbs_the_ladder);
+    RUN(a_unit_the_ground_shuts_in_gives_its_move_up);
+    RUN(a_group_sent_through_a_gap_one_body_wide_all_get_through);
     RUN(a_builder_that_cannot_reach_its_site_gives_the_build_up);
     RUN(a_near_blocked_unit_holds_its_line);
     RUN(a_wide_unit_walks_a_corridor_its_own_width);
