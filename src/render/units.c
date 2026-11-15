@@ -12037,13 +12037,19 @@ static int unit_water_depth_ok(const GameWorld *w, const UnitDef *def,
 /* Tiles of the body at (x, y) on ground the route search refuses: the
  * whole footprint (legacy:219089-219131), anchored on the position
  * rounded to the tile grid (legacy:184166-184186). */
-static int unit_body_bad(const GameWorld *w, const Unit *u,
-                         const UnitDef *def, int32_t x, int32_t y) {
+static int unit_body_bad_mc(const GameWorld *w, const Unit *u,
+                            const UnitDef *def, const MoveClassDef *mc,
+                            int32_t x, int32_t y) {
     if (!w || !def || def->can_fly) return 0;
     int fx, fz;
     unit_occ_fp(u, &fx, &fz);
-    return TAK_PathBodyBad(w, unit_move_class(w, def), def->max_slope, fx, fz,
+    return TAK_PathBodyBad(w, mc, def->max_slope, fx, fz,
                            Occ_TileOf(x - fx * 8 + 8), Occ_TileOf(y - fz * 8 + 8));
+}
+
+static int unit_body_bad(const GameWorld *w, const Unit *u,
+                         const UnitDef *def, int32_t x, int32_t y) {
+    return unit_body_bad_mc(w, u, def, unit_move_class(w, def), x, y);
 }
 
 /* Whether a step to (x, y) moves the body's tiles along both axes. */
@@ -12964,6 +12970,7 @@ static void unit_route_check(Unit *u, const UnitDef *def,
 /* Would a step to (nx, ny) be refused? The escape hatches let a unit
  * already on illegal ground or on someone's footprint step out. */
 static int unit_step_refused(const GameWorld *w, const UnitDef *def,
+                             const MoveClassDef *mc,
                              const Unit *u, int self_h,
                              int escaping, int occ_escape,
                              int32_t nx, int32_t ny) {
@@ -12972,12 +12979,12 @@ static int unit_step_refused(const GameWorld *w, const UnitDef *def,
      * thing keeping a boat off dry land (legacy:219155-219157). */
     if (!unit_water_depth_ok(w, def, nx, ny)) return 1;
     /* The body may not take on more bad ground than it stands on now. */
-    if (unit_body_bad(w, u, def, nx, ny) > escaping) return 1;
+    if (unit_body_bad_mc(w, u, def, mc, nx, ny) > escaping) return 1;
     /* Across a tile corner, the bodies either side too, as a route's
      * diagonal asks, so no unit slips into ground no route leaves. */
     if (unit_body_crosses_corner(u, nx, ny) &&
-        (unit_body_bad(w, u, def, nx, u->world_y) > escaping ||
-         unit_body_bad(w, u, def, u->world_x, ny) > escaping))
+        (unit_body_bad_mc(w, u, def, mc, nx, u->world_y) > escaping ||
+         unit_body_bad_mc(w, u, def, mc, u->world_x, ny) > escaping))
         return 1;
     if (!occ_escape) {
         int k = occ_step_blocked(w, u, self_h, nx, ny);
@@ -13495,8 +13502,10 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     /* A unit already standing on illegal ground (mission placement,
      * factory exit) must be allowed to step OUT, otherwise every
      * candidate fails the same predicate and it is immobilised. */
-    int escaping = unit_body_bad(w, u, def, u->world_x, u->world_y);
-    int refused = unit_step_refused(w, def, u, self_h, escaping,
+    /* The class is resolved once a step: the step asks the body often. */
+    const MoveClassDef *body_mc = unit_move_class(w, def);
+    int escaping = unit_body_bad_mc(w, u, def, body_mc, u->world_x, u->world_y);
+    int refused = unit_step_refused(w, def, body_mc, u, self_h, escaping,
                                     occ_escape, nx, ny);
     if (refused) {
         const int32_t rx = nx, ry = ny;
@@ -13504,11 +13513,11 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
          * and lets the other keep moving (legacy:184190-184230). */
         int slid = 0;
         if (mx != 0 && my != 0 &&
-            !unit_step_refused(w, def, u, self_h, escaping, occ_escape,
+            !unit_step_refused(w, def, body_mc, u, self_h, escaping, occ_escape,
                                u->world_x + mx, u->world_y)) {
             ny = u->world_y; my = 0; slid = 1;
         } else if (mx != 0 && my != 0 &&
-                   !unit_step_refused(w, def, u, self_h, escaping,
+                   !unit_step_refused(w, def, body_mc, u, self_h, escaping,
                                       occ_escape, u->world_x,
                                       u->world_y + my)) {
             nx = u->world_x; mx = 0; slid = 1;
@@ -13570,7 +13579,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
             int close_px = u->move_group ? UNIT_FORMATION_ARRIVE_PX : 48;
             if (u->path_index >= u->path_len && gd2 <= (int64_t)close_px * close_px) return 1;
             if (refused == 1 && u->path_len == 0 && !u->path_pending &&
-                unit_body_bad(w, u, def, gx, gy)) {
+                unit_body_bad_mc(w, u, def, body_mc, gx, gy)) {
                 return 1;
             }
             if (u->blocked_ticks > UNIT_TERRAIN_BLOCK_TICKS)
