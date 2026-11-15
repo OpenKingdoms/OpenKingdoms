@@ -119,6 +119,13 @@ int TAK_PathClearanceAt(const struct GameWorld *world,
                         int fallback_max_slope,
                         int tile_x, int tile_y);
 
+/* How many tiles of a body fx by fz, top left at tile (tx0, ty0), stand
+ * on ground the route search refuses this class. 0 is wholly on it. */
+int TAK_PathBodyBad(const struct GameWorld *world,
+                    const struct MoveClassDef *move_class,
+                    int fallback_max_slope, int fx, int fz,
+                    int tx0, int ty0);
+
 /* Whether two points stand on ground this move class can walk
  * between: 1 when they do, and 1 when either end is not on ground
  * the class can stand on at all, which is an unknown rather than a

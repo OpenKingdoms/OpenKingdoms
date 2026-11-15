@@ -4206,6 +4206,8 @@ static int unit_terrain_walkable(const GameWorld *w, const UnitDef *def,
                                  int32_t x, int32_t y);
 static const MoveClassDef *unit_move_class(const GameWorld *w,
                                            const UnitDef *def);
+static int unit_body_bad(const GameWorld *w, const Unit *u,
+                         const UnitDef *def, int32_t x, int32_t y);
 
 /* Could this unit legally stand at (x,y)? Terrain/water rules only. */
 int Units_CanStandAt(int handle, int32_t world_x, int32_t world_y) {
@@ -12032,6 +12034,26 @@ static int unit_water_depth_ok(const GameWorld *w, const UnitDef *def,
     return 1;
 }
 
+/* Tiles of the body at (x, y) on ground the route search refuses: the
+ * whole footprint (legacy:219089-219131), anchored on the position
+ * rounded to the tile grid (legacy:184166-184186). */
+static int unit_body_bad(const GameWorld *w, const Unit *u,
+                         const UnitDef *def, int32_t x, int32_t y) {
+    if (!w || !def || def->can_fly) return 0;
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    return TAK_PathBodyBad(w, unit_move_class(w, def), def->max_slope, fx, fz,
+                           Occ_TileOf(x - fx * 8 + 8), Occ_TileOf(y - fz * 8 + 8));
+}
+
+/* Whether a step to (x, y) moves the body's tiles along both axes. */
+static int unit_body_crosses_corner(const Unit *u, int32_t x, int32_t y) {
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    return Occ_TileOf(x - fx * 8 + 8) != Occ_TileOf(u->world_x - fx * 8 + 8) &&
+           Occ_TileOf(y - fz * 8 + 8) != Occ_TileOf(u->world_y - fz * 8 + 8);
+}
+
 static int unit_terrain_walkable(const GameWorld *w,
                                  const UnitDef *def,
                                  int32_t x,
@@ -12845,7 +12867,7 @@ static void unit_aim_point(const Unit *u,
 static int unit_neighbour_blocks(const GameWorld *w, const Unit *u,
                                  const UnitDef *def, int self_h,
                                  int32_t nx, int32_t ny) {
-    if (!unit_terrain_walkable(w, def, nx, ny)) return 1;
+    if (unit_body_bad(w, u, def, nx, ny)) return 1;
     if (!w->occ) return 0;
     int fx, fz;
     unit_occ_fp(u, &fx, &fz);
@@ -12946,11 +12968,17 @@ static int unit_step_refused(const GameWorld *w, const UnitDef *def,
                              int escaping, int occ_escape,
                              int32_t nx, int32_t ny) {
     if (!w) return 0;
-    /* The escape hatch relaxes slope and features so a unit can leave
-     * illegal ground, but never the water window: that window is the
-     * only thing keeping a boat off dry land (legacy:219155-219157). */
+    /* The water window at the centre is never relaxed: it is the only
+     * thing keeping a boat off dry land (legacy:219155-219157). */
     if (!unit_water_depth_ok(w, def, nx, ny)) return 1;
-    if (!escaping && !unit_terrain_walkable(w, def, nx, ny)) return 1;
+    /* The body may not take on more bad ground than it stands on now. */
+    if (unit_body_bad(w, u, def, nx, ny) > escaping) return 1;
+    /* Across a tile corner, the bodies either side too, as a route's
+     * diagonal asks, so no unit slips into ground no route leaves. */
+    if (unit_body_crosses_corner(u, nx, ny) &&
+        (unit_body_bad(w, u, def, nx, u->world_y) > escaping ||
+         unit_body_bad(w, u, def, u->world_x, ny) > escaping))
+        return 1;
     if (!occ_escape) {
         int k = occ_step_blocked(w, u, self_h, nx, ny);
         if (k == 1) return 2;   /* another unit */
@@ -13467,8 +13495,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     /* A unit already standing on illegal ground (mission placement,
      * factory exit) must be allowed to step OUT, otherwise every
      * candidate fails the same predicate and it is immobilised. */
-    int escaping = (w && !unit_terrain_walkable(w, def, u->world_x,
-                                                u->world_y));
+    int escaping = unit_body_bad(w, u, def, u->world_x, u->world_y);
     int refused = unit_step_refused(w, def, u, self_h, escaping,
                                     occ_escape, nx, ny);
     if (refused) {
@@ -13543,7 +13570,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
             int close_px = u->move_group ? UNIT_FORMATION_ARRIVE_PX : 48;
             if (u->path_index >= u->path_len && gd2 <= (int64_t)close_px * close_px) return 1;
             if (refused == 1 && u->path_len == 0 && !u->path_pending &&
-                !unit_terrain_walkable(w, def, gx, gy)) {
+                unit_body_bad(w, u, def, gx, gy)) {
                 return 1;
             }
             if (u->blocked_ticks > UNIT_TERRAIN_BLOCK_TICKS)

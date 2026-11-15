@@ -1,0 +1,143 @@
+# The step tests the body (2026-11-15)
+
+The step used to test one point, the unit's centre, against terrain and
+water. The route search tests every tile of the footprint. The two
+disagreed at every edge of rough ground, and the step let units go
+where the search could not see them. This is what the step does now,
+what had to change beside it, and what was measured.
+
+## Seen in the original
+
+Catapults were sent up the ramp to the high ground on Abnar's Terrace,
+in the original and in the engine, with move orders from about 300 px
+away. In the original a catapult stopped short, at the foot of the ramp
+or of the cliff, whichever was nearer. Repeated orders brought it closer
+but never up. It made for the flattest, closest ground it could reach
+and did not go back onto the ground it had stopped short of. On the east
+side there is no way up for it at all. In the engine the catapult walked
+its centre up the ramp, and its body hung over the cliff edge.
+
+After the change, on a fork of this engine that carries it, compared
+against the original again: catapults path as they do there, with no
+clipping into cliffs and the same ramps out of their reach. Units on the
+edge of ground they cannot path on still get out.
+
+## What the step does now
+
+The step counts the tiles of the body, anchored on the position
+rounded to the tile grid (legacy:184166-184186), that stand on ground
+the route search would refuse: past the class's slope, a closed mark,
+a blocking feature, outside its water depths, or off the map. It
+sweeps the whole footprint, as the original's step does
+(legacy:219089-219131), and reads the same ground the search plans on
+(`TAK_PathBodyBad`). A step that adds to the count is refused. A unit
+half on a slope may make for flatter ground and may not go back. The
+water window at the centre is kept as it was, since it alone keeps a
+boat off dry land. Skipping waypoints asks the same of the next
+position, so a large body near a cliff follows its route point by point.
+
+A body crossing a tile corner, its tiles moving along both axes in one
+step, must also pass the two bodies either side of the corner. The
+original's rule for corners is not established. The engine's search
+and its walk out of a trapped start have always asked this of a
+diagonal, and without it on the step a unit slipped past a corner into
+ground neither could lead it out of. On Valysia City an ARASWORD
+crossed one at 6792,856 into four tiles of open ground walled by rock,
+and stood there for good. A long march probe in a fork of this engine
+found it, before this change.
+
+## What changed beside it
+
+- The walk out of a trapped start follows the step's rule. It never
+  takes the body onto more bad ground than it stands on, beside a
+  diagonal too, where it used to judge the centre tile and cross shut
+  ground within two tiles of the unit. Its nodes are the points a body
+  stands on: a tile's centre for an odd footprint, its top left corner
+  for an even one. Water is tested at that point, as the step tests it
+  at the centre.
+- A unit standing on its ground but a tile off every placement of its
+  own cell, which can reach none of them in a line without meeting bad
+  ground, a building or a corner, has a trapped start and is walked out
+  first. The search begins a route at its cell's placements, and the
+  first leg from where the unit really stands crossed the corner.
+- A route whose first leg the step would refuse from where the unit
+  stands is planned again as a trapped start, walked out first. A unit
+  partly on bad ground in a legal cell got a route from the cell's
+  placements, and when the step refused its first pixel and both
+  slides, every replan gave the same route and it stood for good. The
+  centre's step had let it through. A flow field route the step could
+  not start goes to a search instead.
+- The first point of a compressed route is kept when the line past it
+  would cut such a corner, as it is kept when the line would take the
+  body off its ground. The body line is anchored on the rounded
+  position, as the step anchors the body.
+- The first point is also kept when the step would not walk the unit,
+  from where it really stands, along the line past it. That check used
+  to follow the centre's tile. It now follows the step: no more bad
+  ground under the body than it stands on, at a corner or not, and the
+  centre never into water it may not enter.
+- A pocket is walked out of when its search runs out within 64 cells
+  and ground or buildings shut it in. A body wholly on its ground can
+  now be in one, so the old test, that part of the body stood off its
+  ground, no longer applies. A unit boxed in by a crowd of parked units
+  is no pocket and is not walked. The search out of a pocket still
+  starts its nearest cell afresh.
+- The walk counts each tile's body once and keeps the count, a footprint
+  of ground lookups for each tile it reaches. The step counts the body
+  once a step, and twice more across a corner. The first step
+  after a cache reset can build the planner's ground cache.
+
+## Measured
+
+On a fork of this engine, built with and without the change, a long
+march probe counted 40 units sent across three maps:
+
+| March | Without | With |
+|---|---|---|
+| Abnar's Terrace: units at their goals | 29 of 40 | 29 of 40 |
+| Abnar's Terrace: stopped short | 9 | 9 |
+| Abnar's Terrace: unit ticks stuck | 22,771 | 42,221 |
+| Angvir's Maze: units at their goals | 36 of 40 | 36 of 40 |
+| Angvir's Maze: unit ticks stuck | 46,464 | 75,888 |
+| Valysia City: units at their goals | 34 of 40 | 35 of 40 |
+| Valysia City: stopped short | 4 | 1 |
+| Valysia City: left over 320 px behind | 1 | 0 |
+| Valysia City: unit ticks stuck | 84,696 | 146,236 |
+
+Without the change an ARAARCH ended the Valysia City march in the
+pocket at 6848,848. With it nobody does. The ticks stuck go up: on
+Abnar's Terrace and Angvir's Maze mostly the knights' and catapults'
+larger bodies, held at the foot of ground they used to walk their
+centres onto, and on Valysia City every kind. That is the original's
+rule.
+
+`test_pathing` holds the walk out on synthetic ground by the step's
+rule. A unit wedged by a corner fails on the search without the trapped
+start for it. A unit with a tile of its body on rock, whose route from
+its cell cannot start, fails without the walk out for it. A unit half on
+the wall of a pocket walks out along a one tile corridor beside that
+wall with no more rock under it, which a body wholly in the pocket
+cannot. A first point judged from a tile off its placement fails
+without the check from the unit. The ground crowd's layout in
+`test_movement` does not change.
+
+`test_movement`'s case of a ship parked by a yard's rally point (M-012)
+had the ship 150 px east of the rally point. A product that stops short
+of the rally point and is in the way of the next one is sent off again
+to a spot of its own, which makes it a launch, and a ship in a launch's
+way is moved by M-012's rule. Put at 14 places along the rally point's
+row, from 200 px west to 280 px east of it, the parked ship was ordered
+off at 9 without this change and at 9 with it, every time while the
+yard had sent a product off its way. The places differ, and 150 px east is
+one of them with the change and not without. The case now parks the
+ship 200 px east, where it is ordered off neither with the change nor
+without it, and still counts every order. With M-012's rule for ships bound for the rally point
+undone, it is ordered off 11 times there.
+
+## Not done
+
+- The spots a unit is sent to still judge the centre alone: a factory's
+  exit, a ship's launch spot, the place a builder stands off at, and a
+  free spot near a point. A product can be sent to a spot its body does
+  not fit, and stop short of it. That likely is why the launches above
+  moved.

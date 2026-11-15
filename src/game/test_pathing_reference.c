@@ -1138,9 +1138,6 @@ static void cell_waypoint(const PlanCtx *c, int cell,
 #define ESC_TILES (ESC_W * ESC_W)
 #define ESC_SETTLE_MAX 4096
 #define ESC_HEAP (ESC_SETTLE_MAX * 8 + 8)
-/* Shut ground is crossed only this near the unit, as the mover's
- * escape hatch lets a centre on it step out. */
-#define ESC_SHUT_R 2
 /* A tile in its own cell or in a cell a route may stand in costs what
  * open ground does. One in a cell with no placement costs, a cell of
  * it, PATH_PINCH_COST more, the price the cell crossings had. */
@@ -1148,10 +1145,11 @@ static void cell_waypoint(const PlanCtx *c, int cell,
 #define ESC_NEAR_DIAG 7
 #define ESC_FAR ((PATH_PINCH_COST + 10) / 2)
 #define ESC_FAR_DIAG ((PATH_PINCH_COST + 14) / 2)
-/* A search that runs out within this many cells, from a unit whose body
- * is partly off its ground, began in a pocket the step let its centre
- * into and no slide leads out of. It is walked out the same way, to
- * placements outside the pocket. */
+/* A search that runs out within this many cells began in a pocket the
+ * step let the unit's body into and no slide of the cell grid leads out
+ * of. It is walked out the way a trapped start is, by the step's own
+ * rule, to placements outside the pocket: where the body could not get
+ * out, nor can the walk. */
 #define PATH_POCKET_CELLS 64
 
 typedef struct EscSeed { int cell, bit, tile, cost; } EscSeed;
@@ -1168,6 +1166,7 @@ static struct {
     int32_t dist[ESC_TILES];
     uint8_t from[ESC_TILES];            /* the step that reached it */
     uint8_t seen[ESC_TILES];            /* 1 queued, 2 settled */
+    uint8_t bad[ESC_TILES];             /* body counts, 0xFF not yet */
     int32_t hkey[ESC_HEAP], hnode[ESC_HEAP];
     int hn;
     EscSeed seed[ESC_SEEDS];
@@ -1184,10 +1183,34 @@ static int esc_ground(const PlanCtx *c, int tx, int ty) {
            water_ok(c->world, c->mc, px, py);
 }
 
-/* Water alone. The mover never relaxes it (unit_step_refused). */
+/* The walk's node for a tile is the point a body stands on there: the
+ * tile's centre for an odd footprint, its top left corner for an even
+ * one, where the body is the placement this tile centres. */
+static int32_t esc_pos(int t, int fp) {
+    return (int32_t)t * TAK_OCC_TILE_PX + (fp & 1) * (TAK_OCC_TILE_PX / 2);
+}
+
+/* Water at the point the body stands on there, where the step tests it.
+ * The mover never relaxes it (unit_step_refused). */
 static int esc_dry(const PlanCtx *c, int tx, int ty) {
-    if (esc_ground(c, tx, ty)) return 1;
-    return water_ok(c->world, c->mc, tile_to_world(tx), tile_to_world(ty));
+    return water_ok(c->world, c->mc, esc_pos(tx, c->fx), esc_pos(ty, c->fz));
+}
+
+/* Tiles of that body that stand on ground the class may not, as the
+ * step counts them. */
+static int esc_body_bad(const PlanCtx *c, int tx, int ty) {
+    int bx = tx - c->fx / 2, by = ty - c->fz / 2, bad = 0;
+    for (int dy = 0; dy < c->fz; dy++)
+        for (int dx = 0; dx < c->fx; dx++)
+            bad += !esc_ground(c, bx + dx, by + dy);
+    return bad;
+}
+
+/* A node's body count, counted once a walk. */
+static int esc_bad(const PlanCtx *c, int tx, int ty) {
+    uint8_t *m = &g_esc.bad[(ty - g_esc.oy) * ESC_W + (tx - g_esc.ox)];
+    if (*m == 0xFF) *m = (uint8_t)esc_body_bad(c, tx, ty);
+    return *m;
 }
 
 /* Nothing built or parked under the body of a unit centred on this
@@ -1267,22 +1290,24 @@ static int esc_pop(int *node) {
     return key;
 }
 
-/* Walk out from the unit's tile, to no start in a skip cell. Water is
- * never crossed. From ground
- * only onto ground, past no corner either side of which is shut, and
- * from shut ground near the unit anywhere near it. What is built or
- * parked is crossed only while the body already stands on some, as
- * the mover's occ_escape allows, and never beside a diagonal. Gives
- * how many starts were found, the cheapest for each cell. */
+/* Walk out from the unit's tile, to no start in a skip cell, by the
+ * step's rule: water at the centre never, and never onto more bad
+ * ground under the body than it stands on, beside a diagonal too.
+ * What is built or parked is crossed only while the body already
+ * stands on some, as the mover's occ_escape allows. Gives how many
+ * starts were found, the cheapest for each cell. */
 static int esc_flood(const PlanCtx *c, int32_t x, int32_t y,
                      const uint8_t *skip) {
-    int t0x = (int)(x / TAK_OCC_TILE_PX), t0y = (int)(y / TAK_OCC_TILE_PX);
+    /* The node whose body is the one the unit stands in now. */
+    int t0x = Occ_TileOf(x - c->fx * 8 + 8) + c->fx / 2;
+    int t0y = Occ_TileOf(y - c->fz * 8 + 8) + c->fz / 2;
     g_esc.ox = t0x - ESC_R;
     g_esc.oy = t0y - ESC_R;
     g_esc.hn = 0;
     g_esc.nseed = 0;
     g_esc.settled = 0;
     memset(g_esc.seen, 0, sizeof(g_esc.seen));
+    memset(g_esc.bad, 0xFF, sizeof(g_esc.bad));
     int scx = t0x / OCC_PER_PATH_CELL, scy = t0y / OCC_PER_PATH_CELL;
     int n0 = ESC_R * ESC_W + ESC_R;
     g_esc.dist[n0] = 0;
@@ -1311,7 +1336,7 @@ static int esc_flood(const PlanCtx *c, int32_t x, int32_t y,
             }
             continue;
         }
-        int on_ground = esc_ground(c, tx, ty);
+        int body_bad = esc_bad(c, tx, ty);
         int body_clear = esc_body_clear(c, tx, ty);
         for (int di = 0; di < 8; di++) {
             int ddx = g_esc_d8[di][0], ddy = g_esc_d8[di][1];
@@ -1323,15 +1348,9 @@ static int esc_flood(const PlanCtx *c, int32_t x, int32_t y,
             if (ntx < 0 || nty < 0 || ntx >= c->mtw || nty >= c->mth) continue;
             if (!esc_dry(c, ntx, nty)) continue;
             int diag = ddx && ddy;
-            if (on_ground) {
-                if (!esc_ground(c, ntx, nty)) continue;
-                if (diag && (!esc_ground(c, ntx, ty) || !esc_ground(c, tx, nty)))
-                    continue;
-            } else if (!esc_ground(c, ntx, nty)) {
-                int rx = ntx - t0x, ry = nty - t0y;
-                if (rx < -ESC_SHUT_R || rx > ESC_SHUT_R ||
-                    ry < -ESC_SHUT_R || ry > ESC_SHUT_R) continue;
-            }
+            if (esc_bad(c, ntx, nty) > body_bad) continue;
+            if (diag && (esc_bad(c, ntx, ty) > body_bad ||
+                         esc_bad(c, tx, nty) > body_bad)) continue;
             if (body_clear) {
                 if (!esc_body_clear(c, ntx, nty)) continue;
                 if (diag && (!esc_body_clear(c, ntx, ty) ||
@@ -1378,8 +1397,8 @@ static int esc_lay(const PlanCtx *c, const EscSeed *s, int *px, int *py,
         int prev = chain[i + 1], t = chain[i], next = chain[i - 1];
         if (i < len - 2 && t - prev == next - t) continue;
         if (n + 1 >= cap) return -1;
-        px[n] = tile_to_world(g_esc.ox + t % ESC_W);
-        py[n] = tile_to_world(g_esc.oy + t / ESC_W);
+        px[n] = esc_pos(g_esc.ox + t % ESC_W, c->fx);
+        py[n] = esc_pos(g_esc.oy + t / ESC_W, c->fz);
         n++;
     }
     int ptx[FP_PLACEMENTS], pty[FP_PLACEMENTS];
@@ -1390,29 +1409,49 @@ static int esc_lay(const PlanCtx *c, const EscSeed *s, int *px, int *py,
     return n + 1;
 }
 
-/* Does a centre walking the line from a to b stay on ground, as the
- * step asks of the centre alone? The tile under a is not asked: the
- * step lets a unit off ground it already stands on. */
-static int centre_line_ok(const PlanCtx *c, int32_t ax, int32_t ay,
-                          int32_t bx, int32_t by) {
+/* Would the step walk the unit from a to b? Its centre never into
+ * water it may not enter, and its body never onto more bad ground. */
+static int step_line_ok(const PlanCtx *c, int32_t ax, int32_t ay,
+                        int32_t bx, int32_t by) {
     int64_t dx = (int64_t)bx - ax, dy = (int64_t)by - ay;
     int64_t adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
     int64_t steps = adx > ady ? adx : ady;
-    int lx = Occ_TileOf(ax), ly = Occ_TileOf(ay);
+    int lx = Occ_TileOf(ax - c->fx * 8 + 8) + c->fx / 2;
+    int ly = Occ_TileOf(ay - c->fz * 8 + 8) + c->fz / 2;
+    int bad = esc_body_bad(c, lx, ly);
     for (int64_t s = 1; s <= steps; s++) {
         int32_t x = ax + (int32_t)(dx * s / steps);
         int32_t y = ay + (int32_t)(dy * s / steps);
-        int tx = Occ_TileOf(x), ty = Occ_TileOf(y);
+        if (!water_ok(c->world, c->mc, x, y)) return 0;
+        int tx = Occ_TileOf(x - c->fx * 8 + 8) + c->fx / 2;
+        int ty = Occ_TileOf(y - c->fz * 8 + 8) + c->fz / 2;
         if (tx == lx && ty == ly) continue;
+        if (tx != lx && ty != ly &&
+            (esc_body_bad(c, tx, ly) > bad || esc_body_bad(c, lx, ty) > bad))
+            return 0;
+        int b = esc_body_bad(c, tx, ty);
+        if (b > bad) return 0;
+        bad = b;
         lx = tx;
         ly = ty;
-        if (!esc_ground(c, tx, ty)) return 0;
     }
     return 1;
 }
 
-/* Does a body walking the line from a to b stand wholly on ground the
- * class crosses, with nothing built under it, at every pixel? */
+/* Does the body with its top left at tile (tx, ty) stand wholly on
+ * ground the class crosses, with nothing built under it? */
+static int body_at_ok(const PlanCtx *c, int tx, int ty) {
+    if (tx < 0 || ty < 0 || tx + c->fx > c->mtw || ty + c->fz > c->mth) return 0;
+    if (c->clear)
+        return tx < c->tw && ty < c->th && c->clear[ty * c->tw + tx] >= c->need;
+    for (int r = 0; r < c->fz; r++)
+        for (int k = 0; k < c->fx; k++)
+            if (!esc_ground(c, tx + k, ty + r)) return 0;
+    return 1;
+}
+
+/* Does a body walking a to b, anchored as the step anchors it, stand
+ * wholly on that ground at every pixel and beside every corner? */
 static int body_line_ok(const PlanCtx *c, int32_t ax, int32_t ay,
                         int32_t bx, int32_t by) {
     int64_t dx = (int64_t)bx - ax, dy = (int64_t)by - ay;
@@ -1422,23 +1461,32 @@ static int body_line_ok(const PlanCtx *c, int32_t ax, int32_t ay,
     for (int64_t s = 0; s <= steps; s++) {
         int32_t x = steps ? ax + (int32_t)(dx * s / steps) : ax;
         int32_t y = steps ? ay + (int32_t)(dy * s / steps) : ay;
-        int32_t bxp = x - c->fx * 8, byp = y - c->fz * 8;
+        int32_t bxp = x - c->fx * 8 + 8, byp = y - c->fz * 8 + 8;
         if (bxp < 0 || byp < 0) return 0;
         int tx = (int)(bxp / TAK_OCC_TILE_PX), ty = (int)(byp / TAK_OCC_TILE_PX);
         if (tx == lx && ty == ly) continue;
+        if (lx != INT_MIN && tx != lx && ty != ly &&
+            (!body_at_ok(c, tx, ly) || !body_at_ok(c, lx, ty)))
+            return 0;
         lx = tx;
         ly = ty;
-        if (tx + c->fx > c->mtw || ty + c->fz > c->mth) return 0;
-        if (c->clear) {
-            if (tx >= c->tw || ty >= c->th || c->clear[ty * c->tw + tx] < c->need)
-                return 0;
-            continue;
-        }
-        for (int r = 0; r < c->fz; r++)
-            for (int k = 0; k < c->fx; k++)
-                if (!esc_ground(c, tx + k, ty + r)) return 0;
+        if (!body_at_ok(c, tx, ty)) return 0;
     }
     return 1;
+}
+
+static int start_reaches_cell(const PlanCtx *c, int cx, int cy,
+                              int32_t x, int32_t y) {
+    int legal = mask_connected(cell_legal_mask(c, cx, cy, 0));
+    int ptx[FP_PLACEMENTS], pty[FP_PLACEMENTS];
+    cell_fp_placements(cx, cy, c->fx, c->fz, ptx, pty);
+    for (int p = 0; p < FP_PLACEMENTS; p++) {
+        if (!((legal >> p) & 1)) continue;
+        if (body_line_ok(c, x, y, placement_centre(ptx[p], c->fx),
+                         placement_centre(pty[p], c->fz)))
+            return 1;
+    }
+    return 0;
 }
 
 /* Shift a goal off ground no route can end on. ignore_live skips the
@@ -1706,7 +1754,7 @@ static void route_lay(TAK_Path *out, PlanCtx *c, int start, int start_bit,
 
     /* Keep a point where the chain turns, and the last. The first is
      * kept when skipping it would take the body off its ground, or the
-     * unit's centre, from where it stands, off ground the step allows. */
+     * unit, from where it stands, where the step will not. */
     int first = 0;
     if (n > 1) {
         int k = 1;
@@ -1715,7 +1763,7 @@ static void route_lay(TAK_Path *out, PlanCtx *c, int start, int start_bit,
             k++;
         int turn = px[0] - ox != px[1] - px[0] || py[0] - oy != py[1] - py[0];
         first = (turn && !body_line_ok(c, ox, oy, px[k], py[k])) ||
-                !centre_line_ok(c, unit_x, unit_y, px[k], py[k]);
+                !step_line_ok(c, unit_x, unit_y, px[k], py[k]);
     }
     for (int i = 0; i < n; i++) {
         int keep = i == n - 1 || (i == 0 && first);
@@ -1767,6 +1815,34 @@ static int plan_ctx_setup(PlanCtx *c, const struct GameWorld *world,
     return ci;
 }
 
+/* Whether ground shuts in the closed cells, parked units not counted. */
+static int pocket_of_ground(const PlanCtx *c, const uint8_t *closed) {
+    PlanCtx g = *c;
+    g.pmask = NULL;
+    g.ignore_live = 1;
+    for (int cur = 0; cur < c->cw * c->ch; cur++) {
+        if (!closed[cur]) continue;
+        int cx = cur % c->cw, cy = cur / c->cw;
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++) {
+                int nx = cx + dx, ny = cy + dy;
+                if ((!dx && !dy) || nx < 0 || ny < 0 || nx >= c->cw || ny >= c->ch)
+                    continue;
+                if (closed[ny * c->cw + nx]) continue;
+                if (dx && dy && (!plan_mask(&g, nx, cy) || !plan_mask(&g, cx, ny)))
+                    continue;
+                if (cells_link(&g, cx, cy, dx, dy, -1, NULL, NULL)) return 0;
+            }
+    }
+    return 1;
+}
+
+static int plan_query(const struct GameWorld *world,
+                      int32_t start_x, int32_t start_y,
+                      int32_t goal_x, int32_t goal_y,
+                      const TAK_PathQuery *query,
+                      TAK_Path *out_path, int walk_out);
+
 int TAK_PathPlanQuery(const struct GameWorld *world,
                       int32_t start_x, int32_t start_y,
                       int32_t goal_x, int32_t goal_y,
@@ -1776,13 +1852,23 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
         world->map_pixels_h <= 0) {
         return 0;
     }
-    memset(out_path, 0, sizeof(*out_path));
     g_dbg_plans++;
     if (g_dbg_reset_every > 0 &&
         ++g_dbg_since_reset >= g_dbg_reset_every) {
         g_dbg_since_reset = 0;
         TAK_PathCacheReset();
     }
+    return plan_query(world, start_x, start_y, goal_x, goal_y, query,
+                      out_path, 0);
+}
+
+/* walk_out starts the unit as a trapped one, whatever its cell. */
+static int plan_query(const struct GameWorld *world,
+                      int32_t start_x, int32_t start_y,
+                      int32_t goal_x, int32_t goal_y,
+                      const TAK_PathQuery *query,
+                      TAK_Path *out_path, int walk_out) {
+    memset(out_path, 0, sizeof(*out_path));
     PlanCtx c;
     int ci = plan_ctx_setup(&c, world, query);
     int cells = c.cw * c.ch;
@@ -1801,7 +1887,9 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
      * on the reported map that put the start 208 px away across a
      * bay: the unit pressed into the shore for two and a half
      * minutes because the route it was following began over there. */
-    c.allow_pinch = !cell_ok_live(&c, sx, sy, 0);
+    c.allow_pinch = walk_out || !cell_ok_live(&c, sx, sy, 0) ||
+                    (body_line_ok(&c, start_x, start_y, start_x, start_y) &&
+                     !start_reaches_cell(&c, sx, sy, start_x, start_y));
     if (c.allow_pinch) {
         /* The way out is ground the unit has to walk, so the route
          * starts where it really is rather than at a cell centre. */
@@ -1934,8 +2022,7 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
         }
     }
     if (pass == 0 && !found && !capped && !c.allow_pinch &&
-        expanded <= PATH_POCKET_CELLS &&
-        !body_line_ok(&c, start_x, start_y, start_x, start_y)) {
+        expanded <= PATH_POCKET_CELLS && pocket_of_ground(&c, closed)) {
         walked = 1;
         seeds = esc_flood(&c, start_x, start_y, closed);
         if (seeds > 0) {
@@ -1987,12 +2074,19 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
         }
     }
 
+    /* A route the step cannot start from where the unit stands begins
+     * with a walk out instead, as a trapped start's does. */
+    int retry = !walk_out && !c.allow_pinch && out_path->count > 0 &&
+        !step_line_ok(&c, start_x, start_y, out_path->x[0], out_path->y[0]);
     tak_free(g);
     tak_free(f);
     tak_free(parent);
     tak_free(heap);
     tak_free(closed);
     if (c.pmask) tak_free(c.pmask);
+    if (retry)
+        return plan_query(world, start_x, start_y, goal_x, goal_y, query,
+                          out_path, 1);
     return out_path->count;
 }
 
@@ -2235,6 +2329,9 @@ int TAK_PathPlanFlow(const struct GameWorld *world,
     route_lay(out_path, &c, start, -1, chain, len, start_x, start_y,
               query->compress, px, py, 0, cells);
     n = out_path->count > 0 ? out_path->count : -1;
+    /* One the step cannot start from where the unit stands is a search's. */
+    if (n > 0 && !step_line_ok(&c, start_x, start_y, out_path->x[0], out_path->y[0]))
+        n = -1;
 done:
     if (c.pmask) tak_free(c.pmask);
     if (px) tak_free(px);

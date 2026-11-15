@@ -1415,12 +1415,13 @@ TEST(a_shipyard_builds_past_an_idle_ship_on_its_pad) {
 }
 
 /* A ship parked near the rally point is no business of the yard's while
- * its products sail past it (M-012). */
+ * its products sail past it (M-012). 200 px east it is clear of the spots
+ * the yard sends a product that stops short to. */
 TEST(a_shipyard_leaves_a_ship_parked_by_its_rally_point_alone) {
     ASSERT_NOT_NULL(mv_sea());
     int32_t yx = 1536, yy = 1536;
     int yard = Units_Spawn(MV_DEF_YARD, 1, 0, yx, yy);
-    int parked = Units_Spawn(MV_DEF_GALLEY, 1, 0, yx + 150, yy + 450);
+    int parked = Units_Spawn(MV_DEF_GALLEY, 1, 0, yx + 200, yy + 450);
     ASSERT(yard >= 0 && parked >= 0);
     Units_DebugSetAggro(parked, UNIT_AGGRO_PASSIVE);
     Units_FactorySetRally(yard, yx, yy + 450);
