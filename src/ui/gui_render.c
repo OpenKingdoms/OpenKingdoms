@@ -580,6 +580,46 @@ static Font *label_text_box(const GUIRuntime *rt, const GUIWidget *w,
     return f;
 }
 
+/* One child widget: its frame, then its text. */
+static void render_child(GUIRuntime *rt, SDL_Surface *offscreen, int i) {
+    const GUIWidget *w = &rt->dialog->children[i];
+    const WidgetCache *c = &rt->caches[i];
+    if (c->hidden) return;
+    int hovered = (rt->hovered == i);
+    int wx = w->rect.x + rt->offset_x;
+    int wy = w->rect.y + rt->offset_y;
+
+    int fi = pick_frame(w, c, hovered, hovered && rt->mouse_down);
+    if (c->frames[fi]) {
+        /* widget_draw_rect picks the size by widget kind. The origin
+         * is the cell minus the frame's hotspot: BattleBar is authored
+         * at (-2,-21) so the track lands between its two nubs. */
+        SDL_Rect dst = widget_draw_rect(w, c, fi, wx, wy);
+        int clip_w = (c->fill >= 1.0f) ? -1
+                   : (int)((float)dst.w * (c->fill > 0.0f ? c->fill : 0.0f) + 0.5f);
+        if (c->tile && c->frame_w[fi] > 0 && dst.w > c->frame_w[fi]) {
+            /* The strip under a wider screen repeats its art at its
+             * own size, the way the original fills it. */
+            for (int x = 0; x < dst.w; x += c->frame_w[fi]) {
+                SDL_Rect t = { dst.x + x, dst.y, c->frame_w[fi], c->frame_h[fi] };
+                int left = dst.w - x;
+                blit_frame_to_rect(offscreen, t, c->frames[fi],
+                                   c->frame_w[fi], c->frame_h[fi],
+                                   left < t.w ? left : -1);
+            }
+        } else {
+            blit_frame_to_rect(offscreen, dst,
+                               c->frames[fi], c->frame_w[fi], c->frame_h[fi],
+                               clip_w);
+        }
+    }
+
+    SDL_Rect tb;
+    int pen_y = wy;
+    Font *tf = label_text_box(rt, w, wx, wy, &tb, &pen_y);
+    if (tf) draw_label_lines(tf, offscreen, w, wx, pen_y, w->display_text);
+}
+
 void GUIRuntime_Render(GUIRuntime *rt) {
     if (!rt) return;
     SDL_Surface *offscreen = UI_Offscreen();
@@ -599,45 +639,13 @@ void GUIRuntime_Render(GUIRuntime *rt) {
                   rt->root_cache.frame_h[0]);
     }
 
-    /* Children */
-    for (int i = 0; i < rt->dialog->num_children; i++) {
-        const GUIWidget *w = &rt->dialog->children[i];
-        const WidgetCache *c = &rt->caches[i];
-        if (c->hidden) continue;
-        int hovered = (rt->hovered == i);
-        int wx = w->rect.x + ox;
-        int wy = w->rect.y + oy;
+    for (int i = 0; i < rt->dialog->num_children; i++)
+        render_child(rt, offscreen, i);
+}
 
-        int fi = pick_frame(w, c, hovered, hovered && rt->mouse_down);
-        if (c->frames[fi]) {
-            /* widget_draw_rect picks the size by widget kind. The origin
-             * is the cell minus the frame's hotspot: BattleBar is authored
-             * at (-2,-21) so the track lands between its two nubs. */
-            SDL_Rect dst = widget_draw_rect(w, c, fi, wx, wy);
-            int clip_w = (c->fill >= 1.0f) ? -1
-                       : (int)((float)dst.w * (c->fill > 0.0f ? c->fill : 0.0f) + 0.5f);
-            if (c->tile && c->frame_w[fi] > 0 && dst.w > c->frame_w[fi]) {
-                /* The strip under a wider screen repeats its art at its
-                 * own size, the way the original fills it. */
-                for (int x = 0; x < dst.w; x += c->frame_w[fi]) {
-                    SDL_Rect t = { dst.x + x, dst.y, c->frame_w[fi], c->frame_h[fi] };
-                    int left = dst.w - x;
-                    blit_frame_to_rect(offscreen, t, c->frames[fi],
-                                       c->frame_w[fi], c->frame_h[fi],
-                                       left < t.w ? left : -1);
-                }
-            } else {
-                blit_frame_to_rect(offscreen, dst,
-                                   c->frames[fi], c->frame_w[fi], c->frame_h[fi],
-                                   clip_w);
-            }
-        }
-
-        SDL_Rect tb;
-        int pen_y = wy;
-        Font *tf = label_text_box(rt, w, wx, wy, &tb, &pen_y);
-        if (tf) draw_label_lines(tf, offscreen, w, wx, pen_y, w->display_text);
-    }
+void GUIRuntime_DrawWidgetAt(GUIRuntime *rt, int index) {
+    if (!rt || index < 0 || index >= rt->dialog->num_children) return;
+    render_child(rt, UI_Offscreen(), index);
 }
 
 void GUI_CenterOffset(const GUIDialog *d, SDL_Rect area, int *dx, int *dy) {

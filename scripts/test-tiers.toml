@@ -294,6 +294,7 @@ ui = [
   ["the_empty_replays_message_fits_on_one_line", 1],
   ["the_lobbies_offer_the_remastered_battlefield", 1],
   ["the_game_options_are_kept_for_the_next_battle", 1],
+  ["hud_rank_shield_follows_the_units_rank", 1],
 ]
 
 [[tier1]]

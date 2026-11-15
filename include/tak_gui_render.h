@@ -76,6 +76,8 @@ int GUIRuntime_TextDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out);
  * is authored after the unit name and its art reaches into the name's
  * cell. */
 void GUIRuntime_DrawTextAt(GUIRuntime *rt, int index);
+/* Draw one widget again, frame and text, unless it is hidden. */
+void GUIRuntime_DrawWidgetAt(GUIRuntime *rt, int index);
 
 /* Set a per-widget override frame (e.g. "display the checkbox's 'on'
  * frame regardless of hover"). frame_index of -1 clears the override. */

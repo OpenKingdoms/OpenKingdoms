@@ -414,14 +414,17 @@ TEST(ctrl_trains_without_end_until_a_click_cancels_it) {
 
 /* The held keys pick the count a build button sends. */
 TEST(the_held_keys_choose_how_many_a_build_button_sends) {
-    SDL_SetModState(KMOD_NONE);
-    ASSERT_EQ_INT(1, (int)HUD_BuildCountArg());
+    uint8_t keys[SDL_NUM_SCANCODES] = { 0 };
+    ASSERT_EQ_INT(1, (int)HUD_BuildCountFor(HUD_HeldKeys(keys)));
+    keys[SDL_SCANCODE_RSHIFT] = 1;
+    ASSERT_EQ_INT(5, (int)HUD_BuildCountFor(HUD_HeldKeys(keys)));
+    keys[SDL_SCANCODE_LCTRL] = 1;
+    ASSERT_EQ_INT((int)TAK_FACTORY_ALL, (int)HUD_BuildCountFor(HUD_HeldKeys(keys)));
+    keys[SDL_SCANCODE_RSHIFT] = 0;
+    ASSERT_EQ_INT((int)TAK_FACTORY_ALL, (int)HUD_BuildCountFor(HUD_HeldKeys(keys)));
+    /* A modifier state still holding a Shift no key holds sends one. */
     SDL_SetModState(KMOD_LSHIFT);
-    ASSERT_EQ_INT(5, (int)HUD_BuildCountArg());
-    SDL_SetModState(KMOD_LCTRL);
-    ASSERT_EQ_INT((int)TAK_FACTORY_ALL, (int)HUD_BuildCountArg());
-    SDL_SetModState((SDL_Keymod)(KMOD_LCTRL | KMOD_LSHIFT));
-    ASSERT_EQ_INT((int)TAK_FACTORY_ALL, (int)HUD_BuildCountArg());
+    ASSERT_EQ_INT(1, (int)HUD_BuildCountArg());
     SDL_SetModState(KMOD_NONE);
 }
 
@@ -526,6 +529,14 @@ TEST(shift_patrol_points_make_one_route) {
     ASSERT_EQ_INT(1, seen_home);
     ASSERT_EQ_INT(UNIT_CMD_PATROL, (int)oq_unit(s)->cmd_kind);
     ASSERT_EQ_INT(3, Units_OrdersOf(s, NULL, 0));
+    /* A long route keeps every point the queue has room for. */
+    for (int i = 0; i < UNIT_MOVE_LEGS_MAX - 1; i++)
+        ASSERT_EQ_INT(1, oq_command(TAK_CMD_PATROL, s, OQ_CX + 8 * i, OQ_CY - 200,
+                                    -1, -1, TAK_CMD_ARG_QUEUE));
+    ASSERT_EQ_INT(0, oq_command(TAK_CMD_PATROL, s, OQ_CX, OQ_CY - 300, -1, -1,
+                                TAK_CMD_ARG_QUEUE));
+    ASSERT_EQ_INT(UNIT_MOVE_LEGS_MAX + 2, Units_OrdersOf(s, NULL, 0));
+    ASSERT(UNIT_MOVE_LEGS_MAX >= 32);
     oq_end();
 }
 

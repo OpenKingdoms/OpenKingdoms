@@ -10135,17 +10135,24 @@ TEST(render_probe_models) {
     ASSERT(at_pole > 0);
     ASSERT(base_before_pole * 2 > base_tris);
 
-    /* A building's faces show where the original's per pixel height key
-     * puts them (legacy:265317) at nearly every pixel, the Veruna
-     * bastion's front walls over the fins inside it among them. */
+    /* A building's or a ship's faces show where the original's per
+     * pixel height key puts them (legacy:265317) at nearly every pixel,
+     * the Veruna bastion's front walls over the fins inside it among
+     * them. */
     {
         int bastion_def = Units_FindDefByName("VERTOWER");
         ASSERT(bastion_def >= 0);
         int bastion = Units_Spawn(bastion_def, 1, 2, cx + 420, cy + 420);
         ASSERT(bastion >= 0);
-        static const char *bn[] = { "ARAKEEP", "ARACASTL", "VERTOWER" };
-        const int bh[] = { keep, castle, bastion };
-        for (int i = 0; i < 3; i++) {
+        /* A ship's too: the Man of War's rigging behind its sails. */
+        int ship_def = Units_FindDefByName("VERMAN");
+        ASSERT(ship_def >= 0);
+        int ship = Units_Spawn(ship_def, 1, 2, cx + 420, cy + 120);
+        ASSERT(ship >= 0);
+        Units_SetHeading(ship, 2.4f);
+        static const char *bn[] = { "ARAKEEP", "ARACASTL", "VERTOWER", "VERMAN" };
+        const int bh[] = { keep, castle, bastion, ship };
+        for (int i = 0; i < 4; i++) {
             int covered = 0;
             int wrong = Units_DebugOrderMismatch(bh[i], world, &covered);
             fprintf(stderr, "probe: %s %d of %d px off the height key\n", bn[i], wrong,
@@ -11419,11 +11426,18 @@ TEST(ctrl_on_a_zhon_builders_button_summons_without_end) {
             slot = i;
     }
     ASSERT(slot >= 0);
+    /* The button's help line, the name over the cost (legacy:149796-149810). */
+    char help[96];
+    ASSERT_EQ_INT(1, HUD_BuildButtonHelp(gob, help, sizeof help));
+    {
+        char want[96];
+        snprintf(want, sizeof want, "%s\ncost %d", Units_GetDef(gob)->display_name,
+                 Units_GetDef(gob)->build_cost);
+        ASSERT_EQ_STR(want, help);
+    }
     r = TAK_Platform_CanvasRectToWindow(&platform, r);
-    SDL_SetModState(KMOD_LCTRL);
-    ASSERT_EQ_INT(1, HUD_HandleSidebarClick(r.x + r.w / 2, r.y + r.h / 2,
-                                            &platform));
-    SDL_SetModState(KMOD_NONE);
+    ASSERT_EQ_INT(1, HUD_HandleSidebarClickHeld(r.x + r.w / 2, r.y + r.h / 2,
+                                                &platform, HUD_HELD_CTRL));
     ASSERT_EQ_INT(HUD_CMD_PLACE_BUILD, HUD_GetCommandMode());
     int32_t seen_y = sy - (int32_t)((float)Terrain_SampleHeight(world, sx, sy)
                                     * Units_GetTanTilt());
@@ -24388,7 +24402,38 @@ TEST(a_towers_crew_draws_the_same_beside_a_second_tower) {
     ASSERT_EQ_INT(solo.width,  duo.width);
     ASSERT_EQ_INT(0, diff);
     SDL_FreeSurface(paired);
+
     SDL_FreeSurface(alone);
+
+    /* A twin posed apart, turned or a door open, still shares the run and
+     * takes an order of its own: each draws as it does with the other
+     * taken off the map. */
+    Units_SetHeading(twin, 1.0f);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(2, Units_DebugDrawRunSize(tower));
+    SDL_Surface *posed = crew_shoot(&platform);
+    ASSERT_NOT_NULL(posed);
+    const int pair_h[2] = { tower, twin };
+    for (int k = 0; k < 2; k++) {
+        float lo[2], hi[2];
+        ASSERT_EQ_INT(0, Units_DebugProjectedBounds(pair_h[k], world, lo, hi));
+        SDL_Rect kb = { (int)lo[0] - 2, (int)lo[1] - 2,
+                        (int)(hi[0] - lo[0]) + 5, (int)(hi[1] - lo[1]) + 5 };
+        Unit *other = (Unit *)&Units_GetActive(&unit_count)[pair_h[1 - k]];
+        int32_t keep_y = other->world_y;
+        other->world_y += 3000;
+        timer.accumulator = 0.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        SDL_Surface *solo_k = crew_shoot(&platform);
+        other->world_y = keep_y;
+        ASSERT_NOT_NULL(solo_k);
+        int dk = crew_rect_diff(solo_k, posed, kb);
+        printf("[posed apart %d: diff %d] ", k, dk);
+        ASSERT_EQ_INT(0, dk);
+        SDL_FreeSurface(solo_k);
+    }
+    SDL_FreeSurface(posed);
 
     InGame_Shutdown();
     Loading_Shutdown();
@@ -26086,10 +26131,10 @@ TEST(hud_kill_count_follows_the_selected_units_kills) {
     VFS_Shutdown();
 }
 
-/* The rank shield in the sidebar shows frame rank minus one, capped at
- * its three frames, and hides at rank 0, for enemy units and for a
- * noveteran monarch (legacy:152439-152449, legacy:232939-232941). It
- * used to show the top frame at any rank. */
+/* The rank shield in the bottom panel: level times three over the cap
+ * of ten picks bronze, silver or gold, nothing below level 4, for any
+ * unit but a noveteran monarch (legacy:152439-152450,
+ * legacy:232939-232941). It sits on the portrait's corner and shows. */
 TEST(hud_rank_shield_follows_the_units_rank) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -26116,9 +26161,12 @@ TEST(hud_rank_shield_follows_the_units_rank) {
     Timer timer;
     Timer_Init(&timer);
 
-    static const int ranks[]  = { 0, 1, 2, 3, 7, 10 };
-    static const int frames[] = { -1, 0, 1, 2, 2, 2 };
+    static const int ranks[]  = { 0, 3, 4, 6, 7, 9, 10 };
+    static const int frames[] = { -1, -1, 0, 0, 1, 1, 2 };
     Units_SelectSingle(mine);
+    SDL_Surface *canvas = UI_Offscreen();
+    uint32_t *bare = (uint32_t *)malloc((size_t)canvas->w * (size_t)canvas->h * 4u);
+    ASSERT_NOT_NULL(bare);
     for (int i = 0; i < (int)(sizeof(ranks) / sizeof(ranks[0])); i++) {
         Units_DebugSetVeteranLevel(mine, ranks[i]);
         ASSERT_EQ_INT(ranks[i], Units_GetVeteranLevel(mine));
@@ -26126,11 +26174,27 @@ TEST(hud_rank_shield_follows_the_units_rank) {
         InGame_Tick(&platform, &timer);
         if (frames[i] < 0) {
             ASSERT_EQ_INT(1, HUD_WidgetHidden("Experience"));
+            for (int y = 0; y < canvas->h; y++)
+                memcpy(bare + (size_t)y * canvas->w,
+                       (const uint8_t *)canvas->pixels + (size_t)y * canvas->pitch,
+                       (size_t)canvas->w * 4u);
         } else {
             ASSERT_EQ_INT(0, HUD_WidgetHidden("Experience"));
             ASSERT_EQ_INT(frames[i], HUD_WidgetFrame("Experience"));
+            /* The shield shows on the portrait's corner, not under it. */
+            const GUIWidget *pic = GUIRuntime_WidgetByName(HUD_DebugRuntime(), "UnitImage");
+            ASSERT_NOT_NULL(pic);
+            int diff = 0;
+            for (int y = pic->rect.y; y < pic->rect.y + pic->rect.h && y < canvas->h; y++) {
+                const uint32_t *row = (const uint32_t *)((const uint8_t *)canvas->pixels +
+                                                         (size_t)y * canvas->pitch);
+                for (int x = pic->rect.x; x < pic->rect.x + pic->rect.w && x < canvas->w; x++)
+                    diff += row[x] != bare[y * canvas->w + x];
+            }
+            ASSERT(diff > 40);
         }
     }
+    free(bare);
 
     /* The monarch is noveteran and never ranks, whatever its XP. */
     const UnitDef *kd = Units_GetDef(units[hero].def_idx);
@@ -26147,7 +26211,8 @@ TEST(hud_rank_shield_follows_the_units_rank) {
     Units_SelectSingle(theirs);
     timer.accumulator = 0.0;
     InGame_Tick(&platform, &timer);
-    ASSERT_EQ_INT(1, HUD_WidgetHidden("Experience"));
+    ASSERT_EQ_INT(0, HUD_WidgetHidden("Experience"));
+    ASSERT_EQ_INT(0, HUD_WidgetFrame("Experience"));
 
     InGame_Shutdown();
     Loading_Shutdown();
@@ -28651,32 +28716,24 @@ TEST(minimap_left_button_carries_out_the_armed_command) {
     igm_teardown(&platform);
 }
 
-/* A minimap pixel whose map point picks this unit, near its dot. */
+/* The minimap pixel a unit's blip is drawn at, where a click finds it
+ * (legacy:238386-238401). */
 static int mmc_pixel_on(const GameWorld *w, const SDL_Rect *r, int handle,
                         int *out_x, int *out_y) {
     int n = 0;
     const Unit *units = Units_GetActive(&n);
-    int ux = r->x + (int)((int64_t)units[handle].world_x * r->w / w->map_pixels_w);
-    int uy = r->y + (int)((int64_t)units[handle].world_y * r->h / w->map_pixels_h);
-    for (int dy = -8; dy <= 8; dy++) {
-        for (int dx = -8; dx <= 8; dx++) {
-            int x = ux + dx, y = uy + dy;
-            if (x < r->x || y < r->y || x >= r->x + r->w || y >= r->y + r->h) continue;
-            int32_t px, py;
-            mmc_point(w, r, x, y, &px, &py);
-            if (Units_PickAt(px, py, 0) != handle) continue;
-            *out_x = x;
-            *out_y = y;
-            return 1;
-        }
-    }
-    return 0;
+    int x = r->x + (int)((int64_t)units[handle].world_x * r->w / w->map_pixels_w);
+    int y = r->y + (int)((int64_t)units[handle].world_y * r->h / w->map_pixels_h);
+    if (x < r->x || y < r->y || x >= r->x + r->w || y >= r->y + r->h) return 0;
+    *out_x = x;
+    *out_y = y;
+    return 1;
 }
 
 /* With nothing armed the left button gives the order a field click
- * would over what stands there: an enemy is attacked and a unit of
- * your own is selected (legacy:243640-243648, legacy:186540-186606,
- * legacy:237934-237950). */
+ * would over the blip there: an enemy is attacked, one only radar shows
+ * among them, and a unit of your own is selected (legacy:243640-243648,
+ * legacy:186540-186606, legacy:237934-237950). */
 TEST(minimap_left_button_gives_the_field_order_over_a_unit) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -28724,6 +28781,32 @@ TEST(minimap_left_button_gives_the_field_order_over_a_unit) {
     ASSERT_EQ_INT(1, sel_n);
     ASSERT_EQ_INT(pal, sel[0]);
     Fog_SetSeeAll(0);
+
+    /* A foe beyond sight that radar marks is picked by its blip as well
+     * (legacy:238386-238401). The monarch sees 232 and radars 650. */
+    int32_t far_dx = ax < w->map_pixels_w / 2 ? 420 : -420;
+    int far = Units_Spawn(Units_FindDefByName("ARASWORD"), 2, 1, ax + far_dx, ay);
+    ASSERT(far >= 0);
+    Units_DebugSetAggro(far, UNIT_AGGRO_PASSIVE);
+    Units_SelectSingle(mine);
+    for (int i = 0; i < 40; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    units = Units_GetActive(&n);
+    ASSERT_EQ_INT(0, Units_IsVisibleToLocalPlayer(&units[far]));
+    ASSERT_EQ_INT(1, Units_RadarShowsToLocalPlayer(&units[far]));
+    ASSERT(mmc_pixel_on(w, &r, far, &fx, &fy));
+    InGame_DebugMouse(1, fx, fy, SDL_BUTTON(SDL_BUTTON_LEFT));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    InGame_DebugMouse(1, fx, fy, 0);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    TAK_CmdQueue_Run();
+    units = Units_GetActive(&n);
+    printf("(on a radar blip: order %d at unit %d, want %d at %d) ",
+           (int)units[mine].cmd_kind, units[mine].target, UNIT_CMD_ATTACK, far);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, units[mine].cmd_kind);
+    ASSERT_EQ_INT(far, units[mine].target);
     InGame_DebugMouse(0, 0, 0, 0);
     igm_teardown(&platform);
 }

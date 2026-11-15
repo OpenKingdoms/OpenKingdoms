@@ -319,7 +319,8 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 #define U_LEG_COUNT     (U_FOG_X + 27u)
 #define U_LEGS          (U_FOG_X + 28u)
 /* Version 5 on: sixteen legs, each any order Shift queues, its def as a
- * definition ordinal. */
+ * definition ordinal. Legs past those go at the end from version 21. */
+#define U_LEGS_V5       16
 #define U_LEG_BYTES     24u
 #define U_LEG_X          0u
 #define U_LEG_Y          4u
@@ -333,7 +334,7 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 #define U_LEG_TARGET    20u
 /* Version 4 on, after the formation legs: the D-025 count and the
  * target passed over. An older record reads back passing nothing over. */
-#define U_BLOCKED_SHOTS (U_LEGS + U_LEG_BYTES * UNIT_MOVE_LEGS_MAX)
+#define U_BLOCKED_SHOTS (U_LEGS + U_LEG_BYTES * U_LEGS_V5)
 #define U_BLOCKED_ID    (U_BLOCKED_SHOTS + 1u)
 #define U_SKIP_ID       (U_BLOCKED_SHOTS + 5u)
 #define U_SKIP_UNTIL    (U_BLOCKED_SHOTS + 9u)
@@ -423,8 +424,19 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 /* Version 21 on: what each weapon of a unit that fires them all took for
  * itself. An older record reads back nothing taken. */
 #define U_SLOT_ID       (U_PASS_ID + 4u)
-#define U_END           (U_SLOT_ID + 12u)
+/* Version 22 on: the legs past the first sixteen and their bits without
+ * end. An older record holds no more than sixteen. */
+#define U_LEGS_MORE     (U_SLOT_ID + 12u)
+#define U_LEG_ENDLESS_HI (U_LEGS_MORE + U_LEG_BYTES * (UNIT_MOVE_LEGS_MAX - U_LEGS_V5))
+#define U_END           (U_LEG_ENDLESS_HI + 2u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
+
+/* Where leg i of a unit record starts: the first sixteen in their
+ * version 5 place, the rest at the end. */
+static size_t unit_leg_off(int i) {
+    return i < U_LEGS_V5 ? U_LEGS + (size_t)i * U_LEG_BYTES
+                         : U_LEGS_MORE + (size_t)(i - U_LEGS_V5) * U_LEG_BYTES;
+}
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
  * count is a high water mark the hash covers, so every slot up to that
@@ -640,7 +652,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 21
+#define VER_UNIT 22
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 4
@@ -1380,7 +1392,7 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     if (legs > UNIT_MOVE_LEGS_MAX) legs = UNIT_MOVE_LEGS_MAX;
     tak_put_u8(r + U_LEG_COUNT, (uint8_t)legs);
     for (int i = 0; i < legs; i++) {
-        uint8_t *l = r + U_LEGS + (size_t)i * U_LEG_BYTES;
+        uint8_t *l = r + unit_leg_off(i);
         tak_put_i32(l + U_LEG_X, u->legs[i].x);
         tak_put_i32(l + U_LEG_Y, u->legs[i].y);
         tak_put_u32(l + U_LEG_GROUP, u->legs[i].group);
@@ -1394,10 +1406,11 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
         tak_put_i16(l + U_LEG_DEF, (int16_t)ord);
         tak_put_u32(l + U_LEG_TARGET, u->legs[i].target);
     }
-    uint16_t endless_legs = 0;
+    uint32_t endless_legs = 0;
     for (int i = 0; i < legs; i++)
-        if (u->legs[i].endless) endless_legs |= (uint16_t)(1u << i);
-    tak_put_u16(r + U_LEG_ENDLESS, endless_legs);
+        if (u->legs[i].endless) endless_legs |= 1u << i;
+    tak_put_u16(r + U_LEG_ENDLESS, (uint16_t)endless_legs);
+    tak_put_u16(r + U_LEG_ENDLESS_HI, (uint16_t)(endless_legs >> 16));
     for (int i = 0; i < queued; i++)
         tak_put_u16(r + U_PROD_MORE + (size_t)i * 2u, u->prod_more[i]);
     tak_put_u8(r + U_PROD_WAIT, u->prod_wait);
@@ -1677,7 +1690,7 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     if (u->leg_count > UNIT_MOVE_LEGS_MAX) u->leg_count = UNIT_MOVE_LEGS_MAX;
     memset(u->legs, 0, sizeof u->legs);
     for (int i = 0; i < u->leg_count; i++) {
-        const uint8_t *l = r + U_LEGS + (size_t)i * U_LEG_BYTES;
+        const uint8_t *l = r + unit_leg_off(i);
         u->legs[i].x = tak_get_i32(l + U_LEG_X);
         u->legs[i].y = tak_get_i32(l + U_LEG_Y);
         u->legs[i].group = tak_get_u32(l + U_LEG_GROUP);
@@ -1700,7 +1713,8 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
             u->legs[i].def = (int16_t)idx;
         }
     }
-    uint16_t endless_legs = tak_get_u16(r + U_LEG_ENDLESS);
+    uint32_t endless_legs = (uint32_t)tak_get_u16(r + U_LEG_ENDLESS) |
+                            (uint32_t)tak_get_u16(r + U_LEG_ENDLESS_HI) << 16;
     for (int i = 0; i < u->leg_count; i++)
         u->legs[i].endless = u->legs[i].kind == UNIT_LEG_BUILD
                            ? (uint8_t)((endless_legs >> i) & 1u) : 0;

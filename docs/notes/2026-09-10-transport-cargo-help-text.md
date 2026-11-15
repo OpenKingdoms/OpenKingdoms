@@ -41,5 +41,7 @@ the label shows while the cursor rests on a build picture.
 from `Units_GetSelectedCargoCount`, which counts the units recorded as
 carried by the selection. The readout uses the pool value the crystal
 ball already reads, without the 29 frame smoothing. `Font_DrawString`
-breaks lines on a newline now, so the readout takes its two lines. The
-build picture hover text is not done yet.
+breaks lines on a newline now, so the readout takes its two lines. While
+the pointer rests on a build picture the label reads the unit's name
+over the translation of `UNIT_COST_HELPTEXT` ("cost") and its build
+cost, the original's `%s\n%s %d` (legacy:149796-149810).

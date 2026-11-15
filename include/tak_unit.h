@@ -881,7 +881,9 @@ typedef struct UnitMoveLeg {
     uint32_t target;
     uint8_t  endless;
 } UnitMoveLeg;
-#define UNIT_MOVE_LEGS_MAX 16
+/* Our own bound. The original keeps a unit's orders in a list with
+ * none (legacy:181640-181660), so a patrol route can be long. */
+#define UNIT_MOVE_LEGS_MAX 32
 
 /* UnitMoveLeg.kind, the orders Shift queues (manual section IV). */
 #define UNIT_LEG_MOVE          0
