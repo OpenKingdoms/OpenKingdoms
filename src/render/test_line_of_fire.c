@@ -2187,8 +2187,9 @@ static void lf_fog(GameWorld *w) {
  * armed targets that see only 256: return fire answers what it cannot
  * see, the shooters find a place to shoot from past the ridge, and the
  * fog is state. Pinned, so every platform in CI has to
- * reach the same answer. */
-#define LF_FOG_VOLLEY_HASH 0xf3078793u
+ * reach the same answer. Retaken when the heading each aim was asked
+ * for joined the hash; the volley itself did not change. */
+#define LF_FOG_VOLLEY_HASH 0xed3a7f73u
 
 static uint32_t lf_fog_volley_hash(int *out_hurt) {
     GameWorld *w = lf_world(1, 1);
@@ -3510,6 +3511,97 @@ TEST(a_turret_fires_only_once_it_has_turned_onto_its_target) {
     ASSERT((off < 0 ? -off : off) <= 182);
 }
 
+/* A turret on a target that walks round it fires only when it points
+ * at where the target is. An aim the target has moved more than the
+ * weapon's AimTolerance off is asked again, so no shot leaves at where
+ * the target was when the aim began (legacy:249328-249338). */
+TEST(a_turret_on_a_moving_target_fires_only_when_it_points_at_it) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    static const char *const names[] = { "AimWeapon" };
+    static const uint32_t offsets[] = { 0 };
+    static const char *const pieces[] = { "turret" };
+    ASSERT_EQ_INT(0, Units_DebugSetDefScript(LF_QUICK, LF_AIM_TURN_SCRIPT,
+                                             (int)(sizeof LF_AIM_TURN_SCRIPT / 4),
+                                             names, offsets, 1));
+    ASSERT_EQ_INT(0, Units_DebugSetDefScriptPieces(LF_QUICK, pieces, 1));
+    ((UnitDef *)Units_GetDef(LF_QUICK))->weapons[0].aim_tolerance = 512;
+    int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_STURDY, 2, LF_SX + 200, LF_ROW);
+    ASSERT(a >= 0 && t >= 0);
+    ASSERT(Units_OrderAttack(a, t));
+    /* Turned onto it, then it walks a quarter of the way round. */
+    for (int i = 0; i < 300; i++) Units_TickEngines();
+    ASSERT(Units_OrderMove(t, LF_SX, LF_ROW - 200));
+    int shots = 0, worst = 0;
+    for (int i = 0; i < 900; i++) {
+        int before = lf_unit(a)->weapon_state[0].cooldown_ticks;
+        Units_TickEngines();
+        const Unit *s = lf_unit(a), *v = lf_unit(t);
+        if (s->weapon_state[0].cooldown_ticks <= before) continue;
+        shots++;
+        /* The turret points at heading minus bearing, as the script
+         * turns it. */
+        float dx = (float)(v->world_x - s->world_x), dy = (float)(v->world_y - s->world_y);
+        int32_t bearing = (int32_t)(atan2f(dx, -dy) * 65536.0f / 6.2831853f);
+        int32_t hdg = (int32_t)(s->heading * 65536.0f / 6.2831853f);
+        int32_t err = (int16_t)(uint16_t)((s->cob->pieces[0].rot[1] - (hdg - bearing)) & 0xffff);
+        if (err < 0) err = -err;
+        if (err > worst) worst = err;
+    }
+    lf_end();
+    printf("(%d shots, the worst %d off the target) ", shots, worst);
+    ASSERT(shots >= 2);
+    ASSERT(worst <= 640);
+}
+
+/* Firing at the ground, then sent at another point a quarter turn round
+ * while it reloads: the next shot waits for the turret to turn there.
+ * Every ground point is one aim key, so the aim it held for the first
+ * point would have let the shot leave with the turret still on it. */
+TEST(a_turret_sent_at_another_ground_point_turns_before_it_fires) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    static const char *const names[] = { "AimWeapon" };
+    static const uint32_t offsets[] = { 0 };
+    static const char *const pieces[] = { "turret" };
+    ASSERT_EQ_INT(0, Units_DebugSetDefScript(LF_QUICK, LF_AIM_TURN_SCRIPT,
+                                             (int)(sizeof LF_AIM_TURN_SCRIPT / 4),
+                                             names, offsets, 1));
+    ASSERT_EQ_INT(0, Units_DebugSetDefScriptPieces(LF_QUICK, pieces, 1));
+    ((UnitDef *)Units_GetDef(LF_QUICK))->weapons[0].aim_tolerance = 512;
+    int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    ASSERT(a >= 0);
+    ASSERT(Units_OrderAttackGround(a, LF_SX + 200, LF_ROW));
+    int first = -1;
+    for (int i = 0; i < 400 && first < 0; i++) {
+        int before = lf_unit(a)->weapon_state[0].cooldown_ticks;
+        Units_TickEngines();
+        if (lf_unit(a)->weapon_state[0].cooldown_ticks > before) first = i;
+    }
+    ASSERT(first > 0);
+    lf_ticks(5);
+    ASSERT(Units_OrderAttackGround(a, LF_SX, LF_ROW - 200));
+    int second = -1;
+    int32_t at = 0;
+    for (int i = 0; i < 600 && second < 0; i++) {
+        int before = lf_unit(a)->weapon_state[0].cooldown_ticks;
+        Units_TickEngines();
+        if (lf_unit(a)->weapon_state[0].cooldown_ticks > before) {
+            second = i;
+            /* The turret points at heading minus bearing, as the script
+             * turns it, and the second point bears due north. */
+            int32_t hdg = (int32_t)(lf_unit(a)->heading * 65536.0f / 6.2831853f);
+            at = lf_unit(a)->cob->pieces[0].rot[1] - hdg;
+        }
+    }
+    lf_end();
+    int32_t off = (int16_t)(uint16_t)(at & 0xffff);
+    if (off < 0) off = -off;
+    printf("(the first shot at %d, the second %d ticks after the new point, "
+           "the turret %d off it) ", first, second, off);
+    ASSERT(second >= 265);
+    ASSERT(off <= 182);
+}
+
 /* An AimWeapon that answers at once, and a FireWeapon that lets the
  * shot go on port 23 half a second in, as an archer's draw does. */
 static const uint32_t LF_DRAW_SCRIPT[] = {
@@ -4825,6 +4917,8 @@ int main(int argc, char **argv) {
     RUN(a_weapon_fires_once_its_script_says_aimed_and_aims_while_it_reloads);
     RUN(a_weapon_its_script_never_says_aimed_fires_after_two_seconds_stopped_in_reach);
     RUN(a_turret_fires_only_once_it_has_turned_onto_its_target);
+    RUN(a_turret_on_a_moving_target_fires_only_when_it_points_at_it);
+    RUN(a_turret_sent_at_another_ground_point_turns_before_it_fires);
     RUN(a_shot_at_the_ground_leaves_at_the_scripts_release);
     RUN(an_acolyte_heals_its_side_at_the_originals_rate);
     RUN(a_shamans_auras_scale_armour_and_attack);

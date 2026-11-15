@@ -821,6 +821,7 @@ typedef struct UnitWeaponState {
     int8_t  aim_thread_slot;     /* the thread the last AimWeapon took */
     int16_t aim_ticks;           /* ticks since that AimWeapon began */
     int16_t aim_target;          /* target handle for the active aim */
+    int16_t aim_heading;         /* the heading that aim was asked for */
     uint8_t aim_ready;
     /* A drawn shot waiting on the script's release, port 23
      * (legacy:245900-245904): UNIT_DRAW_*, and the target drawn at. */

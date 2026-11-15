@@ -13892,10 +13892,20 @@ static int weapon_aim_ready(Unit *u, int slot, int aim_key,
     /* A new target, or a shot gone, asks the script to aim again; the
      * aim is done when the script sets port 22 to the slot, not when
      * AimWeapon returns (legacy:249303-249310, legacy:223392-223395). */
-    if (ws->aim_target != aim_key) {
+    /* A target the aim has fallen more than the weapon's AimTolerance
+     * off is aimed at again where it now is (legacy:249328-249338,
+     * legacy:249308), so a shot never leaves at where it was. */
+    int fresh = ws->aim_target != aim_key;
+    int tol = g_defs[u->def_idx].weapons[slot].aim_tolerance;
+    if (!fresh && tol > 0) {
+        int32_t drift = (int16_t)(uint16_t)((rel_heading - ws->aim_heading) & 0xffff);
+        fresh = drift > tol || drift < -tol;
+    }
+    if (fresh) {
         ws->aim_ready = 0;
         ws->aim_ticks = 0;
         ws->aim_target = (int16_t)aim_key;
+        ws->aim_heading = (int16_t)rel_heading;
         int started = Cob_StartThreadByName(u->cob, name, args, 3);
         ws->aim_thread_slot = (int8_t)started;
         if (started < 0) {
