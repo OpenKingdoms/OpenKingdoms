@@ -206,8 +206,9 @@
  * from the engine. 80: a mission's order lists run patrols, attacks on a
  * place, standing orders and placed angles as the original's do. 81: a Shift
  * drag lays a line of buildings, and a summons without end refuses Shift
- * orders. 82: Ctrl+Shift puts an order in front of the queue. */
-#define TAK_ENGINE_BUILD_ID           82
+ * orders. 82: Ctrl+Shift puts an order in front of the queue. 83: height
+ * buys sight, up to twice sightdistance. */
+#define TAK_ENGINE_BUILD_ID           83
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

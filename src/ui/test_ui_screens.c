@@ -7810,6 +7810,8 @@ TEST(a_feature_past_the_known_map_is_cut_by_the_fog) {
     ASSERT_NOT_NULL(world->fog_layers[1]);
     ASSERT_EQ_INT(0, InGame_Init(&platform));
     Units_SetShadowsOn(0);
+    /* No pointer: its cursor animates by the clock and would count as ink. */
+    platform.has_focus = 0;
 
     Timer timer;
     Timer_Init(&timer);
@@ -7819,7 +7821,7 @@ TEST(a_feature_past_the_known_map_is_cut_by_the_fog) {
     /* Sprite features the camera can be centred on, widest first, until
      * one leaves ink in the frame: some of the widest are markers with
      * nothing to draw. Three frames each: the whole map known, then
-     * only the three by three cells around the feature's centre known,
+     * only a three by three block beside the feature known,
      * then the whole map known with the feature gone. The clock is
      * stopped, so nothing recomputes the fog in between. What differs
      * between the first and the last is the feature's own ink. */
@@ -7843,7 +7845,12 @@ TEST(a_feature_past_the_known_map_is_cut_by_the_fog) {
         tried++;
         int32_t wx = world->features[cand].tile_x * 16 + cand_fx * 8;
         int32_t wy = world->features[cand].tile_z * 16 + cand_fz * 8;
-        int cell_x = wx / TAK_FOG_CELL_PX, cell_y = wy / TAK_FOG_CELL_PX;
+        /* The known block is centred two cells east of the fog cell drawn
+         * over the feature, which stands h / 2 up the picture under fog
+         * drawn TAK_FOG_LIFT_PX up, so the feature's west part lies past it. */
+        int cell_x = wx / TAK_FOG_CELL_PX + 2;
+        int cell_y = (wy - Terrain_SampleHeight(world, wx, wy) / 2 + TAK_FOG_LIFT_PX) /
+                     TAK_FOG_CELL_PX;
         world->cam_x = wx - world->viewport_w / 2;
         world->cam_y = wy - world->viewport_h / 2;
 
@@ -7876,13 +7883,15 @@ TEST(a_feature_past_the_known_map_is_cut_by_the_fog) {
          * the middle cell it is what it was. */
         /* The overlay's quads blend towards their right and lower
          * neighbours, so the solid dark starts two cells out on the
-         * near side and one cell out on the far side. */
+         * near side and one cell out on the far side. Its rows are
+         * drawn TAK_FOG_LIFT_PX up the picture. */
+        int lift_y = world->cam_y + TAK_FOG_LIFT_PX;
         int dark_x0 = (cell_x - 2) * TAK_FOG_CELL_PX - world->cam_x;
         int dark_x1 = (cell_x + 2) * TAK_FOG_CELL_PX - world->cam_x;
-        int dark_y0 = (cell_y - 2) * TAK_FOG_CELL_PX - world->cam_y;
-        int dark_y1 = (cell_y + 2) * TAK_FOG_CELL_PX - world->cam_y;
+        int dark_y0 = (cell_y - 2) * TAK_FOG_CELL_PX - lift_y;
+        int dark_y1 = (cell_y + 2) * TAK_FOG_CELL_PX - lift_y;
         int inside_x = cell_x * TAK_FOG_CELL_PX - world->cam_x;
-        int inside_y = cell_y * TAK_FOG_CELL_PX - world->cam_y;
+        int inside_y = cell_y * TAK_FOG_CELL_PX - lift_y;
         ink_past = black_past = ink_inside = kept_inside = 0;
         for (int y = 0; y < H; y++) {
             for (int x = 0; x < W; x++) {

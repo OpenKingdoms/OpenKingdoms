@@ -1,5 +1,6 @@
 #include "tak_fog.h"
 #include "tak_world.h"
+#include "tak_terrain.h"
 #include "tak_unit.h"
 #include "tak_memory.h"
 #include <SDL.h>
@@ -37,6 +38,8 @@ typedef struct FogUnitCache {
     int32_t *cells;
     int32_t  cap;
     int32_t  n;
+    int32_t  eye;
+    int16_t  tall;
     int16_t  sight;
     int8_t   valid;
 } FogUnitCache;
@@ -88,8 +91,29 @@ uint8_t Fog_OverlayAlphaAt(const GameWorld *world, int32_t world_x, int32_t worl
     if (g_fog_see_all) return 0x00;
     const uint8_t *layer = world->fog_layers[Fog_Viewer()];
     if (!layer) return 0xFF;
-    int cx = world_x / world->fog_cell_px, cy = world_y / world->fog_cell_px;
+    int cx = world_x / world->fog_cell_px;
+    int cy = (world_y + TAK_FOG_LIFT_PX) / world->fog_cell_px;
     return fog_corner_alpha(world, layer, cx, cy, 0x78);
+}
+
+/* The lowest ground in each flat map cell (legacy:224395-224470), read
+ * flat as seen in the original, with open water at its surface. */
+static void fog_build_ground(GameWorld *world) {
+    size_t n = (size_t)world->fog_w * (size_t)world->fog_h;
+    world->fog_ground = (int16_t *)tak_malloc(n * sizeof(int16_t));
+    if (!world->fog_ground) return;
+    int16_t *g = world->fog_ground;
+    for (size_t i = 0; i < n; i++) g[i] = 0x7fff;
+    for (int32_t y = 4; y < world->map_pixels_h; y += 8) {
+        for (int32_t x = 4; x < world->map_pixels_w; x += 8) {
+            int h = Terrain_SampleHeight(world, x, y);
+            if (h < world->water_height) h = world->water_height;
+            int16_t *c = &g[fog_idx(world, x / FOG_CELL_PX, y / FOG_CELL_PX)];
+            if (h < *c) *c = (int16_t)h;
+        }
+    }
+    for (size_t i = 0; i < n; i++)
+        if (g[i] == 0x7fff) g[i] = 0;   /* a sliver of a cell with no sample */
 }
 
 int Fog_Init(GameWorld *world) {
@@ -124,24 +148,20 @@ void Fog_Free(GameWorld *world) {
         world->fog_layers[p] = NULL;
     }
     world->fog_state = NULL;
+    if (world->fog_ground) tak_free(world->fog_ground);
+    world->fog_ground = NULL;
     world->fog_w = world->fog_h = world->fog_cell_px = 0;
     if (g_fog_world == world) g_fog_world = NULL;
 }
 
-/* The original's fog stamp, LOS_UpdateArea (legacy:167323). It works
- * in fog cells: the unit's cell, the cell being lit, and the squared
- * distance between the two indices (legacy:167401). The nine cells
- * around the unit are lit whatever the radius buys
- * (legacy:167402), and every other cell has to sit within
- * sightdistance, which at 32 px a cell is 1024 * d2 <= sight * sight
- * (legacy:167422 on level ground). Nothing between the two cells is
- * read: terrain blocks no sight in the original. D-014 records the
- * height term we leave out. */
-static int fog_cell_lit(int dx, int dy, int sight) {
+/* LOS_UpdateArea's cell test (legacy:167323, legacy:167401-167423): the nine
+ * always, else reach = sight * up / tall, and no further than `most` whole cells. */
+static int fog_cell_lit(int dx, int dy, int sight, int32_t up, int32_t tall, int most) {
     int d2 = dx * dx + dy * dy;
     if (d2 < 3) return 1;
-    return (int64_t)d2 * (int64_t)(FOG_CELL_PX * FOG_CELL_PX) <=
-           (int64_t)sight * (int64_t)sight;
+    if (up <= 0 || d2 > most * most) return 0;
+    int64_t reach = (int64_t)sight * up;
+    return (int64_t)d2 * (FOG_CELL_PX * FOG_CELL_PX) * tall * tall <= reach * reach;
 }
 
 /* The original gives a unit's sight to an ally's map at the moment it
@@ -214,6 +234,8 @@ void Fog_Update(GameWorld *world, int player_id) {
     if (!world || !layer || world->fog_w <= 0 || world->fog_h <= 0)
         return;
     size_t n = (size_t)world->fog_w * (size_t)world->fog_h;
+    /* Built at the first stamp, once the map stands as it will. */
+    if (!world->fog_ground) fog_build_ground(world);
     /* The explored map grows in both modes (legacy:167404-167409). Line
      * of Sight off only fills the sight map, which is what
      * Fog_IsVisibleForPlayer answers (legacy:167211-167219). */
@@ -240,20 +262,24 @@ void Fog_Update(GameWorld *world, int player_id) {
         const UnitDef *def = Units_GetDef((int)u->def_idx);
         int sight = (def && def->sight_distance > 0) ? def->sight_distance : 256;
 
-        /* The cells are worked out once and re-stamped until the
-         * unit enters a new fog cell, which is when the original
-         * re-stamps too (legacy:167450-167454). That anchor decides
-         * which ground the unit lights up, which makes it simulation
-         * state rather than a cache, so it lives on the unit and
-         * travels in a save. g_fog_cache below is the cache proper:
-         * the cell list, which is a pure function of the anchor and
-         * can be thrown away and built again at any time. */
+        /* The anchor moves only when the unit enters a new fog cell, as
+         * the original's does (legacy:167450-167454). It decides which
+         * ground the unit lights up, so it lives on the unit and travels
+         * in a save. g_fog_cache below is the cache proper: the cell
+         * list, a function of the anchor and the eye, which can be
+         * thrown away and built again at any time. */
         int32_t ax = u->world_x, ay = u->world_y;
         Units_FogAnchor(i, sight, &ax, &ay);
+        /* Read fresh, where the original waits for a move past 5 (legacy:167455-167456). */
+        int32_t eye = 0, tall = 0;
+        Units_FogEye(i, &eye, &tall);
+        if (tall < 1) tall = 1;
+        if (tall > 0x7fff) tall = 0x7fff;
+        int most = 2 * sight / FOG_CELL_PX;
 
         FogUnitCache *c = (i < FOG_CACHE_MAX) ? &g_fog_cache[i] : NULL;
-        if (c && c->valid && c->sight == (int16_t)sight &&
-            c->x == ax && c->y == ay) {
+        if (c && c->valid && c->sight == (int16_t)sight && c->x == ax &&
+            c->y == ay && c->eye == eye && c->tall == (int16_t)tall) {
             for (int k = 0; k < c->n; k++) layer[c->cells[k]] = TAK_FOG_VISIBLE;
             continue;
         }
@@ -263,7 +289,7 @@ void Fog_Update(GameWorld *world, int player_id) {
          * covers the nine always-lit cells of a short-sighted unit. */
         int cx0 = ax / FOG_CELL_PX;
         int cy0 = ay / FOG_CELL_PX;
-        int reach = sight / FOG_CELL_PX + 1;
+        int reach = most + 1;
         int min_x = cx0 - reach;
         int max_x = cx0 + reach;
         int min_y = cy0 - reach;
@@ -285,8 +311,9 @@ void Fog_Update(GameWorld *world, int player_id) {
         }
         for (int fy = min_y; fy <= max_y; fy++) {
             for (int fx = min_x; fx <= max_x; fx++) {
-                if (!fog_cell_lit(fx - cx0, fy - cy0, sight)) continue;
                 int idx = fog_idx(world, fx, fy);
+                int32_t up = world->fog_ground ? eye - world->fog_ground[idx] : tall;
+                if (!fog_cell_lit(fx - cx0, fy - cy0, sight, up, tall, most)) continue;
                 layer[idx] = TAK_FOG_VISIBLE;
                 if (c && c->cells && cn < c->cap) c->cells[cn++] = idx;
             }
@@ -296,6 +323,8 @@ void Fog_Update(GameWorld *world, int player_id) {
             c->x = ax;
             c->y = ay;
             c->sight = (int16_t)sight;
+            c->eye = eye;
+            c->tall = (int16_t)tall;
             c->n = cn;
         }
     }
@@ -427,12 +456,14 @@ static void overlay_draw(const GameWorld *world, TAK_Platform *plat, uint8_t dim
 
     const int cell = FOG_CELL_PX;
     const int half = cell / 2;
+    /* Every row is drawn TAK_FOG_LIFT_PX up the picture. */
+    const int top = world->cam_y + TAK_FOG_LIFT_PX;
     /* Cell-index range whose half-shifted quads can touch the
      * viewport (extra ±1 covers truncation toward zero). */
     int c0x = (world->cam_x - half) / cell - 1;
-    int c0y = (world->cam_y - half) / cell - 1;
+    int c0y = (top - half) / cell - 1;
     int c1x = (world->cam_x + world->viewport_w + half) / cell + 1;
-    int c1y = (world->cam_y + world->viewport_h + half) / cell + 1;
+    int c1y = (top + world->viewport_h + half) / cell + 1;
     if (!overlay_room((c1x - c0x + 1) * (c1y - c0y + 1))) {
         SDL_SetRenderDrawBlendMode(r, prev);
         return;
@@ -448,7 +479,7 @@ static void overlay_draw(const GameWorld *world, TAK_Platform *plat, uint8_t dim
             if ((a00 | a10 | a11 | a01) == 0) continue;   /* all clear */
 
             int sx = cx * cell + half - world->cam_x;
-            int sy = cy * cell + half - world->cam_y;
+            int sy = cy * cell + half - top;
             SDL_Vertex *v = &g_ov_v[quads * 4];
             const float fx0 = (float)sx, fy0 = (float)sy;
             const float fx1 = (float)(sx + cell), fy1 = (float)(sy + cell);
@@ -538,7 +569,7 @@ void Fog_RenderJamHaze(const GameWorld *world, TAK_Platform *plat) {
     const SDL_Color tint = { FOG_HAZE_R, FOG_HAZE_G, FOG_HAZE_B, 0 };
     for (int h = 0; h < n; h++) {
         float cx = (float)(hz[h].x - world->cam_x);
-        float cy = (float)(hz[h].y - world->cam_y);
+        float cy = (float)(hz[h].y - world->cam_y - TAK_FOG_LIFT_PX);
         float rad = (float)hz[h].radius;
         if (cx + rad < 0.0f || cy + rad < 0.0f ||
             cx - rad > (float)world->viewport_w ||
