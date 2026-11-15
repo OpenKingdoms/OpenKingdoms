@@ -11472,12 +11472,22 @@ void Units_RecomputeEconomy(struct GameWorld *world) {
     }
 }
 
+/* A unit's record ends, death or removal alike, which is when the
+ * original tells a mission's kill keys (legacy:227277-227286). */
+static void unit_record_ends(const Unit *u) {
+    GameWorld *w = World_Get();
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (w && d && w->mission.objective_count > 0)
+        Mission_NoteUnitGone(&w->mission, d->unitname, u->player_id);
+}
+
 /* Take a unit off the map with no death sequence: the original's death
  * type 10 skips the Killed script and frees the record at once
  * (legacy:227241-227260). Used when a player is eliminated. */
 static void unit_remove_now(int handle) {
     Unit *u = &g_units[handle];
     if (u->alive == UNIT_ALIVE_DEAD) return;
+    unit_record_ends(u);
     g_selection_count = slot_list_drop(g_selection, g_selection_count, handle);
     if (u->alive == UNIT_ALIVE_ACTIVE) {
         occ_lift(handle);
@@ -11626,6 +11636,7 @@ static void apply_killed_as(Unit *t, int t_idx, int bursts) {
     } else {
         /* No script: nothing asks for a body, so none is left
          * (legacy:227113), and the death ends at once. */
+        unit_record_ends(t);
         t->alive = 0;
         unit_death_blast(t, t_idx);
     }
@@ -11651,6 +11662,7 @@ static void apply_turned(Unit *t, int t_idx, int frozen) {
             tak_free(t->cob);
             t->cob = NULL;
         }
+        unit_record_ends(t);
         t->alive = UNIT_ALIVE_DEAD;
     }
     unit_leave_statue(t, frozen);
@@ -17035,6 +17047,7 @@ static void magic_death_tick(Unit *u, int i) {
     Cob_EngineFree(u->cob);
     tak_free(u->cob);
     u->cob = NULL;
+    unit_record_ends(u);
     u->alive = UNIT_ALIVE_DEAD;
     fprintf(stderr, "Units_TickEngines: unit %d despawned (whiteout done)\n", i);
 }
@@ -17226,6 +17239,7 @@ void Units_TickEngines(void) {
             Cob_EngineFree(u->cob);
             tak_free(u->cob);
             u->cob = NULL;
+            unit_record_ends(u);
             u->alive = UNIT_ALIVE_DEAD;
             fprintf(stderr, "Units_TickEngines: unit %d despawned (Killed done)\n", i);
         }

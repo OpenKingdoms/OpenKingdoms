@@ -127,17 +127,13 @@ static int mission_unit_owner_ok(const MissionUnitSnapshot *u,
     return 1;
 }
 
-static int any_matching_dead(const MissionUnitSnapshot *units,
-                             int unit_count,
-                             const char *unitname,
-                             int local_player,
-                             int owner) {
-    for (int i = 0; i < unit_count; i++) {
-        if (!mission_unit_matches(&units[i], unitname)) continue;
-        if (!mission_unit_owner_ok(&units[i], local_player, owner)) continue;
-        if (!units[i].alive) return 1;
-    }
-    return 0;
+/* The deaths a kill key waits for. KillUnitType never fires on a count
+ * below one, and UnitTypeKilled fires on the first death then
+ * (legacy:240604-240618, legacy:240997-241006). The file always names
+ * one, and one stands in when it does not. */
+static int mission_kills_needed(const MissionObjective *o) {
+    if (o->type == MISSION_OBJ_KILL_UNIT_TYPE) return o->a < 0 ? 1 : o->a;
+    return o->a < 1 ? 1 : o->a;
 }
 
 static int no_matching_alive(const MissionUnitSnapshot *units,
@@ -399,14 +395,12 @@ int Mission_ObjectiveSatisfied(const MissionObjective *objective,
     case MISSION_OBJ_KILL_ENEMY_COMMANDER:
         return no_matching_alive(units, unit_count, objective->text,
                                  local_player, MISSION_OWNER_ENEMY, 0, 1);
-    /* The victory key counts the enemy's losses, the defeat key any
-     * seat's (legacy:240609, legacy:240997). */
+    /* Counted as the units go, by Mission_NoteUnitGone. */
     case MISSION_OBJ_UNIT_TYPE_KILLED:
-        return any_matching_dead(units, unit_count, objective->text,
-                                 local_player, MISSION_OWNER_ANY);
-    case MISSION_OBJ_KILL_UNIT_TYPE:
-        return any_matching_dead(units, unit_count, objective->text,
-                                 local_player, MISSION_OWNER_ENEMY);
+    case MISSION_OBJ_KILL_UNIT_TYPE: {
+        int need = mission_kills_needed(objective);
+        return need > 0 && objective->kills >= need;
+    }
     /* A unit the player owns of that type, which is how a mission
      * reads both "build one" and "capture one". */
     case MISSION_OBJ_BUILD_UNIT_TYPE:
@@ -485,6 +479,23 @@ static int mission_role_met(const MissionData *mission,
     return role == MISSION_ROLE_VICTORY ? seen : 0;
 }
 
+int Mission_ConditionLatches(MissionObjectiveType type) {
+    return type != MISSION_OBJ_DESTROY_ALL_UNITS &&
+           type != MISSION_OBJ_ALL_UNITS_KILLED;
+}
+
+int Mission_RoleHeld(const MissionData *mission, const uint8_t *held, int role) {
+    int seen = 0;
+    if (!mission || !held) return 0;
+    for (int i = 0; i < mission->objective_count && i < TAK_MISSION_MAX_CONDITIONS; i++) {
+        if (mission->objectives[i].role != role) continue;
+        seen = 1;
+        if (role == MISSION_ROLE_VICTORY && !held[i]) return 0;
+        if (role == MISSION_ROLE_DEFEAT && held[i]) return 1;
+    }
+    return role == MISSION_ROLE_VICTORY ? seen : 0;
+}
+
 int Mission_VictoryMet(const MissionData *mission,
                        const MissionUnitSnapshot *units,
                        int unit_count,
@@ -542,6 +553,22 @@ void Mission_ParseSeat(const char *line, int first, MissionSeat *out) {
     const char *logo = strstr(low, "logo");
     int v = 0;
     if (logo && sscanf(logo, "logo %i", &v) == 1) out->logo = v;
+}
+
+/* The victory key counts the second seat's losses, the defeat key any
+ * seat's, each down from the number the key names (legacy:240604-240618,
+ * legacy:240997-241006). */
+void Mission_NoteUnitGone(MissionData *mission, const char *unitname, int owner) {
+    if (!mission || !unitname || !unitname[0]) return;
+    for (int i = 0; i < mission->objective_count; i++) {
+        MissionObjective *o = &mission->objectives[i];
+        if (o->type != MISSION_OBJ_KILL_UNIT_TYPE &&
+            o->type != MISSION_OBJ_UNIT_TYPE_KILLED) continue;
+        if (o->type == MISSION_OBJ_KILL_UNIT_TYPE && owner != TAK_MISSION_ENEMY_SEAT)
+            continue;
+        if (tak_stricmp(o->text, unitname) != 0) continue;
+        if (o->kills < mission_kills_needed(o)) o->kills++;
+    }
 }
 
 int Mission_RosterAllows(const MissionData *mission, const char *unitname) {

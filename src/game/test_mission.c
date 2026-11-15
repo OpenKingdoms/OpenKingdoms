@@ -444,19 +444,17 @@ TEST(evaluates_objective_vocabulary) {
     obj.c = 15;
     ASSERT(Mission_ObjectiveSatisfied(&obj, units, 4, 1, 0));
 
+    /* The kill keys count deaths as they come, not the snapshot's dead,
+     * and a key with no number waits for one. */
     obj.type = MISSION_OBJ_KILL_UNIT_TYPE;
     strcpy(obj.text, "TARSOLD");
+    obj.a = -1;
+    ASSERT(!Mission_ObjectiveSatisfied(&obj, units, 4, 1, 0));
+    obj.kills = 1;
     ASSERT(Mission_ObjectiveSatisfied(&obj, units, 4, 1, 0));
-
-    /* The defeat key of the pair asks the same question. Which list it
-     * is in is what makes one a win and the other a loss. */
     obj.type = MISSION_OBJ_UNIT_TYPE_KILLED;
     ASSERT(Mission_ObjectiveSatisfied(&obj, units, 4, 1, 0));
-    strcpy(obj.text, "NPCEMEN");
-    ASSERT(!Mission_ObjectiveSatisfied(&obj, units, 4, 1, 0));
-    units[2].alive = 0;
-    ASSERT(Mission_ObjectiveSatisfied(&obj, units, 4, 1, 0));
-    units[2].alive = 1;
+    obj.kills = 0;
 
     obj.type = MISSION_OBJ_KILL_ENEMY_COMMANDER;
     strcpy(obj.text, "TARKING");
@@ -812,6 +810,78 @@ TEST(black_peace_reads_its_seats_and_its_roster) {
     Mission_Free(&mission);
 }
 
+/* KillUnitType counts the second seat's losses of the type down from
+ * its number, UnitTypeKilled any seat's (legacy:240604-240618,
+ * legacy:240997-241006). */
+TEST(the_kill_keys_count_down_from_their_number) {
+    MissionData mission;
+    ensure_vfs();
+    ASSERT_EQ_INT(0, Mission_LoadOTA("missions/missions/takmission32_mt.ota",
+                                     &mission));
+    MissionObjective *kill = NULL;
+    for (int i = 0; i < mission.objective_count; i++)
+        if (mission.objectives[i].type == MISSION_OBJ_KILL_UNIT_TYPE)
+            kill = &mission.objectives[i];
+    ASSERT_NOT_NULL(kill);
+    ASSERT_EQ_STR("VERSWORD", kill->text);
+    ASSERT_EQ_INT(17, kill->a);
+    Mission_NoteUnitGone(&mission, "VERSWORD", 2);
+    ASSERT(!Mission_VictoryMet(&mission, NULL, 0, 1, 0));
+    /* The player's own swordsmen and another kind are not the count. */
+    Mission_NoteUnitGone(&mission, "VERSWORD", 1);
+    Mission_NoteUnitGone(&mission, "VERARCH", 2);
+    ASSERT_EQ_INT(1, kill->kills);
+    for (int i = 0; i < 15; i++) Mission_NoteUnitGone(&mission, "versword", 2);
+    ASSERT(!Mission_VictoryMet(&mission, NULL, 0, 1, 0));
+    Mission_NoteUnitGone(&mission, "VERSWORD", 2);
+    ASSERT(Mission_VictoryMet(&mission, NULL, 0, 1, 0));
+    Mission_NoteUnitGone(&mission, "VERSWORD", 2);
+    ASSERT_EQ_INT(17, kill->kills);
+    Mission_Free(&mission);
+
+    MissionObjective lose;
+    memset(&lose, 0, sizeof(lose));
+    lose.type = MISSION_OBJ_UNIT_TYPE_KILLED;
+    lose.role = MISSION_ROLE_DEFEAT;
+    strcpy(lose.text, "NPCSAIL");
+    lose.a = 7;
+    memset(&mission, 0, sizeof(mission));
+    mission.objectives = &lose;
+    mission.objective_count = 1;
+    mission.defeat_count = 1;
+    for (int i = 0; i < 6; i++) Mission_NoteUnitGone(&mission, "NPCSAIL", 1 + i % 3);
+    ASSERT(!Mission_DefeatMet(&mission, NULL, 0, 1, 0));
+    Mission_NoteUnitGone(&mission, "NPCSAIL", 10);
+    ASSERT(Mission_DefeatMet(&mission, NULL, 0, 1, 0));
+}
+
+/* A condition once met stays met, but for the two that count what
+ * stands, so a unit that walked through a line still passed it
+ * (legacy:240729-240733, legacy:240940-240965). */
+TEST(a_met_condition_stays_met) {
+    MissionObjective objs[3];
+    memset(objs, 0, sizeof(objs));
+    objs[0].type = MISSION_OBJ_UNIT_TYPE_PASSES_X;
+    objs[1].type = MISSION_OBJ_KILL_ALL_OF_TYPE;
+    objs[2].type = MISSION_OBJ_ALL_UNITS_KILLED;
+    objs[2].role = MISSION_ROLE_DEFEAT;
+    MissionData mission;
+    memset(&mission, 0, sizeof(mission));
+    mission.objectives = objs;
+    mission.objective_count = 3;
+    ASSERT_EQ_INT(1, Mission_ConditionLatches(MISSION_OBJ_UNIT_TYPE_PASSES_X));
+    ASSERT_EQ_INT(1, Mission_ConditionLatches(MISSION_OBJ_KILL_ALL_MOBILE_UNITS));
+    ASSERT_EQ_INT(0, Mission_ConditionLatches(MISSION_OBJ_DESTROY_ALL_UNITS));
+    ASSERT_EQ_INT(0, Mission_ConditionLatches(MISSION_OBJ_ALL_UNITS_KILLED));
+    uint8_t held[TAK_MISSION_MAX_CONDITIONS] = { 1, 0, 0 };
+    ASSERT_EQ_INT(0, Mission_RoleHeld(&mission, held, MISSION_ROLE_VICTORY));
+    held[1] = 1;
+    ASSERT_EQ_INT(1, Mission_RoleHeld(&mission, held, MISSION_ROLE_VICTORY));
+    ASSERT_EQ_INT(0, Mission_RoleHeld(&mission, held, MISSION_ROLE_DEFEAT));
+    held[2] = 1;
+    ASSERT_EQ_INT(1, Mission_RoleHeld(&mission, held, MISSION_ROLE_DEFEAT));
+}
+
 /* The shipped corpus, split the way the original splits it. Every
  * mission ends up with a way to lose, AllUnitsKilled is always a
  * defeat condition, and DestroyAllUnits is always a victory one. */
@@ -881,6 +951,8 @@ int main(int argc, char **argv) {
     RUN(campaign_corpus_splits_conditions_by_role);
     RUN(a_mission_enemy_is_the_second_seat_alone);
     RUN(black_peace_reads_its_seats_and_its_roster);
+    RUN(the_kill_keys_count_down_from_their_number);
+    RUN(a_met_condition_stays_met);
 
     if (vfs_ready) VFS_Shutdown();
     tak_mem_shutdown();

@@ -110,7 +110,10 @@ _Static_assert(WRLD_END == TAK_WRLD_BYTES, "WRLD layout and width disagree");
 #define WRLD_WIND_HEADING   (WRLD_WIND_RAND + 4u)
 #define WRLD_WIND_CHANGED   (WRLD_WIND_HEADING + 2u)
 #define WRLD_FX_END         (WRLD_WIND_CHANGED + 1u)
-#define WRLD_WRITE_BYTES    WRLD_FX_END
+/* Then each condition's kill count, in the mission's condition order. */
+#define WRLD_KILLS          WRLD_FX_END
+#define WRLD_KILLS_END      (WRLD_KILLS + 4u * TAK_MISSION_MAX_CONDITIONS)
+#define WRLD_WRITE_BYTES    WRLD_KILLS_END
 _Static_assert(WRLD_WRITE_BYTES == TAK_WRLD_WRITE_BYTES, "WRLD tail and width disagree");
 
 /* The scalars, in the order they are written. */
@@ -2803,6 +2806,16 @@ static void encode_wrld(uint8_t *p, const GameWorld *w) {
     tak_put_u32(p + WRLD_WIND_RAND, w->wind_rand);
     tak_put_u16(p + WRLD_WIND_HEADING, w->wind_heading);
     tak_put_u8(p + WRLD_WIND_CHANGED, w->wind_changed);
+    for (int i = 0; i < TAK_MISSION_MAX_CONDITIONS && i < w->mission.objective_count; i++)
+        tak_put_i32(p + WRLD_KILLS + 4u * (size_t)i, w->mission.objectives[i].kills);
+}
+
+/* The kill counts, none counted for a save from before them. The mission
+ * is read afresh before a save is applied, so its conditions are here. */
+static void apply_wrld_kills(const uint8_t *p, size_t len, GameWorld *w) {
+    if (len < WRLD_KILLS_END) return;
+    for (int i = 0; i < TAK_MISSION_MAX_CONDITIONS && i < w->mission.objective_count; i++)
+        w->mission.objectives[i].kills = tak_get_i32(p + WRLD_KILLS + 4u * (size_t)i);
 }
 
 /* The console's changes, or none for a save from before them. */
@@ -3644,6 +3657,7 @@ int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap) {
     w->cfg = sg->info.cfg;
     apply_wrld(wrld, w);
     apply_wrld_console(wrld, len, w);
+    apply_wrld_kills(wrld, len, w);
     if (sg->info.has_camera) {
         w->cam_x = sg->info.cam_x;
         w->cam_y = sg->info.cam_y;

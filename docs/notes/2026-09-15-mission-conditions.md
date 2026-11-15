@@ -34,6 +34,10 @@ The defeat list, seven keys:
 - `AnyUnitPassesZ` :239808
 
 Victory needs every condition in the first list at once, :239922-239950.
+Each condition keeps a Satisfied flag once it is met, :240729-240733
+for one, and the save carries it, so a condition met and then lost
+still counts. DestroyAllUnits and AllUnitsKilled are the two that look
+again at what stands each time they are asked :240940-240965.
 With no victory condition at all it never fires. Defeat needs any one
 condition in the second list, :239952-239990. The per-player tick reads
 victory first and only asks about defeat when victory is not met,
@@ -113,8 +117,10 @@ The conditions about the player's own units read the first seat:
 :240795-240822, `BuildUnitType`, `CommanderKilled` :240884 and
 `AllUnitsKilled` :240923-240965. `AllUnitsKilledOfType` walks the first two
 seats together :241056-241100, and `UnitTypeKilled` counts deaths on
-any seat :240997. The counts of the two kill keys are not followed here
-yet, and the first death answers both.
+any seat :240997-241006. Both hear of a death when the unit's record
+ends :227286, whether it was killed, captured or removed, and the count
+goes into the save, so takmission32_mt is won on its seventeenth
+swordsman and takx04_ph lost on its seventh sailor.
 
 The four passes keys ask whether a unit stands within three squares of
 the line, not past it :240719-240733, :241133-241145. A mission that

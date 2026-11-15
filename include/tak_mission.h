@@ -91,6 +91,9 @@ typedef struct MissionObjective {
     int a;
     int b;
     int c;
+    /* KillUnitType and UnitTypeKilled: the deaths of the type counted
+     * so far, which the save keeps. */
+    int kills;
 } MissionObjective;
 
 typedef struct MissionUnitSnapshot {
@@ -163,6 +166,8 @@ int  Mission_LoadOTA(const char *vfs_path, MissionData *out);
 /* Reads one PlayerN line. `first` is Player1, which counts as present
  * whatever it says (legacy:169044). */
 void Mission_ParseSeat(const char *line, int first, MissionSeat *out);
+/* A unit's record ended: the kill keys count it (legacy:227286). */
+void Mission_NoteUnitGone(MissionData *mission, const char *unitname, int owner);
 /* 1 when the roster names the type, or when there is no roster. */
 int  Mission_RosterAllows(const MissionData *mission, const char *unitname);
 int  Mission_ParseInitialMission(const char *text,
@@ -186,6 +191,14 @@ int  Mission_DefeatMet(const MissionData *mission,
                        int unit_count,
                        int local_player,
                        int elapsed_seconds);
+
+/* Whether a condition, once met, stays met. The original latches every
+ * one but the two that count what stands afresh each time
+ * (legacy:239289, legacy:240940-240965). */
+int  Mission_ConditionLatches(MissionObjectiveType type);
+/* The verdict of one role from each condition's held flag, as
+ * Mission_VictoryMet and Mission_DefeatMet decide it. */
+int  Mission_RoleHeld(const MissionData *mission, const uint8_t *held, int role);
 
 /* The conditions the original adds when a mission names none: a
  * victory by destroying every enemy outside campaign mode, and a

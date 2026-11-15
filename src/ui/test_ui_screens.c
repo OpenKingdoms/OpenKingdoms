@@ -30450,6 +30450,106 @@ TEST(the_books_load_dialog_is_shown_and_its_escape_stays_with_it) {
     VFS_Shutdown();
 }
 
+/* takmission32_mt is won by KillUnitType=VERSWORD, 17: the second seat
+ * loses seventeen swordsmen, counted through a save and a load
+ * (legacy:239432-239470, legacy:240604-240618). */
+static int kc_swordsmen(int *out, int cap) {
+    int n = 0, count = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count && n < cap; i++)
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 2 &&
+            (int)units[i].def_idx == Units_FindDefByName("VERSWORD")) out[n++] = i;
+    return n;
+}
+
+static void kc_kill(int n) {
+    int h[32];
+    int have = kc_swordsmen(h, 32);
+    for (int i = 0; i < n && i < have; i++) Units_DebugKillHandle(h[i]);
+    InGame_DebugRunSimTicks(300);
+}
+
+TEST(seventeen_swordsmen_win_takmission32_through_a_save) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    sb_clear_saves();
+    int next = Story_StartMissionFile(&platform, "takmission32_mt.ota");
+    ASSERT(next == GAMESTATE_GAME_LOADING || next == GAMESTATE_CREDITS);
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    /* Twenty swordsmen of the second seat, out of everyone's way. */
+    for (int i = 0; i < 20; i++) {
+        int h = Units_Spawn(Units_FindDefByName("VERSWORD"), 2, 0,
+                            (30 + (i % 5) * 3) * 16, (215 + (i / 5) * 3) * 16);
+        ASSERT(h >= 0);
+        Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    }
+    kc_kill(1);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    kc_kill(4);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    int h[32];
+    int saved = kc_swordsmen(h, 32);
+    printf("[%d swordsmen saved] ", saved);
+    ASSERT(saved >= 12);
+
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, sb_open_menu_and_press("SaveGame"));
+    SaveBrowser_SetName("Seventeen");
+    ASSERT_EQ_INT(SAVEBROWSER_SAVED, SaveBrowser_Press("SaveGame"));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_TakeBrowserResult(SAVEBROWSER_SAVED));
+    InGameMenu_Close();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+
+    ASSERT_EQ_INT(0, Story_Init(&platform));
+    ASSERT_EQ_INT(0, SaveBrowser_Open(SAVEBROWSER_LOAD));
+    SaveBrowser_SelectRow(0);
+    ASSERT_EQ_INT(SAVEBROWSER_LOAD_READY, SaveBrowser_Press("LoadGame"));
+    TAK_SaveGame *sg = SaveBrowser_TakeLoad();
+    ASSERT_NOT_NULL(sg);
+    const TAK_SaveInfo *info = Save_Info(sg);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &info->cfg, info->map_name, info->map_kingdom));
+    World_SetRestoring(1);
+    Loading_SetPendingSave(sg);
+    SaveBrowser_Close();
+    Story_Shutdown();
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_STR("", Loading_SaveRefusal());
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    if (Briefing_IsOpen()) InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(saved, kc_swordsmen(h, 32));
+
+    kc_kill(11);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    kc_kill(1);
+    ASSERT_EQ_INT(1, world->skirmish_game_over);
+    ASSERT_EQ_INT(1, world->skirmish_local_result);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    sb_clear_saves();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(a_campaign_save_loaded_from_the_book_takes_orders) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -31864,6 +31964,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(loading_a_save_reaches_a_running_battle);
     RUN_UI_TEST(a_load_brings_back_one_army_not_two);
     RUN_UI_TEST(a_campaign_save_loaded_from_the_book_takes_orders);
+    RUN_UI_TEST(seventeen_swordsmen_win_takmission32_through_a_save);
     RUN_UI_TEST(a_mission_loaded_from_the_skirmish_screen_plays_on_as_saved);
     RUN_UI_TEST(a_ferry_under_way_plays_on_the_same_after_a_load);
     RUN_UI_TEST(the_books_load_dialog_is_shown_and_its_escape_stays_with_it);
