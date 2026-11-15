@@ -11988,8 +11988,8 @@ TEST(tower_auto_engages_enemy) {
  * The shake is in the draw and nowhere else: the camera is where the
  * player left it on every frame of it. */
 /* Issue #16. An Iron Beak's Egg Bomb is subtype Dropped: it leaves the
- * flyer with no launch pitch and no climb, falls from the height the
- * flyer was at, and lands on what is under it (legacy:246794). */
+ * flyer level and nose down, never climbs, and falls onto what it was
+ * dropped at (legacy:246799-246829). */
 TEST(a_dropped_bomb_falls_from_the_flyer) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -12060,7 +12060,7 @@ TEST(a_dropped_bomb_falls_from_the_flyer) {
     ASSERT(seen);
     /* It starts up where the flyer is and only ever comes down. */
     ASSERT(first_height > 60.0f);
-    ASSERT(first_pitch > -0.001f && first_pitch < 0.001f);
+    ASSERT(first_pitch < 0.0f);
     ASSERT(!climbed);
     ASSERT(damaged);
 

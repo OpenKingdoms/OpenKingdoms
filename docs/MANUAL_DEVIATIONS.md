@@ -2544,7 +2544,12 @@ Format per entry:
   original's does, with one exception. When AimWeapon is still running
   after 120 ticks, two seconds, while the unit stands still with the
   target in reach, the weapon counts as aimed and fires. Every other aim
-  the script never answers is asked again, as before.
+  the script never answers is asked again, as before. The exception
+  never applies while the weapon's FireWeapon from the last shot is
+  still playing. Musketeers, grenadiers and trebuchets hold AimWeapon
+  until their firing and reloading animation ends, and fired from the
+  exception they started a second FireWeapon over the first, so two
+  animations fought over the same pieces.
 - Why: some casters' scripts hold AimWeapon until their own can-aim
   flag is set, and their walk sets that flag only for an aim that began
   while the unit was still walking. Our attack approach starts the aim
@@ -2672,6 +2677,32 @@ Format per entry:
   distance, the damage the weapon does and the turn to face it
   (legacy:21170-21246), and a hit draws only the unit that was hit
   (legacy:15187-15215), or a guard's charge (legacy:233765-233768).
+
+## D-049: Where an attack run and a flyer's patrol depart from the original
+
+- Change: a flyer without hoverattack, the Dirigible, the Gryphon, the
+  Fallen Angel, the Aerial Juggernaut and the Wrath of Tammuz among the
+  shipped units, flies its attack runs as the original does, with three
+  differences. It flies its run at a target from the start, where the
+  original first hands a target that fails a reach test on its path to a
+  formation move. Its points are kept its turning circle and 32 px
+  inside the map, where the original sends a flyer near the edge 800 px
+  back in. A flyer attacking another flyer stands off it and fires, as
+  the engine did before, where the original hands it to another mission.
+  A flyer on patrol takes its next leg once within 128 px of its point,
+  unless that next point is as near, and flies its patrol point to
+  point.
+- Why: the formation move, the edge push and the air to air mission are
+  missions the engine does not have yet, and the run's own legs cover
+  the approach. A patrol leg walked to within 8 px braked every flyer to
+  a stop on each point, which the playtest saw on Parrots.
+- Citation: the run (legacy:28491-29118), the reach test and formation
+  move (legacy:28572-28630), the edge push (legacy:28854-28924) and the
+  flying target and dropped key handed elsewhere (legacy:28524-28545).
+  The original's flyer patrol ends each leg within 128 px (legacy:26275)
+  and flies its legs round the order point at its weapon's range plus
+  160 px, a shape the engine does not copy. The manual is silent.
+  docs/notes/2026-11-14-air-attacks-and-dropped-shots.md has the detail.
 
 ## R-008: A reel's soundtrack goes through the game's mixer
 

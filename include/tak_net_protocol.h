@@ -193,8 +193,10 @@
  * go over a hill they can climb and round bad ground. 73: a unit's queue
  * holds 32 orders, and the Rictus rides the sea surface. 74: a computer's
  * castles train cheap troops when its mana runs short, its units give up
- * a fight at their leash, and Zhon's beast producers are paced. */
-#define TAK_ENGINE_BUILD_ID           74
+ * a fight at their leash, and Zhon's beast producers are paced. 75: a
+ * flyer without hoverattack attacks in runs, a dropped shot falls onto its
+ * aim, a flyer on patrol keeps its speed, and a shot waits for its aim. */
+#define TAK_ENGINE_BUILD_ID           75
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
