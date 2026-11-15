@@ -2764,12 +2764,14 @@ static int ai_walker_reaches(const GameWorld *world, const Unit *units, int i,
 
 /* Combat think (legacy:17624): a unit with no fight on its hands takes
  * the nearest seen enemy inside max(sight, range) plus its engagement
- * radius. Marching units divert too, as the original's do. */
+ * radius, as a fight on its leash. Marching units divert too, which is
+ * ours. One holding fire takes none (legacy:181894). */
 static int ai_engage_nearby(const GameWorld *world, const Unit *units,
                             int unit_count, int actor_idx,
                             const UnitDef *def) {
     const Unit *u = &units[actor_idx];
     if (u->cmd_kind != UNIT_CMD_NONE && u->cmd_kind != UNIT_CMD_MOVE) return 0;
+    if (u->aggro_mode == UNIT_AGGRO_PASSIVE) return 0;
     int32_t r = ai_engage_radius(u, def);
     int kept = ai_monarch_kept(world, u->player_id, def);
     int64_t best_d2 = (int64_t)r * r + 1;
@@ -2791,13 +2793,13 @@ static int ai_engage_nearby(const GameWorld *world, const Unit *units,
         if (d2 == best_d2 && best >= 0 && i == best) continue;
         if (!ai_visible_to(world, u->player_id, t)) continue;
         if (!Units_CanAttackTarget(actor_idx, i)) continue;
+        if (!Units_FightMayTake(actor_idx, i)) continue;
         if (kept && !ai_monarch_may_take(u->player_id, u, def, t)) continue;
         if (!ai_walker_reaches(world, units, actor_idx, def, t)) continue;
         best_d2 = d2;
         best = i;
     }
-    if (best < 0) return 0;
-    Units_CommandAttackUnit(actor_idx, best);
+    if (best < 0 || !Units_CommandFightUnit(actor_idx, best)) return 0;
     ai_count_order(u->player_id, units[best].player_id, 0);
     return 1;
 }

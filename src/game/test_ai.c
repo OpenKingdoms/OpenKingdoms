@@ -245,6 +245,19 @@ void Units_CommandAttackUnit(int handle, int target_handle) {
     g_last_attack_target = target_handle;
 }
 
+int Units_FightMayTake(int handle, int target_handle) {
+    (void)handle; (void)target_handle; return 1;
+}
+
+int Units_CommandFightUnit(int handle, int target_handle) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    if (target_handle < 0 || target_handle >= g_unit_count) return 0;
+    Units_CommandAttackUnit(handle, target_handle);
+    if (g_units[handle].target != target_handle) return 0;
+    g_units[handle].attack_explicit = UNIT_ATTACK_FIGHT;
+    return 1;
+}
+
 /* The weapon buttons' order and the damage table, as units.c gives them
  * for a weapon with no table: its default damage. */
 static int g_weapon_slot_calls;
@@ -450,6 +463,8 @@ static void reset_mock(GameWorld *w) {
     memset(w, 0, sizeof(*w));
     memset(g_defs, 0, sizeof(g_defs));
     memset(g_units, 0, sizeof(g_units));
+    /* Born offensive, as a unit whose file gives no stance. */
+    for (int k = 0; k < MOCK_UNITS; k++) g_units[k].aggro_mode = UNIT_AGGRO_OFFENSIVE;
     memset(g_buildable_counts, 0, sizeof(g_buildable_counts));
     memset(g_buildables, 0, sizeof(g_buildables));
     g_unit_count = 0;

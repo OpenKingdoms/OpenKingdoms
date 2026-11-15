@@ -8994,6 +8994,132 @@ TEST(ai_rush_on_the_computers_monarch) {
     VFS_Shutdown();
 }
 
+/* The length of (dx, dy), rounded up. */
+static int32_t lure_dist(int64_t dx, int64_t dy) {
+    int32_t e = 0;
+    while ((int64_t)e * e < dx * dx + dy * dy) e++;
+    return e;
+}
+
+/* A measuring tool, not a case. TAK_AI_LURE=<minute> plays an Aramon seat
+ * against a Veruna one on Two Castles. At that minute, or once he stands
+ * idle with TAK_AI_LURE_IDLE, Kirenna is set TAK_AI_LURE_PASS px (160) from
+ * Elsin, strikes him for four seconds unless she was set further, and walks
+ * home, where six troops of hers stand. Elsin is a computer's, or the
+ * player's own on its default stance with TAK_AI_LURE_HUMAN=1, and
+ * TAK_AI_LURE_NOLOS=1 plays with line of sight off. For Monarch Expendable
+ * off and on over TAK_AI_LURE_GAMES seeds (3) it prints how far he follows. */
+static int lure_once(TAK_Platform *platform, int minute, int human, int expendable,
+                     uint32_t seed, int *closest, int *fell, int *base_s,
+                     int *chase_s, int *far) {
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.seed = seed;
+    cfg.monarch_expendable = expendable;
+    if (getenv("TAK_AI_LURE_NOLOS")) cfg.line_of_sight = 0;
+    cfg.players[0].side = TAK_SIDE_ARAMON;
+    cfg.players[1].side = TAK_SIDE_VERUNA;
+    for (int k = 0; k < 2; k++) cfg.players[k].color = k;
+    cfg.players[0].kind = human ? TAK_SLOT_HUMAN : TAK_SLOT_AI;
+    cfg.players[0].ai_difficulty = 2;
+    cfg.players[1].kind = TAK_SLOT_HUMAN;
+    *closest = 1 << 30;
+    *fell = *base_s = *chase_s = *far = 0;
+    if (World_BeginLoad(platform, &cfg, cfg.map_name, "aramon") != 0) return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    GameWorld *world = World_Get();
+    int ran = -1;
+    if (next == GAMESTATE_IN_GAME && world && InGame_Init(platform) == 0) {
+        InGame_DebugPlayWithoutHumans(1);
+        int32_t bx = 0, by = 0, hx = 0, hy = 0;
+        hostility_start_of(world, 2, &bx, &by);
+        hostility_start_of(world, 1, &hx, &hy);
+        int elsin = hostility_monarch_of(1), kirenna = hostility_monarch_of(2);
+        int troop = hostility_combat_def_for_side(TAK_SIDE_VERUNA);
+        InGame_DebugRunSimTicks(minute * 3600);
+        int count = 0;
+        const Unit *units = Units_GetActive(&count);
+        for (int w = 0; getenv("TAK_AI_LURE_IDLE") && elsin >= 0 && w < 180 &&
+                        units[elsin].alive == UNIT_ALIVE_ACTIVE &&
+                        units[elsin].cmd_kind != UNIT_CMD_NONE; w++) {
+            InGame_DebugRunSimTicks(60);
+            units = Units_GetActive(&count);
+        }
+        if (elsin >= 0 && kirenna >= 0 && units[elsin].alive == UNIT_ALIVE_ACTIVE) {
+            ran = 0;
+            for (int k = 0; k < 6 && troop >= 0; k++)
+                Units_Spawn(troop, 2, 1, bx + 48 * (k % 3) - 48, by + 48 * (k / 3) - 24);
+            /* Kirenna on the side of him nearer her home. */
+            const char *ps = getenv("TAK_AI_LURE_PASS");
+            int32_t off = ps && atoi(ps) > 0 ? atoi(ps) : 0;
+            int64_t dx = bx - units[elsin].world_x, dy = by - units[elsin].world_y;
+            int32_t len = 1;
+            while ((int64_t)len * len < dx * dx + dy * dy) len++;
+            int32_t kx = units[elsin].world_x + (int32_t)(dx * (off ? off : 160) / len);
+            int32_t ky = units[elsin].world_y + (int32_t)(dy * (off ? off : 160) / len);
+            int32_t gx = kx, gy = ky;
+            corpse_find_clear_ground(world, kx, ky, 64, &gx, &gy);
+            Units_DebugPlace(kirenna, gx, gy);
+            if (off) Units_OrderStop(kirenna);
+            else Units_CommandAttackUnit(kirenna, elsin);
+            for (int s = 0; s < 150; s++) {
+                if (s == 4) Units_CommandMoveUnit(kirenna, bx, by);
+                InGame_DebugRunSimTicks(60);
+                units = Units_GetActive(&count);
+                if (units[elsin].alive != UNIT_ALIVE_ACTIVE) { *fell = 1; break; }
+                int32_t e = lure_dist(units[elsin].world_x - bx, units[elsin].world_y - by);
+                int32_t o = lure_dist(units[elsin].world_x - hx, units[elsin].world_y - hy);
+                if (e < *closest) *closest = e;
+                if (e < 640) (*base_s)++;
+                if (o > *far) *far = o;
+                if (units[elsin].target == kirenna) (*chase_s)++;
+            }
+        }
+        InGame_DebugPlayWithoutHumans(0);
+        InGame_Shutdown();
+    }
+    Loading_Shutdown();
+    World_End(platform);
+    return ran;
+}
+
+TEST(ai_monarch_follows_a_lure) {
+    const char *ask = getenv("TAK_AI_LURE");
+    if (!ask || atoi(ask) <= 0) return;
+    if (mount_iron_plague() != 0) SKIP("no game dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    const char *hu = getenv("TAK_AI_LURE_HUMAN");
+    int human = hu && atoi(hu) != 0;
+    const char *g = getenv("TAK_AI_LURE_GAMES");
+    int games = g && atoi(g) > 0 ? atoi(g) : 3;
+    for (int exp = 0; exp <= 1; exp++) {
+        int fell = 0, inside = 0, played = 0;
+        for (int s = 1; s <= games; s++) {
+            int closest = 0, f = 0, base_s = 0, chase_s = 0, far = 0;
+            if (lure_once(&platform, atoi(ask), human, exp, (uint32_t)(s * 7919),
+                          &closest, &f, &base_s, &chase_s, &far) < 0) continue;
+            played++;
+            fell += f;
+            inside += base_s > 0;
+            fprintf(stderr, "lure: %s Elsin, expendable %d, seed %d: on her %d s, %d px from "
+                    "his home at most, came within %d px of hers, %d s inside 640 px, %s\n",
+                    human ? "the player's" : "a computer's", exp, s, chase_s, far, closest,
+                    base_s, f ? "fell" : "stood");
+        }
+        fprintf(stderr, "lure: expendable %d: into her base in %d of %d, fell in %d\n",
+                exp, inside, played, fell);
+    }
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A measuring tool, not a case. TAK_AI_STARVE=<minute> plays two computer
  * seats of one kingdom on Two Castles and at that minute takes seat 2's
  * lodestones, its fighters and its pool, the aftermath of a lost battle.
@@ -31928,6 +32054,9 @@ static void ui_run_cases(void) {
     }
     if (getenv("TAK_AI_STARVE")) {
         RUN_UI_TEST(ai_starved_seat_trains_again);
+    }
+    if (getenv("TAK_AI_LURE")) {
+        RUN_UI_TEST(ai_monarch_follows_a_lure);
     }
     if (getenv("TAK_SPIKE_PROBE")) {
         RUN_UI_TEST(sim_spike_probe);

@@ -248,6 +248,15 @@ void Units_CommandAttackUnit(int handle, int target_handle) {
     g_units[handle].target = (int16_t)target_handle;
 }
 
+int Units_FightMayTake(int handle, int target_handle) {
+    (void)handle; (void)target_handle; return 1;
+}
+
+int Units_CommandFightUnit(int handle, int target_handle) {
+    Units_CommandAttackUnit(handle, target_handle);
+    return handle >= 0 && handle < g_unit_count && g_units[handle].target == target_handle;
+}
+
 uint32_t Units_SimTick(void) { return 0; }
 /* The stable id index, as a scan. */
 int Units_FindByStableId(uint32_t stable_id) {

@@ -917,6 +917,8 @@ typedef struct UnitMoveLeg {
 /* Unit.attack_explicit. */
 #define UNIT_ATTACK_ORDER 1
 #define UNIT_ATTACK_HELD  2
+/* The computer's engage: an order, on the leash of a fight it took itself. */
+#define UNIT_ATTACK_FIGHT 3
 
 /* Unit.post_set: a fight the unit took on for itself, which it walks
  * back from to (post_x, post_y), or a patrolling builder's repair, after
@@ -1108,8 +1110,8 @@ typedef struct Unit {
     uint32_t   hit_by;
     uint32_t   hit_tick;
     /* An attack order, not a target it took itself: UNIT_ATTACK_ORDER,
-     * or UNIT_ATTACK_HELD for a mission script's, which D-025 never
-     * lets go. */
+     * UNIT_ATTACK_HELD for a mission script's, which D-025 never lets go,
+     * or UNIT_ATTACK_FIGHT for the computer's engage. */
     uint8_t    attack_explicit;
     /* D-025: shots in a row at target blocked_id that stopped short of
      * it, with the walk they sent the unit on packed above them (CHASE_*
@@ -2408,6 +2410,12 @@ void              Units_CommandPatrolSelected(int32_t world_x, int32_t world_y);
 void              Units_CommandGuardSelected(int target_handle);
 void              Units_CommandAttackUnit(int handle, int target_handle);
 void              Units_CommandAttackUnitScript(int handle, int target_handle);
+/* The fight a computer's idle unit takes: it closes in whatever its stance
+ * and gives up at its maneuverleashlength from where it took the first.
+ * 0 when refused, a target past the leash of the post it walks back to. */
+int               Units_CommandFightUnit(int handle, int target_handle);
+/* Whether that fight would be taken: no post, or the post's leash takes it. */
+int               Units_FightMayTake(int handle, int target_handle);
 
 /* Diplomacy as the battle config set it: a slot's team, or a side of
  * its own past the team range when it has none, 0 for a closed slot.

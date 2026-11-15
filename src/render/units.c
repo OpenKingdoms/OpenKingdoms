@@ -3177,8 +3177,14 @@ static void chase_for_target(Unit *u, const Unit *t) {
  * the original's computer sends its groups by move orders and they take
  * their targets by search (legacy:18487-18530). */
 static int unit_attack_own(const Unit *u) {
-    return !u->attack_explicit ||
+    return !u->attack_explicit || u->attack_explicit == UNIT_ATTACK_FIGHT ||
            (u->attack_explicit == UNIT_ATTACK_ORDER && !unit_seat_is_human(u->player_id));
+}
+
+/* An attack its post's leash ends: one it took itself or the computer's
+ * engage (legacy:11020). */
+static int unit_attack_leashed(const Unit *u) {
+    return !u->attack_explicit || u->attack_explicit == UNIT_ATTACK_FIGHT;
 }
 
 /* A walker with a ranged weapon in an attack, and not holding position
@@ -5686,6 +5692,41 @@ void Units_CommandAttackUnit(int handle, int target_handle) {
 
 void Units_CommandAttackUnitScript(int handle, int target_handle) {
     command_attack_unit_ex(handle, target_handle, 0);
+}
+
+/* The original's computer walks an idle unit on by patrol, and a patrol
+ * takes what it finds as a fight of its own with a post, whatever the
+ * stance (legacy:17965-17972, legacy:10843-10851), which ends at the
+ * leash (legacy:11020). A fight taken walking back keeps the first post. */
+int Units_FightMayTake(int handle, int target_handle) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    if (target_handle < 0 || target_handle >= g_unit_count) return 0;
+    const Unit *u = &g_units[handle];
+    return u->post_set != UNIT_POST_FIGHT ||
+           unit_post_may_take(u, Units_GetDef(u->def_idx), &g_units[target_handle]);
+}
+
+int Units_CommandFightUnit(int handle, int target_handle) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    if (target_handle < 0 || target_handle >= g_unit_count) return 0;
+    Unit *u = &g_units[handle];
+    const Unit *t = &g_units[target_handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (u->alive != 1 || t->alive != 1 || handle == target_handle || !d) return 0;
+    if (!unit_players_are_enemies(u->player_id, t->player_id)) return 0;
+    if (!unit_can_see_target(u, t)) return 0;
+    if (u->post_set == UNIT_POST_FIGHT && !unit_post_may_take(u, d, t)) return 0;
+    if (u->post_set != UNIT_POST_FIGHT && d->max_velocity > 0.0f && !d->can_fly) {
+        u->post_set = UNIT_POST_FIGHT;
+        u->post_x = u->world_x;
+        u->post_y = u->world_y;
+        u->post_leash = (uint16_t)d->leash_length;
+    }
+    u->cmd_kind = UNIT_CMD_ATTACK;
+    u->attack_explicit = UNIT_ATTACK_FIGHT;
+    u->target = (int16_t)target_handle;
+    unit_clear_path(u);
+    return 1;
 }
 
 void Units_SetOwner(int handle, int player_id, int team_color_idx) {
@@ -16005,7 +16046,7 @@ static void Units_TickCombat(void) {
         /* An order from outside ends the walk back and a patrol's repairs. */
         if ((u->post_set == UNIT_POST_FIGHT && u->cmd_kind != UNIT_CMD_NONE &&
              u->cmd_kind != UNIT_CMD_PATROL &&
-             !(u->cmd_kind == UNIT_CMD_ATTACK && !u->attack_explicit)) ||
+             !(u->cmd_kind == UNIT_CMD_ATTACK && unit_attack_leashed(u))) ||
             (u->post_set == UNIT_POST_WORK && u->cmd_kind != UNIT_CMD_NONE &&
              u->cmd_kind != UNIT_CMD_REPAIR && u->cmd_kind != UNIT_CMD_BUILD))
             u->post_set = UNIT_POST_NONE;
@@ -16056,7 +16097,7 @@ static void Units_TickCombat(void) {
             /* A fight it took on for itself ends once the unit stands its
              * leash from its post (legacy:11020, legacy:11380), unless the
              * target is still in its reach. */
-            if (u->post_set == UNIT_POST_FIGHT && !u->attack_explicit &&
+            if (u->post_set == UNIT_POST_FIGHT && unit_attack_leashed(u) &&
                 (u->cmd_kind == UNIT_CMD_ATTACK ||
                  u->cmd_kind == UNIT_CMD_PATROL) &&
                 u->target < g_unit_count && !friendly_target &&
