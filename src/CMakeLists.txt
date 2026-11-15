@@ -237,11 +237,25 @@ target_include_directories(tak-re PRIVATE
 # ── SDL2 + FFmpeg + system libraries ────────────────────────────────────────
 find_package(PkgConfig QUIET)
 find_path(AVCODEC_INCLUDE_DIR libavcodec/avcodec.h)
-find_library(AVCODEC_LIBRARY avcodec)
-find_library(AVFORMAT_LIBRARY avformat)
-find_library(AVUTIL_LIBRARY avutil)
-find_library(SWSCALE_LIBRARY swscale)
-find_library(SWRESAMPLE_LIBRARY swresample)
+# vcpkg searches its debug tree first under a multi-config generator, so
+# a Release build linked the debug FFmpeg. Take each tree for its own
+# configurations when both are there.
+foreach(_ff avcodec avformat avutil swscale swresample)
+    string(TOUPPER ${_ff} _ff_var)
+    if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+        set(_ff_tree "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
+        find_library(${_ff_var}_LIBRARY_RELEASE ${_ff}
+                     PATHS "${_ff_tree}/lib" NO_DEFAULT_PATH)
+        find_library(${_ff_var}_LIBRARY_DEBUG ${_ff}
+                     PATHS "${_ff_tree}/debug/lib" NO_DEFAULT_PATH)
+    endif()
+    if(${_ff_var}_LIBRARY_RELEASE AND ${_ff_var}_LIBRARY_DEBUG)
+        set(${_ff_var}_LIBRARY optimized ${${_ff_var}_LIBRARY_RELEASE}
+                               debug ${${_ff_var}_LIBRARY_DEBUG})
+    else()
+        find_library(${_ff_var}_LIBRARY ${_ff})
+    endif()
+endforeach()
 
 target_link_libraries(tak-re PRIVATE
     SDL2::SDL2
