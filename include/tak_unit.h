@@ -2414,8 +2414,12 @@ void              Units_CommandAttackUnitScript(int handle, int target_handle);
  * and gives up at its maneuverleashlength from where it took the first.
  * 0 when refused, a target past the leash of the post it walks back to. */
 int               Units_CommandFightUnit(int handle, int target_handle);
-/* Whether that fight would be taken: no post, or the post's leash takes it. */
+/* Whether that fight would be taken: in the leash of the post it keeps, or
+ * with none in what its weapon reaches from the end of a fresh leash. */
 int               Units_FightMayTake(int handle, int target_handle);
+/* A seat handed back to its player: the computer's fights become its
+ * units' own. */
+void              Units_EndComputerFights(int player_id);
 
 /* Diplomacy as the battle config set it: a slot's team, or a side of
  * its own past the team range when it has none, 0 for a closed slot.

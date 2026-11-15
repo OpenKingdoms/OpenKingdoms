@@ -5698,12 +5698,29 @@ void Units_CommandAttackUnitScript(int handle, int target_handle) {
  * takes what it finds as a fight of its own with a post, whatever the
  * stance (legacy:17965-17972, legacy:10843-10851), which ends at the
  * leash (legacy:11020). A fight taken walking back keeps the first post. */
+void Units_EndComputerFights(int player_id) {
+    for (int i = 0; i < g_unit_count; i++)
+        if (g_units[i].player_id == player_id &&
+            g_units[i].attack_explicit == UNIT_ATTACK_FIGHT)
+            g_units[i].attack_explicit = 0;
+}
+
 int Units_FightMayTake(int handle, int target_handle) {
     if (handle < 0 || handle >= g_unit_count) return 0;
     if (target_handle < 0 || target_handle >= g_unit_count) return 0;
     const Unit *u = &g_units[handle];
-    return u->post_set != UNIT_POST_FIGHT ||
-           unit_post_may_take(u, Units_GetDef(u->def_idx), &g_units[target_handle]);
+    const Unit *t = &g_units[target_handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d) return 0;
+    if (u->post_set == UNIT_POST_FIGHT) return unit_post_may_take(u, d, t);
+    /* A fresh fight on a leash takes only what its weapon would reach
+     * from the end of it. */
+    if (d->leash_length <= 0 || d->num_weapons <= 0 || d->max_velocity <= 0.0f ||
+        d->can_fly) return 1;
+    int slot = u->weapon_slot;
+    if (slot < 0 || slot >= d->num_weapons) slot = 0;
+    int64_t far = (int64_t)d->leash_length + weapon_effective_range(&d->weapons[slot]);
+    return unit_reach_d2(u, t) <= far * far;
 }
 
 int Units_CommandFightUnit(int handle, int target_handle) {
@@ -5715,7 +5732,7 @@ int Units_CommandFightUnit(int handle, int target_handle) {
     if (u->alive != 1 || t->alive != 1 || handle == target_handle || !d) return 0;
     if (!unit_players_are_enemies(u->player_id, t->player_id)) return 0;
     if (!unit_can_see_target(u, t)) return 0;
-    if (u->post_set == UNIT_POST_FIGHT && !unit_post_may_take(u, d, t)) return 0;
+    if (!Units_FightMayTake(handle, target_handle)) return 0;
     if (u->post_set != UNIT_POST_FIGHT && d->max_velocity > 0.0f && !d->can_fly) {
         u->post_set = UNIT_POST_FIGHT;
         u->post_x = u->world_x;
@@ -16245,6 +16262,7 @@ static void Units_TickCombat(void) {
              * army is that human's to order, so this never moves one,
              * whichever seat this machine plays. */
             if (u->target < 0 && u->cmd_kind == UNIT_CMD_NONE &&
+                u->post_set == UNIT_POST_NONE &&
                 !unit_seat_is_human(u->player_id) &&
                 def->max_velocity > 0.0f)
             {

@@ -752,6 +752,41 @@ static int test_ai_a_starved_castle_passes_over_a_dear_troop(void) {
     printf("[dear troop trained %d of 40 starved, %d fed] ", trained[0], trained[1]);
     ASSERT_TRUE(trained[0] > 0 && trained[0] < 20);
     ASSERT_EQ_INT(40, trained[1]);
+
+    /* With a cheap troop beside it, a think the dear one is drawn and
+     * passed over trains nothing (legacy:18004-18008). */
+    setup_ai_progression_fixture(&w);
+    g_defs[3].build_cost = 2000;
+    g_defs[6] = g_defs[3];
+    strcpy(g_defs[6].unitname, "TARCHEAP");
+    g_defs[6].build_cost = 100;
+    g_buildable_counts[2] = 2;
+    g_buildables[2][1] = 6;
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 2;
+    g_units[1].def_idx = 1;
+    g_units[2].alive = UNIT_ALIVE_ACTIVE;
+    g_units[2].player_id = 2;
+    g_units[2].def_idx = 2;
+    g_units[2].build_target = -1;
+    g_unit_count = 3;
+    g_mock_share = 0.5f;
+    int idle = 0, cheap = 0;
+    for (int k = 0; k < 40; k++) {
+        g_units[0].cmd_kind = UNIT_CMD_BUILD;
+        g_units[0].build_target = 1;
+        g_units[2].cmd_kind = UNIT_CMD_NONE;
+        g_units[2].build_target = -1;
+        g_begin_calls = 0;
+        g_last_build_def = -1;
+        w.skirmish_elapsed_ticks = 60 * (k + 1);
+        TAK_AI_TickSkirmish(&w);
+        idle += g_begin_calls == 0;
+        cheap += g_last_build_def == 6;
+    }
+    printf("[with a cheap one: %d thinks idle, %d cheap] ", idle, cheap);
+    ASSERT_TRUE(idle > 0);
+    ASSERT_TRUE(cheap > 0);
     return 0;
 }
 

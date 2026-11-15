@@ -349,6 +349,31 @@ static int ai_player_stalling(const GameWorld *world, int player_id) {
            (diff == 0 && Economy_GetMana(&world->economy, player_id) <= 0);
 }
 
+static uint32_t g_ai_think_serial;
+
+/* Every unit the seat has, the original's per-player count, counted once
+ * a think for every seat. */
+static int ai_units_of(int player_id) {
+    static int counts[TAK_MAX_PLAYERS + 1];
+    static uint32_t at_think;
+    static int at_count = -1;
+    static const Unit *at_units;
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    if (at_think != g_ai_think_serial || count != at_count || units != at_units) {
+        memset(counts, 0, sizeof(counts));
+        for (int i = 0; units && i < count; i++)
+            if ((units[i].alive == UNIT_ALIVE_ACTIVE ||
+                 units[i].alive == UNIT_ALIVE_TRANSPORTED) &&
+                units[i].player_id <= TAK_MAX_PLAYERS)
+                counts[units[i].player_id]++;
+        at_think = g_ai_think_serial;
+        at_count = count;
+        at_units = units;
+    }
+    return player_id >= 0 && player_id <= TAK_MAX_PLAYERS ? counts[player_id] : 0;
+}
+
 /* The original's build score for one type (legacy:19944-20054): 1, or
  * 21 armed. A type with the FBI builder key and none in the yard adds
  * a band by what the seat owns against the profile limit, cut while
@@ -1005,18 +1030,13 @@ static int ai_begin_building(int actor_idx, int build_def,
     return took;
 }
 
-/* Every unit the seat has, the original's per-player count. */
-static int ai_units_of(int player_id) {
-    int count = 0, n = 0;
-    const Unit *units = Units_GetActive(&count);
-    for (int i = 0; units && i < count; i++)
-        if ((units[i].alive == UNIT_ALIVE_ACTIVE || units[i].alive == UNIT_ALIVE_TRANSPORTED) &&
-            units[i].player_id == player_id) n++;
-    return n;
-}
+/* Set when the last start was refused by the seat's mana, which ends
+ * the look: the original draws once a think (legacy:17991-18010). */
+static int g_ai_gate_refused;
 
 static int ai_try_start_build_def(int actor_idx, int build_def) {
     const Unit *units = Units_GetActive(NULL);
+    g_ai_gate_refused = 0;
     if (!units) return 0;
     if (ai_trace()) {
         const UnitDef *tb = Units_GetDef(build_def);
@@ -1039,15 +1059,18 @@ static int ai_try_start_build_def(int actor_idx, int build_def) {
         float share = sw ? Economy_GetShare(&sw->economy, actor->player_id) : 1.0f;
         int earns = bd->mogrium_income_per_sec >= 0.01f;
         int factory = ad->max_velocity <= 0.0f;
+        g_ai_gate_refused = 1;
         if (!earns && share < (factory ? 0.23333333f : 0.7f))
             return 0;
         /* Below 0.7 a factory passes over a product dearer than 500, all
          * but one time in 2 + (cost - 500) / 300, while the seat owns fewer
-         * than 30 to 59 units (legacy:18001-18010). */
+         * than 30 to 59 units (legacy:18001-18010, the draw's bound computed
+         * at 0x40dd73-0x40dd8b). */
         if (factory && share < 0.7f && bd->build_cost > 500 &&
             ai_rand((uint32_t)((bd->build_cost - 500) / 300 + 2)) != 0 &&
             ai_units_of(actor->player_id) < 30 + (int)ai_rand(30))
             return 0;
+        g_ai_gate_refused = 0;
     }
     if (bd && ad && bd->max_velocity > 0.0f && ad->max_velocity <= 0.0f) {
         return ai_begin_building(actor_idx, build_def,
@@ -1061,7 +1084,7 @@ static int ai_try_start_build_def(int actor_idx, int build_def) {
 /* Weighted-random pick over qualifying entries, the original's
  * reservoir draw in whole numbers (legacy:21300, the draw itself at
  * legacy:21338-21341), honoring profile limits; falls back to the
- * rest if the pick can't start. */
+ * rest if the pick can't start, unless the seat's mana refused it. */
 static int ai_try_start_build_from_list(int actor_idx,
                                         const int *buildables,
                                         int buildable_count,
@@ -1087,6 +1110,7 @@ static int ai_try_start_build_from_list(int actor_idx,
     }
     if (pick >= 0 && ai_try_start_build_def(actor_idx, buildables[pick]))
         return 1;
+    if (pick >= 0 && g_ai_gate_refused) return 0;
     for (int i = 0; i < buildable_count; i++) {
         if (i == pick) continue;
         const UnitDef *bd = Units_GetDef(buildables[i]);
