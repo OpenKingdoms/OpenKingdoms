@@ -191,8 +191,10 @@
  * and its kill keys count down from their number. 72: a unit without
  * weaponswitching fires every weapon at a target of its own, and routes
  * go over a hill they can climb and round bad ground. 73: a unit's queue
- * holds 32 orders, and the Rictus rides the sea surface. */
-#define TAK_ENGINE_BUILD_ID           73
+ * holds 32 orders, and the Rictus rides the sea surface. 74: a computer's
+ * castles train cheap troops when its mana runs short, its units give up
+ * a fight at their leash, and Zhon's beast producers are paced. */
+#define TAK_ENGINE_BUILD_ID           74
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
