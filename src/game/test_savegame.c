@@ -1766,8 +1766,9 @@ static uint32_t rec_u32(const uint8_t *r, int at) {
  * a magic death at 1062, version 19 a hover point on the map rather
  * than off its target, in the same bytes, version 20 what a moving
  * unit's weapon took at 1065, version 21 what each weapon of a unit
- * that fires them all took at 1069, and version 22 the legs past sixteen
- * at 1081 with their bits without end at 1465. */
+ * that fires them all took at 1069, version 22 the legs past sixteen
+ * at 1081 with their bits without end at 1465, and version 23 the
+ * heading each weapon's aim was asked for at 1467. */
 TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
@@ -1779,9 +1780,9 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
-    ASSERT_EQ_INT(22, (int)version);
+    ASSERT_EQ_INT(23, (int)version);
     ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7 + 24 + 12 + 11 + 2 + 8 + 3 + 2 + 3 + 4 + 12 +
-                  24 * 16 + 2,
+                  24 * 16 + 2 + 6,
                   (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;
     /* The bowman's formation group at 487 and its second leg at 520. */

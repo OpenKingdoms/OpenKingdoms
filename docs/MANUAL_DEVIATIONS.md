@@ -2581,7 +2581,13 @@ Format per entry:
   still playing. Musketeers, grenadiers and trebuchets hold AimWeapon
   until their firing and reloading animation ends, and fired from the
   exception they started a second FireWeapon over the first, so two
-  animations fought over the same pieces.
+  animations fought over the same pieces. Nor does it apply while the
+  aim, or a script it called, waits on a piece it is turning or moving.
+  A tower's turret turns at 3640 a second, so a quarter turn takes
+  four and a half seconds, and the exception fired VERTOWER and ARASSH
+  half way round, then every shot after at whatever their turret
+  faced. In the original they fire only once the turret is on the
+  target.
 - Why: some casters' scripts hold AimWeapon until their own can-aim
   flag is set, and their walk sets that flag only for an aim that began
   while the unit was still walking. Our attack approach starts the aim
@@ -2591,7 +2597,9 @@ Format per entry:
   its approach starting the aim before the stop. Until ours does the
   same, this keeps those spells working.
 - Citation: the aimed port (legacy:223392-223395) and the fire gate
-  that waits for it (legacy:249328-249384). The manual is silent.
+  that waits for it (legacy:249328-249384). The manual is silent. The
+  turret: an observation in the original, VERTOWER and ARASSH turning
+  fully onto a target before they fire.
 
 ## D-043: A fallen player is marked by a low horn
 
