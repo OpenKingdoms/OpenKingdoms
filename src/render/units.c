@@ -13486,6 +13486,22 @@ static void unit_face_toward(Unit *u, const UnitDef *def,
     unit_face_bearing(u, def, (float)dx, (float)dy);
 }
 
+/* A mobile at its work turns onto it at its turninplacerate, scaled by
+ * its ground, when that comes to min_rate. A ship has none and holds its
+ * heading (legacy:12172-12186, legacy:13407-13421, legacy:14642-14676).
+ * A flyer still turns at once. */
+static void unit_face_work(Unit *u, const UnitDef *def, int64_t dx, int64_t dy,
+                           float min_rate) {
+    if ((dx == 0 && dy == 0) || !def || def->max_velocity <= 0.0f) return;
+    float want = tak_atan2f((float)dx, -(float)dy);
+    if (def->can_fly) {
+        u->heading = want;
+        return;
+    }
+    float rate = def->turn_in_place_rate * unit_ground_scale(World_Get(), u, def);
+    if (rate >= min_rate) unit_turn_at(u, rate, want);
+}
+
 /* Onto a unit, from where both truly are: a walker's drift is then the
  * small turn it is, not a whole pixel's worth every other tick. */
 static void unit_face_unit(Unit *u, const UnitDef *def, const Unit *t) {
@@ -16902,10 +16918,11 @@ static void Units_TickCombat(void) {
             /* Immobile units never swing their base — legacy aims the
              * turret/bowmen PIECES via the COB AimWeapon script while
              * the structure itself stays put. A walker faces its target
-             * once there: on the way the walker owns the heading. */
-            if (desired != UNIT_ANIM_MOVING && (dx != 0 || dy != 0) &&
-                def->max_velocity > 0.0f)
-                u->heading = tak_atan2f((float)dx, -(float)dy);
+             * once there: on the way the walker owns the heading. A
+             * guard turns only at a turninplacerate over 999
+             * (legacy:14270-14283). */
+            if (desired != UNIT_ANIM_MOVING)
+                unit_face_work(u, def, dx, dy, 1000.0f);
         } else if ((u->cmd_kind == UNIT_CMD_RECLAIM ||
                     u->cmd_kind == UNIT_CMD_RESURRECT) &&
                    u->target < 0 && u->reclaim_tile_x >= 0) {
@@ -16949,9 +16966,8 @@ static void Units_TickCombat(void) {
                 } else {
                     desired = UNIT_ANIM_BUILDING;
                 }
-                if (desired != UNIT_ANIM_MOVING && (dx != 0 || dy != 0) &&
-                    def->max_velocity > 0.0f)
-                    u->heading = tak_atan2f((float)dx, -(float)dy);
+                if (desired != UNIT_ANIM_MOVING)
+                    unit_face_work(u, def, dx, dy, 1.0f);
             }
         } else if (u->cmd_kind == UNIT_CMD_LOAD && u->target >= 0 &&
                    (def->cap_flags & UNIT_CAP_TRANSPORT)) {
@@ -17004,9 +17020,8 @@ static void Units_TickCombat(void) {
              * turret/bowmen PIECES via the COB AimWeapon script while
              * the structure itself stays put. A walker faces its target
              * once there: on the way the walker owns the heading. */
-            if (desired != UNIT_ANIM_MOVING && (dx != 0 || dy != 0) &&
-                def->max_velocity > 0.0f)
-                u->heading = tak_atan2f((float)dx, -(float)dy);
+            if (desired != UNIT_ANIM_MOVING)
+                unit_face_work(u, def, dx, dy, 1.0f);
         } else if (u->target >= 0 &&
                    hover_attacks(u, def, &g_units[u->target])) {
             const Unit *t = &g_units[u->target];
@@ -17203,9 +17218,7 @@ static void Units_TickCombat(void) {
                 /* Face the building so the build animation plays
                  * facing the work, not whatever heading we approached
                  * from. Immobile builders stay put. */
-                if ((vx != 0 || vy != 0) && def->max_velocity > 0.0f) {
-                    u->heading = tak_atan2f((float)vx, -(float)vy);
-                }
+                unit_face_work(u, def, vx, vy, 1.0f);
             }
             if (arrived_at_site && target_alive_inprog) {
                 desired = UNIT_ANIM_BUILDING;

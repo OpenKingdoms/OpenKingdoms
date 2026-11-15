@@ -43,7 +43,8 @@ enum { MV_DEF_WALKER = 0, MV_DEF_KNIGHT, MV_DEF_BUILDER, MV_DEF_HUT,
        MV_DEF_HORSE, MV_DEF_HORSE3, MV_DEF_COUNT };
 /* A sea world has ships and a shipyard as well. */
 enum { MV_DEF_GALLEY = MV_DEF_COUNT, MV_DEF_IRONCLAD, MV_DEF_TREB,
-       MV_DEF_SKIFF, MV_DEF_MANOWAR, MV_DEF_YARD, MV_DEF_SEA_COUNT };
+       MV_DEF_SKIFF, MV_DEF_MANOWAR, MV_DEF_YARD, MV_DEF_FLAGSHIP,
+       MV_DEF_SEA_COUNT };
 #define MV_SEABED  20       /* a sea world's floor, deep under its water */
 #define MV_WATER   80
 
@@ -212,6 +213,12 @@ static GameWorld *mv_world_with(int sea) {
     sea_defs[MV_DEF_YARD].footprint_z = 6;
     sea_defs[MV_DEF_YARD].min_water_depth = 0;
     sea_defs[MV_DEF_YARD].max_water_depth = 255;
+    /* The Flagship, a builder with no turninplacerate (verflag.fbi). */
+    mv_fill_ship(&sea_defs[MV_DEF_FLAGSHIP], "TESTFLAG", "TESTWATER4",
+                 3.3f, 0.33f, 0.066f, 198.0f, 71, 79, 31);
+    sea_defs[MV_DEF_FLAGSHIP].cap_flags |= UNIT_CAP_BUILDER;
+    sea_defs[MV_DEF_FLAGSHIP].worker_time = 10.0f;
+    sea_defs[MV_DEF_FLAGSHIP].build_distance = 300;
     for (int i = MV_DEF_GALLEY; i <= MV_DEF_MANOWAR; i++) {
         sea_defs[i].build_cost = 100;
         sea_defs[i].buildtime = 100.0f;
@@ -1343,6 +1350,36 @@ TEST(ships_sent_to_one_place_keep_their_hulls_apart) {
     /* And they gathered rather than holding off. */
     ASSERT(far2 <= (int64_t)480 * 480);
     #undef MV_FLEET_N
+    mv_end();
+}
+
+/* A ship mending another holds its heading, as one with no
+ * turninplacerate does in the original, and the work goes on. */
+TEST(a_ship_mending_another_does_not_swing_round) {
+    ASSERT_NOT_NULL(mv_sea());
+    int f = Units_Spawn(MV_DEF_FLAGSHIP, 1, 0, 1200, 1500);
+    int m = Units_Spawn(MV_DEF_MANOWAR, 1, 0, 1400, 1500);
+    ASSERT(f >= 0 && m >= 0);
+    Units_DebugSetAggro(f, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetAggro(m, UNIT_AGGRO_PASSIVE);
+    Unit *mu = (Unit *)mv_unit(m);   /* test-only wound */
+    mu->health = mu->max_health / 2;
+    int hp0 = mu->health;
+    float h0 = mv_unit(f)->heading;
+    ASSERT(Units_OrderRepair(f, m));
+    float worst = 0.0f;
+    for (int t = 0; t < 600; t++) {
+        float was = mv_unit(f)->heading;
+        Units_TickEngines();
+        float d = fabsf(mv_unit(f)->heading - was);
+        if (d > 3.14159265f) d = 6.2831853f - d;
+        if (d > worst) worst = d;
+    }
+    printf("(turned %.2f rad, most in a tick %.3f rad, mended %d hp) ",
+           (double)fabsf(mv_unit(f)->heading - h0), (double)worst,
+           mv_unit(m)->health - hp0);
+    ASSERT(mv_unit(m)->health > hp0);
+    ASSERT(fabsf(mv_unit(f)->heading - h0) < 0.001f);
     mv_end();
 }
 
@@ -3081,6 +3118,7 @@ int main(int argc, char **argv) {
     RUN(a_loaded_world_sees_the_ships_a_running_one_does);
     RUN(two_ships_caught_bow_to_bow_get_past_each_other);
     RUN(a_shipyard_in_a_corner_launches_its_whole_queue);
+    RUN(a_ship_mending_another_does_not_swing_round);
     RUN(a_fleet_sails_a_narrow_strait);
     RUN(a_ground_crowd_packs_as_it_did);
     TEST_SUITE("Flyers");
