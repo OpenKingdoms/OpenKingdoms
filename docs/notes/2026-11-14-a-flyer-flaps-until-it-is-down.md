@@ -44,10 +44,20 @@ when a landing flyer stops being 5.
 (legacy:24298-24302). The `flying` flag itself changes when it did, so
 the cells a landing flyer holds and what may shoot at it are as before.
 
-Most flyers' landing loops draw from the simulation's random generator
-about once a tick, so the rolls after a landing differ from before. A
-count over all 27 flyers with scripts, each landing once, gave 30 draws
-in the descent before and 1343 now, over the same 2188 ticks.
+Most flyers draw from the simulation's random generator about once a
+tick through the descent now, so the rolls after a landing differ from
+before. `land` draws nothing. The draws come from the script's flight
+watcher, which keeps cycling while it is told 5 and finds its flight
+routines return at once, since `BeginLanding` cleared the script's own
+flight flag. A count over all 27 flyers with scripts, each landing
+once, gave 30 draws in the descent before and 1343 now, over the same
+2188 ticks.
+
+A flyer killed during the descent is now still in the air for its
+script, so a script that tells an airborne death from a grounded one
+takes the airborne `Killed` branch. Nine scripts do. Today only the
+pieces it records as exploded and the hash change, since nothing else
+in the engine reads them, and nothing shows on screen.
 
 Checked beside the original on 2026-11-15 with this in: the Iron Beak
 comes down tail down and wings up and takes its landed pose at
