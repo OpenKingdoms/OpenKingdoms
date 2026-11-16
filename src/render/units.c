@@ -12417,10 +12417,10 @@ static int g_path_work_this_tick;
  * deliberate deviation in docs/MANUAL_DEVIATIONS.md (M-006). */
 #define UNIT_NO_PROGRESS_TICKS 240
 #define UNIT_NO_PROGRESS_PX    32
-/* Plain replans before the order is given up as unreachable. #60 asks
- * for another route to the SAME destination, so a fresh search is the
- * whole of the ladder and giving up is the last rung, never the first.
- * Four of them is sixteen seconds of a unit closing no ground.
+/* Plain replans before the last rung. #60 asks for another route to the
+ * SAME destination, so a fresh search is the whole of the ladder. The
+ * last rung ends the order or keeps it (unit_move_kept), never the
+ * first. Four of them is sixteen seconds of a unit closing no ground.
  *
  * There used to be rungs above the replan that aimed at points ringing
  * the goal. They fired in exactly one measured case, the escorts on a
@@ -12429,6 +12429,10 @@ static int g_path_work_this_tick;
  * no route can end on, and unit_effective_goal serves a goal the
  * planner had to move. Deleted rather than left looking reassuring. */
 #define UNIT_STALL_ESCALATIONS 4
+/* A kept order searches once a rung, not between, for at most 30 rungs
+ * (two minutes). The one body gap sweep used 22 at most. */
+#define UNIT_STALL_KEPT (UNIT_STALL_ESCALATIONS + 1)
+#define UNIT_STALL_KEPT_RUNGS 30
 
 /* Route check interval. The original re-examines the route every
  * "speed class" frames, a per-def byte derived from maxvelocity
@@ -12639,29 +12643,46 @@ static int unit_stall_progress(int32_t m, int32_t *best, int32_t *mark) {
     return 0;
 }
 
-/* Stopped friends this near are the edge of a crowd that has packed. */
-#define UNIT_PACKED_NEAR_PX 64
+/* Stopped friends whose bodies come this near are the edge of a crowd
+ * that has packed. */
+#define UNIT_PACKED_GAP_PX 32
 
-/* Is a move the ground can serve kept from the ladder's last rung? Units
- * jammed at a gap try again later in the original (legacy:191265-191388,
- * M-006). One at the edge of stopped friends packs there. */
+static int unit_arrive_px(const Unit *u);
+static int64_t unit_body_gap_d2(const Unit *u, const Unit *t);
+
+/* Does a friend that has stopped stand at this unit's edge? A fleet
+ * packs by its hulls (unit_arrive_px), walkers by their bodies. */
+static int unit_packed_beside(const Unit *u, const Unit *o) {
+    if (def_hull(u->def_idx)) {
+        int64_t dx = (int64_t)o->world_x - u->world_x;
+        int64_t dy = (int64_t)o->world_y - u->world_y;
+        int64_t r = unit_arrive_px(u);
+        return dx * dx + dy * dy <= r * r;
+    }
+    return unit_body_gap_d2(u, o) <= (int64_t)UNIT_PACKED_GAP_PX * UNIT_PACKED_GAP_PX;
+}
+
+/* Is a move kept from the ladder's last rung? Jammed units try again later
+ * in the original (legacy:191265-191388, M-006), unless they have packed. */
 static int unit_move_kept(const Unit *u, const UnitDef *def,
                           const GameWorld *w,
                           int32_t final_x, int32_t final_y) {
     if (u->cmd_kind != UNIT_CMD_MOVE) return 0;
-    if (!TAK_PathGroundConnected(w, unit_move_class(w, def), def->max_slope,
+    const MoveClassDef *mc = unit_move_class(w, def);
+    /* Only for a point the body stands on, which the label check needs:
+     * it answers yes for ground it cannot place. */
+    if (unit_body_bad_mc(w, u, def, mc, final_x, final_y)) return 0;
+    if (!TAK_PathGroundConnected(w, mc, def->max_slope,
                                  u->world_x, u->world_y, final_x, final_y))
         return 0;
     for (int i = 0; i < g_unit_count; i++) {
         const Unit *o = &g_units[i];
-        if (o == u || o->alive != UNIT_ALIVE_ACTIVE) continue;
+        if (o == u || o->alive != UNIT_ALIVE_ACTIVE || o->carried_by >= 0) continue;
+        if (o->under_construction) continue;
         if (o->player_id != u->player_id || o->cmd_kind != UNIT_CMD_NONE) continue;
         const UnitDef *od = Units_GetDef(o->def_idx);
         if (!od || od->can_fly || od->max_velocity <= 0.0f) continue;
-        int64_t dx = (int64_t)o->world_x - u->world_x;
-        int64_t dy = (int64_t)o->world_y - u->world_y;
-        if (dx * dx + dy * dy <= (int64_t)UNIT_PACKED_NEAR_PX * UNIT_PACKED_NEAR_PX)
-            return 0;
+        if (unit_packed_beside(u, o)) return 0;
     }
     return 1;
 }
@@ -12690,7 +12711,8 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
     }
     if (unit_path_goal_changed(u, final_x, final_y)) {
         unit_replan_path(u, def, w, final_x, final_y);
-    } else if (u->path_failed && u->path_len == 0) {
+    } else if (u->path_failed && u->path_len == 0 &&
+               u->stall_esc < UNIT_STALL_KEPT) {
         /* No route from here — retry periodically. The unit keeps
          * moving meanwhile: the original walks a straight two point
          * route when the search fails (legacy:22536-22551). */
@@ -12704,10 +12726,10 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
     /* ── The #60 watchdog ──────────────────────────────────────────
      * Route or no route, a live move order that has not closed any
      * ground on its goal gets a fresh search: the first is a plain replan, the
-     * next once whoever was in the way has had time to move or park,
-     * and after four of them the order is ended rather than ground at
-     * for ever. Every rung plans to the same destination, which is
-     * what #60 asks for.
+     * next once whoever was in the way has had time to move or park.
+     * After four of them the order is ended, or kept and searched again
+     * once a rung (unit_move_kept). Every rung plans to the same
+     * destination, which is what #60 asks for.
      * It sits outside the "has a route" gate on purpose: the cases in
      * the report are the ones where the search returns nothing, and
      * the old watchdog could not run at all without a route. */
@@ -12768,12 +12790,11 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
         }
         if (u->stall_ticks > UNIT_NO_PROGRESS_TICKS) {
             u->stall_ticks = 0;
-            if (u->stall_esc >= UNIT_STALL_ESCALATIONS) {
-                if (!unit_move_kept(u, def, w, final_x, final_y))
-                    return NAV_GIVE_UP;
-                u->stall_esc = 0;
-            }
-            u->stall_esc++;
+            if (u->stall_esc < UNIT_STALL_ESCALATIONS) u->stall_esc++;
+            else if (u->stall_esc < UNIT_STALL_ESCALATIONS + UNIT_STALL_KEPT_RUNGS &&
+                     unit_move_kept(u, def, w, final_x, final_y))
+                u->stall_esc++;
+            else return NAV_GIVE_UP;
             unit_drop_route(u);
             unit_replan_path(u, def, w, final_x, final_y);
         }

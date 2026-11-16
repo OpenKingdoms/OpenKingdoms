@@ -1314,10 +1314,12 @@ Format per entry:
 - Change: A unit with a live move order that has not closed 32 pixels
   of ground on its goal for 240 ticks gets a fresh search, and after
   four of those have not moved it on the order is ended as
-  unreachable, unless the ground joins the unit to its point and no
-  friend that has stopped stands within 64 pixels of it. Then the
-  ladder starts over and the order is kept. The original scales every retry delay by a per def
-  speed byte derived from maxvelocity (legacy:162838-162851,
+  unreachable. The order is kept instead while its point is ground the
+  body stands on, the ground joins the unit to it, and no friend that
+  has stopped stands at its edge. A kept order searches once every 240
+  ticks and not between, and ends after 30 such rungs, two minutes
+  with no ground closed. The original scales every retry delay by a
+  per def speed byte derived from maxvelocity (legacy:162838-162851,
   legacy:184656-184658), so a slow unit waits several times longer
   than a fast one.
 - What counts as closing ground: with a route, the way still left to
@@ -1374,14 +1376,15 @@ Format per entry:
   command the blocker to move either: legacy:191265-191388 re-runs the
   search on a delay scaled by that same speed byte and never touches
   the unit in the way. Seen in the original: twelve swordsmen sent
-  through a gap exactly one body wide. Three to six get through, and
-  the rest back up and cycle, then find another way or try again
-  later. None stands for good. Until 2026-11-15 the order was ended
-  here, and on a gap one body wide the units that gave up stood at the
-  wall face or in the gap and held the rest back for good
-  (docs/notes/2026-11-15-the-step-tests-the-body.md). A unit at the
-  edge of friends that have already stopped still ends its order, which
-  is how a crowd sent to one point packs. Making a blocking unit stand
+  through a gap exactly one body wide, with the goal well past it.
+  Three to six get through, and the rest back up and cycle, then find
+  another way or try again later. None stands for good. Until
+  2026-11-15 the order was ended here, and on a gap one body wide the
+  units that gave up stood at the wall face or in the gap and held the
+  rest back for good (docs/notes/2026-11-15-the-step-tests-the-body.md).
+  A unit whose body comes within 32 px of a friend that has stopped,
+  or a ship within its arrival reach of one, still ends its order,
+  which is how a crowd sent to one point packs. Making a blocking unit stand
   aside would be a new behaviour, not parity, and is what issue #60's
   "or another unit" clause still wants.
 - Measured: on the reported band fixture the ladder is what turns the

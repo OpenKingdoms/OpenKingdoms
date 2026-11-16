@@ -482,11 +482,11 @@ TEST(a_line_abreast_holds_its_lane) {
  * the goal. That is the case the stall ladder is for, and while the
  * ladder measured displacement from a reference point that moved
  * with the unit, each length of the pocket reset it and the last
- * rung was never reached. The ground joins the pocket to the goal, so
- * the last rung keeps the order and starts the ladder over. Measured on the unfixed mover: after 3000 ticks the order
- * was still live, the unit had paced 2023 px, was no closer to the
- * goal than the 345 px it started at, and the ladder had reset three
- * times and never climbed past its first rung of four.
+ * rung was never reached. Measured on the unfixed mover: after 3000
+ * ticks the order was still live, the unit had paced 2023 px, was no
+ * closer to the goal than the 345 px it started at, and the ladder had
+ * reset three times and never climbed past its first rung of four. The
+ * ground joins the pocket to the goal, so the last rung keeps the order.
  */
 #define MV_POCKET_TICKS 3000
 
@@ -521,7 +521,7 @@ TEST(a_unit_that_covers_ground_without_closing_on_its_goal_climbs_the_ladder) {
     int32_t lx = mv_unit(h)->world_x, ly = mv_unit(h)->world_y;
     int64_t best2 = mv_dist2(mv_unit(h), gx, gy);
     long travelled = 0;
-    int ended = -1, max_esc = 0, resets = 0, last_esc = 0, again = 0;
+    int ended = -1, max_esc = 0, resets = 0, last_esc = 0;
     for (int t = 0; t < MV_POCKET_TICKS && ended < 0; t++) {
         /* The friend keeps its feet moving in the mouth. Two points
          * a tile apart, re-ordered often enough that it never parks. */
@@ -535,7 +535,6 @@ TEST(a_unit_that_covers_ground_without_closing_on_its_goal_climbs_the_ladder) {
         int e = (int)u->stall_esc;
         if (e > max_esc) max_esc = e;
         if (e < last_esc) resets++;
-        if (last_esc == 4 && e < 4) again++;
         last_esc = e;
         int32_t dx = u->world_x - lx, dy = u->world_y - ly;
         travelled += (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
@@ -547,23 +546,22 @@ TEST(a_unit_that_covers_ground_without_closing_on_its_goal_climbs_the_ladder) {
     int best = 0;
     while ((int64_t)(best + 1) * (best + 1) <= best2) best++;
     printf("(ended at %d, travelled %ld px, closest %d px, max rung %d, "
-           "%d resets, %d from the last rung) ", ended, travelled, best,
-           max_esc, resets, again);
+           "%d resets) ", ended, travelled, best, max_esc, resets);
     /* It really was pacing, not standing still: the stationary case
      * was already served and proves nothing here. */
     ASSERT(travelled > 1000);
     /* And none of that pacing was progress. The goal is 345 px away
      * through a wall and it never got near it. */
     ASSERT(best > 300);
-    /* So the ladder climbed all four rungs. The resets it took on the
-     * way are the mover really getting further along its route than it
-     * ever had, which is progress and is meant to start the ladder
-     * over. There can only ever be a bounded number of those, because
-     * the best way left to walk only ever falls. From the last rung it
-     * started over and kept the order. */
-    ASSERT_EQ_INT(4, max_esc);
-    ASSERT(again >= 1);
-    ASSERT(resets <= 4 + again);
+    /* So the ladder climbed all four rungs and on to the kept one, 5.
+     * The resets it took on the way are the mover really getting
+     * further along its route than it ever had, which is progress and
+     * is meant to start the ladder over. There can only ever be a
+     * bounded number of those, because the best way left to walk only
+     * ever falls. The order is kept, not ended: that is the check the
+     * last rung's change fails before it. */
+    ASSERT_EQ_INT(5, max_esc);
+    ASSERT(resets <= 4);
     ASSERT(ended < 0);
     mv_end();
 }
@@ -602,7 +600,7 @@ TEST(a_unit_the_ground_shuts_in_gives_its_move_up) {
  * original: a few get through, the rest back up and try again later.
  * Here the first stop at the wall face beside the gap, park, and shut
  * it to the others' searches. With the order ended on the last rung,
- * six of them stood there for good. */
+ * five of them stood there for good. */
 TEST(a_group_sent_through_a_gap_one_body_wide_all_get_through) {
     GameWorld *w = mv_world();
     ASSERT_NOT_NULL(w);
@@ -1950,6 +1948,29 @@ TEST(a_flyer_lands_clear_and_holds_its_ground) {
     mv_end();
 }
 
+/* Ten ships of five kinds sent to one point. Each that stops beside the
+ * fleet, by its hull, ends its order there. Kept orders once held two of
+ * them 114 and 138 px from their nearest friend, searching for ever. */
+TEST(a_fleet_sent_to_one_point_packs_and_ends_its_orders) {
+    ASSERT_NOT_NULL(mv_sea());
+    static const int kinds[5] = { MV_DEF_GALLEY, MV_DEF_IRONCLAD, MV_DEF_TREB,
+                                  MV_DEF_SKIFF, MV_DEF_MANOWAR };
+    int h[10];
+    for (int i = 0; i < 10; i++) {
+        h[i] = Units_Spawn(kinds[i % 5], 1, 0, 600 + (i % 5) * 400,
+                           500 + (i / 5) * 500);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    for (int i = 0; i < 10; i++) Units_OrderMove(h[i], 1536, 1536);
+    mv_run(3000);
+    int live = 0;
+    for (int i = 0; i < 10; i++) live += mv_unit(h[i])->cmd_kind == UNIT_CMD_MOVE;
+    printf("(%d orders live at tick 3000) ", live);
+    ASSERT_EQ_INT(0, live);
+    mv_end();
+}
+
 /* A ground crowd lands where it did before ships had hulls. The layout
  * hash is pinned from that build. */
 TEST(a_ground_crowd_packs_as_it_did) {
@@ -3041,6 +3062,7 @@ int main(int argc, char **argv) {
     RUN(a_shipyard_leaves_a_ship_parked_by_its_rally_point_alone);
     RUN(a_loaded_world_sees_the_ships_a_running_one_does);
     RUN(a_fleet_sails_a_narrow_strait);
+    RUN(a_fleet_sent_to_one_point_packs_and_ends_its_orders);
     RUN(a_ground_crowd_packs_as_it_did);
     TEST_SUITE("Flyers");
     RUN(flyers_sent_to_one_place_do_not_stack);

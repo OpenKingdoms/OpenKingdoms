@@ -152,21 +152,39 @@ closed against the best so far whatever the route does. Its last rung
 ended the order, and the units that gave up stood at the face or in the
 gap and held the rest back for good.
 
-The last rung now keeps a move order while the ground joins the unit to
-its point, and the ladder starts over. The original re-runs its search
-on a delay and never moves the unit in the way (legacy:191265-191388).
-A unit at the edge of friends that have already stopped still ends its
-order, which is how a crowd sent to one point packs.
+The last rung now keeps a move order while its point is ground the body
+stands on and the ground joins the unit to it. The original re-runs its
+search on a delay and never moves the unit in the way
+(legacy:191265-191388). A kept order searches once a rung, every 240
+ticks, and not on the shorter retry a unit with no route otherwise has.
+It ends after 30 kept rungs with no ground closed. The most any unit
+used in the sweep below was 22. A unit whose body comes within 32 px of
+a friend that has stopped, or a ship within its arrival reach of one,
+still ends its order, which is how a crowd sent to one point packs.
 
 Measured, 2 to 12 swords over ten spawn offsets, at spacings of 32, 40
 and 48 px, with the wall whole and with a second gap eight tiles wide
 far to the north: 660 runs of 4620 units. Before, 104 runs left 191
 units, every one with its order ended. Now no unit is left. 10 go round
-by the second gap, 17 get through after tick 3000, and the last is
-through by tick 5958. In the 12 sword runs, 2 to 12 are through by tick
-1500. The test is a_group_sent_through_a_gap_one_body_wide_all_get_through
-in test_movement: before, 7 of its 12 got through, and now all 12 do, 5
-of them by tick 1500.
+by the second gap, 21 get through after tick 3000, and the last is
+through by tick 7440. In the 12 sword runs, 2 to 12 are through by tick
+1500. The goal there is 600 px past the wall. With it 60 to 150 px past,
+1, 3 and 4 of 12 get through and the rest end their orders at the face,
+as before this change: they stop beside friends that have stopped.
+
+The rule for stopped friends matters for cost too. Without it, on
+Valysia City, a 40 unit army sent to one point stood 164,316 ticks, made
+16,818 searches and left 6 orders that never ended, against 36,599,
+8,439 and none with it. With 200 swords behind a gap plugged by a hut,
+a kept order searching on the shorter retry made 7.6 searches a tick.
+Searching once a rung makes 0.84.
+
+The tests are in test_movement.
+- a_group_sent_through_a_gap_one_body_wide_all_get_through: before, 7 of
+  its 12 got through, and now all 12 do, 5 of them by tick 1500.
+- a_fleet_sent_to_one_point_packs_and_ends_its_orders: ten ships of five
+  kinds. With the stopped friend judged by centres 64 px apart, two held
+  their orders for good.
 
 ## Not done
 
