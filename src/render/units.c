@@ -12668,11 +12668,9 @@ static int unit_move_kept(const Unit *u, const UnitDef *def,
                           const GameWorld *w,
                           int32_t final_x, int32_t final_y) {
     if (u->cmd_kind != UNIT_CMD_MOVE) return 0;
-    const MoveClassDef *mc = unit_move_class(w, def);
-    /* Only for a point the body stands on, which the label check needs:
-     * it answers yes for ground it cannot place. */
-    if (unit_body_bad_mc(w, u, def, mc, final_x, final_y)) return 0;
-    if (!TAK_PathGroundConnected(w, mc, def->max_slope,
+    /* The label check answers yes where it cannot tell. The rung bound
+     * covers that, and a goal the body cannot reach ends at the shore. */
+    if (!TAK_PathGroundConnected(w, unit_move_class(w, def), def->max_slope,
                                  u->world_x, u->world_y, final_x, final_y))
         return 0;
     for (int i = 0; i < g_unit_count; i++) {
@@ -12712,7 +12710,8 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
     if (unit_path_goal_changed(u, final_x, final_y)) {
         unit_replan_path(u, def, w, final_x, final_y);
     } else if (u->path_failed && u->path_len == 0 &&
-               u->stall_esc < UNIT_STALL_KEPT) {
+               (u->stall_esc < UNIT_STALL_KEPT || u->path_pending)) {
+        /* A kept order waits for its rung, unless the budget refused it. */
         /* No route from here — retry periodically. The unit keeps
          * moving meanwhile: the original walks a straight two point
          * route when the search fails (legacy:22536-22551). */

@@ -1314,11 +1314,11 @@ Format per entry:
 - Change: A unit with a live move order that has not closed 32 pixels
   of ground on its goal for 240 ticks gets a fresh search, and after
   four of those have not moved it on the order is ended as
-  unreachable. The order is kept instead while its point is ground the
-  body stands on, the ground joins the unit to it, and no friend that
-  has stopped stands at its edge. A kept order searches once every 240
-  ticks and not between, and ends after 30 such rungs, two minutes
-  with no ground closed. The original scales every retry delay by a
+  unreachable. The order is kept instead while the ground joins the
+  unit to its point and no friend that has stopped stands at its edge.
+  A kept order searches once every 240 ticks and not between, unless
+  the tick's search budget refused it, and ends after 30 such rungs,
+  two minutes with no ground closed. The original scales every retry delay by a
   per def speed byte derived from maxvelocity (legacy:162838-162851,
   legacy:184656-184658), so a slow unit waits several times longer
   than a fast one.

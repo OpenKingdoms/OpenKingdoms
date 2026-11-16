@@ -152,12 +152,18 @@ closed against the best so far whatever the route does. Its last rung
 ended the order, and the units that gave up stood at the face or in the
 gap and held the rest back for good.
 
-The last rung now keeps a move order while its point is ground the body
-stands on and the ground joins the unit to it. The original re-runs its
-search on a delay and never moves the unit in the way
-(legacy:191265-191388). A kept order searches once a rung, every 240
-ticks, and not on the shorter retry a unit with no route otherwise has.
-It ends after 30 kept rungs with no ground closed. The most any unit
+The last rung now keeps a move order while the ground joins the unit to
+its point. The original re-runs its search on a delay and never moves
+the unit in the way (legacy:191265-191388). A kept order searches once a
+rung, every 240 ticks, and not on the shorter retry a unit with no route
+otherwise has. A rung search the tick's budget refused runs on the next
+tick, as any other does. The order ends after 30 kept rungs with no
+ground closed. A point the body cannot stand on is kept as well: on
+Valysia City, a 40 unit army sent to points of their own ended 132 of
+240 within 192 px of them that way, against 100 when such points were
+never kept. The label check behind the ground test answers yes where it
+cannot tell, and the 30 rung bound covers that. A land unit ordered far
+out to sea ends its order at the shore in any case. The most any unit
 used in the sweep below was 22. A unit whose body comes within 32 px of
 a friend that has stopped, or a ship within its arrival reach of one,
 still ends its order, which is how a crowd sent to one point packs.
