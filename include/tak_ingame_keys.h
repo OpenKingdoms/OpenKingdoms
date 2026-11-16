@@ -70,7 +70,7 @@ InGameSelectKey InGame_SelectKey(const uint8_t *keys, const uint8_t *prev);
 int  InGame_BoxSkipsMonarchKey(const uint8_t *keys);
 
 /* Keys.TDF's UnitCommand letters, read by scancode. Shift is the upper
- * case and means the same, and Ctrl or Alt makes a letter no order. */
+ * case and means the same, and Ctrl, Alt or Cmd makes a letter no order. */
 typedef enum InGameOrderKey {
     IG_ORDER_NONE = 0,
     IG_ORDER_MOVE,
@@ -88,7 +88,8 @@ typedef enum InGameOrderKey {
 /* The order key that went down this frame, or IG_ORDER_NONE. */
 InGameOrderKey InGame_OrderKey(const uint8_t *keys, const uint8_t *prev);
 
-/* Keys.TDF's other keys the engine has a feature for. None fires with Alt. */
+/* Keys.TDF's other keys the engine has a feature for. None fires with
+ * Alt or Cmd. */
 typedef enum InGameFnKey {
     IG_FN_NONE = 0,
     IG_FN_PAUSE,       /* PAUSE: TogglePause */
@@ -100,8 +101,8 @@ typedef enum InGameFnKey {
 
 InGameFnKey InGame_FnKey(const uint8_t *keys, const uint8_t *prev);
 
-/* F1 alone opens the menu. Ctrl+F1 is a weapon key, and Shift+F1 does
- * nothing, as in the original. */
+/* F1 alone opens the menu. Ctrl+F1 is a weapon key, and Shift, Alt or
+ * Cmd with F1 does nothing. */
 int  InGame_MenuKey(const uint8_t *keys, const uint8_t *prev);
 
 /* Ctrl+F1 to F3: UnitCommand PrimaryWeapon, SecondaryWeapon and

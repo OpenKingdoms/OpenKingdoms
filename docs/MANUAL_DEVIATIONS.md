@@ -1967,6 +1967,10 @@ Format per entry:
   the clock starts, on a press of the mouse or of Enter, Escape, Space
   or Pause. F2 raises it again during the mission, and putting it away
   then leaves the clock as F2 found it, so a paused battle stays paused.
+  While it is up it owns the keys and the mouse. The key or press that
+  puts it away goes no further: Enter opens no chat line, F1 opens no
+  menu under it, and the click gives the selection no order. A press
+  held on the battle while it comes up gives no order when it is let go.
 - Why: the original builds the panel as the battle screen is built and
   pauses the game under it. How it is dismissed is in a handler the
   listing does not name, so the keys are ours. The panel has no button

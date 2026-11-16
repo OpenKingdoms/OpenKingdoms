@@ -85,27 +85,50 @@ already worked this way before this change.
   the same path a click takes. A targeting order arms on the press and
   a second press disarms it. Stop is given at once. A selection with no
   such button takes nothing, as a click on the empty slot would give,
-  and a unit inspected from another side takes nothing. Ctrl or Alt
-  with a letter is never an order.
+  and a unit inspected from another side takes nothing. Ctrl, Alt or
+  Cmd with a letter is never an order. Cmd is the Windows key off a
+  Mac, and a Mac browser keeps Cmd+S, Cmd+A and the like for itself.
+  Cmd is refused on the keys this change binds: the order letters, K,
+  F1, the function keys, the weapon keys and the bookmarks. The select
+  keys, the digits, V, Tab and the turn and speed keys were there
+  before and still let it through.
 - O presses whichever of Active and Inactive is not lit, as K already
   does for the cloak pair (legacy:151278-151287).
 - Ctrl+F1 to F3 press the three weapon buttons, and a weapon button that
   is greyed out takes no key, as it takes no click
   (legacy:329637-329640). Ctrl+F1 no longer opens the menu.
-- F5 to F8 put the camera back where Ctrl with the same key stored it.
-  A slot nothing was stored in does nothing. The four slots last the
-  battle and are not in a save or a replay, since they are a view and
-  not the game.
+- F5 to F8 put the camera back where Ctrl with the same key stored it,
+  in the classic view and the 3D view alike. The 3D view now takes the
+  classic camera before its own input when something else moved it,
+  which also stops a screen shake from moving the 3D camera for good.
+  Before, a 40 frame shake of magnitude 12 left it at 786,779 where it
+  had stood at 800,800. A slot nothing was stored in does nothing. The
+  four slots last the battle and are not in a save or a replay, since
+  they are a view and not the game.
 - Pause pauses and resumes a skirmish or a campaign mission. In a replay
   it keeps the replay's own pause.
 - F2 raises the briefing of a campaign mission, and putting it away
   leaves the clock as F2 found it (D-019). A skirmish has no briefing.
+  While the briefing is up it owns the keys and the mouse. Enter puts
+  it away and opens no chat line, F1 opens no menu under it, and the
+  click that puts it away gives the selection no order. The briefing a
+  mission opens with did all three wrong on main already. F2 made them
+  easy to meet, and they are fixed here.
+- A press held on the battle while a dialog or a plate comes up gives
+  no order when the button is let go. The briefing, the in game menu,
+  the Ctrl+D question and the rejoin and snapshot plates each take the
+  mouse while they are up and cancel a drag in flight, as a release
+  anywhere else does. On main a press held across F1 or the Ctrl+D
+  question gave a Move on its release.
 - F12 clears the chat lines.
-- Shift with a function key or Pause does nothing, as was seen in the
-  original. So Shift+F2 does not raise the briefing, though the file
-  gives Shift+F2 to a debug probe the engine leaves out, and Shift+F1
-  no longer opens the menu. Ctrl+Shift+S and Ctrl+Shift+L still save
-  and load, as the file binds them.
+- In battle, Shift, Alt or Cmd with a function key or Pause does
+  nothing. For Shift this was seen in the original. So Shift+F2 does
+  not raise the briefing, though the file gives Shift+F2 to a debug
+  probe the engine leaves out, and Shift+F1 and Alt+F1 no longer open
+  the menu. Ctrl+Shift+S and Ctrl+Shift+L still save and load, as the
+  file binds them. This is the battle's input only. A replay's own
+  Pause and the briefing's dismiss keys still answer with any of them
+  held.
 - Ctrl+S and Ctrl+L open the in game menu with its save or load dialog
   up, as the menu's own buttons do. The match menu has neither button,
   so in a live match they do nothing, and a replay saves nothing, so

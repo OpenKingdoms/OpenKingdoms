@@ -2125,6 +2125,20 @@ TEST(each_order_letter_decodes_to_its_order) {
     /* Held across frames it fires on the first only. */
     memcpy(prev, keys, sizeof prev);
     ASSERT_EQ_INT(IG_ORDER_NONE, InGame_OrderKey(keys, prev));
+    /* Cmd+S and Cmd+A are a Mac browser's own, never Stop or Attack. */
+    memset(keys, 0, sizeof keys);
+    memset(prev, 0, sizeof prev);
+    keys[SDL_SCANCODE_LGUI] = 1;
+    keys[SDL_SCANCODE_S] = 1;
+    ASSERT_EQ_INT(IG_ORDER_NONE, InGame_OrderKey(keys, prev));
+    keys[SDL_SCANCODE_S] = 0;
+    keys[SDL_SCANCODE_LGUI] = 0;
+    keys[SDL_SCANCODE_RGUI] = 1;
+    keys[SDL_SCANCODE_A] = 1;
+    ASSERT_EQ_INT(IG_ORDER_NONE, InGame_OrderKey(keys, prev));
+    keys[SDL_SCANCODE_A] = 0;
+    keys[SDL_SCANCODE_K] = 1;
+    ASSERT_EQ_INT(0, InGame_CloakKey(keys, prev));
 }
 
 /* A letter presses the sidebar button for its order, so a unit that
@@ -2256,13 +2270,28 @@ TEST(the_function_keys_decode_and_ctrl_or_alt_changes_them) {
     oq_press(keys, SDL_SCANCODE_L, SDL_SCANCODE_RCTRL);
     keys[SDL_SCANCODE_RSHIFT] = 1;
     ASSERT_EQ_INT(IG_FN_LOAD, InGame_FnKey(keys, prev));
-    /* F1 alone opens the menu, and neither Ctrl nor Shift with it does. */
+    /* F1 alone opens the menu, and Ctrl, Shift, Alt or Cmd with it does not. */
     oq_press(keys, SDL_SCANCODE_F1, 0);
     ASSERT_EQ_INT(1, InGame_MenuKey(keys, prev));
     oq_press(keys, SDL_SCANCODE_F1, SDL_SCANCODE_LSHIFT);
     ASSERT_EQ_INT(0, InGame_MenuKey(keys, prev));
     oq_press(keys, SDL_SCANCODE_F1, SDL_SCANCODE_LCTRL);
     ASSERT_EQ_INT(0, InGame_MenuKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_F1, SDL_SCANCODE_LALT);
+    ASSERT_EQ_INT(0, InGame_MenuKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_F1, SDL_SCANCODE_LGUI);
+    ASSERT_EQ_INT(0, InGame_MenuKey(keys, prev));
+    /* Cmd+S, Cmd+L and Cmd with a function key are the browser's. */
+    oq_press(keys, SDL_SCANCODE_S, SDL_SCANCODE_LGUI);
+    keys[SDL_SCANCODE_LCTRL] = 1;
+    ASSERT_EQ_INT(IG_FN_NONE, InGame_FnKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_F12, SDL_SCANCODE_RGUI);
+    ASSERT_EQ_INT(IG_FN_NONE, InGame_FnKey(keys, prev));
+    oq_press(keys, SDL_SCANCODE_F5, SDL_SCANCODE_LGUI);
+    ASSERT_EQ_INT(-1, InGame_BookmarkKey(keys, prev, NULL));
+    oq_press(keys, SDL_SCANCODE_F2, SDL_SCANCODE_LGUI);
+    keys[SDL_SCANCODE_LCTRL] = 1;
+    ASSERT_EQ_INT(-1, InGame_WeaponKey(keys, prev));
     oq_press(keys, SDL_SCANCODE_F1, 0);
     memcpy(prev, keys, sizeof prev);
     ASSERT_EQ_INT(0, InGame_MenuKey(keys, prev));

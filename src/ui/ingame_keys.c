@@ -12,6 +12,12 @@
 
 #define IG_KEY_PRESSED(sc) (keys[sc] && !prev[sc])
 
+/* Cmd or the Windows key, which a browser on a Mac sends for its own
+ * shortcuts. */
+static int ig_gui(const uint8_t *keys) {
+    return keys[SDL_SCANCODE_LGUI] || keys[SDL_SCANCODE_RGUI];
+}
+
 InGameSpeedKey InGame_SpeedKey(const uint8_t *keys, const uint8_t *prev) {
     if (!keys || !prev) return IG_SPEED_KEY_NONE;
     /* Alt is the debug modifier, and nothing bound here answers it. */
@@ -97,7 +103,7 @@ int InGame_BoxSkipsMonarchKey(const uint8_t *keys) {
 int InGame_CloakKey(const uint8_t *keys, const uint8_t *prev) {
     if (!keys || !prev) return 0;
     if (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT]) return 0;
-    if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL]) return 0;
+    if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL] || ig_gui(keys)) return 0;
     return IG_KEY_PRESSED(SDL_SCANCODE_K) ? 1 : 0;
 }
 
@@ -123,6 +129,7 @@ InGameOrderKey InGame_OrderKey(const uint8_t *keys, const uint8_t *prev) {
     if (!keys || !prev) return IG_ORDER_NONE;
     if (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT]) return IG_ORDER_NONE;
     if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL]) return IG_ORDER_NONE;
+    if (ig_gui(keys)) return IG_ORDER_NONE;
     for (size_t i = 0; i < sizeof(k_order_keys) / sizeof(k_order_keys[0]); i++)
         if (IG_KEY_PRESSED(k_order_keys[i].key)) return k_order_keys[i].order;
     return IG_ORDER_NONE;
@@ -141,12 +148,13 @@ static int ig_shift(const uint8_t *keys) {
 }
 
 int InGame_MenuKey(const uint8_t *keys, const uint8_t *prev) {
-    if (!keys || !prev || ig_ctrl(keys) || ig_shift(keys)) return 0;
+    if (!keys || !prev || ig_alt(keys) || ig_ctrl(keys) || ig_shift(keys) || ig_gui(keys))
+        return 0;
     return IG_KEY_PRESSED(SDL_SCANCODE_F1) ? 1 : 0;
 }
 
 InGameFnKey InGame_FnKey(const uint8_t *keys, const uint8_t *prev) {
-    if (!keys || !prev || ig_alt(keys)) return IG_FN_NONE;
+    if (!keys || !prev || ig_alt(keys) || ig_gui(keys)) return IG_FN_NONE;
     if (ig_ctrl(keys)) {
         if (IG_KEY_PRESSED(SDL_SCANCODE_S)) return IG_FN_SAVE;
         if (IG_KEY_PRESSED(SDL_SCANCODE_L)) return IG_FN_LOAD;
@@ -161,7 +169,7 @@ InGameFnKey InGame_FnKey(const uint8_t *keys, const uint8_t *prev) {
 }
 
 int InGame_WeaponKey(const uint8_t *keys, const uint8_t *prev) {
-    if (!keys || !prev || ig_alt(keys) || !ig_ctrl(keys)) return -1;
+    if (!keys || !prev || ig_alt(keys) || ig_gui(keys) || !ig_ctrl(keys)) return -1;
     if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) return -1;
     for (int i = 0; i < 3; i++)
         if (IG_KEY_PRESSED(SDL_SCANCODE_F1 + i)) return i;
@@ -169,7 +177,7 @@ int InGame_WeaponKey(const uint8_t *keys, const uint8_t *prev) {
 }
 
 int InGame_BookmarkKey(const uint8_t *keys, const uint8_t *prev, int *store) {
-    if (!keys || !prev || ig_alt(keys)) return -1;
+    if (!keys || !prev || ig_alt(keys) || ig_gui(keys)) return -1;
     if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) return -1;
     for (int i = 0; i < 4; i++) {
         if (!IG_KEY_PRESSED(SDL_SCANCODE_F5 + i)) continue;

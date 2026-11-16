@@ -722,12 +722,15 @@ const char *InGame_SeatNotice(void) {
     return ig.seat_notice;
 }
 
+static void ig_mouse_away(const TAK_Platform *platform);
+
 /* The battle hidden while it rejoins the others. */
 static void ig_rejoin_plate(TAK_Platform *platform, SDL_Surface *off) {
     if (off) SDL_FillRect(off, NULL, SDL_MapRGBA(off->format, 0, 0, 0, 255));
     HUD_DrawMessageLine(platform, "Rejoining the battle...");
     UI_Present(platform);
     memcpy(ig.prev_keys, SDL_GetKeyboardState(NULL), sizeof(ig.prev_keys));
+    ig_mouse_away(platform);
 }
 
 /* The relay asked for this world to rebuild one that parted. It goes
@@ -1470,6 +1473,27 @@ static uint32_t g_dbg_mouse_buttons;
 void InGame_DebugMouse(int on, int win_x, int win_y, uint32_t buttons) {
     g_dbg_mouse_on = on; g_dbg_mouse_x = win_x; g_dbg_mouse_y = win_y;
     g_dbg_mouse_buttons = buttons;
+}
+
+/* A frame a dialog or a plate takes. Its buttons are no press on the
+ * battle, and a drag in flight is cancelled, as a release elsewhere is. */
+static void ig_mouse_away(const TAK_Platform *platform) {
+    uint32_t b = (platform && platform->has_focus) ? SDL_GetMouseState(NULL, NULL) : 0u;
+    if (g_dbg_mouse_on) b = g_dbg_mouse_buttons;
+    ig.prev_left  = (uint8_t)((b & SDL_BUTTON_LMASK) != 0);
+    ig.prev_right = (uint8_t)((b & SDL_BUTTON_RMASK) != 0);
+    ig.drag_tracking = 0;
+    ig.drag_active   = 0;
+}
+
+static int g_dbg_keys_on;
+static uint8_t g_dbg_keys[SDL_NUM_SCANCODES];
+void InGame_DebugKeys(int on, int mods, int scancode) {
+    memset(g_dbg_keys, 0, sizeof(g_dbg_keys));
+    g_dbg_keys_on = on;
+    if (mods & IG_CLICK_CTRL) g_dbg_keys[SDL_SCANCODE_LCTRL] = 1;
+    if (mods & IG_CLICK_SHIFT) g_dbg_keys[SDL_SCANCODE_LSHIFT] = 1;
+    if (scancode > 0 && scancode < SDL_NUM_SCANCODES) g_dbg_keys[scancode] = 1;
 }
 
 void InGame_DebugKeyFrame(int scancode, const char *text_in) {
@@ -2290,27 +2314,30 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * loader legacy:122746-122785). While it is up it owns the frame:
      * the battle stays drawn behind it and every key and click goes to
      * the dialog (legacy:154694-154752). */
-    const Uint8 *keys = SDL_GetKeyboardState(NULL);
+    const Uint8 *keys = g_dbg_keys_on ? g_dbg_keys : SDL_GetKeyboardState(NULL);
+    /* A campaign mission opens under its briefing, and the clock waits
+     * for the player to put it away (legacy:153077). It owns the keys
+     * before the console and F1, as in ig_debug_keys. */
+    if (Briefing_IsOpen()) {
+        int bmx = 0, bmy = 0;
+        uint32_t bbuttons = platform->has_focus ? SDL_GetMouseState(&bmx, &bmy) : 0u;
+        if (g_dbg_mouse_on) { bmx = g_dbg_mouse_x; bmy = g_dbg_mouse_y; bbuttons = g_dbg_mouse_buttons; }
+        int dismiss = ig_briefing_keys(platform->has_focus, keys);
+        if (Briefing_Tick(bmx, bmy, (bbuttons & SDL_BUTTON_LMASK) != 0, dismiss)) {
+            InGame_SetPaused(ig.brief_resume_paused);
+        }
+        ig_mouse_away(platform);
+        SDL_ShowCursor(SDL_ENABLE);
+        UI_Present(platform);
+        memcpy(ig.prev_keys, keys, sizeof(ig.prev_keys));
+        return GAMESTATE_IN_GAME;
+    }
     /* Ctrl+D's question takes Enter, which would open a chat line. */
     int console_keys = ig.sd_ask ? 0 : ig_console_keys(platform->has_focus, keys,
                                                        platform->text_in);
     if (platform->has_focus && !console_keys && InGame_MenuKey(keys, ig.prev_keys) &&
         !InGameMenu_IsOpen() && !ig.sd_ask) {
         (void)InGameMenu_Open();
-    }
-    /* A campaign mission opens under its briefing, and the clock waits
-     * for the player to put it away (legacy:153077). */
-    if (Briefing_IsOpen()) {
-        int bmx = 0, bmy = 0;
-        uint32_t bbuttons = platform->has_focus ? SDL_GetMouseState(&bmx, &bmy) : 0u;
-        int dismiss = ig_briefing_keys(platform->has_focus, keys);
-        if (Briefing_Tick(bmx, bmy, (bbuttons & SDL_BUTTON_LMASK) != 0, dismiss)) {
-            InGame_SetPaused(ig.brief_resume_paused);
-        }
-        SDL_ShowCursor(SDL_ENABLE);
-        UI_Present(platform);
-        memcpy(ig.prev_keys, keys, sizeof(ig.prev_keys));
-        return GAMESTATE_IN_GAME;
     }
     if (InGameMenu_IsOpen()) {
         int next = InGameMenu_Tick(platform);
@@ -2319,6 +2346,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         DebugPanel_Draw();
         UI_Present(platform);
         memcpy(ig.prev_keys, keys, sizeof(ig.prev_keys));
+        ig_mouse_away(platform);
         return next;
     }
     /* Ctrl+D's question owns the keys and the mouse while it stands,
@@ -2328,6 +2356,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         SDL_ShowCursor(SDL_ENABLE);
         UI_Present(platform);
         memcpy(ig.prev_keys, keys, sizeof(ig.prev_keys));
+        ig_mouse_away(platform);
         return GAMESTATE_IN_GAME;
     }
 
@@ -2574,8 +2603,9 @@ void InGame_Shutdown(void) {
     OrderOverlay_SetShift(0);
     g_request_view3d = 0;
     Translate_Free(&g_death_lines);
-    /* A test's mouse goes with the battle it drove. */
+    /* A test's mouse and keyboard go with the battle they drove. */
     g_dbg_mouse_on = 0;
+    g_dbg_keys_on = 0;
     /* Nothing transient yet. GameWorld teardown is main.c's responsibility
      * via World_End() — that outlives this screen and Phase D's pause
      * menu will want to re-enter InGame without rebuilding the world. */
