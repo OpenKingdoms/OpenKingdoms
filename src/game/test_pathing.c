@@ -2007,6 +2007,84 @@ static void test_a_first_point_is_judged_from_the_unit(void) {
     occ_world_free(&world);
 }
 
+/* A 3 by 3 unit with a tile of its body on rock, 8 px off the point of
+ * its own tile. The walk out began at the next tile's point, and the
+ * line there from where the unit stands passed more rock. */
+static void test_a_walk_out_starts_where_the_unit_stands(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
+    strip_land(&world, 0, 0, 48, 32);
+    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
+    strip_shut(20, 17);
+    strip_shut(22, 19);
+    strip_shut(23, 16);
+    strip_shut(19, 20);
+    MoveClassDef mc;
+    strip_class(&mc, 3);
+    TAK_PathQuery q;
+    strip_query(&q, &mc, 1);
+    int32_t sx = 336, sy = 256;
+    EXPECT(strip_body_bad(&world, &mc, sx, sy) == 1);
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&world, sx, sy, 392, 200, &q, &path);
+    EXPECT(n > 0);
+    if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
+    strip_marks_free();
+    occ_world_free(&world);
+}
+
+/* A walk out's diagonal between two tiles' points. Up one axis and down
+ * the other, the body turns a pixel apart on the two and passes one side:
+ * here a side with no rock, and from it the next tile has one. */
+static void test_a_walk_out_diagonal_passes_its_side_as_the_step_does(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
+    strip_land(&world, 0, 0, 48, 32);
+    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
+    strip_shut(21, 18);
+    strip_shut(21, 19);
+    strip_shut(24, 15);
+    MoveClassDef mc;
+    strip_class(&mc, 3);
+    TAK_PathQuery q;
+    strip_query(&q, &mc, 1);
+    int32_t sx = 320, sy = 288;
+    EXPECT(strip_body_bad(&world, &mc, sx, sy) == 2);
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&world, sx, sy, 392, 200, &q, &path);
+    EXPECT(n > 0);
+    if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
+    strip_marks_free();
+    occ_world_free(&world);
+}
+
+/* A field route for a unit already in its goal's cell is one point, and
+ * the line to it from the unit cut a shut tile's corner. It is a
+ * search's now, as any field route the step cannot start. */
+static void test_a_field_route_in_the_goal_cell_is_judged_from_the_unit(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
+    strip_land(&world, 0, 0, 48, 32);
+    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
+    strip_shut(21, 18);
+    MoveClassDef mc;
+    strip_class(&mc, 1);
+    TAK_PathQuery q;
+    strip_query(&q, &mc, 1);
+    int32_t sx = 320, sy = 288;
+    TAK_Path path;
+    int n = TAK_PathPlanFlow(&world, sx, sy, 328, 296, &q, &path);
+    if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
+    n = TAK_PathPlanQuery(&world, sx, sy, 328, 296, &q, &path);
+    EXPECT(n > 0);
+    if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
+    strip_marks_free();
+    occ_world_free(&world);
+}
+
 /* How far a route strays from the straight line over a gentle hill, or
  * past a steep band with a gap beside it. A step costs by kind of ground,
  * not by climb, and bad ground costs more (legacy:22210-22222). */
@@ -2154,6 +2232,9 @@ int main(void) {
     test_a_unit_partly_on_rock_walks_out_where_its_route_cannot_start();
     test_a_turn_at_the_first_point_is_kept();
     test_a_first_point_is_judged_from_the_unit();
+    test_a_walk_out_starts_where_the_unit_stands();
+    test_a_walk_out_diagonal_passes_its_side_as_the_step_does();
+    test_a_field_route_in_the_goal_cell_is_judged_from_the_unit();
     test_a_long_route_is_not_a_flood();
     test_a_field_swept_as_far_as_its_members_routes_them_the_same();
     test_connected_ground_separates_an_island();

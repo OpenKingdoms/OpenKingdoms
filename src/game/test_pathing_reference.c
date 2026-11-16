@@ -1162,6 +1162,7 @@ static const int g_esc_d8[8][2] = {
 
 static struct {
     int ox, oy;                         /* the window's top left tile */
+    int32_t ux, uy;                     /* where the unit stands */
     int settled;
     int32_t dist[ESC_TILES];
     uint8_t from[ESC_TILES];            /* the step that reached it */
@@ -1188,12 +1189,6 @@ static int esc_ground(const PlanCtx *c, int tx, int ty) {
  * one, where the body is the placement this tile centres. */
 static int32_t esc_pos(int t, int fp) {
     return (int32_t)t * TAK_OCC_TILE_PX + (fp & 1) * (TAK_OCC_TILE_PX / 2);
-}
-
-/* Water at the point the body stands on there, where the step tests it.
- * The mover never relaxes it (unit_step_refused). */
-static int esc_dry(const PlanCtx *c, int tx, int ty) {
-    return water_ok(c->world, c->mc, esc_pos(tx, c->fx), esc_pos(ty, c->fz));
 }
 
 /* Tiles of that body that stand on ground the class may not, as the
@@ -1290,6 +1285,34 @@ static int esc_pop(int *node) {
     return key;
 }
 
+/* Water at every pixel of the line from a to b, past a, where the step
+ * tests it at the centre. The mover never relaxes it (unit_step_refused). */
+static int esc_line_dry(const PlanCtx *c, int32_t ax, int32_t ay,
+                        int32_t bx, int32_t by) {
+    int32_t dx = bx - ax, dy = by - ay;
+    int32_t steps = (dx < 0 ? -dx : dx) > (dy < 0 ? -dy : dy)
+                  ? (dx < 0 ? -dx : dx) : (dy < 0 ? -dy : dy);
+    for (int32_t s = 1; s <= steps; s++)
+        if (!water_ok(c->world, c->mc, ax + dx * s / steps, ay + dy * s / steps))
+            return 0;
+    return 1;
+}
+
+/* A diagonal from node point to node point as the step walks it. An
+ * axis moving down its tiles turns a pixel after one moving up, so the
+ * body passes the side of the one moving up, or both sides at once. */
+static int esc_diag_ok(const PlanCtx *c, int tx, int ty, int ddx, int ddy,
+                       int bad) {
+    int sx = esc_bad(c, tx + ddx, ty), sy = esc_bad(c, tx, ty + ddy);
+    int to = esc_bad(c, tx + ddx, ty + ddy);
+    if (ddx == ddy) return sx <= bad && sy <= bad && to <= bad;
+    int side = ddx > 0 ? sx : sy;
+    return side <= bad && to <= side;
+}
+
+static int step_line_ok(const PlanCtx *c, int32_t ax, int32_t ay,
+                        int32_t bx, int32_t by);
+
 /* Walk out from the unit's tile, to no start in a skip cell, by the
  * step's rule: water at the centre never, and never onto more bad
  * ground under the body than it stands on, beside a diagonal too.
@@ -1303,6 +1326,8 @@ static int esc_flood(const PlanCtx *c, int32_t x, int32_t y,
     int t0y = Occ_TileOf(y - c->fz * 8 + 8) + c->fz / 2;
     g_esc.ox = t0x - ESC_R;
     g_esc.oy = t0y - ESC_R;
+    g_esc.ux = x;
+    g_esc.uy = y;
     g_esc.hn = 0;
     g_esc.nseed = 0;
     g_esc.settled = 0;
@@ -1346,11 +1371,11 @@ static int esc_flood(const PlanCtx *c, int32_t x, int32_t y,
             if (g_esc.seen[ni] == 2) continue;
             int ntx = tx + ddx, nty = ty + ddy;
             if (ntx < 0 || nty < 0 || ntx >= c->mtw || nty >= c->mth) continue;
-            if (!esc_dry(c, ntx, nty)) continue;
+            if (!esc_line_dry(c, esc_pos(tx, c->fx), esc_pos(ty, c->fz),
+                              esc_pos(ntx, c->fx), esc_pos(nty, c->fz))) continue;
             int diag = ddx && ddy;
-            if (esc_bad(c, ntx, nty) > body_bad) continue;
-            if (diag && (esc_bad(c, ntx, ty) > body_bad ||
-                         esc_bad(c, tx, nty) > body_bad)) continue;
+            if (diag ? !esc_diag_ok(c, tx, ty, ddx, ddy, body_bad)
+                     : esc_bad(c, ntx, nty) > body_bad) continue;
             if (body_clear) {
                 if (!esc_body_clear(c, ntx, nty)) continue;
                 if (diag && (!esc_body_clear(c, ntx, ty) ||
@@ -1391,8 +1416,24 @@ static int esc_lay(const PlanCtx *c, const EscSeed *s, int *px, int *py,
         if (d == ESC_NONE) break;
         t -= g_esc_d8[d][1] * ESC_W + g_esc_d8[d][0];
     }
-    /* chain runs exit first, the unit's own tile last. */
+    /* chain runs exit first, the unit's own tile last. A unit off its own
+     * tile's point, whose line to the next the step refuses, goes to its
+     * own first if the way is dry: its body does not change on the way. */
     int n = 0;
+    int t0 = chain[len - 1];
+    int t0x = g_esc.ox + t0 % ESC_W, t0y = g_esc.oy + t0 / ESC_W;
+    int32_t x0 = esc_pos(t0x, c->fx), y0 = esc_pos(t0y, c->fz);
+    int t1 = len > 1 ? chain[len - 2] : t0;
+    if ((x0 != g_esc.ux || y0 != g_esc.uy) &&
+        !step_line_ok(c, g_esc.ux, g_esc.uy,
+                      esc_pos(g_esc.ox + t1 % ESC_W, c->fx),
+                      esc_pos(g_esc.oy + t1 / ESC_W, c->fz)) &&
+        esc_line_dry(c, g_esc.ux, g_esc.uy, x0, y0)) {
+        if (n + 1 >= cap) return -1;
+        px[n] = x0;
+        py[n] = y0;
+        n++;
+    }
     for (int i = len - 2; i >= 1; i--) {
         int prev = chain[i + 1], t = chain[i], next = chain[i - 1];
         if (i < len - 2 && t - prev == next - t) continue;
@@ -2318,6 +2359,8 @@ int TAK_PathPlanFlow(const struct GameWorld *world,
     if (start == goal) {
         path_put(out_path, &c, goal);
         n = out_path->count;
+        if (n > 0 && !step_line_ok(&c, start_x, start_y, out_path->x[0], out_path->y[0]))
+            n = -1;
         goto done;
     }
     int len = 0;

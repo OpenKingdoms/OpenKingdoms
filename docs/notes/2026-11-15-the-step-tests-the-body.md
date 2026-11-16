@@ -192,6 +192,38 @@ The tests are in test_movement.
   kinds. With the stopped friend judged by centres 64 px apart, two held
   their orders for good.
 
+## Every leg of a walk out (2026-11-15)
+
+A review of the walk out found three routes the step would refuse, each
+checked by a test in test_pathing that failed before this.
+- A diagonal between two tiles' points. Up one axis and down the other,
+  the body's tiles turn a pixel apart on the two, so it passes the side
+  of the axis moving up, and it may not take on more bad ground from
+  there. The walk judged the side and the next tile against the tile it
+  left. It now walks them in the step's order
+  (test_a_walk_out_diagonal_passes_its_side_as_the_step_does).
+- The first leg. A unit off its own tile's point went straight to the
+  next tile's point, on a line that could pass more bad ground. When the
+  step refuses that line, it now goes to its own tile's point first,
+  where its body does not change
+  (test_a_walk_out_starts_where_the_unit_stands). Always going there
+  first was worse: a monarch on Castle overshot that short leg and stood
+  where the next one did not start.
+- A field route for a unit already in its goal's cell, one point, was
+  not judged from the unit. It is a search's now when the step cannot
+  walk it (test_a_field_route_in_the_goal_cell_is_judged_from_the_unit).
+
+The walk also tests water at every pixel between two tiles' points, as
+the step does at the centre, where it tested the points alone. Over
+3,697,158 routes on synthetic ground with one to four shut tiles, from
+every second pixel near them and for bodies of 1, 2 and 3 tiles, no leg
+of any compressed route or field route is one the step refuses. Before,
+at every fourth pixel, 2,860 searched routes and 208 field routes had
+one. In test_path_buffers, 91 fewer of its 7830 plans find a route. 87
+of them started with the unit's centre in water it may not enter, where
+the step refuses every move. The other 4 were walk outs that find no way
+out once every leg follows the step's rule.
+
 ## Not done
 
 - The spots a unit is sent to still judge the centre alone: a factory's
