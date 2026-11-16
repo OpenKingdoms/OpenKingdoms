@@ -162,7 +162,7 @@ void Features_SetEventHook(FeatureEventHook hook);
 /* Moves on whenever a sacred site joins or leaves a feature list, or a
  * list is replaced whole, so an index of the sites knows to rebuild. */
 uint32_t Features_SacredGeneration(void);
-void     Features_NoteListReplaced(void);
+void     Features_NoteListReplaced(void);  /* also drops the walkable grid */
 
 /* Place a feature instance with its footprint's top-left corner on
  * cell (cell_x, cell_z), its model at (world_x, world_y) facing

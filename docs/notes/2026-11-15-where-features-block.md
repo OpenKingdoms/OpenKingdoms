@@ -65,7 +65,10 @@ not patched. The grid is dropped and stamped afresh instead.
   stage, the old and new footprints both, and rubble under the
   remastered rules.
 - `Features_NoteListReplaced` and `Features_MarkChanged` drop it: a map
-  loaded, a save applied, a world ended, new defs.
+  loaded, a save applied, a world ended, new defs. A sacred site placed
+  mid-battle drops it too, since `Features_AddInstanceFacing` calls
+  `Features_NoteListReplaced` for one. The next lookup stamps the whole
+  map again. That costs time, not correctness, and sacred sites are rare.
 
 A lookup also checks the world, the array, the count, the map's size and
 the remastered rules, and stamps the grid afresh when any of them
@@ -85,3 +88,7 @@ tile past the map each way, while features are written whole, moved in
 place, removed, swept, placed, turned and changed stage, under both
 rules and across a save. `Terrain_DebugWalkGrid(0)` gives the walk back
 for that comparison.
+
+A possible follow-up, not done here: `Terrain_BlockingBegin` and
+`Terrain_WalkableTilesRect` still walk every feature, and could read the
+grid instead.
