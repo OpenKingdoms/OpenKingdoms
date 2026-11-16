@@ -104,6 +104,15 @@ void Terrain_BlockingBegin(const struct GameWorld *world,
                            int32_t x0, int32_t y0, int32_t x1, int32_t y1);
 void Terrain_BlockingEnd(void);
 
+/* features.c names the list as it was and the tiles a change touches
+ * (none when tx1 < tx0). A list replaced whole drops the grid. */
+void Terrain_FeaturesChanged(const struct GameWorld *world,
+                             const void *was_src, int was_count,
+                             int tx0, int tz0, int tx1, int tz1);
+void Terrain_FeaturesReplaced(void);
+/* Test hook: off walks the feature list for every point instead. */
+void Terrain_DebugWalkGrid(int on);
+
 /* Features examined by the walkable tests since the process began.
  * Instrumentation for tests. */
 uint64_t Terrain_DebugFeatureTests(void);

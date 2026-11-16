@@ -342,6 +342,99 @@ void Terrain_BlockingBegin(const struct GameWorld *world,
 
 void Terrain_BlockingEnd(void) { g_block_scope.world = NULL; }
 
+/* The blocking features of the whole map, a byte per 16 px tile. Derived
+ * from the list, so neither saved nor hashed. */
+static struct {
+    const struct GameWorld *world;
+    const void *src;
+    int      count, remastered, map_w, map_h;
+    int      tw, th;
+    size_t   cap;
+    uint8_t *blocked;
+    int      no_memory;   /* the loop answers until the grid is dropped */
+} g_walk;
+static int g_walk_off;
+
+void Terrain_DebugWalkGrid(int on) { g_walk_off = !on; }
+
+/* Tiles [x0, x1) by [z0, z1) of the grid take again from the list. */
+static void walk_stamp(const struct GameWorld *world, int x0, int z0, int x1, int z1) {
+    for (int z = z0; z < z1; z++)
+        memset(&g_walk.blocked[(size_t)z * g_walk.tw + x0], 0, (size_t)(x1 - x0));
+    g_feature_tests += (uint64_t)world->feature_count;
+    for (int i = 0; i < world->feature_count; i++) {
+        if (!Features_InstanceBlocks(world, i)) continue;
+        int fp_x, fp_z;
+        Features_InstanceFootprint(world, i, &fp_x, &fp_z);
+        int fx0 = (int)world->features[i].tile_x;
+        int fz0 = (int)world->features[i].tile_z;
+        int ax = fx0 > x0 ? fx0 : x0, bx = fx0 + fp_x < x1 ? fx0 + fp_x : x1;
+        int az = fz0 > z0 ? fz0 : z0, bz = fz0 + fp_z < z1 ? fz0 + fp_z : z1;
+        for (int z = az; z < bz; z++)
+            for (int x = ax; x < bx; x++)
+                g_walk.blocked[(size_t)z * g_walk.tw + x] = 1;
+    }
+}
+
+static int walk_keyed(const struct GameWorld *world) {
+    return g_walk.world == world && g_walk.remastered == world->cfg.remastered &&
+           g_walk.map_w == world->map_pixels_w && g_walk.map_h == world->map_pixels_h;
+}
+
+static int walk_ready(const struct GameWorld *world) {
+    if (walk_keyed(world) && g_walk.src == (const void *)world->features &&
+        g_walk.count == world->feature_count)
+        return 1;
+    g_walk.world = NULL;
+    if (g_walk.no_memory) return 0;
+    int tw = (world->map_pixels_w + 15) / 16, th = (world->map_pixels_h + 15) / 16;
+    if (tw <= 0 || th <= 0) return 0;
+    size_t n = (size_t)tw * (size_t)th;
+    if (n > g_walk.cap) {
+        tak_free(g_walk.blocked);
+        g_walk.blocked = (uint8_t *)tak_malloc(n);
+        g_walk.cap = g_walk.blocked ? n : 0;
+        g_walk.no_memory = !g_walk.blocked;
+        if (!g_walk.blocked) return 0;
+    }
+    g_walk.tw = tw;
+    g_walk.th = th;
+    walk_stamp(world, 0, 0, tw, th);
+    g_walk.src = world->features;
+    g_walk.count = world->feature_count;
+    g_walk.remastered = world->cfg.remastered;
+    g_walk.map_w = world->map_pixels_w;
+    g_walk.map_h = world->map_pixels_h;
+    g_walk.world = world;
+    return 1;
+}
+
+void Terrain_FeaturesChanged(const struct GameWorld *world,
+                             const void *was_src, int was_count,
+                             int tx0, int tz0, int tx1, int tz1) {
+    if (!world || g_walk.world != world) return;
+    /* Patched only from the very list it was stamped from. */
+    if (!walk_keyed(world) || g_walk.src != was_src || g_walk.count != was_count) {
+        g_walk.world = NULL;
+        return;
+    }
+    g_walk.src = world->features;
+    g_walk.count = world->feature_count;
+    if (tx0 < 0) tx0 = 0;
+    if (tz0 < 0) tz0 = 0;
+    if (tx1 >= g_walk.tw) tx1 = g_walk.tw - 1;
+    if (tz1 >= g_walk.th) tz1 = g_walk.th - 1;
+    if (tx0 <= tx1 && tz0 <= tz1) walk_stamp(world, tx0, tz0, tx1 + 1, tz1 + 1);
+}
+
+void Terrain_FeaturesReplaced(void) {
+    g_walk.world = NULL;
+    tak_free(g_walk.blocked);
+    g_walk.blocked = NULL;
+    g_walk.cap = 0;
+    g_walk.no_memory = 0;
+}
+
 int Terrain_IsWalkable(const struct GameWorld *world,
                        int32_t world_x, int32_t world_y,
                        int max_slope) {
@@ -356,6 +449,10 @@ int Terrain_IsWalkable(const struct GameWorld *world,
         if (tx >= 0 && tz >= 0 && tx < g_block_scope.tw && tz < g_block_scope.th)
             return !g_block_scope.blocked[tz * g_block_scope.tw + tx];
     }
+    if (world->features && world->feature_count > 0 && !g_walk_off &&
+        walk_ready(world))
+        return !g_walk.blocked[(size_t)(world_y / 16) * (size_t)g_walk.tw +
+                               (size_t)(world_x / 16)];
     if (world->features && world->feature_count > 0) {
         g_feature_tests += (uint64_t)world->feature_count;
         for (int i = 0; i < world->feature_count; i++) {

@@ -4882,6 +4882,191 @@ TEST(a_wandering_shot_runs_on_the_same_after_a_load) {
     lf_end();
 }
 
+/* ── the walkable grid ─────────────────────────────────────────────── */
+
+enum { WG_A = 0, WG_B, WG_C, WG_D, WG_E, WG_F, WG_G, WG_H, WG_I, WG_COUNT };
+/* A map whose last row and column of tiles are cut short. */
+#define WG_PX_W (64 * 16 + 8)
+#define WG_PX_H 1000
+
+static uint16_t wg_layer[LF_TILES * LF_TILES];
+
+static void wg_def(FeatureDef *f, const char *name, int fx, int fz,
+                   int blocking, const char *dead) {
+    memset(f, 0, sizeof(*f));
+    strncpy(f->name, name, sizeof(f->name) - 1);
+    strncpy(f->feature_dead, dead, sizeof(f->feature_dead) - 1);
+    f->footprint_x = fx;
+    f->footprint_z = fz;
+    f->blocking = blocking;
+    f->damage = 10;
+}
+
+/* Every tile's edges and middle, one tile past the map each way, at
+ * two slopes. Each answer goes to out when given, and the count of
+ * them the grid gives otherwise than walking the list comes back. */
+static long wg_differ(GameWorld *w, uint8_t *out, long *shut) {
+    static const int off[3] = { 0, 9, 15 };
+    static const int slope[2] = { 0, 255 };
+    int tw = (w->map_pixels_w + 15) / 16, th = (w->map_pixels_h + 15) / 16;
+    long differ = 0, k = 0;
+    if (shut) *shut = 0;
+    for (int ty = -1; ty <= th; ty++)
+        for (int tx = -1; tx <= tw; tx++)
+            for (int p = 0; p < 9; p++)
+                for (int s = 0; s < 2; s++) {
+                    int32_t x = tx * 16 + off[p % 3], y = ty * 16 + off[p / 3];
+                    int grid = Terrain_IsWalkable(w, x, y, slope[s]);
+                    Terrain_DebugWalkGrid(0);
+                    int list = Terrain_IsWalkable(w, x, y, slope[s]);
+                    Terrain_DebugWalkGrid(1);
+                    if (grid != list) differ++;
+                    if (shut && !grid) (*shut)++;
+                    if (out) out[k] = (uint8_t)grid;
+                    k++;
+                }
+    return differ;
+}
+
+static int wg_find(const GameWorld *w, int def) {
+    for (int i = 0; i < w->feature_count; i++)
+        if (w->features[i].global_idx == def) return i;
+    return -1;
+}
+
+/* Terrain_IsWalkable reads blocking features from a grid. It answers as
+ * walking the whole list does, off the map and at its edges, as features
+ * come, go, turn and change stage, under both rules, and after a load. */
+TEST(the_walkable_grid_answers_as_the_feature_list_does) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    ASSERT(lf_spawn(LF_TARGET, 1, 200, 200) >= 0);
+    FeatureDef fd[WG_COUNT];
+    wg_def(&fd[WG_A], "WGA", 1, 1, 1, "WGC");
+    wg_def(&fd[WG_B], "WGB", 2, 2, 1, "");
+    wg_def(&fd[WG_C], "WGC", 3, 2, 1, "WGF");
+    wg_def(&fd[WG_D], "WGD", 4, 4, 1, "WGE");
+    wg_def(&fd[WG_E], "WGE", 2, 2, 1, "WGF");
+    wg_def(&fd[WG_F], "WGF", 1, 1, 0, "");
+    fd[WG_F].indestructible = 1;
+    wg_def(&fd[WG_G], "WGG", 2, 2, 1, "WGH");
+    wg_def(&fd[WG_H], "WGH", 2, 2, 0, "");
+    strncpy(fd[WG_G].category, "walls", sizeof(fd[WG_G].category) - 1);
+    strncpy(fd[WG_H].category, "walls", sizeof(fd[WG_H].category) - 1);
+    wg_def(&fd[WG_I], "WGI", 2, 3, 0, "");
+    ASSERT_EQ_INT(WG_COUNT, Features_DebugSetDefs(fd, WG_COUNT));
+    w->map_pixels_w = WG_PX_W;
+    w->map_pixels_h = WG_PX_H;
+    lf_heights(w, 20, 24, 30, 33, LF_GROUND + 30);
+    for (int i = 0; i < LF_TILES * LF_TILES; i++) wg_layer[i] = 0xFFFFu;
+    for (int k = 0; k < 6; k++) wg_layer[(40 + k) * LF_TILES + 12 + k] = TNT_CELL_IMPASSABLE;
+    w->tnt.feature_layer = wg_layer;
+
+    /* A list written whole, as the loader writes one: every footprint and
+     * turn, rubble, a def that is gone, some over the map's edges and one
+     * wholly off it. */
+    int n = 160;
+    w->features = (struct MapFeature *)tak_calloc((size_t)n, sizeof(*w->features));
+    ASSERT_NOT_NULL(w->features);
+    w->feature_cap = n;
+    uint32_t r = 7u;
+    for (int i = 0; i < n; i++) {
+        struct MapFeature *f = &w->features[i];
+        r = r * 1103515245u + 12345u;
+        f->tile_x = (uint16_t)((r >> 8) % 68u);
+        f->tile_z = (uint16_t)((r >> 16) % 66u);
+        f->global_idx = i % (WG_COUNT + 1) == WG_COUNT ? -1 : i % (WG_COUNT + 1);
+        f->facing = (uint8_t)((r >> 24) & 3u);
+        f->rubble = (uint8_t)((r >> 26) % 3u == 0);
+        f->world_x = f->tile_x * 16 + 8;
+        f->world_y = f->tile_z * 16 + 8;
+        f->color_idx = -1;
+        f->decompose_ticks = -1;
+    }
+    static const int edge[5][4] = {
+        { 0, 0, WG_C, 0 }, { 63, 61, WG_D, 0 }, { 64, 10, WG_B, 0 },
+        { 10, 62, WG_C, 1 }, { 70, 70, WG_D, 0 } };
+    for (int i = 0; i < 5; i++) {
+        w->features[i].tile_x = (uint16_t)edge[i][0];
+        w->features[i].tile_z = (uint16_t)edge[i][1];
+        w->features[i].global_idx = edge[i][2];
+        w->features[i].facing = (uint8_t)edge[i][3];
+    }
+    w->feature_count = n;
+    Features_NoteListReplaced();
+    Features_MarkChanged(w);
+    long shut_whole = 0, shut_rules = 0, shut_moved = 0, shut_api = 0, shut_stage = 0;
+    ASSERT_EQ_INT(0, (int)wg_differ(w, NULL, &shut_whole));
+    w->cfg.remastered = 1;
+    ASSERT_EQ_INT(0, (int)wg_differ(w, NULL, &shut_rules));
+    ASSERT(shut_rules > shut_whole);
+
+    /* Written in place, said with Features_MarkChanged alone. */
+    for (int i = 5; i < 40; i++)
+        w->features[i].tile_x = (uint16_t)((w->features[i].tile_x + 7) % 68);
+    Features_MarkChanged(w);
+    ASSERT_EQ_INT(0, (int)wg_differ(w, NULL, &shut_moved));
+
+    /* Removed, swept and placed through the list's own calls, the grid
+     * current throughout, the last two placed flush with the edges. */
+    for (int k = 0; k < 12; k++)
+        ASSERT_EQ_INT(0, Features_RemoveInstance(w, (k * 37) % w->feature_count));
+    ASSERT_EQ_INT(0, Features_SweepInstance(w, 3));
+    int placed = 0;
+    for (int k = 0; k < 24; k++) {
+        r = r * 1103515245u + 12345u;
+        int cx = (int)((r >> 8) % 64u), cz = (int)((r >> 16) % 62u);
+        placed += Features_AddInstanceFacing(w, k % WG_COUNT, cx, cz, cx * 16 + 8,
+                                             cz * 16 + 8, 0, -1, k & 3) >= 0;
+    }
+    ASSERT(placed >= 12);
+    ASSERT(Features_AddInstanceFacing(w, WG_D, 60, 58, 0, 0, 0, -1, 0) >= 0);
+    ASSERT(Features_AddInstanceFacing(w, WG_C, 62, 59, 0, 0, 0, -1, 1) >= 0);
+    ASSERT_EQ_INT(0, (int)wg_differ(w, NULL, &shut_api));
+    ASSERT(shut_api != shut_moved);
+
+    /* Next stages: one grows over its neighbours, one shrinks, a wall
+     * leaves rubble, one is gone with nothing after it. */
+    static const int hit[5] = { WG_A, WG_D, WG_G, WG_B, WG_E };
+    for (int k = 0; k < 5; k++) {
+        int i = wg_find(w, hit[k]);
+        ASSERT(i >= 0);
+        Features_DebugHit(w, i, 100, 0);
+    }
+    ASSERT(wg_find(w, WG_H) >= 0);
+    ASSERT_EQ_INT(0, (int)wg_differ(w, NULL, &shut_stage));
+    ASSERT(shut_stage != shut_api);
+    w->cfg.remastered = 0;
+    ASSERT_EQ_INT(0, (int)wg_differ(w, NULL, NULL));
+    w->cfg.remastered = 1;
+
+    /* A load gives back the grid the save was taken over. */
+    int tw = (w->map_pixels_w + 15) / 16 + 2, th = (w->map_pixels_h + 15) / 16 + 2;
+    size_t pts = (size_t)tw * (size_t)th * 18u;
+    uint8_t *saved = (uint8_t *)tak_malloc(pts), *loaded = (uint8_t *)tak_malloc(pts);
+    ASSERT(saved && loaded);
+    ASSERT_EQ_INT(0, (int)wg_differ(w, saved, NULL));
+    char err[256] = { 0 };
+    size_t len = 0;
+    uint8_t *snap = Save_WriteMemory(&len, err, sizeof err);
+    ASSERT_NOT_NULL(snap);
+    for (int k = 0; k < 8; k++) Features_RemoveInstance(w, k * 5);
+    ASSERT(Features_AddInstanceFacing(w, WG_D, 30, 30, 0, 0, 0, -1, 0) >= 0);
+    TAK_SaveGame *sg = Save_ReadMemory(snap, len, err, sizeof err);
+    tak_free(snap);
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(0, Save_Apply(sg, err, sizeof err));
+    Save_ReadClose(sg);
+    ASSERT_EQ_INT(0, (int)wg_differ(w, loaded, NULL));
+    ASSERT_EQ_INT(0, memcmp(saved, loaded, pts));
+    printf("(shut %ld %ld %ld %ld %ld) ", shut_whole, shut_rules, shut_moved,
+           shut_api, shut_stage);
+    tak_free(saved);
+    tak_free(loaded);
+    w->tnt.feature_layer = NULL;
+    lf_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("What the feature hook hears");
@@ -5041,5 +5226,7 @@ int main(int argc, char **argv) {
     RUN(a_mission_scripts_attack_order_is_never_let_go);
     RUN(a_building_is_drawn_when_its_side_can_take_it);
     RUN(a_volley_in_the_fog_hashes_to_its_pin);
+    TEST_SUITE("The walkable grid");
+    RUN(the_walkable_grid_answers_as_the_feature_list_does);
     TEST_REPORT();
 }

@@ -191,8 +191,8 @@ void Features_InstanceFootprint(const struct GameWorld *world, int idx,
 /* Test hook: replace the feature registry with synthetic defs. */
 int  Features_DebugSetDefs(const FeatureDef *defs, int count);
 
-/* Anything that writes world->features says so here, so the per cell
- * feature heights shots read are rebuilt before their next use. */
+/* Anything that writes world->features says so here, so the shot
+ * heights and the walkable grid are rebuilt before their next use. */
 void Features_MarkChanged(struct GameWorld *world);
 
 /* What stands on the 16 px cell (cell_x, cell_z) for a shot: 0 for no

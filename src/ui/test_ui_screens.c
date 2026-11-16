@@ -28200,6 +28200,7 @@ TEST(sound_ambient_feature_plays_on_timer) {
     world->features[0].global_idx = jungle;
     world->features[0].tile_x = (uint16_t)((cx + 64) / 16);
     world->features[0].tile_z = (uint16_t)(cy / 16);
+    Features_MarkChanged(world);
 
     ASSERT_EQ_INT(0, InGame_Init(&platform));
     Timer timer;
