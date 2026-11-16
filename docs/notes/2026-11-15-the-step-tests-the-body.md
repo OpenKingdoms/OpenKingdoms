@@ -53,8 +53,10 @@ found it, before this change.
   diagonal too, where it used to judge the centre tile and cross shut
   ground within two tiles of the unit. Its nodes are the points a body
   stands on: a tile's centre for an odd footprint, its top left corner
-  for an even one. Water is tested at that point, as the step tests it
-  at the centre.
+  for an even one. Its first steps, out of the unit's own tile, are
+  judged by the step's own test from where the unit stands. After them
+  water is tested at every pixel between two points, as the step tests
+  it at the centre.
 - A unit standing on its ground but a tile off every placement of its
   own cell, which can reach none of them in a line without meeting bad
   ground, a building or a corner, has a trapped start and is walked out
@@ -194,35 +196,51 @@ The tests are in test_movement.
 
 ## Every leg of a walk out (2026-11-15)
 
-A review of the walk out found three routes the step would refuse, each
-checked by a test in test_pathing that failed before this.
+Two reviews of the walk out found routes the step would refuse, each now
+checked by a test in test_pathing.
 - A diagonal between two tiles' points. Up one axis and down the other,
   the body's tiles turn a pixel apart on the two, so it passes the side
   of the axis moving up, and it may not take on more bad ground from
   there. The walk judged the side and the next tile against the tile it
   left. It now walks them in the step's order
   (test_a_walk_out_diagonal_passes_its_side_as_the_step_does).
-- The first leg. A unit off its own tile's point went straight to the
-  next tile's point, on a line that could pass more bad ground. When the
-  step refuses that line, it now goes to its own tile's point first,
-  where its body does not change
-  (test_a_walk_out_starts_where_the_unit_stands). Always going there
-  first was worse: a monarch on Castle overshot that short leg and stood
-  where the next one did not start.
+- The first leg. A unit is seldom on its own tile's point, and the walk
+  judged its first steps from that point: a line from the unit to the
+  next point could pass more bad ground
+  (test_a_walk_out_starts_where_the_unit_stands), and where heights are
+  read between corners, the point could be in water with the unit's
+  centre dry, so every first step failed and there was no route
+  (test_a_walk_out_leaves_from_where_the_unit_stands). The first steps
+  are now the step's own test from where the unit stands. A version that
+  sent the unit to its own tile's point first did not help: the mover
+  passes a point within 16 or 32 px of it without walking to it.
+- A walk out whose first leg the step would still refuse is no route.
+  A route from a search that the step cannot start was already planned
+  again as a walk out.
 - A field route for a unit already in its goal's cell, one point, was
   not judged from the unit. It is a search's now when the step cannot
   walk it (test_a_field_route_in_the_goal_cell_is_judged_from_the_unit).
 
-The walk also tests water at every pixel between two tiles' points, as
-the step does at the centre, where it tested the points alone. Over
-3,697,158 routes on synthetic ground with one to four shut tiles, from
-every second pixel near them and for bodies of 1, 2 and 3 tiles, no leg
-of any compressed route or field route is one the step refuses. Before,
-at every fourth pixel, 2,860 searched routes and 208 field routes had
-one. In test_path_buffers, 91 fewer of its 7830 plans find a route. 87
-of them started with the unit's centre in water it may not enter, where
-the step refuses every move. The other 4 were walk outs that find no way
-out once every leg follows the step's rule.
+Measured on synthetic ground with lakes, shut tiles, buildings and the
+map's edge, for land units, waders, boats and amphibious classes with
+bodies of 1 to 5 tiles, from every fourth pixel of a 160 px square to six
+goals: 1,296,000 searches and as many field routes, with heights read
+one a tile and again between corners. Every leg of every compressed
+route, as the planner lays it, was walked by the step's rules from the
+unit's exact pixel. No route's leg is refused for water, bad ground or a
+corner. After the
+first review's fix alone, with heights read between corners, 9,933 walk
+outs had a first leg the step refuses for water, and 3,870 routes the
+step could walk were lost. Against the planner before both reviews,
+61,306 searches find no route now where they found one. 61,294 of them
+start with the unit's centre in water it may not enter, and none of the
+routes lost was one the step could walk. 6,037 searched routes and
+3,758 field routes have a first leg that clips a building, since the
+test from the unit is of ground and water alone (M-004). Uncompressed
+routes, which only tests ask for, keep a point a cell and their legs are
+not judged. In test_path_buffers, 5148 of its 7830 plans find a route,
+where 5255 did: 105 fewer start with the unit's centre in forbidden
+water, and 2 fewer start dry.
 
 ## Not done
 
@@ -231,3 +249,14 @@ out once every leg follows the step's rule.
   free spot near a point. A product can be sent to a spot its body does
   not fit, and stop short of it. That likely is why the launches above
   moved.
+- The first leg is judged on the route the planner lays, not on what
+  the mover walks. The mover passes a first point within 32 px, or 16 px
+  beside an obstacle, without walking to it. In the brute force above,
+  37,015 routes have a first point that near and a line past it the step
+  refuses. There the unit is refused, slides, or drops its route and
+  plans again.
+- A unit whose centre stands in water it may not enter gets a route only
+  where the step can take it a pixel onto dry ground, but not always
+  there: the walk out's start tests lines only to the points of its 8
+  neighbouring nodes. In 60 of the routes lost, a pixel the unit could
+  step to has a route the step can walk.

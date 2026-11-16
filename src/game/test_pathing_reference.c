@@ -1371,11 +1371,18 @@ static int esc_flood(const PlanCtx *c, int32_t x, int32_t y,
             if (g_esc.seen[ni] == 2) continue;
             int ntx = tx + ddx, nty = ty + ddy;
             if (ntx < 0 || nty < 0 || ntx >= c->mtw || nty >= c->mth) continue;
-            if (!esc_line_dry(c, esc_pos(tx, c->fx), esc_pos(ty, c->fz),
-                              esc_pos(ntx, c->fx), esc_pos(nty, c->fz))) continue;
             int diag = ddx && ddy;
-            if (diag ? !esc_diag_ok(c, tx, ty, ddx, ddy, body_bad)
-                     : esc_bad(c, ntx, nty) > body_bad) continue;
+            int32_t npx = esc_pos(ntx, c->fx), npy = esc_pos(nty, c->fz);
+            if (node == n0) {
+                /* Out of the start, the unit's first leg: the step's own
+                 * test from where it really stands. */
+                if (!step_line_ok(c, g_esc.ux, g_esc.uy, npx, npy)) continue;
+            } else {
+                if (!esc_line_dry(c, esc_pos(tx, c->fx), esc_pos(ty, c->fz),
+                                  npx, npy)) continue;
+                if (diag ? !esc_diag_ok(c, tx, ty, ddx, ddy, body_bad)
+                         : esc_bad(c, ntx, nty) > body_bad) continue;
+            }
             if (body_clear) {
                 if (!esc_body_clear(c, ntx, nty)) continue;
                 if (diag && (!esc_body_clear(c, ntx, ty) ||
@@ -1416,24 +1423,8 @@ static int esc_lay(const PlanCtx *c, const EscSeed *s, int *px, int *py,
         if (d == ESC_NONE) break;
         t -= g_esc_d8[d][1] * ESC_W + g_esc_d8[d][0];
     }
-    /* chain runs exit first, the unit's own tile last. A unit off its own
-     * tile's point, whose line to the next the step refuses, goes to its
-     * own first if the way is dry: its body does not change on the way. */
+    /* chain runs exit first, the unit's own tile last. */
     int n = 0;
-    int t0 = chain[len - 1];
-    int t0x = g_esc.ox + t0 % ESC_W, t0y = g_esc.oy + t0 / ESC_W;
-    int32_t x0 = esc_pos(t0x, c->fx), y0 = esc_pos(t0y, c->fz);
-    int t1 = len > 1 ? chain[len - 2] : t0;
-    if ((x0 != g_esc.ux || y0 != g_esc.uy) &&
-        !step_line_ok(c, g_esc.ux, g_esc.uy,
-                      esc_pos(g_esc.ox + t1 % ESC_W, c->fx),
-                      esc_pos(g_esc.oy + t1 / ESC_W, c->fz)) &&
-        esc_line_dry(c, g_esc.ux, g_esc.uy, x0, y0)) {
-        if (n + 1 >= cap) return -1;
-        px[n] = x0;
-        py[n] = y0;
-        n++;
-    }
     for (int i = len - 2; i >= 1; i--) {
         int prev = chain[i + 1], t = chain[i], next = chain[i - 1];
         if (i < len - 2 && t - prev == next - t) continue;
@@ -2128,6 +2119,12 @@ static int plan_query(const struct GameWorld *world,
     if (retry)
         return plan_query(world, start_x, start_y, goal_x, goal_y, query,
                           out_path, 1);
+    /* Nor does a walk out, whose first leg was the step's own. */
+    if (c.allow_pinch && out_path->count > 0 &&
+        !step_line_ok(&c, start_x, start_y, out_path->x[0], out_path->y[0])) {
+        out_path->count = 0;
+        return 0;
+    }
     return out_path->count;
 }
 

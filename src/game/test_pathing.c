@@ -17,11 +17,28 @@ const FeatureDef *Features_GetByIndex(int idx) {
     return NULL;
 }
 
+/* 1 reads heights between the corners as the game does, so water and
+ * dry ground can share a tile. 0 reads one height a tile. */
+static int g_bilinear;
+
 int Terrain_SampleHeight(const struct GameWorld *world,
                          int32_t world_x, int32_t world_y) {
     if (!world || !world->tnt.heightmap) return 0;
     if (world_x < 0) world_x = 0;
     if (world_y < 0) world_y = 0;
+    if (g_bilinear) {
+        const TNTFile *t = &world->tnt;
+        int max_x = (t->height_w - 1) * 16 - 1, max_y = (t->height_h - 1) * 16 - 1;
+        if (world_x > max_x) world_x = max_x;
+        if (world_y > max_y) world_y = max_y;
+        int vx = world_x / 16, vy = world_y / 16, fx = world_x % 16, fy = world_y % 16;
+        const uint8_t *hm = t->heightmap;
+        int s = t->height_w;
+        int h00 = hm[vy * s + vx], h10 = hm[vy * s + vx + 1];
+        int h01 = hm[(vy + 1) * s + vx], h11 = hm[(vy + 1) * s + vx + 1];
+        int hx0 = h00 + ((h10 - h00) * fx) / 16, hx1 = h01 + ((h11 - h01) * fx) / 16;
+        return hx0 + ((hx1 - hx0) * fy) / 16 - 32;
+    }
     int tx = (int)(world_x / 16);
     int ty = (int)(world_y / 16);
     if (tx >= world->tnt.height_w) tx = world->tnt.height_w - 1;
@@ -2085,6 +2102,36 @@ static void test_a_field_route_in_the_goal_cell_is_judged_from_the_unit(void) {
     occ_world_free(&world);
 }
 
+/* A 3 by 3 land unit on a lake's shore, its centre on dry ground and the
+ * point of its own tile in the water, with heights read between corners.
+ * The walk out judged its first steps from that point, found every one
+ * wet and gave no route. They are the unit's own first leg. */
+static void test_a_walk_out_leaves_from_where_the_unit_stands(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
+    world.water_height = 90;
+    size_t hn = (size_t)world.tnt.height_w * (size_t)world.tnt.height_h;
+    memset(world.tnt.heightmap, 132, hn);
+    for (int vy = 10; vy <= 22; vy++)
+        for (int vx = 26; vx <= 33; vx++)
+            world.tnt.heightmap[vy * world.tnt.height_w + vx] = 92;
+    g_bilinear = 1;
+    MoveClassDef mc;
+    strip_class(&mc, 3);
+    mc.max_slope = 60;
+    TAK_PathQuery q;
+    strip_query(&q, &mc, 1);
+    int32_t sx = 400, sy = 180;
+    EXPECT(Terrain_SampleHeight(&world, sx, sy) >= 90);
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&world, sx, sy, 100, 100, &q, &path);
+    EXPECT(n > 0);
+    if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
+    g_bilinear = 0;
+    occ_world_free(&world);
+}
+
 /* How far a route strays from the straight line over a gentle hill, or
  * past a steep band with a gap beside it. A step costs by kind of ground,
  * not by climb, and bad ground costs more (legacy:22210-22222). */
@@ -2233,6 +2280,7 @@ int main(void) {
     test_a_turn_at_the_first_point_is_kept();
     test_a_first_point_is_judged_from_the_unit();
     test_a_walk_out_starts_where_the_unit_stands();
+    test_a_walk_out_leaves_from_where_the_unit_stands();
     test_a_walk_out_diagonal_passes_its_side_as_the_step_does();
     test_a_field_route_in_the_goal_cell_is_judged_from_the_unit();
     test_a_long_route_is_not_a_flood();

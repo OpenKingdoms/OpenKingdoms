@@ -381,17 +381,31 @@ Format per entry:
   or not, or its centre into water it may not enter. Structures under
   the unit's real body are still judged from the placement's body line,
   so a unit off its placement can still meet the corner of a building
-  and slide. A route whose first leg the step would refuse from where
-  the unit stands is planned again as a trapped start. A unit whose body
-  fits no placement of its own cell, or whose body, wholly on its
-  ground, can reach none of them in a line without meeting bad ground, a
-  building or a corner, is walked out first, body by body by the step's
-  own rule, to the bodies that are a legal placement, and the route
-  begins with that walk at its turns. Water is never crossed on it, the
-  body never takes on more bad ground than it stands on, beside a
-  diagonal too, and what is built is crossed only while the body already
-  stands on some, as the mover allows. A tile of it in a cell with no
-  legal placement costs a cell's worth of detour, half of
+  and slide. The same holds for every first leg judged from the unit, a
+  walk out's and a field route's included: that test is of ground and
+  water, not of what is built. The step tests buildings on the tiles it
+  stamps, anchored on its position less half the body, up to a tile from
+  the rounded anchor its ground test uses. Uncompressed routes, which
+  only tests ask for, keep a point a cell and are not judged leg by leg.
+  A route whose first leg the step would refuse from where the unit
+  stands is planned again as a trapped start. A unit whose body fits no
+  placement of its own cell, or whose body, wholly on its ground, can
+  reach none of them in a line without meeting bad ground, a building or
+  a corner, is walked out first, body by body by the step's own rule, to
+  the bodies that are a legal placement, and the route begins with that
+  walk at its turns. Its first steps are judged by the step's own test
+  from where the unit stands. After them its centre meets no water it
+  may not enter at any pixel, the body never takes on more bad ground
+  than it stands on, beside a diagonal too, in the order the step meets
+  the tiles, and what is built is crossed only while the body already
+  stands on some, as the mover allows. A walk out whose first leg the
+  step would still refuse is no route. These checks hold for the route
+  as the planner lays it. The mover passes a first point within 32 px,
+  or 16 px beside an obstacle (M-001), without walking to it, and where
+  the line from the unit to the next point is one the step refuses, the
+  unit is refused, slides, or drops its route and plans again. A tile of
+  a walk out in a cell with no legal placement costs a cell's worth of
+  detour, half of
   PATH_PINCH_COST, as the crossings of 32 pixel cells it replaced did,
   and the cell it starts the search from adds its half of bad ground, as
   any step into that cell does. Those crossings took a cell with one
@@ -1316,10 +1330,12 @@ Format per entry:
   four of those have not moved it on the order is ended as
   unreachable. The order is kept instead while the ground joins the
   unit to its point and no friend that has stopped stands at its edge.
-  A kept order searches once every 240 ticks and not between, unless
-  the tick's search budget refused it, and ends after 30 such rungs,
-  two minutes with no ground closed. The original scales every retry delay by a
-  per def speed byte derived from maxvelocity (legacy:162838-162851,
+  The ladder then goes on counting its rungs as kept ones. A kept order
+  searches once every 240 ticks and not between, unless the tick's
+  search budget refused it, and ends after 30 kept rungs, two minutes
+  with no ground closed. Ground closed starts the ladder over from its
+  first rung. The original scales every retry delay by a per def speed
+  byte derived from maxvelocity (legacy:162838-162851,
   legacy:184656-184658), so a slow unit waits several times longer
   than a fast one.
 - What counts as closing ground: with a route, the way still left to
@@ -1371,8 +1387,8 @@ Format per entry:
   several near miss cases. An owner parity call, not one the reference
   settles.
 - Also: where the way is blocked by another unit and the corridor is
-  too narrow to pass it, the order is kept and the ladder starts over,
-  so the unit searches again every 240 ticks. The original does not
+  too narrow to pass it, the order is kept on a kept rung, so the unit
+  searches again every 240 ticks. The original does not
   command the blocker to move either: legacy:191265-191388 re-runs the
   search on a delay scaled by that same speed byte and never touches
   the unit in the way. Seen in the original: twelve swordsmen sent
@@ -1397,7 +1413,7 @@ Format per entry:
   in test_movement: a unit pacing a walled pocket with the way out
   facing away from its goal, which the old ladder never climbed. This
   one climbs all four rungs, and since the ground joins the pocket to
-  the goal it starts over. Shut at the mouth too, the same pocket ends
+  the goal it keeps the order on a kept rung. Shut at the mouth too, the same pocket ends
   the order (a_unit_the_ground_shuts_in_gives_its_move_up).
 - Citation: Issue #60. Manual is silent.
 
