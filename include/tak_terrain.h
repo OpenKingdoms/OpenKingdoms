@@ -85,8 +85,7 @@ int Terrain_SlopeAllows(const struct GameWorld *world,
                         int max_slope);
 
 /* Terrain_IsWalkable at the centre of every 16 px tile, tw by th of
- * them, row by row. Each blocking feature is stamped once, where
- * asking tile by tile walks the whole feature list for every tile. */
+ * them, row by row. Each blocking feature is stamped once. */
 void Terrain_WalkableTiles(const struct GameWorld *world, int max_slope,
                            uint8_t *out, int tw, int th);
 /* The same for the tiles x0..x1 by y0..y1 (inclusive) of that map
@@ -95,14 +94,18 @@ void Terrain_WalkableTilesRect(const struct GameWorld *world, int max_slope,
                                uint8_t *out, int tw, int th,
                                int x0, int y0, int x1, int y1);
 
-/* A search that asks Terrain_IsWalkable over and over in one area, a
- * build site search, stamps the blocking features there once instead
- * of walking the whole list per question. Points inside the area are
- * answered from the stamp, anything else as before. The features must
- * not change until Terrain_BlockingEnd, and scopes do not nest. */
+/* A build site search stamps its area's blocking features once, read before
+ * the grid, unchanged until Terrain_BlockingEnd. Scopes do not nest. */
 void Terrain_BlockingBegin(const struct GameWorld *world,
                            int32_t x0, int32_t y0, int32_t x1, int32_t y1);
 void Terrain_BlockingEnd(void);
+
+/* features.c names the list as it was and the tiles a change touches
+ * (none when tx1 < tx0). A list replaced whole drops the grid. */
+void Terrain_FeaturesChanged(const struct GameWorld *world,
+                             const void *was_src, int was_count,
+                             int tx0, int tz0, int tx1, int tz1);
+void Terrain_FeaturesReplaced(void);
 
 /* Features examined by the walkable tests since the process began.
  * Instrumentation for tests. */

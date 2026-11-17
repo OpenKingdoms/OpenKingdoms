@@ -162,7 +162,7 @@ void Features_SetEventHook(FeatureEventHook hook);
 /* Moves on whenever a sacred site joins or leaves a feature list, or a
  * list is replaced whole, so an index of the sites knows to rebuild. */
 uint32_t Features_SacredGeneration(void);
-void     Features_NoteListReplaced(void);
+void     Features_NoteListReplaced(void);  /* also drops the walkable grid */
 
 /* Place a feature instance with its footprint's top-left corner on
  * cell (cell_x, cell_z), its model at (world_x, world_y) facing
@@ -191,8 +191,8 @@ void Features_InstanceFootprint(const struct GameWorld *world, int idx,
 /* Test hook: replace the feature registry with synthetic defs. */
 int  Features_DebugSetDefs(const FeatureDef *defs, int count);
 
-/* Anything that writes world->features says so here, so the per cell
- * feature heights shots read are rebuilt before their next use. */
+/* Anything that writes world->features says so here, so the shot
+ * heights and the walkable grid are rebuilt before their next use. */
 void Features_MarkChanged(struct GameWorld *world);
 
 /* What stands on the 16 px cell (cell_x, cell_z) for a shot: 0 for no

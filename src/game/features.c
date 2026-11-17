@@ -405,6 +405,7 @@ int Features_AddInstance(struct GameWorld *world, int global_idx,
 }
 
 static int  feat_top_current(const struct GameWorld *w);
+static void feat_top_stale(struct GameWorld *w);
 static void feat_top_stamp(struct GameWorld *w, int i, int x0, int z0,
                            int x1, int z1);
 
@@ -447,6 +448,8 @@ int Features_AddInstanceFacing(struct GameWorld *world, int global_idx,
         Features_RemoveInstance(world, i);
     }
     int grid_current = feat_top_current(world);
+    const void *was_src = world->features;
+    int was_count = world->feature_count;
 
     if (world->feature_count >= world->feature_cap) {
         int cap = world->feature_cap ? world->feature_cap * 2 : 64;
@@ -480,13 +483,16 @@ int Features_AddInstanceFacing(struct GameWorld *world, int global_idx,
     if (fd->sacred_site > 0.0f) Features_NoteListReplaced();
     int idx = world->feature_count++;
     g_spark_cells_ok = 0;
+    int bx1 = Features_InstanceBlocks(world, idx) ? cell_x + fp_x - 1 : cell_x - 1;
+    Terrain_FeaturesChanged(world, was_src, was_count, cell_x, cell_z, bx1,
+                            cell_z + fp_z - 1);
     /* The shot grid takes the new feature in place when it was current. */
     if (grid_current) {
         feat_top_stamp(world, idx, 0, 0, world->feat_top_w, world->feat_top_h);
         world->feat_top_count = world->feature_count;
         world->feat_top_src = world->features;
     } else {
-        Features_MarkChanged(world);
+        feat_top_stale(world);
     }
     /* Route planning caches terrain blocking, so a body that blocks
      * has to tell it (the original's placement tells the pathfinder
@@ -543,13 +549,18 @@ int Features_InstanceSinkTicks(const struct GameWorld *world, int idx) {
 
 static uint32_t g_sacred_gen;
 uint32_t Features_SacredGeneration(void) { return g_sacred_gen; }
-void     Features_NoteListReplaced(void) { g_sacred_gen++; }
+void     Features_NoteListReplaced(void) {
+    g_sacred_gen++;
+    Terrain_FeaturesReplaced();
+}
 
 int Features_RemoveInstance(struct GameWorld *world, int idx) {
     if (!world || !world->features) return -1;
     if (idx < 0 || idx >= world->feature_count) return -1;
     if (g_remove_kind >= 0)
         feat_event(world, g_remove_kind, idx, world->features[idx].global_idx, -1, 0, 0, 0);
+    const void *was_src = world->features;
+    int was_count = world->feature_count;
     const FeatureDef *fd =
         Features_GetByIndex(world->features[idx].global_idx);
     int blocked = Features_InstanceBlocks(world, idx);
@@ -575,13 +586,13 @@ int Features_RemoveInstance(struct GameWorld *world, int idx) {
         if (rx1 > world->feat_top_w) rx1 = world->feat_top_w;
         if (rz1 > world->feat_top_h) rz1 = world->feat_top_h;
     }
-    /* Compact rather than tombstone: every consumer (walkability,
-     * rendering, sacred-site scan) walks the array live, so the cleared
-     * cell stops blocking on the next query with no other edits. */
+    /* Compact rather than tombstone: rendering and the sacred-site scan
+     * walk the array live, and the walkable grid is patched here. */
     for (int i = idx; i + 1 < world->feature_count; i++)
         world->features[i] = world->features[i + 1];
     world->feature_count--;
     hold_note_removed(idx);
+    Terrain_FeaturesChanged(world, was_src, was_count, bx0, bz0, bx1, bz1);
     /* The shot grid gives up the feature's cells to whatever else stands
      * on them, in place when it was current. */
     if (grid_current) {
@@ -598,7 +609,7 @@ int Features_RemoveInstance(struct GameWorld *world, int idx) {
         }
         world->feat_top_count = world->feature_count;
     } else {
-        Features_MarkChanged(world);
+        feat_top_stale(world);
     }
     if (blocked) TAK_PathCacheFeatureChanged(world, bx0, bz0, bx1, bz1);
     return 0;
@@ -611,8 +622,12 @@ int Features_SweepInstance(struct GameWorld *world, int idx) {
     return r;
 }
 
+static void feat_top_stale(struct GameWorld *w) { w->feat_top_clean = 0; }
+
 void Features_MarkChanged(struct GameWorld *world) {
-    if (world) world->feat_top_clean = 0;
+    if (!world) return;
+    feat_top_stale(world);
+    Terrain_FeaturesReplaced();
 }
 
 /* The grid is built and matches the feature list. */
@@ -1028,7 +1043,7 @@ static int remaster_leaves_rubble(const FeatureDef *fd) {
 /* The cells of [x0, x1) by [z0, z1) take their shot heights again from
  * whatever stands on them. */
 static void feat_top_refresh(struct GameWorld *w, int x0, int z0, int x1, int z1) {
-    if (!feat_top_current(w)) { Features_MarkChanged(w); return; }
+    if (!feat_top_current(w)) { feat_top_stale(w); return; }
     if (x0 < 0) x0 = 0;
     if (z0 < 0) z0 = 0;
     if (x1 > w->feat_top_w) x1 = w->feat_top_w;
@@ -1122,8 +1137,11 @@ static void feat_replace(struct GameWorld *w, int idx, int next, int kind) {
     mf->rubble = rubble;
     int fx_w = ofx > nfx ? ofx : nfx, fx_h = ofz > nfz ? ofz : nfz;
     feat_top_refresh(w, tx, tz, tx + fx_w, tz + fx_h);
-    if (was_blocking || Features_InstanceBlocks(w, idx))
+    if (was_blocking || Features_InstanceBlocks(w, idx)) {
+        Terrain_FeaturesChanged(w, w->features, w->feature_count,
+                                tx, tz, tx + fx_w - 1, tz + fx_h - 1);
         TAK_PathCacheFeatureChanged(w, tx, tz, tx + fx_w - 1, tz + fx_h - 1);
+    }
     feat_event(w, kind, idx, old, next, 0, 0, 0);
 }
 
