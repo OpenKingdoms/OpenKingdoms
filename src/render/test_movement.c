@@ -2151,6 +2151,50 @@ TEST(a_flyer_stopped_over_land_lands_where_it_is) {
     mv_end();
 }
 
+/* BeginLanding starts the descent (legacy:24302), and setSFXoccupy says
+ * 5 until the flyer is down: the script's landing loop runs on that 5. */
+TEST(a_landing_flyer_is_in_the_air_until_it_is_down) {
+    ASSERT_NOT_NULL(mv_island());
+    int h = Units_Spawn(MV_FLY_DRAG, 1, 0, 2300, 1500);
+    ASSERT(h >= 0);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    Units_OrderMove(h, 2900, 1500);
+    int stopped = 0, descent = 0, not_air = 0, down = 0, began = -1;
+    float began_at = -1.0f;
+    for (int t = 0; t < 4000 && !down; t++) {
+        Units_TickEngines();
+        const Unit *u = mv_unit(h);
+        if (!stopped && u->flying && u->flight_alt >= 150.0f) {
+            Units_OrderStop(h);
+            stopped = 1;
+        }
+        if (!stopped || u->flying) continue;
+        if (began < 0) {
+            began = Units_DebugScriptEventCount(h, UNIT_SCRIPT_EV_BEGIN_LANDING);
+            began_at = u->flight_alt;
+        }
+        if (u->flight_alt <= 0.0f) {
+            down = 1;
+        } else {
+            descent++;
+            if (u->sfx_occupy != 5) not_air++;
+        }
+    }
+    mv_run(1);
+    const Unit *u = mv_unit(h);
+    printf("(landing began %.0f px up, %d of %d descent ticks not in the air) ",
+           (double)began_at, not_air, descent);
+    ASSERT(down);
+    ASSERT_EQ_INT(1, began);
+    ASSERT(began_at > 100.0f);
+    ASSERT(descent > 0);
+    ASSERT_EQ_INT(0, not_air);
+    /* Down on dry ground it is told 1. */
+    ASSERT_EQ_INT(1, (int)u->sfx_occupy);
+    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(h, UNIT_SCRIPT_EV_BEGIN_LANDING));
+    mv_end();
+}
+
 /* The search draws from the simulation's generator, so the same game
  * lands the flyer on the same spot. */
 TEST(the_landing_search_repeats_exactly) {
@@ -2970,6 +3014,7 @@ int main(int argc, char **argv) {
     RUN(a_flyer_left_over_open_sea_stays_up);
     RUN(a_flyer_stopped_off_the_shore_lands_on_the_island);
     RUN(a_flyer_stopped_over_land_lands_where_it_is);
+    RUN(a_landing_flyer_is_in_the_air_until_it_is_down);
     RUN(the_landing_search_repeats_exactly);
     RUN(a_flyer_cruises_over_the_sea_not_the_sea_floor);
     RUN(a_ship_is_drawn_at_its_waterline_not_on_the_sea_floor);

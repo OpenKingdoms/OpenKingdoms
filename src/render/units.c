@@ -14530,13 +14530,15 @@ static void tick_weapon_draw(Unit *u, int shooter_idx, int slot,
     }
 }
 
-/* Ground contact state for setSFXoccupy (legacy:185079-185112): a flyer
- * is always 5, a ground mover is 4 wading, 1 on land, 2 sitting at its
+/* Ground contact state for setSFXoccupy (legacy:185079-185112): 5 in
+ * the air, and a ground mover is 4 wading, 1 on land, 2 sitting at its
  * waterline. Sent only when it changes. */
 static int unit_sfx_occupy_state(const Unit *u, const UnitDef *def,
                                  const GameWorld *w) {
     (void)def;
-    if (u->flying) return 5;
+    /* In the air until down, not until the flying flag clears: seen in the
+     * original, where a flyer holds its descent pose to touchdown. */
+    if (u->flying || u->flight_alt > 0.0f) return 5;
     if (!w || w->water_height <= 0) return 1;
     int h = Terrain_SampleHeight(w, u->world_x, u->world_y);
     int sea = w->water_height;
