@@ -353,9 +353,6 @@ static struct {
     uint8_t *blocked;
     int      no_memory;   /* the loop answers until the grid is dropped */
 } g_walk;
-static int g_walk_off;
-
-void Terrain_DebugWalkGrid(int on) { g_walk_off = !on; }
 
 /* Tiles [x0, x1) by [z0, z1) of the grid take again from the list. */
 static void walk_stamp(const struct GameWorld *world, int x0, int z0, int x1, int z1) {
@@ -449,8 +446,7 @@ int Terrain_IsWalkable(const struct GameWorld *world,
         if (tx >= 0 && tz >= 0 && tx < g_block_scope.tw && tz < g_block_scope.th)
             return !g_block_scope.blocked[tz * g_block_scope.tw + tx];
     }
-    if (world->features && world->feature_count > 0 && !g_walk_off &&
-        walk_ready(world))
+    if (world->features && world->feature_count > 0 && walk_ready(world))
         return !g_walk.blocked[(size_t)(world_y / 16) * (size_t)g_walk.tw +
                                (size_t)(world_x / 16)];
     if (world->features && world->feature_count > 0) {

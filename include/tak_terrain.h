@@ -106,8 +106,6 @@ void Terrain_FeaturesChanged(const struct GameWorld *world,
                              const void *was_src, int was_count,
                              int tx0, int tz0, int tx1, int tz1);
 void Terrain_FeaturesReplaced(void);
-/* Test hook: off walks the feature list for every point instead. */
-void Terrain_DebugWalkGrid(int on);
 
 /* Features examined by the walkable tests since the process began.
  * Instrumentation for tests. */
