@@ -1931,6 +1931,13 @@ Format per entry:
     damage would also raise.
   - `a TYPE` picks the nearest unit of the type. The original adds a
     random part to each distance first, up to half of it.
+  - `a X Z` on a unit with no weapon sends it to the place. Nothing
+    seen in the original settles that case. An armed unit attacks the
+    ground there, as in the original. What follows the attack was not
+    seen either, since the test list ended with it. Here the rest of
+    the list waits behind it, as behind an attack on a named unit.
+    Every shipped mission has `a X Z` only as the last step of a list,
+    so no mission meets that case.
   - `i NAME` puts the unit aboard at once, as the original does, and
     the rest of its list waits until it is set down. A `w` still runs
     out aboard. The original runs the rest of the list while the unit

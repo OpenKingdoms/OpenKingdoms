@@ -122,6 +122,11 @@ int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
     return 1;
 }
 
+int Units_OrderAttackGround(int handle, int32_t x, int32_t y) {
+    (void)x; (void)y;
+    return g_defs[g_units[handle].def_idx].num_weapons > 0;
+}
+
 int Units_OrderUnload(int handle, int32_t x, int32_t y) {
     return Units_OrderMove(handle, x, y);
 }

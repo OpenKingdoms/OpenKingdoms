@@ -400,6 +400,10 @@ static int ms_step_run(MsProgram *p, int handle, const Unit *u) {
             int took;
             if (s->type == MS_STEP_UNLOAD) {
                 took = Units_OrderUnload(handle, s->a * MS_CELL, s->b * MS_CELL);
+            } else if (s->type == MS_STEP_ATTACK_PLACE &&
+                       Units_OrderAttackGround(handle, s->a * MS_CELL, s->b * MS_CELL)) {
+                /* Fires on the place until another order. Unarmed units go there. */
+                took = 1;
             } else {
                 took = Units_OrderMove(handle, s->a * MS_CELL, s->b * MS_CELL);
             }
