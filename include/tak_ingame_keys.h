@@ -66,8 +66,53 @@ typedef struct InGameSelectKey {
 InGameSelectKey InGame_SelectKey(const uint8_t *keys, const uint8_t *prev);
 
 /* M held without Ctrl or Alt: a box drag leaves your monarch out. Ctrl+M
- * stays the select key. The original's M arms Move, which we do not bind. */
+ * stays the select key. M is also Move, which arms on the press. */
 int  InGame_BoxSkipsMonarchKey(const uint8_t *keys);
+
+/* Keys.TDF's UnitCommand letters, read by scancode, with Attack on B and
+ * Stop on N since W, A, S and D pan (D-050). Shift is the upper case and
+ * means the same, and Ctrl, Alt or Cmd makes a letter no order. */
+typedef enum InGameOrderKey {
+    IG_ORDER_NONE = 0,
+    IG_ORDER_MOVE,
+    IG_ORDER_ATTACK,
+    IG_ORDER_GUARD,
+    IG_ORDER_PATROL,
+    IG_ORDER_LOAD,
+    IG_ORDER_UNLOAD,
+    IG_ORDER_HEAL,
+    IG_ORDER_CLEAR,
+    IG_ORDER_STOP,
+    IG_ORDER_GATE
+} InGameOrderKey;
+
+/* The order key that went down this frame, or IG_ORDER_NONE. */
+InGameOrderKey InGame_OrderKey(const uint8_t *keys, const uint8_t *prev);
+
+/* Keys.TDF's other keys the engine has a feature for. None fires with
+ * Alt or Cmd. */
+typedef enum InGameFnKey {
+    IG_FN_NONE = 0,
+    IG_FN_PAUSE,       /* PAUSE: TogglePause */
+    IG_FN_BRIEFING,    /* F2: Briefing */
+    IG_FN_CLEAR_CHAT,  /* F12: ClearChat */
+    IG_FN_SAVE,        /* Ctrl+S, with or without Shift: SaveGame */
+    IG_FN_LOAD         /* Ctrl+L, with or without Shift: LoadGame */
+} InGameFnKey;
+
+InGameFnKey InGame_FnKey(const uint8_t *keys, const uint8_t *prev);
+
+/* F1 alone opens the menu. Ctrl+F1 is a weapon key, and Shift, Alt or
+ * Cmd with F1 does nothing. */
+int  InGame_MenuKey(const uint8_t *keys, const uint8_t *prev);
+
+/* Ctrl+F1 to F3: UnitCommand PrimaryWeapon, SecondaryWeapon and
+ * SpecialWeapon. Returns the slot 0 to 2, or -1. */
+int  InGame_WeaponKey(const uint8_t *keys, const uint8_t *prev);
+
+/* F5 to F8 recall a camera bookmark and Ctrl+F5 to F8 store one. Returns
+ * the slot 0 to 3 and sets *store, or returns -1. */
+int  InGame_BookmarkKey(const uint8_t *keys, const uint8_t *prev, int *store);
 
 /* Ctrl+D, with or without Shift: Keys.TDF's CTRL_D and CTRLSHIFT_D bind
  * SelfDestruct. */

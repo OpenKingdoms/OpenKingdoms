@@ -12,6 +12,12 @@
 
 #define IG_KEY_PRESSED(sc) (keys[sc] && !prev[sc])
 
+/* Cmd or the Windows key, which a browser on a Mac sends for its own
+ * shortcuts. */
+static int ig_gui(const uint8_t *keys) {
+    return keys[SDL_SCANCODE_LGUI] || keys[SDL_SCANCODE_RGUI];
+}
+
 InGameSpeedKey InGame_SpeedKey(const uint8_t *keys, const uint8_t *prev) {
     if (!keys || !prev) return IG_SPEED_KEY_NONE;
     /* Alt is the debug modifier, and nothing bound here answers it. */
@@ -97,8 +103,89 @@ int InGame_BoxSkipsMonarchKey(const uint8_t *keys) {
 int InGame_CloakKey(const uint8_t *keys, const uint8_t *prev) {
     if (!keys || !prev) return 0;
     if (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT]) return 0;
-    if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL]) return 0;
+    if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL] || ig_gui(keys)) return 0;
     return IG_KEY_PRESSED(SDL_SCANCODE_K) ? 1 : 0;
+}
+
+/* Keys.TDF's LOWER_ and UPPER_ letters that name a UnitCommand, but
+ * Attack and Stop sit on B and N, as A and S pan (D-050). K is the
+ * cloak and has its own decoder above. */
+static const struct {
+    SDL_Scancode key;
+    InGameOrderKey order;
+} k_order_keys[] = {
+    { SDL_SCANCODE_M, IG_ORDER_MOVE },
+    { SDL_SCANCODE_B, IG_ORDER_ATTACK },
+    { SDL_SCANCODE_G, IG_ORDER_GUARD },
+    { SDL_SCANCODE_P, IG_ORDER_PATROL },
+    { SDL_SCANCODE_L, IG_ORDER_LOAD },
+    { SDL_SCANCODE_U, IG_ORDER_UNLOAD },
+    { SDL_SCANCODE_H, IG_ORDER_HEAL },
+    { SDL_SCANCODE_C, IG_ORDER_CLEAR },
+    { SDL_SCANCODE_N, IG_ORDER_STOP },
+    { SDL_SCANCODE_O, IG_ORDER_GATE },
+};
+
+InGameOrderKey InGame_OrderKey(const uint8_t *keys, const uint8_t *prev) {
+    if (!keys || !prev) return IG_ORDER_NONE;
+    if (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT]) return IG_ORDER_NONE;
+    if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL]) return IG_ORDER_NONE;
+    if (ig_gui(keys)) return IG_ORDER_NONE;
+    for (size_t i = 0; i < sizeof(k_order_keys) / sizeof(k_order_keys[0]); i++)
+        if (IG_KEY_PRESSED(k_order_keys[i].key)) return k_order_keys[i].order;
+    return IG_ORDER_NONE;
+}
+
+static int ig_alt(const uint8_t *keys) {
+    return keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT];
+}
+
+static int ig_ctrl(const uint8_t *keys) {
+    return keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL];
+}
+
+static int ig_shift(const uint8_t *keys) {
+    return keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
+}
+
+int InGame_MenuKey(const uint8_t *keys, const uint8_t *prev) {
+    if (!keys || !prev || ig_alt(keys) || ig_ctrl(keys) || ig_shift(keys) || ig_gui(keys))
+        return 0;
+    return IG_KEY_PRESSED(SDL_SCANCODE_F1) ? 1 : 0;
+}
+
+InGameFnKey InGame_FnKey(const uint8_t *keys, const uint8_t *prev) {
+    if (!keys || !prev || ig_alt(keys) || ig_gui(keys)) return IG_FN_NONE;
+    if (ig_ctrl(keys)) {
+        if (IG_KEY_PRESSED(SDL_SCANCODE_S)) return IG_FN_SAVE;
+        if (IG_KEY_PRESSED(SDL_SCANCODE_L)) return IG_FN_LOAD;
+        return IG_FN_NONE;
+    }
+    /* Shift with these does nothing in the original. */
+    if (ig_shift(keys)) return IG_FN_NONE;
+    if (IG_KEY_PRESSED(SDL_SCANCODE_PAUSE)) return IG_FN_PAUSE;
+    if (IG_KEY_PRESSED(SDL_SCANCODE_F2)) return IG_FN_BRIEFING;
+    if (IG_KEY_PRESSED(SDL_SCANCODE_F12)) return IG_FN_CLEAR_CHAT;
+    return IG_FN_NONE;
+}
+
+int InGame_WeaponKey(const uint8_t *keys, const uint8_t *prev) {
+    if (!keys || !prev || ig_alt(keys) || ig_gui(keys) || !ig_ctrl(keys)) return -1;
+    if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) return -1;
+    for (int i = 0; i < 3; i++)
+        if (IG_KEY_PRESSED(SDL_SCANCODE_F1 + i)) return i;
+    return -1;
+}
+
+int InGame_BookmarkKey(const uint8_t *keys, const uint8_t *prev, int *store) {
+    if (!keys || !prev || ig_alt(keys) || ig_gui(keys)) return -1;
+    if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) return -1;
+    for (int i = 0; i < 4; i++) {
+        if (!IG_KEY_PRESSED(SDL_SCANCODE_F5 + i)) continue;
+        if (store) *store = ig_ctrl(keys) ? 1 : 0;
+        return i;
+    }
+    return -1;
 }
 
 int InGame_SelfDestructKey(const uint8_t *keys, const uint8_t *prev) {

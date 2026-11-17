@@ -2026,7 +2026,12 @@ Format per entry:
   original's does, with the chapter, the chapter's title and the
   mission's text dealt out over the panel's eight lines. It closes, and
   the clock starts, on a press of the mouse or of Enter, Escape, Space
-  or Pause.
+  or Pause. F2 raises it again during the mission, and putting it away
+  then leaves the clock as F2 found it, so a paused battle stays paused.
+  While it is up it owns the keys and the mouse. The key or press that
+  puts it away goes no further: Enter opens no chat line, F1 opens no
+  menu under it, and the click gives the selection no order. A press
+  held on the battle while it comes up gives no order when it is let go.
 - Why: the original builds the panel as the battle screen is built and
   pauses the game under it. How it is dismissed is in a handler the
   listing does not name, so the keys are ours. The panel has no button
@@ -2696,11 +2701,18 @@ Format per entry:
   units Ctrl+M takes. Shift with it adds them to the selection and keeps
   the units already selected. It works in both views. With Ctrl held, M
   is still Ctrl+M, and while a chat line is open M is a typed letter.
+  The press of M arms Move, as it does in the original, and a box
+  dragged with M held drops the Move it armed. Three things follow from
+  the shared key. A click with M held that moves less than 4 px is not
+  a box, so it gives the armed Move to that spot. A drag with M held
+  that is let go over the HUD is no box either, and leaves Move
+  armed. A press of M while Move is armed from its button disarms it,
+  as a second click on the button does.
 - Why: the owner asked for a quick way to take an army into a fight and
   leave the monarch behind.
 - Citation: the original's Keys.TDF binds M, LOWER_M and UPPER_M, to
-  UnitCommand Move, which this engine has never bound, so M did nothing
-  in battle before. The manual is silent.
+  UnitCommand Move, and the engine binds it so. The box rule is ours
+  and shares the key with Move. The manual is silent.
 
 ## D-047: Battle chat is larger, in the sender's colour, on a plate
 
@@ -2772,6 +2784,24 @@ Format per entry:
   and flies its legs round the order point at its weapon's range plus
   160 px, a shape the engine does not copy. The manual is silent.
   docs/notes/2026-11-14-air-attacks-and-dropped-shots.md has the detail.
+
+## D-050: W, A, S and D pan, and Attack and Stop sit on B and N
+
+- Change: W, A, S and D pan the camera in both views, as the arrows and
+  the screen edge do, except while Ctrl is held, when they are select
+  keys. B arms Attack and N gives Stop, in upper and lower case alike,
+  where the original has A and S. The other order letters are the
+  original's: M, G, P, L, U, H, C, K and O.
+- Why: letter panning ranks above the original's two letters, and A and
+  S cannot both pan and give orders. B and N are free in both views,
+  sit by the index finger beside WASD, and keep their labels on QWERTZ
+  and AZERTY. Ctrl+B and Ctrl+N stay the select keys, which no order
+  letter answers.
+- Citation: the original's Keys.TDF binds LOWER_A and UPPER_A to
+  UnitCommand Attack and LOWER_S and UPPER_S to Stop, leaves B empty,
+  gives N to MoveToNextUnit, which the engine does not have, and binds
+  no letter to the camera, which pans on the arrows and the edge. The
+  manual is silent.
 
 ## R-008: A reel's soundtrack goes through the game's mixer
 
