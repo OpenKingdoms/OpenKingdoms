@@ -229,6 +229,8 @@ TEST(a_list_is_worked_through_one_order_at_a_time) {
     int u = Units_Spawn(sword, 2, 1, 100, 100);
     ASSERT_EQ_INT(4, MissionOrders_Give(u, "w 2, m 10 20, o 1, m 30 40,"));
     ASSERT_EQ_INT(1, MissionOrders_Running(u));
+    /* o 1 is the standing orders, set as the list is read. */
+    ASSERT_EQ_INT(UNIT_AGGRO_DEFENSIVE, (int)g_units[u].aggro_mode);
 
     /* Two seconds of nothing. */
     ticks(119);
@@ -240,11 +242,9 @@ TEST(a_list_is_worked_through_one_order_at_a_time) {
     /* The next order waits for this one. */
     ticks(300);
     ASSERT_EQ_INT(1, g_move_calls);
-    ASSERT_EQ_INT(UNIT_AGGRO_OFFENSIVE, (int)g_units[u].aggro_mode);
     mock_arrive(u);
     ticks(2);
-    /* o 1 is the standing orders, and the unit is whose it was. */
-    ASSERT_EQ_INT(UNIT_AGGRO_DEFENSIVE, (int)g_units[u].aggro_mode);
+    /* The unit is whose it was. */
     ASSERT_EQ_INT(2, (int)g_units[u].player_id);
     ASSERT_EQ_INT(2, g_move_calls);
     ASSERT_EQ_INT(480, g_last_move_x);

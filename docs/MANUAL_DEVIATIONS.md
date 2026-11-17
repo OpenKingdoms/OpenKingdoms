@@ -1938,6 +1938,10 @@ Format per entry:
     the list waits behind it, as behind an attack on a named unit.
     Every shipped mission has `a X Z` only as the last step of a list,
     so no mission meets that case.
+  - `o` is set as the list is given, the last one winning, as in the
+    original. A save made before `o` was read this way keeps any `o`
+    it had not reached as a step, and that step is skipped on loading,
+    so the unit keeps the orders it had.
   - `i NAME` puts the unit aboard at once, as the original does, and
     the rest of its list waits until it is set down. A `w` still runs
     out aboard. The original runs the rest of the list while the unit

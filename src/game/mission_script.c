@@ -45,8 +45,7 @@ enum {
     MS_STEP_ATTACK_PLACE,   /* a, b squares */
     MS_STEP_BUILD,          /* ref unit type, a count, b, c squares */
     MS_STEP_BOARD,          /* ref ident */
-    MS_STEP_ORDERS,         /* a level */
-    MS_STEP_SELF_DESTRUCT,
+    MS_STEP_SELF_DESTRUCT = 11, /* saves keep the numbers, 10 was an `o` step */
     MS_STEP_UNLOAD,         /* a, b squares */
     MS_STEP_SKIP,           /* selectable, speed, unknown */
     MS_STEP_CLOAK
@@ -260,7 +259,6 @@ static void ms_step_from(const MissionCommand *c, MsStep *s) {
         s->type = MS_STEP_BOARD;
         s->ref = ms_clamp16(ms_ident_index(c->text, 1));
         break;
-    case MISSION_CMD_ORDERS:        s->type = MS_STEP_ORDERS; break;
     case MISSION_CMD_SELF_DESTRUCT: s->type = MS_STEP_SELF_DESTRUCT; break;
     case MISSION_CMD_CLOAK:         s->type = MS_STEP_CLOAK; break;
     default:                        s->type = MS_STEP_SKIP; break;
@@ -298,9 +296,14 @@ int MissionOrders_Give(int handle, const char *text) {
     p->first = (uint16_t)ms.steps_used;
     p->count = (uint16_t)n;
     p->watch = -1;
+    int level = -1;
     for (int i = 0; i < n; i++) {
         ms_step_from(&cmds[i], &ms.step[ms.steps_used + i]);
+        if (cmds[i].type == MISSION_CMD_ORDERS && cmds[i].a >= 0 && cmds[i].a <= 2)
+            level = cmds[i].a;
     }
+    /* `o` is not a step: the last one in the list holds from the start. */
+    if (level >= 0) Units_OrderSetAggro(handle, level);
     ms.steps_used += n;
     ms.program_of[handle] = (int16_t)(slot + 1);
     Mission_FreeCommands(cmds);
@@ -491,10 +494,6 @@ static int ms_step_run(MsProgram *p, int handle, const Unit *u) {
         if (carrier >= 0) Units_BoardAtOnce(handle, carrier);
         return 1;
     }
-
-    case MS_STEP_ORDERS:
-        if (s->a >= 0 && s->a <= 2) Units_OrderSetAggro(handle, s->a);
-        return 1;
 
     case MS_STEP_SELF_DESTRUCT:
         Units_DebugKillHandle(handle);

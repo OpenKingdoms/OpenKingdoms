@@ -5589,6 +5589,9 @@ int Units_OrderSetAggro(int handle, int aggro_mode) {
     if (aggro_mode < UNIT_AGGRO_PASSIVE || aggro_mode > UNIT_AGGRO_OFFENSIVE)
         return 0;
     Unit *u = order_unit(handle);
+    /* A rider takes one too: a mission list's `o` is set as it is given (D-018). */
+    if (!u && handle >= 0 && handle < g_unit_count &&
+        g_units[handle].alive == UNIT_ALIVE_TRANSPORTED) u = &g_units[handle];
     if (!u) return 0;
     u->aggro_mode = (uint8_t)aggro_mode;
     /* Passive units must drop any in-flight auto-target. */
