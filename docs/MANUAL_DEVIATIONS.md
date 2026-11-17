@@ -2724,6 +2724,24 @@ Format per entry:
   160 px, a shape the engine does not copy. The manual is silent.
   docs/notes/2026-11-14-air-attacks-and-dropped-shots.md has the detail.
 
+## D-050: W, A, S and D pan, and Attack and Stop sit on B and N
+
+- Change: W, A, S and D pan the camera in both views, as the arrows and
+  the screen edge do, except while Ctrl is held, when they are select
+  keys. B arms Attack and N gives Stop, in upper and lower case alike,
+  where the original has A and S. The other order letters are the
+  original's: M, G, P, L, U, H, C, K and O.
+- Why: letter panning ranks above the original's two letters, and A and
+  S cannot both pan and give orders. B and N are free in both views,
+  sit by the index finger beside WASD, and keep their labels on QWERTZ
+  and AZERTY. Ctrl+B and Ctrl+N stay the select keys, which no order
+  letter answers.
+- Citation: the original's Keys.TDF binds LOWER_A and UPPER_A to
+  UnitCommand Attack and LOWER_S and UPPER_S to Stop, leaves B empty,
+  gives N to MoveToNextUnit, which the engine does not have, and binds
+  no letter to the camera, which pans on the arrows and the edge. The
+  manual is silent.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

@@ -959,7 +959,7 @@ directly, and the canvas is transparent in-game). Delete that FillRect from
 
 - **Map visible on screen at native resolution.** Not blurry. Not
   640×480-scaled. Native.
-- Arrow keys scroll the camera, terrain updates each frame.
+- WASD / arrow keys scroll the camera, terrain updates each frame.
 - No frame hitches at 60 FPS on Ground War-class maps.
 - Missing chunks (shouldn't happen for shipped maps, but be
   defensive) show as background-coloured gaps, not crashes.

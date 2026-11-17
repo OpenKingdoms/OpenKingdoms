@@ -30348,7 +30348,6 @@ TEST(typing_a_chat_line_issues_no_orders) {
     ASSERT_EQ_INT(alive_before, chat_test_alive_units());
     ASSERT_EQ_INT((int)cam_x, (int)world->cam_x);   /* the a scrolled nothing */
     ASSERT_EQ_INT((int)cam_y, (int)world->cam_y);
-    /* And the a and the c armed no Attack or Clear over the Move. */
     ASSERT_EQ_INT(HUD_CMD_MOVE, HUD_GetCommandMode());
     ASSERT_EQ_INT(1, igm_selection_count());
 
@@ -30359,10 +30358,10 @@ TEST(typing_a_chat_line_issues_no_orders) {
     ASSERT_EQ_STR("Player: attack", Chat_EntryText(0));
     InGame_DebugKeyFrame(0, NULL);
 
-    /* The control: with the console shut the s is Stop, which drops the
-     * armed Move, so the assertions above were testing something. */
-    InGame_DebugKeyFrame(SDL_SCANCODE_S, NULL);
-    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+    /* The control: with the console shut the same key does move the
+     * camera, so the assertions above were testing something. */
+    InGame_DebugKeyFrame(SDL_SCANCODE_A, NULL);
+    ASSERT(world->cam_x < cam_x);
 
     igm_teardown(&platform);
 }

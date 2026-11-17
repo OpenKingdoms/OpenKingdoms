@@ -1377,12 +1377,12 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
  * The tick scales it by the frame's scroll distance. */
 static void ig_scroll_dir(const Uint8 *keys, int *out_dx, int *out_dy) {
     int dx = 0, dy = 0;
-    /* The arrows only. The original pans on no letter, and A, S and D
-     * are order keys (Keys.TDF). */
-    if (keys[SDL_SCANCODE_LEFT])  dx -= 1;
-    if (keys[SDL_SCANCODE_RIGHT]) dx += 1;
-    if (keys[SDL_SCANCODE_UP])    dy -= 1;
-    if (keys[SDL_SCANCODE_DOWN])  dy += 1;
+    /* With Ctrl down W, A, S and D are select keys, not the camera. */
+    int wasd = !keys[SDL_SCANCODE_LCTRL] && !keys[SDL_SCANCODE_RCTRL];
+    if (keys[SDL_SCANCODE_LEFT]  || (wasd && keys[SDL_SCANCODE_A])) dx -= 1;
+    if (keys[SDL_SCANCODE_RIGHT] || (wasd && keys[SDL_SCANCODE_D])) dx += 1;
+    if (keys[SDL_SCANCODE_UP]    || (wasd && keys[SDL_SCANCODE_W])) dy -= 1;
+    if (keys[SDL_SCANCODE_DOWN]  || (wasd && keys[SDL_SCANCODE_S])) dy += 1;
     *out_dx = dx;
     *out_dy = dy;
 }
@@ -2398,7 +2398,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * module-global CameraConfig (tak_camera.h) — a future options UI
      * tweaks that struct and all of this automatically follows.
      * Keyboard and mouse-edge contributions add to each other, so
-     * holding Left at the left edge scrolls at 2× speed. */
+     * holding A at the left edge scrolls at 2× speed. */
     const CameraConfig *cc = Camera_GetConfig();
     float scroll_px = cc->scroll_px_per_sec * (float)Timer_GetFrameDT(timer);
     if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT])
@@ -2426,7 +2426,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         right = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
         if (DebugPanel_HandleInput(platform, wx, wy, left)) {
             dp_active = 1;
-            dx = dy = 0;     /* panel wins over the keys this frame */
+            dx = dy = 0;     /* panel wins over WASD this frame */
         }
     }
 

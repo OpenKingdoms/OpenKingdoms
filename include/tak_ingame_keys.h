@@ -69,8 +69,9 @@ InGameSelectKey InGame_SelectKey(const uint8_t *keys, const uint8_t *prev);
  * stays the select key. M is also Move, which arms on the press. */
 int  InGame_BoxSkipsMonarchKey(const uint8_t *keys);
 
-/* Keys.TDF's UnitCommand letters, read by scancode. Shift is the upper
- * case and means the same, and Ctrl, Alt or Cmd makes a letter no order. */
+/* Keys.TDF's UnitCommand letters, read by scancode, with Attack on B and
+ * Stop on N since W, A, S and D pan (D-050). Shift is the upper case and
+ * means the same, and Ctrl, Alt or Cmd makes a letter no order. */
 typedef enum InGameOrderKey {
     IG_ORDER_NONE = 0,
     IG_ORDER_MOVE,

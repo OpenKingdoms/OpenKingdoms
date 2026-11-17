@@ -107,21 +107,22 @@ int InGame_CloakKey(const uint8_t *keys, const uint8_t *prev) {
     return IG_KEY_PRESSED(SDL_SCANCODE_K) ? 1 : 0;
 }
 
-/* Keys.TDF's LOWER_ and UPPER_ letters that name a UnitCommand. K is
- * the cloak and has its own decoder above. */
+/* Keys.TDF's LOWER_ and UPPER_ letters that name a UnitCommand, but
+ * Attack and Stop sit on B and N, as A and S pan (D-050). K is the
+ * cloak and has its own decoder above. */
 static const struct {
     SDL_Scancode key;
     InGameOrderKey order;
 } k_order_keys[] = {
     { SDL_SCANCODE_M, IG_ORDER_MOVE },
-    { SDL_SCANCODE_A, IG_ORDER_ATTACK },
+    { SDL_SCANCODE_B, IG_ORDER_ATTACK },
     { SDL_SCANCODE_G, IG_ORDER_GUARD },
     { SDL_SCANCODE_P, IG_ORDER_PATROL },
     { SDL_SCANCODE_L, IG_ORDER_LOAD },
     { SDL_SCANCODE_U, IG_ORDER_UNLOAD },
     { SDL_SCANCODE_H, IG_ORDER_HEAL },
     { SDL_SCANCODE_C, IG_ORDER_CLEAR },
-    { SDL_SCANCODE_S, IG_ORDER_STOP },
+    { SDL_SCANCODE_N, IG_ORDER_STOP },
     { SDL_SCANCODE_O, IG_ORDER_GATE },
 };
 
