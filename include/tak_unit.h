@@ -821,6 +821,7 @@ typedef struct UnitWeaponState {
     int8_t  aim_thread_slot;     /* the thread the last AimWeapon took */
     int16_t aim_ticks;           /* ticks since that AimWeapon began */
     int16_t aim_target;          /* target handle for the active aim */
+    int16_t aim_heading;         /* the heading that aim was asked for */
     uint8_t aim_ready;
     /* A drawn shot waiting on the script's release, port 23
      * (legacy:245900-245904): UNIT_DRAW_*, and the target drawn at. */
@@ -2637,6 +2638,10 @@ int               Units_DebugSetDefs(const UnitDef *defs, int count);
 int               Units_DebugSetDefScript(int def_idx, const uint32_t *code,
                                           int words, const char *const *names,
                                           const uint32_t *offsets, int scripts);
+/* Test hook: name the pieces of the script Units_DebugSetDefScript gave
+ * def_idx. A def with no model runs the script on those pieces. */
+int               Units_DebugSetDefScriptPieces(int def_idx,
+                                                const char *const *pieces, int n);
 /* Test hook: give a registered def a yardmap from an FBI yardmap string,
  * which makes a def with bmcode 0 a structure. Returns 0 on success. */
 int               Units_DebugSetYardmap(int def_idx, const char *spec);

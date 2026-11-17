@@ -20303,9 +20303,8 @@ TEST(flyer_takes_off_flaps_and_lands) {
     }
     ASSERT(landed);
 
-    /* On the ground the flap loop is off. The land script is itself a
-     * loop (the dragon shifts on the spot), so the wing is not frozen,
-     * but it travels a fraction of what it did in the air. */
+    /* Down, the flap and landing loops have both ended, so the wing
+     * does not move. */
     for (int i = 0; i < 600; i++) {
         timer.accumulator = timer.sim_dt;
         ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
