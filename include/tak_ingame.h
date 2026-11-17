@@ -124,9 +124,6 @@ void InGame_DebugKeyChord(int mods, int scancode);
 /* Test seam: the mouse InGame_Tick reads in place of SDL's, window
  * coordinates and SDL_BUTTON masks; on = 0 hands it back. */
 void InGame_DebugMouse(int on, int win_x, int win_y, uint32_t buttons);
-/* Test seam: the keyboard InGame_Tick reads in place of SDL's, one key
- * plus the IG_CLICK_ mods held. on = 0 hands it back. */
-void InGame_DebugKeys(int on, int mods, int scancode);
 
 /* The 3D view. SetView3D switches in place and returns 1 when the view
  * asked for is up (the 3D view can refuse where there is no GL).

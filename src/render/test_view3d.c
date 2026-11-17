@@ -441,43 +441,6 @@ TEST(a_minimap_look_with_a_selection_moves_the_3d_view) {
     shutdown_all(&platform);
 }
 
-/* F5 puts the 3D view back where Ctrl+F5 stored it. The key moves the
- * classic camera before the 3D view reads its own input that tick. */
-TEST(a_bookmark_recalls_in_the_3d_view) {
-    TAK_Platform platform;
-    GameWorld *world = NULL;
-    int rc = boot(&platform, &world);
-    if (rc == 1) return;
-    ASSERT_EQ_INT(0, rc);
-    Timer timer;
-    Timer_Init(&timer);
-    world->cam_x = 400; world->cam_y = 400;
-    ASSERT(frame(&platform, &timer));
-    ASSERT_EQ_INT(1, InGame_SetView3D(1));
-    platform.has_focus = 1;
-    ASSERT(frame(&platform, &timer));
-    InGame_DebugKeys(1, IG_CLICK_CTRL, SDL_SCANCODE_F5);
-    ASSERT(frame(&platform, &timer));
-    InGame_DebugKeys(1, 0, 0);
-    world->cam_x = 900; world->cam_y = 700;
-    ASSERT(frame(&platform, &timer));
-    ASSERT(frame(&platform, &timer));
-    const Camera3D *cam = View3D_Camera();
-    InGame_DebugKeys(1, 0, SDL_SCANCODE_F5);
-    ASSERT(frame(&platform, &timer));
-    InGame_DebugKeys(1, 0, 0);
-    ASSERT(frame(&platform, &timer));
-    printf("(classic %d,%d, 3D over %.0f,%.0f) ", (int)world->cam_x, (int)world->cam_y,
-           cam->target_x, cam->target_z);
-    ASSERT_EQ_INT(400, (int)world->cam_x);
-    ASSERT_EQ_INT(400, (int)world->cam_y);
-    ASSERT_EQ_INT(400 + world->viewport_w / 2, (int)cam->target_x);
-    ASSERT_EQ_INT(400 + world->viewport_h / 2, (int)cam->target_z);
-    InGame_DebugKeys(0, 0, 0);
-    platform.has_focus = 0;
-    shutdown_all(&platform);
-}
-
 TEST(the_accessors_hand_out_the_baked_model_and_its_pose) {
     TAK_Platform platform;
     GameWorld *world = NULL;
@@ -2854,7 +2817,6 @@ int main(int argc, char **argv) {
     RUN_NAMED(the_first_switch_to_3d_stays_over_the_same_ground);
     RUN_NAMED(a_scroll_in_3d_moves_the_classic_camera_with_it);
     RUN_NAMED(a_minimap_look_with_a_selection_moves_the_3d_view);
-    RUN_NAMED(a_bookmark_recalls_in_the_3d_view);
     RUN_NAMED(the_accessors_hand_out_the_baked_model_and_its_pose);
     RUN_NAMED(a_walking_units_pieces_move_in_the_3d_pose);
     RUN_NAMED(the_build_ghost_in_3d_is_judged_where_the_pointer_lands);

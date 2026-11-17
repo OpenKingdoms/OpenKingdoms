@@ -1486,16 +1486,6 @@ static void ig_mouse_away(const TAK_Platform *platform) {
     ig.drag_active   = 0;
 }
 
-static int g_dbg_keys_on;
-static uint8_t g_dbg_keys[SDL_NUM_SCANCODES];
-void InGame_DebugKeys(int on, int mods, int scancode) {
-    memset(g_dbg_keys, 0, sizeof(g_dbg_keys));
-    g_dbg_keys_on = on;
-    if (mods & IG_CLICK_CTRL) g_dbg_keys[SDL_SCANCODE_LCTRL] = 1;
-    if (mods & IG_CLICK_SHIFT) g_dbg_keys[SDL_SCANCODE_LSHIFT] = 1;
-    if (scancode > 0 && scancode < SDL_NUM_SCANCODES) g_dbg_keys[scancode] = 1;
-}
-
 void InGame_DebugKeyFrame(int scancode, const char *text_in) {
     static uint8_t frame_keys[SDL_NUM_SCANCODES];
     memset(frame_keys, 0, sizeof(frame_keys));
@@ -2314,7 +2304,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * loader legacy:122746-122785). While it is up it owns the frame:
      * the battle stays drawn behind it and every key and click goes to
      * the dialog (legacy:154694-154752). */
-    const Uint8 *keys = g_dbg_keys_on ? g_dbg_keys : SDL_GetKeyboardState(NULL);
+    const Uint8 *keys = SDL_GetKeyboardState(NULL);
     /* A campaign mission opens under its briefing, and the clock waits
      * for the player to put it away (legacy:153077). It owns the keys
      * before the console and F1, as in ig_debug_keys. */
@@ -2603,9 +2593,8 @@ void InGame_Shutdown(void) {
     OrderOverlay_SetShift(0);
     g_request_view3d = 0;
     Translate_Free(&g_death_lines);
-    /* A test's mouse and keyboard go with the battle they drove. */
+    /* A test's mouse goes with the battle it drove. */
     g_dbg_mouse_on = 0;
-    g_dbg_keys_on = 0;
     /* Nothing transient yet. GameWorld teardown is main.c's responsibility
      * via World_End() — that outlives this screen and Phase D's pause
      * menu will want to re-enter InGame without rebuilding the world. */

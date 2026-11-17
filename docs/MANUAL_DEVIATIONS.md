@@ -2650,8 +2650,7 @@ Format per entry:
 - Why: the owner asked for a quick way to take an army into a fight and
   leave the monarch behind.
 - Citation: the original's Keys.TDF binds M, LOWER_M and UPPER_M, to
-  UnitCommand Move, and the engine binds it so
-  (docs/notes/2026-11-15-the-original-keys.md). The box rule is ours
+  UnitCommand Move, and the engine binds it so. The box rule is ours
   and shares the key with Move. The manual is silent.
 
 ## D-047: Battle chat is larger, in the sender's colour, on a plate
