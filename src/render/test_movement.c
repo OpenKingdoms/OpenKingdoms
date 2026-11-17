@@ -482,15 +482,15 @@ TEST(a_line_abreast_holds_its_lane) {
  * the goal. That is the case the stall ladder is for, and while the
  * ladder measured displacement from a reference point that moved
  * with the unit, each length of the pocket reset it and the last
- * rung, the one that ends an order nothing can serve, was never
- * reached. Measured on the unfixed mover: after 3000 ticks the order
- * was still live, the unit had paced 2023 px, was no closer to the
- * goal than the 345 px it started at, and the ladder had reset three
- * times and never climbed past its first rung of four.
+ * rung was never reached. Measured on the unfixed mover: after 3000
+ * ticks the order was still live, the unit had paced 2023 px, was no
+ * closer to the goal than the 345 px it started at, and the ladder had
+ * reset three times and never climbed past its first rung of four. The
+ * ground joins the pocket to the goal, so the last rung keeps the order.
  */
 #define MV_POCKET_TICKS 3000
 
-TEST(a_unit_that_covers_ground_without_closing_on_its_goal_gives_up) {
+TEST(a_unit_that_covers_ground_without_closing_on_its_goal_climbs_the_ladder) {
     GameWorld *w = mv_world();
     ASSERT_NOT_NULL(w);
     /* The pocket: four tiles of it, so the unit stands legally inside
@@ -553,15 +553,16 @@ TEST(a_unit_that_covers_ground_without_closing_on_its_goal_gives_up) {
     /* And none of that pacing was progress. The goal is 345 px away
      * through a wall and it never got near it. */
     ASSERT(best > 300);
-    /* So the ladder climbed all four rungs and ended the order. The
-     * two resets it took on the way are the mover really getting
+    /* So the ladder climbed all four rungs and on to the kept one, 5.
+     * The resets it took on the way are the mover really getting
      * further along its route than it ever had, which is progress and
      * is meant to start the ladder over. There can only ever be a
      * bounded number of those, because the best way left to walk only
-     * ever falls. */
-    ASSERT_EQ_INT(4, max_esc);
+     * ever falls. The order is kept, not ended: that is the check the
+     * last rung's change fails before it. */
+    ASSERT_EQ_INT(5, max_esc);
     ASSERT(resets <= 4);
-    ASSERT(ended > 0);
+    ASSERT(ended < 0);
     mv_end();
 }
 
@@ -1415,12 +1416,13 @@ TEST(a_shipyard_builds_past_an_idle_ship_on_its_pad) {
 }
 
 /* A ship parked near the rally point is no business of the yard's while
- * its products sail past it (M-012). */
+ * its products sail past it (M-012). 200 px east it is clear of the spots
+ * the yard sends a product that stops short to. */
 TEST(a_shipyard_leaves_a_ship_parked_by_its_rally_point_alone) {
     ASSERT_NOT_NULL(mv_sea());
     int32_t yx = 1536, yy = 1536;
     int yard = Units_Spawn(MV_DEF_YARD, 1, 0, yx, yy);
-    int parked = Units_Spawn(MV_DEF_GALLEY, 1, 0, yx + 150, yy + 450);
+    int parked = Units_Spawn(MV_DEF_GALLEY, 1, 0, yx + 200, yy + 450);
     ASSERT(yard >= 0 && parked >= 0);
     Units_DebugSetAggro(parked, UNIT_AGGRO_PASSIVE);
     Units_FactorySetRally(yard, yx, yy + 450);
@@ -2983,7 +2985,7 @@ int main(int argc, char **argv) {
     RUN(two_units_walking_into_each_other_give_way);
     RUN(two_files_of_units_walk_through_each_other);
     RUN(a_line_abreast_holds_its_lane);
-    RUN(a_unit_that_covers_ground_without_closing_on_its_goal_gives_up);
+    RUN(a_unit_that_covers_ground_without_closing_on_its_goal_climbs_the_ladder);
     RUN(a_builder_that_cannot_reach_its_site_gives_the_build_up);
     RUN(a_near_blocked_unit_holds_its_line);
     RUN(a_wide_unit_walks_a_corridor_its_own_width);

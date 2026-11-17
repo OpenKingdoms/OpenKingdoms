@@ -4206,6 +4206,8 @@ static int unit_terrain_walkable(const GameWorld *w, const UnitDef *def,
                                  int32_t x, int32_t y);
 static const MoveClassDef *unit_move_class(const GameWorld *w,
                                            const UnitDef *def);
+static int unit_body_bad(const GameWorld *w, const Unit *u,
+                         const UnitDef *def, int32_t x, int32_t y);
 
 /* Could this unit legally stand at (x,y)? Terrain/water rules only. */
 int Units_CanStandAt(int handle, int32_t world_x, int32_t world_y) {
@@ -12039,6 +12041,32 @@ static int unit_water_depth_ok(const GameWorld *w, const UnitDef *def,
     return 1;
 }
 
+/* Tiles of the body at (x, y) on ground the route search refuses: the
+ * whole footprint (legacy:219089-219131), anchored on the position
+ * rounded to the tile grid (legacy:184166-184186). */
+static int unit_body_bad_mc(const GameWorld *w, const Unit *u,
+                            const UnitDef *def, const MoveClassDef *mc,
+                            int32_t x, int32_t y) {
+    if (!w || !def || def->can_fly) return 0;
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    return TAK_PathBodyBad(w, mc, def->max_slope, fx, fz,
+                           Occ_TileOf(x - fx * 8 + 8), Occ_TileOf(y - fz * 8 + 8));
+}
+
+static int unit_body_bad(const GameWorld *w, const Unit *u,
+                         const UnitDef *def, int32_t x, int32_t y) {
+    return unit_body_bad_mc(w, u, def, unit_move_class(w, def), x, y);
+}
+
+/* Whether a step to (x, y) moves the body's tiles along both axes. */
+static int unit_body_crosses_corner(const Unit *u, int32_t x, int32_t y) {
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    return Occ_TileOf(x - fx * 8 + 8) != Occ_TileOf(u->world_x - fx * 8 + 8) &&
+           Occ_TileOf(y - fz * 8 + 8) != Occ_TileOf(u->world_y - fz * 8 + 8);
+}
+
 static int unit_terrain_walkable(const GameWorld *w,
                                  const UnitDef *def,
                                  int32_t x,
@@ -12389,10 +12417,10 @@ static int g_path_work_this_tick;
  * deliberate deviation in docs/MANUAL_DEVIATIONS.md (M-006). */
 #define UNIT_NO_PROGRESS_TICKS 240
 #define UNIT_NO_PROGRESS_PX    32
-/* Plain replans before the order is given up as unreachable. #60 asks
- * for another route to the SAME destination, so a fresh search is the
- * whole of the ladder and giving up is the last rung, never the first.
- * Four of them is sixteen seconds of a unit closing no ground.
+/* Plain replans before the last rung. #60 asks for another route to the
+ * SAME destination, so a fresh search is the whole of the ladder. The
+ * last rung ends the order or keeps it (unit_move_kept), never the
+ * first. Four of them is sixteen seconds of a unit closing no ground.
  *
  * There used to be rungs above the replan that aimed at points ringing
  * the goal. They fired in exactly one measured case, the escorts on a
@@ -12401,6 +12429,10 @@ static int g_path_work_this_tick;
  * no route can end on, and unit_effective_goal serves a goal the
  * planner had to move. Deleted rather than left looking reassuring. */
 #define UNIT_STALL_ESCALATIONS 4
+/* A kept order searches once a rung, not between, for at most 30 rungs
+ * (two minutes). The one body gap sweep used 22 at most. */
+#define UNIT_STALL_KEPT (UNIT_STALL_ESCALATIONS + 1)
+#define UNIT_STALL_KEPT_RUNGS 30
 
 /* Route check interval. The original re-examines the route every
  * "speed class" frames, a per-def byte derived from maxvelocity
@@ -12611,6 +12643,48 @@ static int unit_stall_progress(int32_t m, int32_t *best, int32_t *mark) {
     return 0;
 }
 
+/* Stopped friends whose bodies come this near are the edge of a crowd
+ * that has packed. */
+#define UNIT_PACKED_GAP_PX 32
+
+static int unit_arrive_px(const Unit *u);
+static int64_t unit_body_gap_d2(const Unit *u, const Unit *t);
+
+/* Does a friend that has stopped stand at this unit's edge? A fleet
+ * packs by its hulls (unit_arrive_px), walkers by their bodies. */
+static int unit_packed_beside(const Unit *u, const Unit *o) {
+    if (def_hull(u->def_idx)) {
+        int64_t dx = (int64_t)o->world_x - u->world_x;
+        int64_t dy = (int64_t)o->world_y - u->world_y;
+        int64_t r = unit_arrive_px(u);
+        return dx * dx + dy * dy <= r * r;
+    }
+    return unit_body_gap_d2(u, o) <= (int64_t)UNIT_PACKED_GAP_PX * UNIT_PACKED_GAP_PX;
+}
+
+/* Is a move kept from the ladder's last rung? Jammed units try again later
+ * in the original (legacy:191265-191388, M-006), unless they have packed. */
+static int unit_move_kept(const Unit *u, const UnitDef *def,
+                          const GameWorld *w,
+                          int32_t final_x, int32_t final_y) {
+    if (u->cmd_kind != UNIT_CMD_MOVE) return 0;
+    /* The label check answers yes where it cannot tell. The rung bound
+     * covers that, and a goal the body cannot reach ends at the shore. */
+    if (!TAK_PathGroundConnected(w, unit_move_class(w, def), def->max_slope,
+                                 u->world_x, u->world_y, final_x, final_y))
+        return 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *o = &g_units[i];
+        if (o == u || o->alive != UNIT_ALIVE_ACTIVE || o->carried_by >= 0) continue;
+        if (o->under_construction) continue;
+        if (o->player_id != u->player_id || o->cmd_kind != UNIT_CMD_NONE) continue;
+        const UnitDef *od = Units_GetDef(o->def_idx);
+        if (!od || od->can_fly || od->max_velocity <= 0.0f) continue;
+        if (unit_packed_beside(u, o)) return 0;
+    }
+    return 1;
+}
+
 /* Plan bookkeeping for one tick: replans, the pending hold, and the
  * stall watchdog. */
 static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
@@ -12635,7 +12709,9 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
     }
     if (unit_path_goal_changed(u, final_x, final_y)) {
         unit_replan_path(u, def, w, final_x, final_y);
-    } else if (u->path_failed && u->path_len == 0) {
+    } else if (u->path_failed && u->path_len == 0 &&
+               (u->stall_esc < UNIT_STALL_KEPT || u->path_pending)) {
+        /* A kept order waits for its rung, unless the budget refused it. */
         /* No route from here — retry periodically. The unit keeps
          * moving meanwhile: the original walks a straight two point
          * route when the search fails (legacy:22536-22551). */
@@ -12649,10 +12725,10 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
     /* ── The #60 watchdog ──────────────────────────────────────────
      * Route or no route, a live move order that has not closed any
      * ground on its goal gets a fresh search: the first is a plain replan, the
-     * next once whoever was in the way has had time to move or park,
-     * and after four of them the order is ended rather than ground at
-     * for ever. Every rung plans to the same destination, which is
-     * what #60 asks for.
+     * next once whoever was in the way has had time to move or park.
+     * After four of them the order is ended, or kept and searched again
+     * once a rung (unit_move_kept). Every rung plans to the same
+     * destination, which is what #60 asks for.
      * It sits outside the "has a route" gate on purpose: the cases in
      * the report are the ones where the search returns nothing, and
      * the old watchdog could not run at all without a route. */
@@ -12713,8 +12789,11 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
         }
         if (u->stall_ticks > UNIT_NO_PROGRESS_TICKS) {
             u->stall_ticks = 0;
-            if (u->stall_esc >= UNIT_STALL_ESCALATIONS) return NAV_GIVE_UP;
-            u->stall_esc++;
+            if (u->stall_esc < UNIT_STALL_ESCALATIONS) u->stall_esc++;
+            else if (u->stall_esc < UNIT_STALL_ESCALATIONS + UNIT_STALL_KEPT_RUNGS &&
+                     unit_move_kept(u, def, w, final_x, final_y))
+                u->stall_esc++;
+            else return NAV_GIVE_UP;
             unit_drop_route(u);
             unit_replan_path(u, def, w, final_x, final_y);
         }
@@ -12852,7 +12931,7 @@ static void unit_aim_point(const Unit *u,
 static int unit_neighbour_blocks(const GameWorld *w, const Unit *u,
                                  const UnitDef *def, int self_h,
                                  int32_t nx, int32_t ny) {
-    if (!unit_terrain_walkable(w, def, nx, ny)) return 1;
+    if (unit_body_bad(w, u, def, nx, ny)) return 1;
     if (!w->occ) return 0;
     int fx, fz;
     unit_occ_fp(u, &fx, &fz);
@@ -12949,15 +13028,22 @@ static void unit_route_check(Unit *u, const UnitDef *def,
 /* Would a step to (nx, ny) be refused? The escape hatches let a unit
  * already on illegal ground or on someone's footprint step out. */
 static int unit_step_refused(const GameWorld *w, const UnitDef *def,
+                             const MoveClassDef *mc,
                              const Unit *u, int self_h,
                              int escaping, int occ_escape,
                              int32_t nx, int32_t ny) {
     if (!w) return 0;
-    /* The escape hatch relaxes slope and features so a unit can leave
-     * illegal ground, but never the water window: that window is the
-     * only thing keeping a boat off dry land (legacy:219155-219157). */
+    /* The water window at the centre is never relaxed: it is the only
+     * thing keeping a boat off dry land (legacy:219155-219157). */
     if (!unit_water_depth_ok(w, def, nx, ny)) return 1;
-    if (!escaping && !unit_terrain_walkable(w, def, nx, ny)) return 1;
+    /* The body may not take on more bad ground than it stands on now. */
+    if (unit_body_bad_mc(w, u, def, mc, nx, ny) > escaping) return 1;
+    /* Across a tile corner, the bodies either side too, as a route's
+     * diagonal asks, so no unit slips into ground no route leaves. */
+    if (unit_body_crosses_corner(u, nx, ny) &&
+        (unit_body_bad_mc(w, u, def, mc, nx, u->world_y) > escaping ||
+         unit_body_bad_mc(w, u, def, mc, u->world_x, ny) > escaping))
+        return 1;
     if (!occ_escape) {
         int k = occ_step_blocked(w, u, self_h, nx, ny);
         if (k == 1) return 2;   /* another unit */
@@ -13474,9 +13560,10 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     /* A unit already standing on illegal ground (mission placement,
      * factory exit) must be allowed to step OUT, otherwise every
      * candidate fails the same predicate and it is immobilised. */
-    int escaping = (w && !unit_terrain_walkable(w, def, u->world_x,
-                                                u->world_y));
-    int refused = unit_step_refused(w, def, u, self_h, escaping,
+    /* The class is resolved once a step: the step asks the body often. */
+    const MoveClassDef *body_mc = unit_move_class(w, def);
+    int escaping = unit_body_bad_mc(w, u, def, body_mc, u->world_x, u->world_y);
+    int refused = unit_step_refused(w, def, body_mc, u, self_h, escaping,
                                     occ_escape, nx, ny);
     if (refused) {
         const int32_t rx = nx, ry = ny;
@@ -13484,11 +13571,11 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
          * and lets the other keep moving (legacy:184190-184230). */
         int slid = 0;
         if (mx != 0 && my != 0 &&
-            !unit_step_refused(w, def, u, self_h, escaping, occ_escape,
+            !unit_step_refused(w, def, body_mc, u, self_h, escaping, occ_escape,
                                u->world_x + mx, u->world_y)) {
             ny = u->world_y; my = 0; slid = 1;
         } else if (mx != 0 && my != 0 &&
-                   !unit_step_refused(w, def, u, self_h, escaping,
+                   !unit_step_refused(w, def, body_mc, u, self_h, escaping,
                                       occ_escape, u->world_x,
                                       u->world_y + my)) {
             nx = u->world_x; mx = 0; slid = 1;
@@ -13550,7 +13637,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
             int close_px = u->move_group ? UNIT_FORMATION_ARRIVE_PX : 48;
             if (u->path_index >= u->path_len && gd2 <= (int64_t)close_px * close_px) return 1;
             if (refused == 1 && u->path_len == 0 && !u->path_pending &&
-                !unit_terrain_walkable(w, def, gx, gy)) {
+                unit_body_bad_mc(w, u, def, body_mc, gx, gy)) {
                 return 1;
             }
             if (u->blocked_ticks > UNIT_TERRAIN_BLOCK_TICKS)
