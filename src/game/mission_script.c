@@ -279,35 +279,39 @@ int MissionOrders_Give(int handle, const char *text) {
         return 0;
     }
     if (n > 0xffff) n = 0xffff;
-    if (ms.steps_used + n > MS_STEPS) ms_steps_compact();
+    /* `o` is not a step: the last one in the list holds from the start. */
+    int level = -1, steps = 0;
+    for (int i = 0; i < n; i++) {
+        if (cmds[i].type != MISSION_CMD_ORDERS) steps++;
+        else if (cmds[i].a >= 0 && cmds[i].a <= 2) level = cmds[i].a;
+    }
+    if (ms.steps_used + steps > MS_STEPS) ms_steps_compact();
     int slot = -1;
     for (int i = 0; i < MS_PROGRAMS && slot < 0; i++) {
         if (ms.program[i].unit < 0) slot = i;
     }
-    if (slot < 0 || ms.steps_used + n > MS_STEPS) {
+    if (steps > 0 && (slot < 0 || ms.steps_used + steps > MS_STEPS)) {
         fprintf(stderr, "Mission: no room for the orders of unit %d\n", handle);
         Mission_FreeCommands(cmds);
         return 0;
     }
-    MsProgram *p = &ms.program[slot];
-    memset(p, 0, sizeof(*p));
-    p->unit = (int16_t)handle;
-    p->stable_id = u->stable_id;
-    p->first = (uint16_t)ms.steps_used;
-    p->count = (uint16_t)n;
-    p->watch = -1;
-    int level = -1;
-    for (int i = 0; i < n; i++) {
-        ms_step_from(&cmds[i], &ms.step[ms.steps_used + i]);
-        if (cmds[i].type == MISSION_CMD_ORDERS && cmds[i].a >= 0 && cmds[i].a <= 2)
-            level = cmds[i].a;
-    }
-    /* `o` is not a step: the last one in the list holds from the start. */
     if (level >= 0) Units_OrderSetAggro(handle, level);
-    ms.steps_used += n;
-    ms.program_of[handle] = (int16_t)(slot + 1);
+    if (steps > 0) {
+        MsProgram *p = &ms.program[slot];
+        memset(p, 0, sizeof(*p));
+        p->unit = (int16_t)handle;
+        p->stable_id = u->stable_id;
+        p->first = (uint16_t)ms.steps_used;
+        p->count = (uint16_t)steps;
+        p->watch = -1;
+        for (int i = 0; i < n; i++) {
+            if (cmds[i].type != MISSION_CMD_ORDERS)
+                ms_step_from(&cmds[i], &ms.step[ms.steps_used++]);
+        }
+        ms.program_of[handle] = (int16_t)(slot + 1);
+    }
     Mission_FreeCommands(cmds);
-    return n;
+    return steps;
 }
 
 int MissionOrders_Running(int handle) {

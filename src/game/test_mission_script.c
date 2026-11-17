@@ -227,7 +227,7 @@ TEST(a_list_is_worked_through_one_order_at_a_time) {
     int sword = mock_def("ARASWORD", 1.0f);
     ASSERT_EQ_INT(0, MissionScript_Begin(NULL, 1, 0));
     int u = Units_Spawn(sword, 2, 1, 100, 100);
-    ASSERT_EQ_INT(4, MissionOrders_Give(u, "w 2, m 10 20, o 1, m 30 40,"));
+    ASSERT_EQ_INT(3, MissionOrders_Give(u, "w 2, m 10 20, o 1, m 30 40,"));
     ASSERT_EQ_INT(1, MissionOrders_Running(u));
     /* o 1 is the standing orders, set as the list is read. */
     ASSERT_EQ_INT(UNIT_AGGRO_DEFENSIVE, (int)g_units[u].aggro_mode);
@@ -251,7 +251,7 @@ TEST(a_list_is_worked_through_one_order_at_a_time) {
     mock_arrive(u);
     ticks(2);
     ASSERT_EQ_INT(0, MissionOrders_Running(u));
-    ASSERT_EQ_INT(4, MissionOrders_DebugDone());
+    ASSERT_EQ_INT(3, MissionOrders_DebugDone());
     MissionScript_End();
 }
 
