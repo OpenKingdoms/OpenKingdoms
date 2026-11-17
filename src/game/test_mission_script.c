@@ -117,6 +117,11 @@ int Units_OrderPatrol(int handle, int32_t x, int32_t y) {
     return 1;
 }
 
+int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
+    (void)handle; (void)leg; (void)queued;
+    return 1;
+}
+
 int Units_OrderUnload(int handle, int32_t x, int32_t y) {
     return Units_OrderMove(handle, x, y);
 }

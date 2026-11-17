@@ -1917,8 +1917,12 @@ Format per entry:
   run on the unit script machine with a host of its own, as the
   original does both. Where ours differs:
   - A patrol of several points is walked by the list, which sends the
-    unit's own patrol order to each point in turn and counts a point
-    reached at 64 pixels. The original queues patrol orders on the unit.
+    unit's own patrol order to each point in turn with the next queued
+    behind it, and goes on once the unit is within 64 pixels or has
+    turned for the next point. The original queues patrol orders on the
+    unit. A save made mid-round before this rule, with a flyer on such a
+    patrol, loads with no queued leg, and the flyer shuttles as it did
+    until its list is given again.
   - `w N` is taken as N seconds, which is how the order was documented
     for Total Annihilation. The original scales the number in floating
     point code the listing does not show, so the unit is inferred.
@@ -2703,7 +2707,11 @@ Format per entry:
 - Why: the formation move, the edge push and the air to air mission are
   missions the engine does not have yet, and the run's own legs cover
   the approach. A patrol leg walked to within 8 px braked every flyer to
-  a stop on each point, which the playtest saw on Parrots.
+  a stop on each point, which the playtest saw on Parrots. A mission's
+  patrol of several points gives the unit each point with the next
+  queued as a patrol leg, and goes on round once the unit has turned
+  for the next point, so a flyer that turns 128 px short still flies
+  the whole round.
 - Citation: the run (legacy:28491-29118), the reach test and formation
   move (legacy:28572-28630), the edge push (legacy:28854-28924) and the
   flying target and dropped key handed elsewhere (legacy:28524-28545).

@@ -418,15 +418,27 @@ static int ms_step_run(MsProgram *p, int handle, const Unit *u) {
             ms_program_free(p);
             return 0;
         }
-        /* Several: the round is walked here and never ends. */
+        /* Several: walked here without end. The next point is queued behind
+         * each, and a unit that turns for it 128 px short (D-049) goes on. */
         int32_t px = s->a * MS_CELL, py = s->b * MS_CELL;
+        int next = p->pc >= to ? from : p->pc + 1;
+        const MsStep *n = &ms.step[p->first + next];
+        int32_t nx = n->a * MS_CELL, ny = n->b * MS_CELL;
         if (!p->started) {
             p->started = 1;
             Units_OrderPatrol(handle, px, py);
+            UnitMoveLeg leg;
+            memset(&leg, 0, sizeof leg);
+            leg.kind = UNIT_LEG_PATROL;
+            leg.x = nx;
+            leg.y = ny;
+            Units_OrderLeg(handle, &leg, 1);
             return 0;
         }
-        if (ms_distance(u->world_x - px, u->world_y - py) <= MS_PATROL_REACH) {
-            p->pc = (uint16_t)(p->pc >= to ? from : p->pc + 1);
+        if (ms_distance(u->world_x - px, u->world_y - py) <= MS_PATROL_REACH ||
+            (u->cmd_kind == UNIT_CMD_PATROL && (nx != px || ny != py) &&
+             u->cmd_x == nx && u->cmd_y == ny)) {
+            p->pc = (uint16_t)next;
             p->started = 0;
         }
         return 0;
