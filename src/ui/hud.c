@@ -99,6 +99,34 @@ static int hud_selection_is_own(void) {
     return 1;
 }
 
+/* Whether the selection shows a button for an order. The sidebar and
+ * the order keys both ask, so a key gives only what a button would. */
+static int hud_mode_shown(int mode) {
+    const UnitDef *d = Units_GetSelectedDef();
+    int own = hud_selection_is_own();
+    uint32_t caps = (d && own) ? d->cap_flags : 0;
+    int n_weapons = (d && own) ? d->num_weapons : 0;
+    switch (mode) {
+        case HUD_CMD_MOVE:    return (caps & UNIT_CAP_MOVE) != 0;
+        case HUD_CMD_ATTACK:  return own && Units_DefTakesAttack(d);
+        case HUD_CMD_GUARD:   return (caps & UNIT_CAP_GUARD) != 0;
+        case HUD_CMD_PATROL:  return (caps & UNIT_CAP_PATROL) != 0;
+        case HUD_CMD_STOP:    return (caps & UNIT_CAP_STOP) != 0;
+        case HUD_CMD_HEAL:    return (caps & UNIT_CAP_REPAIR) != 0;
+        case HUD_CMD_LOAD:    return (caps & (UNIT_CAP_LOAD | UNIT_CAP_TRANSPORT)) != 0;
+        case HUD_CMD_UNLOAD:  return (caps & UNIT_CAP_TRANSPORT) != 0;
+        case HUD_CMD_CLEAR:   return (caps & UNIT_CAP_RECLAIM) != 0;
+        case HUD_CMD_ACTIVATE:
+        case HUD_CMD_DEACTIVATE:
+            /* The onoffable pair (legacy:150430-150436, 150930-150950). */
+            return own && Units_SelectedOnOffState() >= 0;
+        case HUD_CMD_W_PRIMARY:   return (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 1;
+        case HUD_CMD_W_SECONDARY: return (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 2;
+        case HUD_CMD_W_SET_SPEC:  return (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 3;
+        default: return 0;
+    }
+}
+
 /* Play-area and minimap slot in dialog (640x480 canvas) space, read
  * from the dialog at init. Legacy bounds the play area the same way:
  * left of UnitMenu.x and above BottomBar.y (legacy:150187-150214). */
@@ -1016,21 +1044,19 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         /* A unit inspected from another side offers no orders. */
         int own = hud_selection_is_own();
         uint32_t caps = (seldef_cap && own) ? seldef_cap->cap_flags : 0;
-        int n_weapons = (seldef_cap && own) ? seldef_cap->num_weapons : 0;
         /* Active/Inactive are the onoffable pair, up when any selected
          * unit has the switch (legacy:150430-150436, 150930-150950). */
         int onoff = own && Units_SelectedOnOffState() >= 0;
         struct { const char *name; int show; } vis[] = {
-            { "MOVE",            (caps & UNIT_CAP_MOVE)      != 0 },
-            { "ATTACK",          own && Units_DefTakesAttack(seldef_cap) },
-            { "GUARD",           (caps & UNIT_CAP_GUARD)     != 0 },
-            { "PATROL",          (caps & UNIT_CAP_PATROL)    != 0 },
-            { "STOP",            (caps & UNIT_CAP_STOP)      != 0 },
-            { "HEAL",            (caps & UNIT_CAP_REPAIR)    != 0 },
-            { "LOAD",            ((caps & UNIT_CAP_LOAD) ||
-                                  (caps & UNIT_CAP_TRANSPORT)) != 0 },
-            { "UNLOAD",          (caps & UNIT_CAP_TRANSPORT) != 0 },
-            { "CLEAR",           (caps & UNIT_CAP_RECLAIM)   != 0 },
+            { "MOVE",            hud_mode_shown(HUD_CMD_MOVE) },
+            { "ATTACK",          hud_mode_shown(HUD_CMD_ATTACK) },
+            { "GUARD",           hud_mode_shown(HUD_CMD_GUARD) },
+            { "PATROL",          hud_mode_shown(HUD_CMD_PATROL) },
+            { "STOP",            hud_mode_shown(HUD_CMD_STOP) },
+            { "HEAL",            hud_mode_shown(HUD_CMD_HEAL) },
+            { "LOAD",            hud_mode_shown(HUD_CMD_LOAD) },
+            { "UNLOAD",          hud_mode_shown(HUD_CMD_UNLOAD) },
+            { "CLEAR",           hud_mode_shown(HUD_CMD_CLEAR) },
             { "Cloaked",         (caps & UNIT_CAP_CLOAK)     != 0 },
             { "Uncloaked",       (caps & UNIT_CAP_CLOAK)     != 0 },
             { "Active",          onoff },
@@ -1038,9 +1064,9 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             { "Offensive",       own && Units_DefHasStances(seldef_cap) },
             { "Defensive",       own && Units_DefHasStances(seldef_cap) },
             { "Passive",         own && Units_DefHasStances(seldef_cap) },
-            { "PrimaryWeapon",   (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 1 },
-            { "SecondaryWeapon", (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 2 },
-            { "SpecialWeapon",   (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 3 },
+            { "PrimaryWeapon",   hud_mode_shown(HUD_CMD_W_PRIMARY) },
+            { "SecondaryWeapon", hud_mode_shown(HUD_CMD_W_SECONDARY) },
+            { "SpecialWeapon",   hud_mode_shown(HUD_CMD_W_SET_SPEC) },
             { "BuildMenu",       (caps & UNIT_CAP_BUILDER)   != 0 },
         };
         for (size_t i = 0; i < sizeof(vis)/sizeof(vis[0]); i++) {
@@ -1778,6 +1804,45 @@ int HUD_ActionSlotCenter(int mode, int *out_x, int *out_y) {
     return 0;
 }
 
+/* One press of an action button, from a click or from its key. A
+ * disabled button takes no input (legacy:329637-329640). */
+static void hud_press_button(int mode, const char *widget_name) {
+    if ((mode == HUD_CMD_W_PRIMARY || mode == HUD_CMD_W_SECONDARY ||
+         mode == HUD_CMD_W_SET_SPEC) &&
+        hud_weapon_button_state(mode - HUD_CMD_W_PRIMARY) == 0)
+        return;
+
+    hud_play_widget_sound(widget_name);
+
+    /* Targeting modes set g_cmd_mode and wait for a world click.
+     * Pressing the same button again toggles off. */
+    if (HUD_IsTargetingMode(mode)) {
+        g_cmd_mode = (g_cmd_mode == mode) ? HUD_CMD_NONE : mode;
+        return;
+    }
+
+    /* A standing fire order also confirms itself (legacy:151700). */
+    if (mode == HUD_CMD_AGGRO_OFF || mode == HUD_CMD_AGGRO_DEF ||
+        mode == HUD_CMD_AGGRO_PAS) {
+        GameSound_PlayUI("setfireorders");
+    }
+
+    /* Immediate-action modes dispatch through the unit selection
+     * commands directly. Mirrors legacy NetPacket_Method03 which
+     * fires the order without a pending-cursor state. */
+    HUD_TriggerCommand(mode);
+}
+
+int HUD_PressOrder(int mode) {
+    if (!hud_mode_shown(mode)) return 0;
+    for (size_t i = 0; i < HUD_NUM_BUTTON_BINDINGS; i++) {
+        if (g_button_bindings[i].mode != mode) continue;
+        hud_press_button(mode, g_button_bindings[i].widget_name);
+        return 1;
+    }
+    return 0;
+}
+
 int HUD_HandleSidebarClick(int win_x, int win_y, TAK_Platform *plat) {
     return HUD_HandleSidebarClickHeld(win_x, win_y, plat,
                                       HUD_HeldKeys(SDL_GetKeyboardState(NULL)));
@@ -1816,32 +1881,7 @@ int HUD_HandleSidebarClickHeld(int win_x, int win_y, TAK_Platform *plat,
         const HUDActionSlot *s = &g_action_slots[i];
         if (win_x < s->rect.x || win_x >= s->rect.x + s->rect.w) continue;
         if (win_y < s->rect.y || win_y >= s->rect.y + s->rect.h) continue;
-
-        /* A disabled button takes no input (legacy:329637-329640). */
-        if ((s->mode == HUD_CMD_W_PRIMARY || s->mode == HUD_CMD_W_SECONDARY ||
-             s->mode == HUD_CMD_W_SET_SPEC) &&
-            hud_weapon_button_state(s->mode - HUD_CMD_W_PRIMARY) == 0)
-            return 1;
-
-        hud_play_widget_sound(s->widget_name);
-
-        /* Targeting modes set g_cmd_mode and wait for a world-click;
-         * clicking the same button again toggles off. */
-        if (HUD_IsTargetingMode(s->mode)) {
-            g_cmd_mode = (g_cmd_mode == s->mode) ? HUD_CMD_NONE : s->mode;
-            return 1;
-        }
-
-        /* A standing fire order also confirms itself (legacy:151700). */
-        if (s->mode == HUD_CMD_AGGRO_OFF || s->mode == HUD_CMD_AGGRO_DEF ||
-            s->mode == HUD_CMD_AGGRO_PAS) {
-            GameSound_PlayUI("setfireorders");
-        }
-
-        /* Immediate-action modes dispatch through the unit selection
-         * commands directly. Mirrors legacy NetPacket_Method03 which
-         * fires the order without a pending-cursor state. */
-        HUD_TriggerCommand(s->mode);
+        hud_press_button(s->mode, s->widget_name);
         return 1;
     }
     return 0;

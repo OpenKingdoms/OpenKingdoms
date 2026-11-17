@@ -184,7 +184,19 @@ void InGameMenu_Close(void) {
     if (was_open && !multiplayer) InGame_SetPaused(restore);
 }
 
+static int press_named(const char *name);
+
 int InGameMenu_IsOpen(void) { return m.open; }
+
+int InGameMenu_OpenBrowser(int load) {
+    if (igm_mode() == IGM_MULTI) return -1;
+    if (!load && Replay_IsPlaying()) return -1;
+    if (!m.open && InGameMenu_Open() != 0) return -1;
+    (void)press_named(load ? "LoadGame" : "SaveGame");
+    if (m.browser_open) return 0;
+    InGameMenu_Close();
+    return -1;
+}
 
 static void play_widget_sound(const GUIWidget *w) {
     if (!w || !w->sound[0]) return;

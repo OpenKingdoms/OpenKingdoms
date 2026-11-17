@@ -172,12 +172,12 @@ static void write_classic_cam(GameWorld *world) {
     v.synced_cam_y = cy;
 }
 
-static void retarget_from_classic(const GameWorld *world) {
+static void retarget_from_classic(const GameWorld *world, int say) {
     v.cam.target_x = (float)(world->cam_x + world->viewport_w / 2);
     v.cam.target_z = (float)(world->cam_y + world->viewport_h / 2);
     v.synced_cam_x = world->cam_x;
     v.synced_cam_y = world->cam_y;
-    fprintf(stderr, "View3D: camera over (%.0f, %.0f)\n", v.cam.target_x, v.cam.target_z);
+    if (say) fprintf(stderr, "View3D: camera over (%.0f, %.0f)\n", v.cam.target_x, v.cam.target_z);
 }
 
 /* ── Terrain build ────────────────────────────────────────────────── */
@@ -1637,11 +1637,11 @@ static void v3_render(const GameWorld *world, TAK_Platform *plat,
         forget_ground_lifts();
         free_effect_tex();
         if (build_terrain(world) != 0) return;
-        retarget_from_classic(world);
+        retarget_from_classic(world, 1);
     }
     if (world->cam_x != v.synced_cam_x || world->cam_y != v.synced_cam_y) {
         /* Somebody else moved the classic camera: the minimap, a test. */
-        retarget_from_classic(world);
+        retarget_from_classic(world, 1);
     }
     v.viewport = viewport ? *viewport : (SDL_Rect){ 0, 0, plat->window_w, plat->window_h };
     if (v.viewport.w < 1) v.viewport.w = 1;
@@ -1792,6 +1792,9 @@ void View3D_Input(GameWorld *world, const TAK_Platform *plat,
                   int middle_down, int wheel_dy) {
     (void)plat;
     if (!v.ready || !world || !keys || !v3_built_for(world)) return;
+    /* A key this tick may have set the classic camera, a bookmark among them. */
+    if (world->cam_x != v.synced_cam_x || world->cam_y != v.synced_cam_y)
+        retarget_from_classic(world, 0);
     float dyaw = 0.0f, dpitch = 0.0f, zoom = 1.0f;
     const float turn = 1.7f * frame_dt, tilt = 1.1f * frame_dt;
     if (keys[SDL_SCANCODE_Q]) dyaw += turn;
