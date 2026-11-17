@@ -7,15 +7,12 @@ and what the search does now.
 
 ## How a unit gets there
 
-The step used to test one point, the unit's centre, against terrain and
-water, while the search tests every tile of the footprint at a
-placement, as the original sweeps a placement (legacy:219089-219131). A
-2 by 2 unit sliding along a one tile ridge could push its centre into
-the ridge's inside corner with half its body over the ridge. No
-placement of its cell then fits. The step now tests the body
-(2026-11-15-the-step-tests-the-body.md), but a unit can still start on
-such ground: put there by a map, a factory exit or a spot chosen by its
-centre.
+The step tests one point, the unit's centre, against terrain and water
+(`unit_step_refused` in `src/render/units.c`). The search tests every
+tile of the footprint at a placement, as the original sweeps a
+placement (legacy:219089-219131). A 2 by 2 unit sliding along a one
+tile ridge can push its centre into the ridge's inside corner with half
+its body over the ridge. No placement of its cell then fits.
 
 ## What the search did
 
@@ -51,45 +48,52 @@ Both were found by a long march probe in a fork of this engine.
 
 ## What it does now
 
-A start is trapped when the body fits no placement of its own cell,
-when a body wholly on its ground can reach none of them in a line
-without meeting bad ground, a building or a corner, or when the step
-would refuse the first leg of the route the search lays from the cell.
-A trapped start is walked out first, body by body by the step's own
-rule. The body never takes on more bad ground than it stands on, beside
-a diagonal too, and the point it stands on never enters water the mover
-keeps it out of. What is built or parked under the body is crossed only
-while the body already stands on some, as the mover's `occ_escape`
-allows, and the bodies beside a diagonal step must be clear too. The
-walk stops at bodies that are a legal placement. Each is a start for
-the cell search, at the price of the walk: a tile in the unit's own
-cell or in a cell a route may stand in costs what open ground does, and
-one in a cell with no placement costs half of `PATH_PINCH_COST`, what
-crossing a cell cost before. The cell a walk reaches adds its own half
-of bad ground when the search starts from it, as a step into that cell
-would. The route begins with the walk's first point and its turns.
+A trapped start is walked out first, tile by tile under the unit's
+centre, by the step's own rule. From walkable ground the walk goes only
+onto walkable ground and past no corner with shut ground either side.
+From shut ground it may cross shut ground within two tiles of the unit,
+as the mover's escape hatch lets a centre on it step out. Water is
+never crossed, since the mover never relaxes it. What is built or
+parked under the body is crossed only while the body already stands on
+some, as the mover's `occ_escape` allows, and the bodies beside a
+diagonal step must be clear too. The walk stops at tiles that centre a
+legal placement. Each is a start for the cell search, at the price of
+the walk: a tile in the unit's own cell or in a cell a route may stand
+in costs what open ground does, and one in a cell with no placement
+costs half of `PATH_PINCH_COST`, what crossing a cell cost before. The
+cell a walk reaches adds its own half of bad ground when the search
+starts from it, as a step into that cell would. The route begins with
+the walk's first tile and its turns.
 
 A pocket is walked out of the same way. When a search runs out within
-64 cells and ground or buildings, not parked units, shut in the cells
-it reached, the walk runs from the unit to placements outside those
-cells, and the search goes on from there. When that search runs out of
-budget, the route goes to the cell it got nearest the goal, not to the
-pocket's nearest. Where the body cannot get out, neither can the walk,
-so two shelves that touch where nothing fits stay no route, as #96 has
-it.
+64 cells and the unit's body at its real position is partly off its
+ground, the walk runs from the unit's tile to placements outside the
+cells the search reached, and the search goes on from there. When
+that search runs out of budget, the route goes to the cell it got
+nearest the goal, not to the pocket's nearest. A unit whose body is
+all on its ground is not walked, so two shelves that touch where
+nothing fits stay no route, as #96 has it.
 
 Compression keeps the first point when the line past it, from where
-the route begins, would take the body off ground it may stand on or
-across a corner either side of which it may not stand. It also keeps
-it when the step would not walk the unit along that line from where
-it really stands. The route begins at the placement nearest the unit,
-not at the unit, so the line from each can differ. It drops the point
-otherwise as before.
+the route begins, would take the body off ground it may stand on. It
+also keeps it when the unit's centre, on the line from where the unit
+really stands, would enter a tile the step refuses. The unit's own
+tile is not judged, since the step lets a unit off ground it already
+stands on. It drops the point otherwise as before.
 
-Structures under the unit's real body are still judged from the
-placement's body line, so a unit off its placement can still meet the
-corner of a building and slide along it. A flow field route the step
-could not start goes to a search instead.
+The body check alone missed such crossings for two reasons. It starts
+at the placement nearest the unit, not at the unit. For a one tile
+class that is at most half a tile away when the unit's own tile is a
+legal placement, and can be further when it is not. And for a one
+tile class it tests the tile under x - 8, y - 8, which is not the tile
+under the centre whenever x or y is less than 8 past a multiple of 16.
+So it could miss a crossing even with the unit standing exactly on its
+placement.
+
+Two limits remain. Structures under the unit's real body are still
+judged from the placement's body line, so a unit off its placement
+can still meet the corner of a building and slide along it. When the
+first point is kept, the leg from the unit to it is not checked.
 
 The walk settles at most 4096 tiles in a window 128 tiles each way, and
 what it settles counts against the tick's search budget.
@@ -99,19 +103,20 @@ what it settles counts against the tick's search budget.
 `test_pathing` holds each case on synthetic ground: the ridge corner,
 the same ridge from edge to edge with no way round, a walk out that
 turns, a unit in a one tile door that leaves the short way, a walk out
-that never crosses water, a pocket too narrow for the body to leave, a
-pocket beside a sealed goal on a map too big to search whole, a unit
-wedged by a corner, a unit partly on rock whose route cannot start, a
-first point that turns, and a first point judged from where the unit
-stands. Each leg is checked pixel by pixel by the step's rule. On open
-ground nothing changes: no start is trapped and the first point is
-dropped as before, and `SIM_PROBE_HASH` does not move.
-`test_path_buffers` holds the planner to its reference copy with no
-mismatch.
+that never crosses water, a pocket with a one tile corridor, a pocket
+beside a sealed goal on a map too big to search whole, a first point
+that turns, and a first point judged from where the unit stands. The
+ridge, the turn, the pocket and the first point that turns fail on the
+search as it was. The pocket beside a sealed goal and the first point
+judged from the unit fail without their own checks. On open ground
+nothing changes: no start is trapped and the first point is dropped as
+before, and `SIM_PROBE_HASH` does not move. `test_path_buffers` holds
+the planner to its reference copy with no mismatch.
 
 ## Not done
 
-- The step tested only the centre when this was first written, so
-  units could push into the corner and into pockets. It tests the body
-  now: see 2026-11-15-the-step-tests-the-body.md.
+- The step still tests only the centre, so units can still push into
+  the corner and into pockets. In the original a catapult will not
+  climb a ramp its body does not fit on, and stops at the foot of it:
+  its step sweeps the whole body. That is a separate change.
 - A pocket larger than 64 cells is not walked out of.

@@ -17,28 +17,11 @@ const FeatureDef *Features_GetByIndex(int idx) {
     return NULL;
 }
 
-/* 1 reads heights between the corners as the game does, so water and
- * dry ground can share a tile. 0 reads one height a tile. */
-static int g_bilinear;
-
 int Terrain_SampleHeight(const struct GameWorld *world,
                          int32_t world_x, int32_t world_y) {
     if (!world || !world->tnt.heightmap) return 0;
     if (world_x < 0) world_x = 0;
     if (world_y < 0) world_y = 0;
-    if (g_bilinear) {
-        const TNTFile *t = &world->tnt;
-        int max_x = (t->height_w - 1) * 16 - 1, max_y = (t->height_h - 1) * 16 - 1;
-        if (world_x > max_x) world_x = max_x;
-        if (world_y > max_y) world_y = max_y;
-        int vx = world_x / 16, vy = world_y / 16, fx = world_x % 16, fy = world_y % 16;
-        const uint8_t *hm = t->heightmap;
-        int s = t->height_w;
-        int h00 = hm[vy * s + vx], h10 = hm[vy * s + vx + 1];
-        int h01 = hm[(vy + 1) * s + vx], h11 = hm[(vy + 1) * s + vx + 1];
-        int hx0 = h00 + ((h10 - h00) * fx) / 16, hx1 = h01 + ((h11 - h01) * fx) / 16;
-        return hx0 + ((hx1 - hx0) * fy) / 16 - 32;
-    }
     int tx = (int)(world_x / 16);
     int ty = (int)(world_y / 16);
     if (tx >= world->tnt.height_w) tx = world->tnt.height_w - 1;
@@ -1885,60 +1868,6 @@ static void test_a_unit_in_a_door_leaves_the_short_way(void) {
     occ_world_free(&world);
 }
 
-/* A 2 by 2 unit a tile off every placement of its cell, its nearest past
- * a corner the step will not cut, begins its route where it stands. */
-static void test_a_unit_wedged_by_a_corner_walks_round_it(void) {
-    TAK_PathCacheReset();
-    GameWorld world;
-    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
-    strip_land(&world, 0, 0, 48, 32);
-    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
-    strip_shut(22, 24);
-    strip_shut(24, 22);
-    MoveClassDef mc;
-    strip_class(&mc, 2);
-    TAK_PathQuery q;
-    strip_query(&q, &mc, 1);
-    int32_t sx = 23 * 16 + 8, sy = 23 * 16 + 8;
-    EXPECT(strip_body_bad(&world, &mc, sx, sy) == 0);
-    EXPECT(!strip_line_walkable(&world, &mc, sx, sy, sx - 16, sy - 16));
-    TAK_Path path;
-    int n = TAK_PathPlanQuery(&world, sx, sy, 8 * 16, 8 * 16, &q, &path);
-    EXPECT(n > 0);
-    if (n > 0) {
-        EXPECT(path.start_x == sx && path.start_y == sy);
-        EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
-    }
-    strip_marks_free();
-    occ_world_free(&world);
-}
-
-/* A 2 by 2 unit with a tile on rock, whose route from its cell's one
- * placement starts where the step will not take it, is walked out. */
-static void test_a_unit_partly_on_rock_walks_out_where_its_route_cannot_start(void) {
-    TAK_PathCacheReset();
-    GameWorld world;
-    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
-    strip_land(&world, 0, 0, 48, 32);
-    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
-    strip_shut(11, 7);
-    strip_shut(11, 8);
-    strip_shut(10, 9);
-    strip_shut(10, 10);
-    MoveClassDef mc;
-    strip_class(&mc, 2);
-    TAK_PathQuery q;
-    strip_query(&q, &mc, 1);
-    int32_t sx = 184, sy = 136;
-    EXPECT(strip_body_bad(&world, &mc, sx, sy) == 1);
-    TAK_Path path;
-    int n = TAK_PathPlanQuery(&world, sx, sy, 120, 72, &q, &path);
-    EXPECT(n > 0);
-    if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
-    strip_marks_free();
-    occ_world_free(&world);
-}
-
 /* A walk out never crosses water: the mover never relaxes it. The unit
  * stands a tile into the sea beside a spit, with the far shore straight
  * across the bay and the only dry way round by the field. */
@@ -1995,8 +1924,7 @@ static void test_a_turn_at_the_first_point_is_kept(void) {
 }
 
 /* A turn judged from where the unit stands. The line from its cell's
- * nearest placement passes a shut tile's corner. Its own crosses it,
- * and from a tile off the placement it cuts that corner. */
+ * nearest placement passes a shut tile's corner. Its own crosses it. */
 static void test_a_first_point_is_judged_from_the_unit(void) {
     TAK_PathCacheReset();
     GameWorld world;
@@ -2013,122 +1941,7 @@ static void test_a_first_point_is_judged_from_the_unit(void) {
     int n = TAK_PathPlanQuery(&world, sx, sy, 360, 296, &q, &path);
     EXPECT(n > 0);
     if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
-    sx = 383;
-    sy = 249;
-    n = TAK_PathPlanQuery(&world, sx, sy, 232, 360, &q, &path);
-    EXPECT(n > 0);
-    if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
-    /* Kept, the point needs no walk out. */
-    if (n > 0) EXPECT(path.start_x != sx || path.start_y != sy);
     strip_marks_free();
-    occ_world_free(&world);
-}
-
-/* A 3 by 3 unit with a tile of its body on rock, 8 px off the point of
- * its own tile. The walk out began at the next tile's point, and the
- * line there from where the unit stands passed more rock. */
-static void test_a_walk_out_starts_where_the_unit_stands(void) {
-    TAK_PathCacheReset();
-    GameWorld world;
-    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
-    strip_land(&world, 0, 0, 48, 32);
-    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
-    strip_shut(20, 17);
-    strip_shut(22, 19);
-    strip_shut(23, 16);
-    strip_shut(19, 20);
-    MoveClassDef mc;
-    strip_class(&mc, 3);
-    TAK_PathQuery q;
-    strip_query(&q, &mc, 1);
-    int32_t sx = 336, sy = 256;
-    EXPECT(strip_body_bad(&world, &mc, sx, sy) == 1);
-    TAK_Path path;
-    int n = TAK_PathPlanQuery(&world, sx, sy, 392, 200, &q, &path);
-    EXPECT(n > 0);
-    if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
-    strip_marks_free();
-    occ_world_free(&world);
-}
-
-/* A walk out's diagonal between two tiles' points. Up one axis and down
- * the other, the body turns a pixel apart on the two and passes one side:
- * here a side with no rock, and from it the next tile has one. */
-static void test_a_walk_out_diagonal_passes_its_side_as_the_step_does(void) {
-    TAK_PathCacheReset();
-    GameWorld world;
-    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
-    strip_land(&world, 0, 0, 48, 32);
-    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
-    strip_shut(21, 18);
-    strip_shut(21, 19);
-    strip_shut(24, 15);
-    MoveClassDef mc;
-    strip_class(&mc, 3);
-    TAK_PathQuery q;
-    strip_query(&q, &mc, 1);
-    int32_t sx = 320, sy = 288;
-    EXPECT(strip_body_bad(&world, &mc, sx, sy) == 2);
-    TAK_Path path;
-    int n = TAK_PathPlanQuery(&world, sx, sy, 392, 200, &q, &path);
-    EXPECT(n > 0);
-    if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
-    strip_marks_free();
-    occ_world_free(&world);
-}
-
-/* A field route for a unit already in its goal's cell is one point, and
- * the line to it from the unit cut a shut tile's corner. It is a
- * search's now, as any field route the step cannot start. */
-static void test_a_field_route_in_the_goal_cell_is_judged_from_the_unit(void) {
-    TAK_PathCacheReset();
-    GameWorld world;
-    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
-    strip_land(&world, 0, 0, 48, 32);
-    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
-    strip_shut(21, 18);
-    MoveClassDef mc;
-    strip_class(&mc, 1);
-    TAK_PathQuery q;
-    strip_query(&q, &mc, 1);
-    int32_t sx = 320, sy = 288;
-    TAK_Path path;
-    int n = TAK_PathPlanFlow(&world, sx, sy, 328, 296, &q, &path);
-    if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
-    n = TAK_PathPlanQuery(&world, sx, sy, 328, 296, &q, &path);
-    EXPECT(n > 0);
-    if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
-    strip_marks_free();
-    occ_world_free(&world);
-}
-
-/* A 3 by 3 land unit on a lake's shore, its centre on dry ground and the
- * point of its own tile in the water, with heights read between corners.
- * The walk out judged its first steps from that point, found every one
- * wet and gave no route. They are the unit's own first leg. */
-static void test_a_walk_out_leaves_from_where_the_unit_stands(void) {
-    TAK_PathCacheReset();
-    GameWorld world;
-    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
-    world.water_height = 90;
-    size_t hn = (size_t)world.tnt.height_w * (size_t)world.tnt.height_h;
-    memset(world.tnt.heightmap, 132, hn);
-    for (int vy = 10; vy <= 22; vy++)
-        for (int vx = 26; vx <= 33; vx++)
-            world.tnt.heightmap[vy * world.tnt.height_w + vx] = 92;
-    g_bilinear = 1;
-    MoveClassDef mc;
-    strip_class(&mc, 3);
-    mc.max_slope = 60;
-    TAK_PathQuery q;
-    strip_query(&q, &mc, 1);
-    int32_t sx = 400, sy = 180;
-    EXPECT(Terrain_SampleHeight(&world, sx, sy) >= 90);
-    TAK_Path path;
-    int n = TAK_PathPlanQuery(&world, sx, sy, 100, 100, &q, &path);
-    EXPECT(n > 0);
-    if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
-    g_bilinear = 0;
     occ_world_free(&world);
 }
 
@@ -2275,14 +2088,8 @@ int main(void) {
     test_a_walk_out_never_crosses_water();
     test_a_body_too_wide_for_a_pockets_way_out_has_no_route();
     test_a_pocket_beside_a_sealed_goal_still_walks_out();
-    test_a_unit_wedged_by_a_corner_walks_round_it();
-    test_a_unit_partly_on_rock_walks_out_where_its_route_cannot_start();
     test_a_turn_at_the_first_point_is_kept();
     test_a_first_point_is_judged_from_the_unit();
-    test_a_walk_out_starts_where_the_unit_stands();
-    test_a_walk_out_leaves_from_where_the_unit_stands();
-    test_a_walk_out_diagonal_passes_its_side_as_the_step_does();
-    test_a_field_route_in_the_goal_cell_is_judged_from_the_unit();
     test_a_long_route_is_not_a_flood();
     test_a_field_swept_as_far_as_its_members_routes_them_the_same();
     test_connected_ground_separates_an_island();

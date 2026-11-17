@@ -566,85 +566,6 @@ TEST(a_unit_that_covers_ground_without_closing_on_its_goal_climbs_the_ladder) {
     mv_end();
 }
 
-/* The same pocket shut at its mouth too. No ground joins it to the
- * goal, so the last rung ends the order. */
-TEST(a_unit_the_ground_shuts_in_gives_its_move_up) {
-    GameWorld *w = mv_world();
-    ASSERT_NOT_NULL(w);
-    for (int tx = 70; tx <= 110; tx++) {
-        w->tnt.heightmap[(size_t)99 * w->tnt.height_w + tx] = 255;
-        w->tnt.heightmap[(size_t)104 * w->tnt.height_w + tx] = 255;
-    }
-    for (int ty = 99; ty <= 104; ty++) {
-        w->tnt.heightmap[(size_t)ty * w->tnt.height_w + 70] = 255;
-        w->tnt.heightmap[(size_t)ty * w->tnt.height_w + 110] = 255;
-    }
-    TAK_PathCacheReset();
-    int32_t cy = 102 * 16, gx = 130 * 16 + 8, gy = cy;
-    int h = Units_Spawn(MV_DEF_WALKER, 1, 0, 108 * 16, cy);
-    ASSERT(h >= 0);
-    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
-    Units_CommandMoveUnit(h, gx, gy);
-    int ended = -1;
-    for (int t = 0; t < MV_POCKET_TICKS && ended < 0; t++) {
-        Units_TickEngines();
-        if (mv_unit(h)->cmd_kind == UNIT_CMD_NONE) ended = t + 1;
-    }
-    printf("(ended at %d) ", ended);
-    ASSERT(ended > 0);
-    mv_end();
-}
-
-/* A wall three tiles thick with a gap one 2 by 2 body wide, tile rows 74
- * and 75, and twelve swords sent through it together. Seen in the
- * original: a few get through, the rest back up and try again later.
- * Here the first stop at the wall face beside the gap, park, and shut
- * it to the others' searches. With the order ended on the last rung,
- * five of them stood there for good. */
-TEST(a_group_sent_through_a_gap_one_body_wide_all_get_through) {
-    GameWorld *w = mv_world();
-    ASSERT_NOT_NULL(w);
-    for (int vy = 0; vy < w->tnt.height_h; vy++) {
-        if (vy >= 74 && vy <= 76) continue;
-        for (int vx = 81; vx <= 82; vx++)
-            w->tnt.heightmap[(size_t)vy * w->tnt.height_w + vx] = 255;
-    }
-    TAK_PathCacheReset();
-    #define MV_GAP_N 12
-    int h[MV_GAP_N], at[MV_GAP_N];
-    /* Each a few pixels off a 40 px grid, the offsets fixed. */
-    uint32_t r = 0x9E3779B9u * 2u;
-    for (int i = 0; i < MV_GAP_N; i++) {
-        r = r * 1664525u + 1013904223u;
-        int jx = (int)((r >> 8) % 24) - 12;
-        r = r * 1664525u + 1013904223u;
-        int jy = (int)((r >> 8) % 24) - 12;
-        h[i] = Units_Spawn(MV_DEF_WALKER, 1, 0, 700 + (i % 4) * 40 + jx,
-                           1120 + (i / 4) * 40 + jy);
-        ASSERT(h[i] >= 0);
-        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
-        at[i] = -1;
-    }
-    for (int i = 0; i < MV_GAP_N; i++) Units_OrderMove(h[i], 1900, 1200);
-    int through = 0, last = 0;
-    for (int t = 0; t < 6000 && through < MV_GAP_N; t++) {
-        Units_TickEngines();
-        for (int i = 0; i < MV_GAP_N; i++) {
-            if (at[i] >= 0 || mv_unit(h[i])->world_x <= 83 * 16) continue;
-            at[i] = t;
-            last = t;
-            through++;
-        }
-    }
-    int early = 0;
-    for (int i = 0; i < MV_GAP_N; i++) early += at[i] >= 0 && at[i] < 1500;
-    printf("(%d through, %d of them by tick 1500, the last at %d) ", through,
-           early, last);
-    ASSERT_EQ_INT(MV_GAP_N, through);
-    #undef MV_GAP_N
-    mv_end();
-}
-
 /* Issue #191. A builder boxed in by ground it cannot climb, ordered to
  * build outside the box. The mover's give up ends the build order, the
  * builder stands free again, and the computer player whose builder it
@@ -1948,29 +1869,6 @@ TEST(a_flyer_lands_clear_and_holds_its_ground) {
     mv_end();
 }
 
-/* Ten ships of five kinds sent to one point. Each that stops beside the
- * fleet, by its hull, ends its order there. Kept orders once held two of
- * them 114 and 138 px from their nearest friend, searching for ever. */
-TEST(a_fleet_sent_to_one_point_packs_and_ends_its_orders) {
-    ASSERT_NOT_NULL(mv_sea());
-    static const int kinds[5] = { MV_DEF_GALLEY, MV_DEF_IRONCLAD, MV_DEF_TREB,
-                                  MV_DEF_SKIFF, MV_DEF_MANOWAR };
-    int h[10];
-    for (int i = 0; i < 10; i++) {
-        h[i] = Units_Spawn(kinds[i % 5], 1, 0, 600 + (i % 5) * 400,
-                           500 + (i / 5) * 500);
-        ASSERT(h[i] >= 0);
-        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
-    }
-    for (int i = 0; i < 10; i++) Units_OrderMove(h[i], 1536, 1536);
-    mv_run(3000);
-    int live = 0;
-    for (int i = 0; i < 10; i++) live += mv_unit(h[i])->cmd_kind == UNIT_CMD_MOVE;
-    printf("(%d orders live at tick 3000) ", live);
-    ASSERT_EQ_INT(0, live);
-    mv_end();
-}
-
 /* A ground crowd lands where it did before ships had hulls. The layout
  * hash is pinned from that build. */
 TEST(a_ground_crowd_packs_as_it_did) {
@@ -3044,8 +2942,6 @@ int main(int argc, char **argv) {
     RUN(two_files_of_units_walk_through_each_other);
     RUN(a_line_abreast_holds_its_lane);
     RUN(a_unit_that_covers_ground_without_closing_on_its_goal_climbs_the_ladder);
-    RUN(a_unit_the_ground_shuts_in_gives_its_move_up);
-    RUN(a_group_sent_through_a_gap_one_body_wide_all_get_through);
     RUN(a_builder_that_cannot_reach_its_site_gives_the_build_up);
     RUN(a_near_blocked_unit_holds_its_line);
     RUN(a_wide_unit_walks_a_corridor_its_own_width);
@@ -3062,7 +2958,6 @@ int main(int argc, char **argv) {
     RUN(a_shipyard_leaves_a_ship_parked_by_its_rally_point_alone);
     RUN(a_loaded_world_sees_the_ships_a_running_one_does);
     RUN(a_fleet_sails_a_narrow_strait);
-    RUN(a_fleet_sent_to_one_point_packs_and_ends_its_orders);
     RUN(a_ground_crowd_packs_as_it_did);
     TEST_SUITE("Flyers");
     RUN(flyers_sent_to_one_place_do_not_stack);

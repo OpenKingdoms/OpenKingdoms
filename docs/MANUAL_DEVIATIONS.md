@@ -415,8 +415,7 @@ Format per entry:
   shut in is walked out the same way when its search runs out within 64
   cells, to placements outside the pocket. Where the body cannot get
   out, neither can the walk, and there is no route. The step tests the
-  whole body, as the original's does
-  (docs/notes/2026-11-15-the-step-tests-the-body.md). A body crossing a
+  whole body, as the original's does. A body crossing a
   tile corner must pass the bodies either side of it too, which is the
   engine's own rule: the original's for corners is not established. The
   original anchors its own sweep on the unit's position rounded to the
@@ -427,8 +426,7 @@ Format per entry:
   and no ground at all at the other, however wide it was. Enumerating
   the placements removed it.
 - Citation: `docs/notes/2026-09-10-clearance-grid.md`,
-  `docs/notes/2026-11-15-a-route-out-of-a-trapped-start.md`,
-  `docs/notes/2026-11-15-the-step-tests-the-body.md`.
+  `docs/notes/2026-11-15-a-route-out-of-a-trapped-start.md`.
 
 ---
 
@@ -1397,7 +1395,7 @@ Format per entry:
   another way or try again later. None stands for good. Until
   2026-11-15 the order was ended here, and on a gap one body wide the
   units that gave up stood at the wall face or in the gap and held the
-  rest back for good (docs/notes/2026-11-15-the-step-tests-the-body.md).
+  rest back for good.
   A unit whose body comes within 32 px of a friend that has stopped,
   or a ship within its arrival reach of one, still ends its order,
   which is how a crowd sent to one point packs. Making a blocking unit stand
@@ -1413,8 +1411,7 @@ Format per entry:
   in test_movement: a unit pacing a walled pocket with the way out
   facing away from its goal, which the old ladder never climbed. This
   one climbs all four rungs, and since the ground joins the pocket to
-  the goal it keeps the order on a kept rung. Shut at the mouth too, the same pocket ends
-  the order (a_unit_the_ground_shuts_in_gives_its_move_up).
+  the goal it keeps the order on a kept rung.
 - Citation: Issue #60. Manual is silent.
 
 ---
