@@ -142,11 +142,12 @@ static int run_selftests(void) {
         Cob_EngineSetHostEmitSfx(&e, selftest_emit_sfx);
         Cob_StartThread(&e, 0, NULL, 0);
         Cob_RunAllThreads(&e);
-        if (capture.calls != 128 || e.threads[0].sleep_remaining != 29) {
+        /* 499 ms is 14 of the original's frames, 28 ticks. */
+        if (capture.calls != 128 || e.threads[0].sleep_remaining != 28) {
             fprintf(stderr, "selftest SFX batch did not reach sleep in one tick\n");
             failed = 1;
         }
-        for (int i = 0; i < 29; i++) Cob_RunAllThreads(&e);
+        for (int i = 0; i < 27; i++) Cob_RunAllThreads(&e);
         if (Cob_AliveThreadCount(&e) != 1 || capture.calls != 128) failed = 1;
         Cob_RunAllThreads(&e);
         if (Cob_AliveThreadCount(&e) != 0) failed = 1;
