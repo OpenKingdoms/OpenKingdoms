@@ -494,6 +494,10 @@ in the [all-contributors](https://allcontributors.org) way.
       <a href="https://github.com/tgilgs"><img src="https://github.com/tgilgs.png?size=100" width="100" alt="tgilgs" style="border-radius: 50%"/><br /><sub><b>tgilgs</b></sub></a><br />
       <sub>flames and smoke on damaged buildings</sub>
     </td>
+    <td align="center" valign="top" width="20%">
+      <a href="https://github.com/Danvern"><img src="https://github.com/Danvern.png?size=100" width="100" alt="Artificer-111" style="border-radius: 50%"/><br /><sub><b>Artificer-111</b></sub></a><br />
+      <sub>pathing, tower aim and flyer landing</sub>
+    </td>
   </tr>
 </table>
 

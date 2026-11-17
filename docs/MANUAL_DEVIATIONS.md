@@ -373,8 +373,30 @@ Format per entry:
   the tiles it stamps there are the tiles the planner tested, and the
   line between two points that are kept runs over placements that were
   each found legal. A compressed route keeps a point where that chain
-  turns and the last. Only a cell a pinched route merely crosses, where
-  no placement is legal, keeps the cell centre. The original anchors
+  turns and the last. The first point is kept when the line past it,
+  from where the route begins, would take the body off ground it may
+  stand on, or the unit's centre, from where it really stands, into a
+  tile the step refuses past its own. Structures under the unit's real
+  body are still judged from the placement's body line, so a unit off
+  its placement can still meet the corner of a building and slide. A
+  leg from the unit to a first point that is kept is not checked. A
+  unit whose body fits no placement of its own cell is walked out
+  first, tile by tile under its centre by the step's own rule, to the
+  tiles that centre a legal placement, and the route begins with that
+  walk at its turns. Water is never crossed on it, shut ground only
+  within two tiles of the unit, and what is built only while the body
+  already stands on some, as the mover allows. A
+  tile of it in a cell with no legal placement costs a cell's worth of
+  detour, half of PATH_PINCH_COST, as the crossings of 32 pixel cells
+  it replaced did, and the cell it starts the search from adds its half
+  of bad ground, as any step into that cell does. Those crossings took a cell with one walkable tile
+  as ground to cross, beside the last one or not, and routed a 2 by 2
+  unit in the corner of a one tile ridge straight through it. A unit
+  whose cell is legal but whose body stands partly off its ground, in a
+  pocket of a few cells no slide leads out of, is walked out the same
+  way when its search runs out within 64 cells, to placements outside
+  the pocket. A unit whose body is all on its ground is never walked:
+  where no slide leads, it has no route. The original anchors
   its own sweep on the unit's position rounded to the tile grid
   (legacy:184166-184186), so it has no 32 pixel cell to be in step
   with. This entry used to record a parity artefact here: a footprint
@@ -382,7 +404,8 @@ Format per entry:
   one cell wide was ground at one parity against the cell grid and no
   ground at all at the other, however wide it was. Enumerating the
   placements removed it.
-- Citation: `docs/notes/2026-09-10-clearance-grid.md`.
+- Citation: `docs/notes/2026-09-10-clearance-grid.md`,
+  `docs/notes/2026-11-15-a-route-out-of-a-trapped-start.md`.
 
 ---
 
