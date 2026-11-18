@@ -37,3 +37,8 @@ int HUD_PickCursor(const HUDCursorFacts *f) {
     if (f->sweep) return HUD_CMD_CLEAR;
     return f->own_walker ? HUD_CMD_MOVE : HUD_CUR_NORMAL;
 }
+
+int HUD_PickMapCursor(const HUDCursorFacts *f) {
+    if (!f || !f->own_selected) return HUD_CUR_NORMAL;
+    return HUD_PickCursor(f);
+}

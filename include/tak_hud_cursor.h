@@ -21,4 +21,8 @@ typedef struct HUDCursorFacts {
 /* A HUD_CMD_* or HUD_CUR_* id for HUD_DrawCursorById. */
 int HUD_PickCursor(const HUDCursorFacts *f);
 
+/* The same over a minimap or Tab map point, where a press with nothing
+ * of yours selected only looks and gives no order. */
+int HUD_PickMapCursor(const HUDCursorFacts *f);
+
 #endif /* TAK_HUD_CURSOR_H */

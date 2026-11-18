@@ -1225,6 +1225,12 @@ int InGame_CommandCursorOn(int mode, int hit, int32_t world_x, int32_t world_y) 
     return HUD_PickCursor(&f);
 }
 
+int InGame_MapCursorOn(int mode, int hit, int32_t map_x, int32_t map_y) {
+    HUDCursorFacts f;
+    ig_cursor_facts(mode, hit, map_x, map_y, &f);
+    return HUD_PickMapCursor(&f);
+}
+
 /* One left click on the game world, in world coordinates. The tick
  * calls this on release and tests call it directly, so the pending
  * command, the pick and the order ack all resolve in one place
@@ -2378,6 +2384,14 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             }
         } else if (over_world) {
             int cur_id = InGame_HoverCursorOn(hover_unit, hover_x, hover_y);
+            drew_cursor = HUD_DrawCursorById(platform, cur_id, mx, my);
+        } else if (platform->has_focus &&
+                   Minimap_PointToWorld(platform, mx, my, 0, &hover_x, &hover_y)) {
+            /* The minimap and the Tab map show what a press there gives,
+             * on the blip ig_minimap hands that press. */
+            int cur_id = InGame_MapCursorOn(HUD_GetCommandMode(),
+                                            Minimap_UnitAt(platform, mx, my),
+                                            hover_x, hover_y);
             drew_cursor = HUD_DrawCursorById(platform, cur_id, mx, my);
         }
         SDL_ShowCursor(drew_cursor ? SDL_DISABLE : SDL_ENABLE);
