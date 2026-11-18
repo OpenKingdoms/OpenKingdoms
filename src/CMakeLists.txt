@@ -980,6 +980,30 @@ target_compile_definitions(test_build_facing PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
 
+# test_model_light: faces lit through a synthetic .shd ramp, no game files.
+add_executable(test_model_light
+    render/test_model_light.c
+    ${TAK_SCREEN_TEST_SOURCES}
+)
+target_include_directories(test_model_light PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_link_libraries(test_model_light PRIVATE SDL2::SDL2 SDL2::SDL2main)
+if(AVCODEC_LIBRARY)
+    target_include_directories(test_model_light PRIVATE ${AVCODEC_INCLUDE_DIR})
+    target_link_libraries(test_model_light PRIVATE
+        ${TAK_FFMPEG_LIBS})
+endif()
+if(WIN32)
+    target_link_libraries(test_model_light PRIVATE user32 gdi32 winmm ws2_32 advapi32)
+    add_dependencies(test_model_light tak_sdl2_runtime)
+endif()
+target_compile_definitions(test_model_light PRIVATE
+    TAK_DATA_DIR="${TAK_DATA_DIR}"
+    TAK_GAME_DIR="${TAK_GAME_DIR}"
+)
+
 # test_orders: factory queues, rally points, Shift queued orders and
 # turned gates, with synthetic defs and a flat world.
 add_executable(test_orders
@@ -1545,6 +1569,18 @@ if(AVCODEC_LIBRARY)
 endif()
 if(WIN32)
     add_dependencies(test_jpg tak_sdl2_runtime)
+endif()
+
+# ── GPU seam blend modes ─────────────────────────────────────────────────
+add_executable(test_gpu
+    render/test_gpu.c
+    render/tak_gpu.c
+    core/memory.c
+)
+target_include_directories(test_gpu PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_gpu PRIVATE SDL2::SDL2 SDL2::SDL2main)
+if(WIN32)
+    add_dependencies(test_gpu tak_sdl2_runtime)
 endif()
 
 # ── Blit tests (Blit_RGBA_Opaque) ────────────────────────────────────────
@@ -2266,6 +2302,8 @@ target_link_libraries(test_ingame_keys_shipped PRIVATE SDL2::SDL2)
 add_executable(test_fog
     game/test_fog.c
     game/fog.c
+    render/fog_mist.c
+    render/tak_gpu.c
     core/memory.c
     core/trig.c
 )
@@ -2699,6 +2737,7 @@ if(BUILD_TESTING)
     # The data free half, for a runner with no game files.
     add_test(NAME test_jpg_no_data COMMAND test_jpg --no-data)
     add_test(NAME test_blit        COMMAND test_blit)
+    add_test(NAME test_gpu         COMMAND test_gpu)
     add_test(NAME test_gaf         COMMAND test_gaf)
     add_test(NAME test_cob         COMMAND test_cob)
     add_test(NAME test_cob_vm      COMMAND test_cob_vm)
@@ -2750,6 +2789,7 @@ if(BUILD_TESTING)
     add_test(NAME test_movement    COMMAND test_movement)
     add_test(NAME test_line_of_fire COMMAND test_line_of_fire)
     add_test(NAME test_build_facing COMMAND test_build_facing)
+    add_test(NAME test_model_light COMMAND test_model_light)
     add_test(NAME test_orders      COMMAND test_orders)
     add_test(NAME test_capture     COMMAND test_capture)
     add_test(NAME test_sim_probe   COMMAND test_sim_probe)

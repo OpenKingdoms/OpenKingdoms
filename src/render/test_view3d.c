@@ -1405,6 +1405,43 @@ TEST(a_flame_weapon_streams_particles_instead_of_a_ray) {
     int sprite = Units_FindSpriteArt("flame");
     ASSERT(sprite >= 0);
     ASSERT(count_effects(sprite, NULL) >= 6);
+    /* The caster moves on and the breath leaves its mouth where it is now,
+     * not where the beam started, as in the original. */
+    const Projectile *b = NULL;
+    for (int i = 0; i < pn && !b; i++)
+        if (ps[i].alive && ps[i].is_beam) b = &ps[i];
+    ASSERT_NOT_NULL(b);
+    int32_t src_x = b->src_x;
+    ASSERT_EQ_INT(0, Units_DebugPlace(h, x + 64, y));
+    InGame_DebugRunSimTicks(4);
+    int en = 0;
+    const ProjectileEffect *es = Units_GetProjectileEffects(&en);
+    const ProjectileEffect *young = NULL;
+    for (int i = 0; i < en; i++)
+        if (es[i].alive && es[i].sprite_idx == sprite &&
+            (!young || es[i].age_ticks < young->age_ticks)) young = &es[i];
+    ASSERT_NOT_NULL(young);
+    int32_t back = young->world_x - ((young->vx_fp * young->age_ticks) >> 16);
+    printf("(newest flame from %d, beam from %d) ", (int)back, (int)src_x);
+    ASSERT(back >= src_x + 56 && back <= src_x + 72);
+    /* Close to the strike point a flame slows so its flight lasts its whole
+     * sheet, a picture a frame, as in the original. */
+    float want = (float)Units_GetDef(def)->weapons[slot].velocity_pps / 60.0f;
+    ASSERT_EQ_INT(0, Units_DebugPlace(h, x + 110, y));
+    InGame_DebugRunSimTicks(4);
+    es = Units_GetProjectileEffects(&en);
+    young = NULL;
+    for (int i = 0; i < en; i++)
+        if (es[i].alive && es[i].sprite_idx == sprite &&
+            (!young || es[i].age_ticks < young->age_ticks)) young = &es[i];
+    ASSERT_NOT_NULL(young);
+    float vx = (float)young->vx_fp / 65536.0f, vy = (float)young->vy_fp / 65536.0f;
+    float got = sqrtf(vx * vx + vy * vy);
+    printf("(close: %.2f px a tick against %.2f, lives %d, %d a picture) ", got, want,
+           young->life_ticks, young->ticks_per_frame);
+    ASSERT(got < want * 0.9f);
+    ASSERT_EQ_INT(24, young->life_ticks);
+    ASSERT_EQ_INT(2, young->ticks_per_frame);
     shutdown_all(&platform);
 }
 
@@ -2807,6 +2844,84 @@ TEST(a_statue_is_painted_with_its_sides_stone_or_ice) {
         if (argc < 2 || strstr(#name, argv[1])) RUN(name); \
     } while (0)
 
+/* A TAF sheet adds when byte 11 of its frame headers is 0 and lies over when
+ * it is 0xFF, as in the original. */
+TEST(a_taf_sheet_blends_by_its_header) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    static const char *const added[] = {
+        "med1", "FireballA", "iceburst", "ring_fx_redA", "LtngBall_1a"
+    };
+    static const char *const laid[] = { "dustpuffa", "cannbsm", "ring_fx_greenA" };
+    for (size_t k = 0; k < sizeof(added) / sizeof(added[0]); k++) {
+        int a = Units_SheetAdded(added[k]);
+        printf("(%s %d) ", added[k], a);
+        ASSERT_EQ_INT(1, a);
+    }
+    for (size_t k = 0; k < sizeof(laid) / sizeof(laid[0]); k++) {
+        int a = Units_SheetAdded(laid[k]);
+        printf("(%s %d) ", laid[k], a);
+        ASSERT_EQ_INT(0, a);
+    }
+    shutdown_all(&platform);
+}
+
+static int is_rain_with_head(const UnitWeapon *w) { return w->remote_kind == 2 && w->rain_head > 0; }
+
+/* A storm drop's head comes down on its burst (D-054). */
+TEST(a_storm_drop_lands_its_head_on_its_burst) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int slot = 0;
+    int def = find_weapon(is_rain_with_head, &slot);
+    ASSERT(def >= 0);
+    const UnitWeapon *w = &Units_GetDef(def)->weapons[slot];
+    printf("(%s, %s drawn %d px up, %d right) ", w->name, w->weapon_art,
+           w->rain_head, w->rain_head_dx);
+    /* meteor: the head's core is 21 to 24 px below every picture's origin,
+     * 2 to 3 left of it, and explodeb's first pictures centre 6 to 9 right. */
+    ASSERT(w->rain_head >= 16 && w->rain_head <= 30);
+    ASSERT(w->rain_head_dx >= 4 && w->rain_head_dx <= 16);
+    int32_t x = 0, y = 0;
+    int h = spawn_beside_monarch(def, &x, &y);
+    ASSERT(h >= 0);
+    ASSERT_EQ_INT(1, Units_DebugFireGround(h, slot, x + 200, y));
+    int en = 0, first = -1;
+    const ProjectileEffect *es = Units_GetProjectileEffects(&en);
+    for (int i = 0; i < en; i++) {
+        if (!es[i].alive || es[i].sprite_idx != w->rain_sprite) continue;
+        ASSERT_EQ_INT(w->rain_head, es[i].pic_dy);
+        ASSERT_EQ_INT(w->rain_head_dx, es[i].pic_dx);
+        if (first < 0 && !es[i].delay_ticks) first = i;
+    }
+    ASSERT(first >= 0);
+    /* It bursts where it comes down, within the one tick's drift it
+     * makes as it lands. */
+    int32_t fx = es[first].world_x, fy = es[first].world_y;
+    int burst = 0;
+    for (int t = 0; t < 120 && !burst; t++) {
+        InGame_DebugRunSimTicks(1);
+        es = Units_GetProjectileEffects(&en);
+        if (first < en && es[first].alive && es[first].sprite_idx == w->rain_sprite) {
+            fx = es[first].world_x;
+            fy = es[first].world_y;
+            continue;
+        }
+        for (int i = 0; i < en; i++)
+            if (es[i].alive && es[i].sheet_timed && es[i].pic_dx == 0 && es[i].pic_dy == 0 &&
+                abs(es[i].world_x - fx) <= 2 && abs(es[i].world_y - fy) <= 2)
+                burst = 1;
+    }
+    ASSERT(burst);
+    shutdown_all(&platform);
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     printf("test_view3d\n");
@@ -2829,6 +2944,8 @@ int main(int argc, char **argv) {
     RUN_NAMED(damage_smoke_is_bounded_and_leaves_sim_unchanged);
     RUN_NAMED(a_wading_archer_leaves_the_originals_wake);
     RUN_NAMED(a_flame_weapon_streams_particles_instead_of_a_ray);
+    RUN_NAMED(a_taf_sheet_blends_by_its_header);
+    RUN_NAMED(a_storm_drop_lands_its_head_on_its_burst);
     RUN_NAMED(a_ring_spell_lays_its_rings_from_the_data);
     RUN_NAMED(a_storm_rains_its_drops_from_the_data);
     RUN_NAMED(the_build_preview_stands_in_the_scene);
