@@ -15592,6 +15592,15 @@ TEST(render_probe_death_flash) {
         base_white[which] = probe_count_white(live, W, H, x0, y0, x1, y1);
 
         ASSERT_EQ_INT(h, Units_DebugKillHandle(h));
+        /* Both deaths burst explosions over the body, which are not the
+         * whiteout, so they are cleared once seen. */
+        int fx_count = 0, bursts = 0;
+        ProjectileEffect *fx = (ProjectileEffect *)Units_GetProjectileEffects(&fx_count);
+        for (int i = 0; i < fx_count; i++) {
+            bursts += fx[i].alive;
+            fx[i].alive = 0;
+        }
+        ASSERT(bursts > 0);
         int unit_count = 0;
         const Unit *units = Units_GetActive(&unit_count);
         int t = 0;
@@ -17907,21 +17916,16 @@ TEST(a_building_under_construction_casts_no_shadow) {
 
 typedef struct MassPalette {
     int rgb[128][3];
-    double mean[3];
 } MassPalette;
 
 static int mass_palette_load(const char *pcx, MassPalette *out) {
     Palette pal;
     if (Palette_LoadPCX(&pal, pcx) != 0) return -1;
-    out->mean[0] = out->mean[1] = out->mean[2] = 0.0;
     for (int i = 0; i < 128; i++) {
         const PaletteEntry *e = &pal.entries[0x20 + i];
         out->rgb[i][0] = e->r;
         out->rgb[i][1] = e->g;
         out->rgb[i][2] = e->b;
-        out->mean[0] += e->r / 128.0;
-        out->mean[1] += e->g / 128.0;
-        out->mean[2] += e->b / 128.0;
     }
     return 0;
 }
@@ -17940,6 +17944,7 @@ typedef struct MassStats {
     int changed;      /* pixels of the box that differ from the base */
     int on_palette;   /* of those, how many are a build palette colour */
     double est[3];    /* the colour that blended over the base into them */
+    double mean[3];   /* their own mean colour */
 } MassStats;
 
 static MassStats mass_measure(const uint32_t *base, const uint32_t *px,
@@ -17958,12 +17963,14 @@ static MassStats mass_measure(const uint32_t *base, const uint32_t *px,
             for (int k = 0; k < 3; k++) {
                 const double cv = (double)((c >> (8 * k)) & 0xFFu);
                 const double bv = (double)((b >> (8 * k)) & 0xFFu);
+                s.mean[k] += cv;
                 if (alpha > 0)
                     s.est[k] += (cv - bv * (255 - alpha) / 255.0) * 255.0 / alpha;
             }
         }
     }
     for (int k = 0; k < 3; k++) if (s.changed) s.est[k] /= s.changed;
+    for (int k = 0; k < 3; k++) if (s.changed) s.mean[k] /= s.changed;
     return s;
 }
 
@@ -18052,20 +18059,20 @@ TEST(a_unit_under_half_built_is_an_intangible_mass) {
     MassStats body = mass_measure(none, done, W, H, box, 255, &pal, 3);
     fprintf(stderr, "probe: mass box %d px, body %d, alpha 25/49/50/75 %d/%d/%d/%d, "
             "changed 0/25/49/50/75/100 %d/%d/%d/%d/%d/%d, on palette 49/50 %d/%d, "
-            "mean %.0f,%.0f,%.0f, est 25 %.0f,%.0f,%.0f, est 75 %.0f,%.0f,%.0f\n",
+            "solid %.0f,%.0f,%.0f, est 25 %.0f,%.0f,%.0f, est 75 %.0f,%.0f,%.0f\n",
             area, body.changed, alpha[1], alpha[2], alpha[3], alpha[4],
             m0.changed, m25.changed, m49.changed, m50.changed, m75.changed,
             m100.changed, m49.on_palette, m50.on_palette,
-            pal.mean[0], pal.mean[1], pal.mean[2],
+            m50.mean[0], m50.mean[1], m50.mean[2],
             m25.est[0], m25.est[1], m25.est[2], m75.est[0], m75.est[1], m75.est[2]);
 
     ASSERT(body.changed * 8 >= area);
     /* Nothing at all when the frame is just placed. */
     ASSERT_EQ_INT(0, m0.changed);
-    /* Under half built the silhouette is there, in the side's colours,
-     * and nothing of the body shows through it. */
+    /* Under half built the silhouette hides the body. The clock is held, so
+     * the marble matches the solid frame at half built. */
     ASSERT(m25.changed * 8 >= area);
-    ASSERT(mass_close(m25.est, pal.mean, 16.0));
+    ASSERT(mass_close(m25.est, m50.mean, 8.0));
     ASSERT(m49.changed * 8 >= area);
     ASSERT(m49.on_palette * 10 >= m49.changed * 8);
     /* At half built it is solid, every pixel a build palette colour. */
@@ -18074,7 +18081,7 @@ TEST(a_unit_under_half_built_is_an_intangible_mass) {
     ASSERT(abs(m50.changed - m25.changed) * 5 <= m50.changed);
     /* Past half built the opaque body is under a mass that fades out. */
     ASSERT(m75.changed * 8 >= area);
-    ASSERT(mass_close(m75.est, pal.mean, 16.0));
+    ASSERT(mass_close(m75.est, m50.mean, 8.0));
     /* And at done it is the finished unit. */
     ASSERT_EQ_INT(0, m100.changed);
     /* Drawing reads the simulation and never writes it. */
@@ -19496,7 +19503,8 @@ TEST(a_dragons_breath_starts_at_its_firing_piece) {
                     ps[i].visual_kind == UNIT_PROJECTILE_VIS_FLAME) beam = i;
         }
         ASSERT(beam >= 0);
-        /* The same tick shed the first particle, not yet moved. */
+        /* The same tick shed the first particle, not yet moved, from the
+         * piece as it stands then, a few px on from where it fired. */
         const Projectile *b = &ps[beam];
         const Unit *du = &Units_GetActive(&unit_count)[h];
         int32_t ground = Terrain_SampleHeight(world, b->src_x, b->src_y);
@@ -19509,7 +19517,8 @@ TEST(a_dragons_breath_starts_at_its_firing_piece) {
         const ProjectileEffect *first = NULL;
         for (int i = 0; i < en && !first; i++)
             if (es[i].alive && es[i].sprite_idx == flame && es[i].age_ticks == 0 &&
-                es[i].world_x == b->src_x && es[i].world_y == b->src_y) first = &es[i];
+                abs(es[i].world_x - b->src_x) <= 4 && abs(es[i].world_y - b->src_y) <= 4)
+                first = &es[i];
         ASSERT_NOT_NULL(first);
         fprintf(stderr, "%s breath: piece %.1f px out, %.1f up over the ground "
                 "under it (flying %.0f), first flame %d up\n", dragons[k], off,
@@ -19519,7 +19528,7 @@ TEST(a_dragons_breath_starts_at_its_firing_piece) {
         /* The piece, or the old 12 px where the piece sits lower. */
         float want = b->muzzle_height > (float)ground + 12.0f
                    ? b->muzzle_height : (float)ground + 12.0f;
-        ASSERT_EQ_INT((int)want, first->height);
+        ASSERT(abs((int)want - first->height) <= 4);
         ASSERT(first->height >= ground + 12);
         /* A flyer's head is up with its body, far over the old 12 px. */
         if (du->flight_alt > 0.0f) ASSERT(first->height >= ground + (int)du->flight_alt);

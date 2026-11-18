@@ -1469,7 +1469,8 @@ static void draw_effects(const GameWorld *world, const float planes[6][4]) {
     }
     for (int i = 0; i < en; i++) {
         const ProjectileEffect *e = &es[i];
-        if (!e->alive || e->delay_ticks) continue;
+        /* The provisional light flash has no picture and no 3D form. */
+        if (!e->alive || e->delay_ticks || e->glow_w) continue;
         if (!Units_EffectShows(world, e)) continue;
         EffectTex *et = effect_tex_for(e->sprite_idx);
         if (!et) continue;
@@ -1482,7 +1483,12 @@ static void draw_effects(const GameWorld *world, const float planes[6][4]) {
         if (et->strip.fw[frame] <= 0 || et->strip.fh[frame] <= 0) continue;
         float c[3] = { (float)e->world_x, (float)e->height, (float)e->world_y };
         if (!Camera3D_SphereInFrustum(planes, c, (float)(et->strip.cell_w + et->strip.cell_h))) continue;
-        put_billboard(&bb[nb++], et, frame, c[0], c[1], c[2]);
+        put_billboard(&bb[nb], et, frame, c[0], c[1], c[2]);
+        /* Shifted on the billboard as the classic view shifts it on screen. */
+        bb[nb].off_x -= (float)e->pic_dx;
+        bb[nb].top += (float)e->pic_dy;
+        bb[nb].bottom += (float)e->pic_dy;
+        nb++;
         s_counts.effects++;
     }
     if (nb > 1) qsort(bb, (size_t)nb, sizeof(Billboard), billboard_cmp);
@@ -1525,28 +1531,25 @@ static void draw_wakes(const GameWorld *world, const float planes[6][4]) {
     if (nv > 0) GL3D_DrawSprites(v.stream_v, nv, v.stream_i, ni, NULL, 1, 0);
 }
 
-/* Beams: a jagged ribbon from muzzle to target in three widths, the
- * outer ones fainter, jittered afresh each frame the way the classic
- * rays flicker. */
+/* Lightning bolts: a jagged ribbon laid over as the classic view draws it,
+ * a core in a soft band for the bolt's life, jittered each frame. */
 #define V3_BEAM_SEGS 8
 static void draw_beams(const GameWorld *world) {
-    int pn = 0;
-    const Projectile *ps = Units_GetProjectiles(&pn);
-    int beams = 0;
-    for (int i = 0; i < pn; i++) if (ps[i].alive && ps[i].is_beam) beams++;
+    int beams = Units_GetBoltCount();
     if (beams <= 0) return;
     const int per_pass_v = (V3_BEAM_SEGS + 1) * 2, per_pass_i = V3_BEAM_SEGS * 6;
     if (ensure_stream(beams * 3 * per_pass_v, beams * 3 * per_pass_i) != 0) return;
     static unsigned flicker;
     flicker++;
     float rx = cosf(v.cam.yaw), rz = -sinf(v.cam.yaw);
-    static const float half_w[3] = { 3.0f, 2.0f, 1.0f };
-    static const float alpha[3] = { 0.35f, 0.65f, 1.0f };
+    static const float half_w[3] = { 12.0f, 2.5f, 0.75f };
+    static const float alpha[3] = { 0.12f, 0.3f, 0.85f };
     int nv = 0, ni = 0;
-    for (int i = 0; i < pn; i++) {
-        const Projectile *p = &ps[i];
-        if (!p->alive || !p->is_beam || p->visual_kind == UNIT_PROJECTILE_VIS_FLAME) continue;
-        if (!Units_ProjectileVisible(world, p)) continue;
+    for (int i = 0; i < beams; i++) {
+        int age = 0, life = 0;
+        const Projectile *p = Units_GetBolt(i, &age, &life);
+        if (!p || !Units_ProjectileVisible(world, p)) continue;
+        float fade = (float)Units_BoltStrength(age, life) / 256.0f;
         float ax = (float)p->src_x, az = (float)p->src_y;
         float ay = Units_BeamStartHeight(p);
         float bx = (float)p->world_x, bz = (float)p->world_y;
@@ -1559,10 +1562,10 @@ static void draw_beams(const GameWorld *world) {
             h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15;
             jitter[s] = (s == 0 || s == V3_BEAM_SEGS) ? 0.0f : ((float)(h % 1000u) / 1000.0f - 0.5f) * 10.0f;
         }
+        float r = p->beam_rgb[0][0] / 255.0f, gg = p->beam_rgb[0][1] / 255.0f,
+              b = p->beam_rgb[0][2] / 255.0f;
         for (int pass = 0; pass < 3; pass++) {
-            int ci = 2 - pass;   /* outer, middle, inner */
-            float r = p->beam_rgb[ci][0] / 255.0f, gg = p->beam_rgb[ci][1] / 255.0f,
-                  b = p->beam_rgb[ci][2] / 255.0f, a = alpha[pass], hw = half_w[pass];
+            float a = alpha[pass] * fade, hw = half_w[pass];
             int base = nv;
             for (int s = 0; s <= V3_BEAM_SEGS; s++) {
                 float t = (float)s / (float)V3_BEAM_SEGS;

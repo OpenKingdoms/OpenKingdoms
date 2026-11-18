@@ -171,6 +171,11 @@ typedef struct UnitWeapon {
      * frames instead of wounding it (legacy:250385-250398,
      * legacy:233857-233878). */
     uint8_t paralyzer;
+    /* lightmap: small, medium or large, UNIT_GLOW_*. Drawing only. */
+    uint8_t lightmap;
+    /* nimbus: its cast plays the side's nimbus sheet round the caster
+     * (legacy:249668-250439). Drawing only. */
+    uint8_t nimbus;
     char    explosion_class[32]; /* explosionclass */
     /* waterexplosionclass, read for a host's look. The simulation never reads it. */
     char    water_explosion_class[32];
@@ -191,9 +196,11 @@ typedef struct UnitWeapon {
     uint8_t los_kind;
     uint8_t is_los;             /* los_kind != 0 */
     int32_t emit_ticks;          /* emittime (30Hz frames) → 60Hz ticks */
+    int16_t bolt_ticks;          /* a lightning bolt's drawn life, ticks */
     uint8_t beam_inner[3];       /* innercolor RGB */
     uint8_t beam_middle[3];      /* middlecolor RGB */
     uint8_t beam_outer[3];       /* outercolor RGB */
+    uint8_t beam_add;            /* its hweffect is translucent: drawn added */
     /* Remote Effect spells, from their own keys: kind 1 lays
      * ring_count rings of sprite_count radiusart sprites, kind 2
      * rains rain_per_second weaponart drops for rain_ticks. */
@@ -204,6 +211,8 @@ typedef struct UnitWeapon {
     int32_t ring_count, ring_delay_ticks, ring_duration_ticks, sprite_count;
     int32_t buildup_ticks, decay_ticks;
     int32_t rain_per_second, rain_ticks;
+    int16_t rain_head;        /* a drop's picture drawn this far up, px, */
+    int16_t rain_head_dx;     /* and this far right, so its head meets its burst */
     int32_t water_weapon;     /* waterweapon targeting flag */
     /* unitsonly: only units stop the shot. groundbounce: it bounces
      * off the ground (legacy:250034-250036). */
@@ -336,6 +345,7 @@ typedef struct Projectile {
      * the visual for ttl_ticks. src→dest is the drawn ray. */
     uint8_t  is_beam;
     uint8_t  beam_rgb[3][3];      /* [inner|middle|outer][r,g,b] */
+    uint8_t  beam_add;            /* drawn added. Drawing only, not saved. */
     int32_t  src_x, src_y;
     /* Arc + orientation. Legacy integrates gravity into the vertical
      * velocity each substep and derives pitch from the velocity vector
@@ -425,6 +435,7 @@ typedef struct ProjectileEffect {
     uint16_t age_ticks;
     uint16_t life_ticks;       /* gone at this age, 0 when the height ends it */
     uint8_t  ticks_per_frame;  /* ticks each picture shows */
+    uint8_t  sheet_timed;      /* each picture holds the frames its sheet says */
     uint8_t  loops;            /* the pictures repeat instead of playing out */
     uint8_t  alive;
     int16_t  owner;            /* the unit it plays for, -1 for none */
@@ -432,6 +443,7 @@ typedef struct ProjectileEffect {
     int32_t  x_acc, y_acc;     /* the fraction of a pixel carried */
     uint16_t delay_ticks;      /* neither shown nor moved until this runs out */
     int16_t  land_explosion;   /* explosionclass played where a faller lands, -1 none */
+    int16_t  pic_dx, pic_dy;   /* its picture drawn this far right and up, px */
     uint32_t damage_owner_id;  /* damage flame: stable owner, 0 for other effects */
     int16_t  damage_node;      /* authored damage attachment in the owner's model */
     /* A puff of smoke or steam: its unit's stable id, and the picture it
@@ -446,7 +458,29 @@ typedef struct ProjectileEffect {
     uint32_t argb;
     uint8_t  wake_stage, wake_hold;
     uint16_t wake_left;
+    /* Drawn added to what is under it rather than blended over it. */
+    uint8_t  add;
+    /* A burst's fire, drawn before the other effects of its pass so the
+     * same burst's dust lies over it. */
+    uint8_t  under;
+    /* A ring particle on the far side of its unit, drawn before the units. */
+    uint8_t  behind;
+    /* Provisional: a soft oblong of light, no picture, its half width
+     * and height in px. 0 for any other effect. */
+    uint8_t  glow_w, glow_h;
+    /* Its brightness and core, 16 times the root of its size against the
+     * original Wisp's flash. */
+    uint8_t  glow_root16;
+    /* A large body's bloom: flatter in the middle than a strike's flash. */
+    uint8_t  glow_flat;
+    /* A cast's nimbus: flat on the ground under every unit. */
+    uint8_t  ground;
+    /* The stable id of the unit it follows by its ground point, 0 for none. */
+    uint32_t follow_id;
 } ProjectileEffect;
+
+/* The light flash sizes, as a weapon's `lightmap` names them. */
+enum { UNIT_GLOW_NONE = 0, UNIT_GLOW_SMALL, UNIT_GLOW_MEDIUM, UNIT_GLOW_LARGE };
 
 /* The picture an effect shows now, whatever has played it so far. */
 int Units_EffectPicture(const ProjectileEffect *e);
@@ -1771,6 +1805,11 @@ int         Units_SpriteArtSlot(const char *file);
 int         Units_SpriteArtPictures(int idx);
 /* Fires weapon `slot` of a unit at the ground, for tests. 1 when it fired. */
 int         Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y);
+/* Lightning bolts being drawn: a copy of the beam at fire, its age and
+ * drawn life in ticks, and its strength then out of 256. */
+int               Units_GetBoltCount(void);
+const Projectile *Units_GetBolt(int i, int *out_age, int *out_life);
+int               Units_BoltStrength(int age, int life);
 /* Weapon `slot` of unit `handle` goes off on the ground at (x, y), as a
  * shell that came down there. Returns 1 when it did. */
 int         Units_DebugBlastAt(int handle, int slot, int32_t x, int32_t y);

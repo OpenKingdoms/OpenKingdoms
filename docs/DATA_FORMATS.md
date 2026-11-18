@@ -144,7 +144,7 @@ Defines the playable factions/sides in the game.
 | buildsparklyanim | string | Animation name within the GAF |
 | resurrectsparklygaf | string | GAF for resurrection effect |
 | resurrectsparklyanim | string | Animation name for resurrection |
-| nimbus | string | God nimbus effect name |
+| nimbus | string | The circle sheet a nimbus weapon's cast plays |
 | waterheight | int | Default water level for this side |
 | musictracks | int list | Space-separated list of music track numbers |
 | logogaf | string | GAF containing team logos |
@@ -586,7 +586,7 @@ meteor, and earthen wave spells, plus mana costs, nimbus effects, etc.)
 | edgeeffectiveness | float | Damage at edge of AoE (0.0-1.0) |
 | model | string | 3DO model for projectile |
 | manapershot | int | Mana cost per firing |
-| nimbus | bool | Requires god nimbus to use |
+| nimbus | bool | Its cast plays the side's nimbus circle round the caster |
 | soundhitclass | string | Reference to soundclasses.tdf for impact |
 | soundhit | string | Direct sound file for impact |
 | explosionclass | string | Reference to explosions.tdf |

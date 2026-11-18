@@ -1306,6 +1306,29 @@ Format per entry:
   its shake. Three units author one: the Acolyte, the Dragon and the
   god of Aramon.
 - Citation: The manual does not describe the effect.
+
+## R-009: Build sparkles drawn fewer and added, with a halo
+
+- Change: A build sparkle draws added, at its art's size, over a
+  faint copy of itself 1.75 times as large for a halo. Only ten in
+  sixteen of a ring's sparkles draw. A raise ring's sparkles use the
+  same art and draw the same way.
+- Why: screenshots of the original show soft, haloed stars that stay
+  distinct points, fewer of them than our full ring of a keep puts on
+  screen. No data file supports a smaller count. sidedata.tdf names
+  only the sparkle art, and the only fact in the art is that each
+  picture holds two to four stars. The ring is sized from the model's
+  box less the flat build pad, as checked in the original
+  (legacy:198540-198551). With the pad the box widened a keep's ring
+  from 69 to 101 px. A capture of the original's keep being built
+  shows its sparkles crowded on the building, and at ten in sixteen our
+  ring puts about 93 sparkles a frame on screen against the original's
+  121. The share and the halo were checked against the original. The
+  ring's rate and motion stay as the note records.
+- Citation: Manual is silent on construction visuals. Observation:
+  screenshots and captures of the original. Behaviour note:
+  docs/notes/2026-09-14-build-sparkles.md.
+
 ## D-005: A map pack contributes only its map
 
 - Change: Every `.kmp` in the game folder's `Maps` folder is mounted
@@ -2865,5 +2888,71 @@ Format per entry:
   units' test on their place (legacy:246721-246738), and lightning
   flies from the muzzle (legacy:247147-247160), unverified for beams
   (docs/notes/2026-09-27-shots-meet-what-they-fly-into.md).
+
+## D-054: A storm's falling drop lands its head on its burst
+
+- Change: each drop of a Remote Effect storm (`subtype = hailstorm`)
+  bursts where it falls, but its picture is drawn shifted, so that the
+  head comes down on the burst. The head is half the drop picture's
+  width up from its lowest opaque row, across at the middle of that
+  end. Up and down, the head meets the burst's origin. Across, it meets
+  the middle of the boxes of the burst class's first eight pictures.
+  The shift is read from the art. A paletted GAF drop is not decoded,
+  and its box's bottom and middle stand in. For `meteor` over
+  `fireball explosion` (Fire Storm, Wrath) the picture is drawn 23 px
+  up and 9 px right. For `iceballspin` over `iceballexp` (Hail Shower,
+  Ice Storm, Ice Storms) it is drawn 1 px left. The classic view
+  shifts the picture on screen. The 3D view shifts the billboard in
+  its own plane, so the head stays on the burst whichever way the
+  camera turns. Drawing only. The storm's damage and the sim hash do
+  not change.
+- Why: in the original TARMAGE's Fire Storm meteors match up with
+  their explosions, but not entirely. Ours line them up. Every `meteor` picture trails its head 21 to 24 px below
+  its origin and 2 to 3 px left of it, and `explodeb` centres 6 to 9 px
+  right of its origin as it starts. A drop whose origin lands on the
+  burst leaves its head that far from it. A capture of the original's
+  Fire Storm shows the original's own miss: a burst opens 8 to 9 px
+  right of and 12 to 14 px above where its meteor's head was last
+  drawn, the same on every pair that could be told apart.
+- Citation: the manual is silent. The fall itself is
+  docs/notes/2026-09-16-spells-draw-from-their-data.md.
+
+## D-055: Storm puffs from the first cast
+
+- Change: each drop of a Remote Effect storm (`subtype = hailstorm`)
+  leaves a short trail of soft white puffs from the first cast of the
+  battle. The original shows them only once something in the battle
+  has died. A cast that takes mana always casts. On one map the
+  original's storm stopped casting after enough casts while still
+  taking the mana, and the engine does not copy that.
+- What is drawn: a drop lays one bigsmoke puff, drawn alpha added,
+  where it is on each of its first 3 or 4 frames of fall. The puffs are
+  22 to 23 px apart, each a frame older than the one below. The art,
+  its size, the blend, the trail, the spacing and the count of up to 4
+  are read from the original's best case of the puffs playing. The
+  count picked per drop between 3 and 4, and each puff starting at
+  bigsmoke's picture 4 and playing on by the sheet's holds, are chosen
+  to look right in that case. Drawing only.
+- Why: both behaviours read as limits of a rushed particle system, and
+  the puffs as the storms' intended look. Every capture of the original
+  without a death first shows none, so the needs-a-death rule would
+  leave them unseen in most battles.
+- Citation: the manual is silent. Tests and stills of the original, and
+  docs/notes/2026-09-16-spells-draw-from-their-data.md.
+
+## D-056: Lightning is one jagged bolt, not the original's fading strands
+
+- Change: a lightning weapon's bolt is drawn as one jagged line of its
+  inner colour laid over in a soft band, at its full length from its
+  first frame, for its measured life. Known deviation, kept until a
+  later rendering pass of our own.
+- Why: in the original a bolt is the `lightning` particle system of
+  `effects.tdf`: fine jagged strands, two new ones a frame, the older
+  ones fading and smearing round them, growing from the muzzle at the
+  weapon's `weaponvelocity`, with the strike's flare when the front gets
+  there. The Mage Tower's, the Wisp's and the Death Totem's bolts all
+  look this way in the original.
+- Citation: captures of the original's Mage Tower, Wisp and Death
+  Totem bolts. The manual is silent.
 
 *(More entries added as deviations land.)*
