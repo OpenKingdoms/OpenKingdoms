@@ -23532,19 +23532,28 @@ static int shadow_ground_height(const struct GameWorld *world, const Unit *u) {
 }
 
 /* A wall (isfeature) turns into a feature once built in the original and
- * casts its shadow as one, so its unit noshadow drops nothing. */
-static int unit_casts_shadow(const Unit *u, const UnitDef *d) {
-    if (!d || d->floater) return 0;
-    if (d->no_shadow && !d->is_feature) return 0;
-    if (u->under_construction) return 0;
-    return 1;
+ * casts its shadow as one, so its unit noshadow drops nothing. It lays
+ * that shadow just before its own body, after the rows behind it, so the
+ * shadow falls across the wall behind, as in the original. Every other
+ * shadow goes down before any body. */
+int Units_ShadowPass(const UnitDef *d, int under_construction) {
+    if (!d || d->floater || under_construction) return UNITS_SHADOW_NONE;
+    if (d->no_shadow && !d->is_feature) return UNITS_SHADOW_NONE;
+    return d->is_feature ? UNITS_SHADOW_IN_ROW : UNITS_SHADOW_GROUND;
 }
 
-/* A wall lays its shadow just before its own body, after the rows behind
- * it, so the shadow falls across the wall behind (seen in the
- * original). Every other shadow goes down before any body. */
+static int unit_casts_shadow(const Unit *u, const UnitDef *d) {
+    return Units_ShadowPass(d, u->under_construction) != UNITS_SHADOW_NONE;
+}
+
 static int unit_shadow_in_row(const Unit *u, const UnitDef *d) {
-    return d && d->is_feature && unit_casts_shadow(u, d);
+    return Units_ShadowPass(d, u->under_construction) == UNITS_SHADOW_IN_ROW;
+}
+
+/* A model feature casts a silhouette unless its file says noshadow, as in
+ * the original. A sprite feature's shadow is its GAF's. */
+int Units_FeatureCastsShadow(const struct FeatureDef *fd) {
+    return fd && fd->object[0] && !fd->no_shadow;
 }
 
 /* Point the renderer at a cleared shadow mask. Returns 0 and the
@@ -24161,7 +24170,7 @@ static void render_feature_shadows(const struct GameWorld *world, TAK_Platform *
     for (int i = 0; i < world->feature_count; i++) {
         const struct MapFeature *mf = &world->features[i];
         const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
-        if (!fd || !fd->object[0] || fd->no_shadow) continue;
+        if (!Units_FeatureCastsShadow(fd)) continue;
         if (mf->world_x < world->cam_x - margin ||
             mf->world_x > world->cam_x + world->viewport_w + margin) continue;
         if (mf->world_y < world->cam_y - margin ||

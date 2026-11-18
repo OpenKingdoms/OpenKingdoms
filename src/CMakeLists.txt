@@ -930,6 +930,27 @@ target_compile_definitions(test_command_pipeline PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
 
+# test_shadow_pass: which shadows are cast and in which pass, with
+# synthetic defs and no game files.
+add_executable(test_shadow_pass
+    render/test_shadow_pass.c
+    ${TAK_SCREEN_TEST_SOURCES}
+)
+target_include_directories(test_shadow_pass PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_link_libraries(test_shadow_pass PRIVATE SDL2::SDL2 SDL2::SDL2main)
+if(AVCODEC_LIBRARY)
+    target_include_directories(test_shadow_pass PRIVATE ${AVCODEC_INCLUDE_DIR})
+    target_link_libraries(test_shadow_pass PRIVATE
+        ${TAK_FFMPEG_LIBS})
+endif()
+if(WIN32)
+    target_link_libraries(test_shadow_pass PRIVATE user32 gdi32 winmm ws2_32 advapi32)
+    add_dependencies(test_shadow_pass tak_sdl2_runtime)
+endif()
+
 # test_capture: the fixed fog capture's flags, fog dump and scout walk,
 # with a synthetic world, so it runs in CI with no game files.
 add_executable(test_capture
@@ -2792,6 +2813,7 @@ if(BUILD_TESTING)
     add_test(NAME test_model_light COMMAND test_model_light)
     add_test(NAME test_orders      COMMAND test_orders)
     add_test(NAME test_capture     COMMAND test_capture)
+    add_test(NAME test_shadow_pass COMMAND test_shadow_pass)
     add_test(NAME test_sim_probe   COMMAND test_sim_probe)
     add_test(NAME test_float_guard COMMAND ${CMAKE_COMMAND}
              -DFILES=${TAK_INTEGER_ONLY_ARG}
