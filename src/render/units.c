@@ -21505,6 +21505,11 @@ static void mark_behind_owners(int n) {
 static void render_projectile_effects(const struct GameWorld *world,
                                       TAK_Platform *plat, int owner);
 
+/* The unit draw lays a wall's shadow in its row. */
+static int  unit_shadow_in_row(const Unit *u, const UnitDef *d);
+static void render_unit_shadows(const struct GameWorld *world, TAK_Platform *plat,
+                                const int *order, int n, int in_row);
+
 /* Walk Y-sorted draw order, group consecutive units sharing
  * (def_idx, color_idx) into runs, submit each run as one coalesced
  * batch. Mixed-faction crowds get many tiny runs (no batching gain
@@ -21525,8 +21530,14 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
         if (!u0->magic_death || tall_feature_before(unit_draw_row(u0)))
             silhouette_close(plat);
         flush_tall_features(plat, unit_draw_row(u0));
+        const int in_row = unit_shadow_in_row(u0, Units_GetDef(u0->def_idx));
+        if (in_row) {
+            /* A whiteout group must not stay bound under the shadow mask. */
+            silhouette_close(plat);
+            render_unit_shadows(world, plat, g_draw_order + run_start, 1, 1);
+        }
         int run_end = run_start + 1;
-        while (run_end < n) {
+        while (!in_row && run_end < n) {
             const Unit *uk = &g_units[g_draw_order[run_end]];
             /* A tall feature between the two rows goes down between them. */
             if (tall_feature_before(unit_draw_row(uk))) break;
@@ -23520,10 +23531,20 @@ static int shadow_ground_height(const struct GameWorld *world, const Unit *u) {
     return h;
 }
 
+/* A wall (isfeature) turns into a feature once built in the original and
+ * casts its shadow as one, so its unit noshadow drops nothing. */
 static int unit_casts_shadow(const Unit *u, const UnitDef *d) {
-    if (!d || d->no_shadow || d->floater) return 0;
+    if (!d || d->floater) return 0;
+    if (d->no_shadow && !d->is_feature) return 0;
     if (u->under_construction) return 0;
     return 1;
+}
+
+/* A wall lays its shadow just before its own body, after the rows behind
+ * it, so the shadow falls across the wall behind (seen in the
+ * original). Every other shadow goes down before any body. */
+static int unit_shadow_in_row(const Unit *u, const UnitDef *d) {
+    return d && d->is_feature && unit_casts_shadow(u, d);
 }
 
 /* Point the renderer at a cleared shadow mask. Returns 0 and the
@@ -24151,18 +24172,20 @@ static void blit_projectile_shadows(TAK_Platform *plat,
     }
 }
 
-/* Every ground shadow of the frame, the units and the shots in flight,
- * drawn before any unit body. */
-static void render_ground_shadows(const struct GameWorld *world,
-                                  TAK_Platform *plat, int n)
+/* The shadows of the units `order` lists whose shadow goes in the row
+ * pass (`in_row`) or the ground pass, and the shots' with the ground
+ * pass, through one mask. */
+static void render_unit_shadows(const struct GameWorld *world, TAK_Platform *plat,
+                                const int *order, int n, int in_row)
 {
     if (!g_shadows_on || !plat || !plat->renderer) return;
     int any = 0;
     for (int i = 0; i < n && !any; i++) {
-        const Unit *u = &g_units[g_draw_order[i]];
-        if (unit_casts_shadow(u, Units_GetDef(u->def_idx))) any = 1;
+        const Unit *u = &g_units[order[i]];
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (unit_casts_shadow(u, d) && unit_shadow_in_row(u, d) == in_row) any = 1;
     }
-    for (int i = 0; i < g_projectile_count && !any; i++) {
+    for (int i = 0; i < g_projectile_count && !any && !in_row; i++) {
         if (projectile_casts_shadow(world, &g_projectiles[i])) any = 1;
     }
     if (!any) return;
@@ -24173,9 +24196,9 @@ static void render_ground_shadows(const struct GameWorld *world,
 
     int i = 0;
     while (i < n) {
-        const Unit *u0 = &g_units[g_draw_order[i]];
+        const Unit *u0 = &g_units[order[i]];
         const UnitDef *d0 = Units_GetDef(u0->def_idx);
-        if (!unit_casts_shadow(u0, d0)) { i++; continue; }
+        if (!unit_casts_shadow(u0, d0) || unit_shadow_in_row(u0, d0) != in_row) { i++; continue; }
         if (d0->shadow_gaf[0] && d0->shadow_art[0]) {
             blit_unit_shadow_sprite(plat, world, u0, d0, &area);
             i++;
@@ -24183,18 +24206,27 @@ static void render_ground_shadows(const struct GameWorld *world,
         }
         int j = i + 1;
         while (j < n) {
-            const Unit *uk = &g_units[g_draw_order[j]];
+            const Unit *uk = &g_units[order[j]];
+            const UnitDef *dk = Units_GetDef(uk->def_idx);
             if (uk->def_idx != u0->def_idx ||
                 uk->team_color_idx != u0->team_color_idx) break;
-            if (!unit_casts_shadow(uk, Units_GetDef(uk->def_idx))) break;
+            if (!unit_casts_shadow(uk, dk) || unit_shadow_in_row(uk, dk) != in_row) break;
             j++;
         }
         submit_shadow_run(plat, world, u0->def_idx, u0->team_color_idx,
-                          g_draw_order + i, j - i, &area);
+                          order + i, j - i, &area);
         i = j;
     }
-    blit_projectile_shadows(plat, world, &area);
+    if (!in_row) blit_projectile_shadows(plat, world, &area);
     shadow_mask_end(plat, prev, &area);
+}
+
+/* Every ground shadow of the frame but the walls', the units and the
+ * shots in flight, drawn before any unit body. */
+static void render_ground_shadows(const struct GameWorld *world,
+                                  TAK_Platform *plat, int n)
+{
+    render_unit_shadows(world, plat, g_draw_order, n, 0);
 }
 
 /* Map features (lodestones, rocks, trees) parsed from the TNT feature
