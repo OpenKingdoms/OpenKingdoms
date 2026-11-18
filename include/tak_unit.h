@@ -1481,6 +1481,13 @@ void              Units_RenderBuildGhostFacing(struct TAK_Platform *plat,
                                                 int32_t world_x, int32_t world_y,
                                                 uint8_t alpha255, int valid,
                                                 int facing);
+/* The same at (world_x, world_y) as given, unsnapped: the armed cursor's. */
+void              Units_RenderBuildGhostFree(struct TAK_Platform *plat,
+                                              const struct GameWorld *world,
+                                              int def_idx, int color_idx,
+                                              int32_t world_x, int32_t world_y,
+                                              uint8_t alpha255, int valid,
+                                              int facing);
 
 /* ── Read only accessors for a second view ───────────────────────────
  *

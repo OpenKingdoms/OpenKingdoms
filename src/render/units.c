@@ -20473,11 +20473,33 @@ void Units_RenderBuildGhost(TAK_Platform *plat,
                                  world_x, world_y, alpha255, valid, 0);
 }
 
+static void render_build_ghost(TAK_Platform *plat, const struct GameWorld *world,
+                               int def_idx, int color_idx,
+                               int32_t world_x, int32_t world_y,
+                               uint8_t alpha255, int valid, int facing, int snap);
+
 void Units_RenderBuildGhostFacing(TAK_Platform *plat,
                                   const struct GameWorld *world,
                                   int def_idx, int color_idx,
                                   int32_t world_x, int32_t world_y,
                                   uint8_t alpha255, int valid, int facing) {
+    render_build_ghost(plat, world, def_idx, color_idx, world_x, world_y,
+                       alpha255, valid, facing, 1);
+}
+
+void Units_RenderBuildGhostFree(TAK_Platform *plat,
+                                const struct GameWorld *world,
+                                int def_idx, int color_idx,
+                                int32_t world_x, int32_t world_y,
+                                uint8_t alpha255, int valid, int facing) {
+    render_build_ghost(plat, world, def_idx, color_idx, world_x, world_y,
+                       alpha255, valid, facing, 0);
+}
+
+static void render_build_ghost(TAK_Platform *plat, const struct GameWorld *world,
+                               int def_idx, int color_idx,
+                               int32_t world_x, int32_t world_y,
+                               uint8_t alpha255, int valid, int facing, int snap) {
     if (!plat || !plat->renderer || !world) return;
     g_live_renderer_gen = plat->renderer_gen;
     UnitDef *def = (UnitDef *)Units_GetDef(def_idx);
@@ -20492,11 +20514,10 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
     const int V = m->vert_count;
     if (ensure_scratch(V, m->tri_count * 3) != 0) return;
 
-    /* Draw the preview on the cell the build will occupy, with the
-     * terrain lift a live unit gets, so the ghost and the finished
-     * building sit on exactly the same pixels (legacy:184168). */
+    /* A placed or queued ghost sits on the cell the build will occupy
+     * (legacy:184168), the cursor's on the free pointer, as in the original. */
     facing = Units_DefFacing(def_idx, facing);
-    Units_SnapBuildSiteFacing(def_idx, facing, &world_x, &world_y);
+    if (snap) Units_SnapBuildSiteFacing(def_idx, facing, &world_x, &world_y);
     const float cam_x = (float)world->cam_x;
     const float cam_y = (float)world->cam_y;
     const float ta    = g_ta_scale;

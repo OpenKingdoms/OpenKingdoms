@@ -1963,8 +1963,8 @@ void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y,
         const GameWorld *wd = World_Get();
         if (wd) {
             /* The view already mapped the pointer to the world, in
-             * whichever projection it draws, so the ghost stands where
-             * the placing click will land. */
+             * whichever projection it draws. The ghost follows it freely
+             * and is judged at the snapped site the click takes. */
             Units_GroundUnderPoint(world_x, world_y, &world_x, &world_y);
             int facing = HUD_GetBuildFacing();
             /* Judged by what the player sees, as the original's cursor
@@ -1988,9 +1988,9 @@ void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y,
                 g_ghost_hook(g_build_def_idx, color_idx, world_x, world_y, valid,
                              facing);
             } else {
-                Units_RenderBuildGhostFacing(plat, wd, g_build_def_idx, color_idx,
-                                             world_x, world_y,
-                                             /*alpha255=*/140, valid, facing);
+                Units_RenderBuildGhostFree(plat, wd, g_build_def_idx, color_idx,
+                                           world_x, world_y,
+                                           /*alpha255=*/140, valid, facing);
             }
         }
         return;

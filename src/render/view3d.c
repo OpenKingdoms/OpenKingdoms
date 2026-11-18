@@ -688,8 +688,9 @@ static void draw_build_ghost(const GameWorld *world) {
     if (!def) return;
     const GpuModel *m = ModelStore_Get(def->objectname, s_ghost.color_idx);
     if (!m) return;
+    /* The cursor's ghost follows the pointer unsnapped, as the classic
+     * view's does. */
     int32_t wx = s_ghost.x, wy = s_ghost.y;
-    Units_SnapBuildSiteFacing(s_ghost.def_idx, s_ghost.facing, &wx, &wy);
     float h = Units_SiteHeight(world, s_ghost.def_idx, wx, wy);
     int n = 0;
     const CobPiece *pieces = Units_GhostPiecesFacing(s_ghost.def_idx, s_ghost.color_idx,
