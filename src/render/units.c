@@ -21590,52 +21590,92 @@ static void render_health_bars(const struct GameWorld *world, TAK_Platform *plat
     }
 }
 
-/* A selection ring at each selected unit's foot, in its team colour. */
+/* A ring's half axes over its quad's half extents, as captures of the
+ * original's rings measure them. */
+#define SELECT_RING_SCALE 1.2f
+
+/* Round the root's selection quad, or the footprint for a model that
+ * has none, buildings and flyers alike (captures of the original's rings). */
+int Units_SelectionRing(int handle, UnitSelectRing *out) {
+    if (!out || handle < 0 || handle >= g_unit_count) return 0;
+    const Unit *u = &g_units[handle];
+    if (u->alive != 1 || selection_find(handle) < 0) return 0;
+    if (!unit_visible_to_local_player(World_Get(), u)) return 0;
+    /* Loads the def's selection quad on first use. */
+    int lo, hi;
+    def_body_span(u->def_idx, &lo, &hi);
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d) return 0;
+    float x0, x1, z0, z1;
+    if (d->body_quad_set) {
+        x0 = z0 = 1e30f;
+        x1 = z1 = -1e30f;
+        for (int k = 0; k < 4; k++) {
+            float x = (float)d->body_quad[k][0] * UNIT_MODEL_TO_WORLD;
+            float z = (float)d->body_quad[k][1] * UNIT_MODEL_TO_WORLD;
+            x0 = fminf(x0, x);
+            x1 = fmaxf(x1, x);
+            z0 = fminf(z0, z);
+            z1 = fmaxf(z1, z);
+        }
+    } else {
+        x1 = (float)(d->footprint_x > 0 ? d->footprint_x : 1) * 8.0f;
+        z1 = (float)(d->footprint_z > 0 ? d->footprint_z : 1) * 8.0f;
+        x0 = -x1;
+        z0 = -z1;
+    }
+    out->cx = (x0 + x1) * 0.5f;
+    out->cz = (z0 + z1) * 0.5f;
+    out->hx = (x1 - x0) * 0.5f * SELECT_RING_SCALE;
+    out->hz = (z1 - z0) * 0.5f * SELECT_RING_SCALE;
+    /* The whole model's own tilt, no script piece's, as in the original. */
+    out->pitch = u->pitch;
+    out->roll = u->roll;
+    return 1;
+}
+
+/* Roll, pitch, then heading, as transform_unit_verts. Ground depth goes to
+ * the screen 1:1 and height by the tilt (legacy:197689). */
+void Units_SelectRingPoint(const UnitSelectRing *r, float heading, float t,
+                           float *dx, float *dy) {
+    float mx = r->cx + tak_cosf(t) * r->hx;
+    float mz = r->cz + tak_sinf(t) * r->hz;
+    float cr = tak_cosf(r->roll), sr = tak_sinf(r->roll);
+    float cp = tak_cosf(r->pitch), sp = tak_sinf(r->pitch);
+    float ax = cr * mx, ay = sr * mx;
+    float by = cp * ay - sp * mz;
+    float bz = sp * ay + cp * mz;
+    float ch = tak_cosf(heading), sh = tak_sinf(heading);
+    *dx = -(ch * ax + sh * bz);
+    *dy = -(sh * ax - ch * bz) - by * g_tan_tilt;
+}
+
+/* A selection ring at each selected unit's foot, coloured by health. */
 static void render_selection_rings(const struct GameWorld *world, TAK_Platform *plat) {
     if (g_selection_count == 0) return;
     SDL_Renderer *r = plat->renderer;
     if (!r) return;
 
-    const float tilt = g_tan_tilt;
     for (int s = 0; s < g_selection_count; s++) {
         int h = g_selection[s];
-        if (h < 0 || h >= g_unit_count || g_units[h].alive != 1) continue;
+        UnitSelectRing ring;
+        if (!Units_SelectionRing(h, &ring)) continue;
         const Unit *u = &g_units[h];
-        if (!unit_visible_to_local_player(world, u)) continue;
         const UnitDef *def = Units_GetDef(u->def_idx);
-        /* Tight ring just past the unit's footprint. Reference shots
-         * (image #77 etc) show the ring sitting close to the feet —
-         * roughly the unit's silhouette half-width plus a few pixels. */
-        float radius_x = 20.0f;
-        if (def) {
-            const UnitMesh *m = def->mesh_per_color[u->team_color_idx];
-            if (m) {
-                float ax = m->aabb_max[0] - m->aabb_min[0];
-                float az = m->aabb_max[2] - m->aabb_min[2];
-                float wider = ax > az ? ax : az;
-                radius_x = wider * 0.5f * g_ta_scale + 3.0f;
-            }
-        }
-        const float radius_y = radius_x * tilt;
 
-        /* Ring colour is tied to the unit's HEALTH percentage:
-         *   ≥50% → green, ≥25% → yellow, else red.
-         * Same convention as the floating per-unit health bar; gives
-         * the player at-a-glance status of every selected unit. */
+        /* Red to yellow below half health, yellow to pure green above
+         * (legacy:210961-210969, captures at full health). */
         int max_hp = u->max_health > 0 ? u->max_health : 1;
-        int pct    = u->health * 100 / max_hp;
-        if (pct >= 50) {
-            SDL_SetRenderDrawColor(r,  60, 220,  60, 255);   /* green */
-        } else if (pct >= 25) {
-            SDL_SetRenderDrawColor(r, 230, 200,  40, 255);   /* yellow */
-        } else {
-            SDL_SetRenderDrawColor(r, 230,  40,  30, 255);   /* red */
-        }
+        int ramp = (int)((int64_t)u->health * 510 / max_hp);
+        if (ramp < 0) ramp = 0;
+        if (ramp > 510) ramp = 510;
+        SDL_SetRenderDrawColor(r, (Uint8)(ramp < 255 ? 255 : 510 - ramp),
+                               (Uint8)(ramp < 255 ? ramp : 255), 0, 255);
 
         float fx = (float)(u->world_x - world->cam_x);
         float fy = (float)(u->world_y - world->cam_y)
                  - ((float)Terrain_SampleHeight(world, u->world_x, u->world_y)
-                    + Units_DrawnAlt(world, u)) * tilt;
+                    + Units_DrawnAlt(world, u)) * g_tan_tilt;
 
         /* Twelve chords in two sets of six that turn opposite ways, each
          * 0xccc long, from the unit's id and the clock, a turn in 4 s
@@ -21646,22 +21686,19 @@ static void render_selection_rings(const struct GameWorld *world, TAK_Platform *
         #define SEL_CHORD (3276.0f * 6.2831853f / 65536.0f)
         for (int i = 0; i < 6; i++) {
             float a = phase + (float)i * SEL_STEP;
-            SDL_RenderDrawLineF(r,
-                fx + tak_cosf(a) * radius_x,
-                fy + tak_sinf(a) * radius_y,
-                fx + tak_cosf(a - SEL_CHORD) * radius_x,
-                fy + tak_sinf(a - SEL_CHORD) * radius_y);
             float b = -phase - (float)i * SEL_STEP;
-            SDL_RenderDrawLineF(r,
-                fx + tak_cosf(b) * radius_x,
-                fy + tak_sinf(b) * radius_y,
-                fx + tak_cosf(b + SEL_CHORD) * radius_x,
-                fy + tak_sinf(b + SEL_CHORD) * radius_y);
+            float x0, y0, x1, y1;
+            Units_SelectRingPoint(&ring, u->heading, a, &x0, &y0);
+            Units_SelectRingPoint(&ring, u->heading, a - SEL_CHORD, &x1, &y1);
+            SDL_RenderDrawLineF(r, fx + x0, fy + y0, fx + x1, fy + y1);
+            Units_SelectRingPoint(&ring, u->heading, b, &x0, &y0);
+            Units_SelectRingPoint(&ring, u->heading, b + SEL_CHORD, &x1, &y1);
+            SDL_RenderDrawLineF(r, fx + x0, fy + y0, fx + x1, fy + y1);
         }
         #undef SEL_STEP
         #undef SEL_CHORD
         /* Your own cloaked unit shows how near an enemy may come
-         * (legacy:180534-180536). */
+         * (legacy:180534-180536). Drawn 1:1 as the ring is, inferred. */
         if (def && u->cloaked && u->player_id == g_local_player &&
             def->min_cloak_distance > 0) {
             SDL_FPoint pts[49];
@@ -21669,7 +21706,7 @@ static void render_selection_rings(const struct GameWorld *world, TAK_Platform *
             for (int k = 0; k <= 48; k++) {
                 float a = (float)k / 48.0f * 6.2831853f;
                 pts[k].x = fx + tak_cosf(a) * cr;
-                pts[k].y = fy + tak_sinf(a) * cr * tilt;
+                pts[k].y = fy + tak_sinf(a) * cr;
             }
             SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
             SDL_RenderDrawLinesF(r, pts, 49);

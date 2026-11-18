@@ -2132,6 +2132,16 @@ int               Units_CanWalk(int handle);
 /* 0 for a unit the player cannot select: none there, dead, or still
  * being built, which the original never selects. */
 int               Units_IsSelectable(int handle);
+/* A selection ring in its unit's frame, px: centre and half axes across (x)
+ * and along (z). It tilts by the unit's own pitch and roll, radians. */
+typedef struct UnitSelectRing { float cx, cz, hx, hz, pitch, roll; } UnitSelectRing;
+/* The ring a selected unit shows, 0 for one that shows none: not in
+ * the selection, dead, or out of the local player's sight. */
+int               Units_SelectionRing(int handle, UnitSelectRing *out);
+/* The ring's point at angle t, tilted with the unit and turned to the
+ * heading, as a screen offset from the unit's ground point. */
+void              Units_SelectRingPoint(const UnitSelectRing *r, float heading,
+                                        float t, float *dx, float *dy);
 /* The ground under a pointer read flat off the screen. Terrain draws
  * lifted by its height times the tilt, so the world point under the
  * pointer sits further down the map than the flat reading, and a near
