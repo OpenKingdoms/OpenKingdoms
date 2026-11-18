@@ -480,6 +480,7 @@ typedef struct UnitDef {
     char     category[TAK_UNITDEF_CAT_MAX];    /* free-form, e.g. "ARA Monarch" */
     char     damage_category[32];              /* damagecategory lookup key */
     char     soundcategory[32];                /* soundclass TDF section (legacy def+0xa2) */
+    char     soundclass[32];                   /* the voice when soundcategory names no class */
     char     bodytype[16];                     /* hit sound material, "default" when absent (legacy:163138) */
     float    mogrium_bounty;                   /* mana granted to the killer (def+0x222) */
     int      unitnumber;

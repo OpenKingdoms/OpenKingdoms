@@ -174,6 +174,17 @@ void GameSound_UnitVoice(const char *soundclass_name, const char *action) {
     play_flat(sound_name, 0x7f, 7);
 }
 
+/* Eight shipped variants name themselves in soundcategory and their
+ * base unit's class in soundclass. */
+const char *GameSound_UnitVoiceClass(const char *soundcategory,
+                                     const char *soundclass) {
+    if (soundcategory && soundcategory[0] && SoundClass_Find(soundcategory) >= 0)
+        return soundcategory;
+    if (soundclass && soundclass[0] && SoundClass_Find(soundclass) >= 0)
+        return soundclass;
+    return NULL;
+}
+
 void GameSound_PlayClass2D(const char *soundclass_name, const char *action,
                            int volume, int priority) {
     if (!soundclass_name) return;

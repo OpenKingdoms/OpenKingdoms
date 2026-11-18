@@ -14,6 +14,11 @@ void GameSound_Shutdown(void);
  * never positions these (legacy:221569-221630). */
 void GameSound_UnitVoice(const char *soundclass_name, const char *action);
 
+/* The class a unit voices from: its soundcategory, else its soundclass
+ * when the first names no loaded class. NULL when neither does. */
+const char *GameSound_UnitVoiceClass(const char *soundcategory,
+                                     const char *soundclass);
+
 /* Unit Sounds on the Sound page silences the voices alone: the effects
  * around them keep playing and the level is untouched. */
 void GameSound_SetUnitVoicesOn(int on);

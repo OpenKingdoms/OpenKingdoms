@@ -248,8 +248,9 @@ static void ig_play_order_ack(const GameWorld *world, const char *action) {
     (void)Units_GetSelection(&n);
     if (n <= 0 || !world) return;
     const UnitDef *def = Units_GetSelectedDef();
-    if (!def || !def->soundcategory[0]) return;
-    GameSound_UnitVoice(def->soundcategory, action);
+    if (!def) return;
+    GameSound_UnitVoice(GameSound_UnitVoiceClass(def->soundcategory,
+                                                 def->soundclass), action);
 }
 
 /* A box select voices the last unit it took (legacy:237800-237806). */
@@ -262,8 +263,9 @@ static void ig_play_box_select_ack(void) {
     int h = sel[n - 1];
     if (h < 0 || h >= count) return;
     const UnitDef *def = Units_GetDef(units[h].def_idx);
-    if (!def || !def->soundcategory[0]) return;
-    GameSound_UnitVoice(def->soundcategory, "select");
+    if (!def) return;
+    GameSound_UnitVoice(GameSound_UnitVoiceClass(def->soundcategory,
+                                                 def->soundclass), "select");
 }
 
 /* The FBI commander flag (legacy:163074), the same test the original's
