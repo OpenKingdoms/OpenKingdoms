@@ -438,6 +438,20 @@ int Cob_IsThreadAlive(const CobEngine *e, int slot) {
     return e->threads[slot].alive ? 1 : 0;
 }
 
+int Cob_ThreadRunsScript(const CobEngine *e, int slot, const char *name) {
+    if (!Cob_IsThreadAlive(e, slot) || !e->script) return 0;
+    const CobScript *s = e->script;
+    int idx = Cob_FindScript(s, name);
+    if (idx < 0) return 0;
+    uint32_t pc = e->threads[slot].pc, at = 0;
+    int found = 0;
+    for (uint16_t i = 0; i < s->num_scripts; i++) {
+        uint32_t o = s->script_offsets[i];
+        if (o <= pc && (!found || o > at)) { at = o; found = 1; }
+    }
+    return found && at == s->script_offsets[idx];
+}
+
 int Cob_GetThreadReturn(const CobEngine *e, int slot, int32_t *out_value) {
     if (!e || !out_value) return 0;
     if (slot < 0 || slot >= COB_THREADS_PER_UNIT) return 0;

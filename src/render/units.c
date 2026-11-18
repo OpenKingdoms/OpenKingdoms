@@ -4680,15 +4680,28 @@ const int *Units_GetSelection(int *out_count) {
     return g_selection;
 }
 
+/* A unit whose script runs its own walk is left to it. The engine's walk
+ * thread beside the script's ran the same cycle out of step. */
+static int unit_script_walks(const Unit *u) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    return d && d->script_walks;
+}
+
+/* The engine's walk thread still runs walk. A finished walk frees its
+ * slot, and the script may have reused it for another thread. */
+static int unit_walk_running(const Unit *u) {
+    return u->cob && Cob_ThreadRunsScript(u->cob, u->walk_thread_slot, "walk");
+}
+
 /* Start the walk cycle unless one is already running. Orders arrive in
  * bursts and each one used to stack another thread on the sixteen-slot
  * engine. Legacy never starts walk at all, its own watcher threads do
  * (docs/notes/2026-09-09-cob-entry-points.md). */
 static void unit_kick_walk(Unit *u) {
     if (!u->cob) return;
+    if (unit_script_walks(u)) return;
     if (u->under_construction) return;   /* the MOVE tick kicks it later */
-    if (u->walk_thread_slot >= 0 &&
-        Cob_IsThreadAlive(u->cob, u->walk_thread_slot)) return;
+    if (unit_walk_running(u)) return;
     u->walk_thread_slot = (int8_t)unit_start_script(u, "walk", NULL, 0);
 }
 
@@ -5885,10 +5898,7 @@ static void issue_feature_order(Unit *u, const GameWorld *w, int fi,
     u->raise_mode = (uint8_t)mode;
     u->raise_left = 0;
     unit_clear_path(u);
-    if (u->cob) {
-        int slot = Cob_StartThreadByName(u->cob, "walk", NULL, 0);
-        u->walk_thread_slot = (int8_t)slot;
-    }
+    unit_kick_walk(u);
 }
 
 /* What the broom may take once the cell holds nothing: a building of
@@ -9589,6 +9599,21 @@ static int cob_sets_launch_port(const CobScript *cs) {
     return 0;
 }
 
+/* 1 when the script calls or starts its own `walk`: a watcher thread
+ * or MoveRate drives the cycle, as the original has it
+ * (docs/notes/2026-09-09-cob-entry-points.md). */
+static int cob_walks_itself(const CobScript *cs) {
+    if (!cs || !cs->code) return 0;
+    int walk = Cob_FindScript(cs, "walk");
+    if (walk < 0) return 0;
+    for (uint32_t i = 0; i + 1 < cs->num_code_words; i++) {
+        if ((cs->code[i] == 0x10061000u || cs->code[i] == 0x10062000u) &&
+            cs->code[i + 1] == (uint32_t)walk)
+            return 1;
+    }
+    return 0;
+}
+
 int Units_LoadDefs(void) {
     return Units_LoadDefsFor(0);
 }
@@ -9645,6 +9670,7 @@ int Units_LoadDefsFor(int crusades_balance) {
         d.cob_script = NULL;
         Cob_Load(&d.cob_script, cob_path);   /* NULL on miss — that's OK */
         d.script_launches = (uint8_t)cob_sets_launch_port(d.cob_script);
+        d.script_walks = (uint8_t)cob_walks_itself(d.cob_script);
         if (d.script_launches) launchers++;
         if (src) src[g_def_count] = paths[i];
         g_defs[g_def_count++] = d;
@@ -11404,7 +11430,8 @@ static int unit_start_script(Unit *u, const char *name,
 }
 
 /* Ensure a thread is running for the given script; if the previous
- * slot has died, start a fresh thread and update the slot pointer.
+ * slot no longer runs the script, start a fresh thread and update the
+ * slot pointer.
  * Only for scripts the engine is entitled to keep alive. See the
  * entry-point table before adding a caller. */
 static int ensure_thread(Unit *u, const char *script_name,
@@ -11412,8 +11439,10 @@ static int ensure_thread(Unit *u, const char *script_name,
                           const int32_t *args, int n_args)
 {
     if (!u->cob) return -1;
-    if (*slot_ref >= 0 && Cob_IsThreadAlive(u->cob, *slot_ref)) {
-        return *slot_ref;
+    if (Cob_ThreadRunsScript(u->cob, *slot_ref, script_name)) return *slot_ref;
+    if (slot_ref == &u->walk_thread_slot && unit_script_walks(u)) {
+        *slot_ref = -1;
+        return -1;
     }
     int slot = unit_start_script(u, script_name, args, n_args);
     *slot_ref = (int8_t)slot;
@@ -11476,8 +11505,7 @@ static void enter_state(Unit *u, UnitAnimState new_state) {
         /* We started this walk thread, so we end it. Legacy never has
          * to: its walk loops end themselves on the signal MoveRate(0)
          * raises (legacy:184448). Left running it walks in place. */
-        if (u->cob && u->walk_thread_slot >= 0)
-            Cob_StopThread(u->cob, u->walk_thread_slot);
+        if (unit_walk_running(u)) Cob_StopThread(u->cob, u->walk_thread_slot);
         u->walk_thread_slot = -1;
     }
     if (u->anim_state == UNIT_ANIM_ATTACKING && new_state != UNIT_ANIM_ATTACKING &&
@@ -18036,6 +18064,7 @@ int Units_DebugSetDefScript(int def_idx, const uint32_t *code, int words,
     if (d->cob_script) Cob_Free(d->cob_script);
     d->cob_script = cs;
     d->script_launches = (uint8_t)cob_sets_launch_port(cs);
+    d->script_walks = (uint8_t)cob_walks_itself(cs);
     g_def_gen++;
     return 0;
 }

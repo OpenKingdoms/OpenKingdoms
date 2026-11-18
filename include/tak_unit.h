@@ -731,6 +731,9 @@ typedef struct UnitDef {
     /* The battle's mission leaves the type off its roster, so no one
      * may make one (legacy:226872-226874). */
     uint8_t  mission_barred;
+    /* Its script runs its own walk cycle, from a watcher thread or from
+     * MoveRate, by calling or starting `walk` itself. */
+    uint8_t  script_walks;
 
     /* COB script bundle (Phase D). Loaded eagerly per-def. */
     CobScript *cob_script;
