@@ -2704,6 +2704,17 @@ int               Units_DebugSubmitOrder(int handle,
  * and in out_covered the pixels it covers. -1 on a bad handle. */
 int               Units_DebugOrderMismatch(int handle, const struct GameWorld *world,
                                            int *out_covered);
+/* Test hook: the overlap order of `n` triangles authored in index order,
+ * each three screen points in `xy` and heights in `h`. Writes the indices
+ * first drawn first to `order`. Returns n, or -1. */
+int               Units_DebugOverlapOrder(const float *xy, const float *h, int n,
+                                          int *order);
+/* Per-model depth (units.c): a point's depth in 0..1, larger nearer, and
+ * the pure rules the GL path draws by, exposed for tests. */
+float             Units_DepthKey(int slot, int slots, float height, float base);
+int               Units_DepthSlots(int bits);
+int               Units_DepthGroupSize(int remaining, int free_slots, int translucent);
+int               Units_DepthNeedsInit(int state, int gl_ready, int same_renderer);
 
 /* Test hook: replace the def registry with synthetic entries, so a
  * harness can spawn units with no model, script or yardmap and no
