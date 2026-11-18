@@ -55,6 +55,10 @@
  * target point, build_type_id its half size in cells, across << 8 |
  * down (legacy:238755-238767). */
 #define TAK_CMD_ARG_AREA         0x1000u
+/* In arg of the orders that take TAK_CMD_ARG_QUEUE: go ahead of every
+ * order the unit holds, the one in hand waiting at the head of the queue,
+ * Ctrl+Shift's last in first out. A factory queues it as Shift does. */
+#define TAK_CMD_ARG_FRONT        0x0800u
 /* FACTORY_ENQUEUE and FACTORY_DEQUEUE: how many in the low bits, 0
  * meaning one. TAK_FACTORY_ALL makes an enqueue run without end and a
  * dequeue take every one (the original's Ctrl click). */

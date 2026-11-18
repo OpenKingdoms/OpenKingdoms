@@ -1151,13 +1151,16 @@ static int ig_build_line_spots(int bdef, int32_t x0, int32_t y0,
     return n;
 }
 
-/* Each spot the cursor's test passes is queued in order from the press
- * and a blocked one is passed over. 0 when the drag lays no line. */
+/* Each spot the cursor's test passes is sent in order from the press
+ * and a blocked one is passed over. With Ctrl held too each goes in
+ * front, so the release end is built first. 0 when the drag lays no
+ * line. */
 static int ig_build_line_drag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                               int mods) {
     int bdef = ig_build_line_def((mods & IG_CLICK_SHIFT) != 0);
     if (bdef < 0) return 0;
     int repeat = HUD_BuildPlacementRepeats();
+    int front = (mods & IG_CLICK_CTRL) != 0;
     BuildLineCell spots[BUILD_LINE_MAX];
     int n = ig_build_line_spots(bdef, x0, y0, x1, y1, spots);
     int placed = 0;
@@ -1165,7 +1168,7 @@ static int ig_build_line_drag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
         if (!Units_IsBuildSiteClearSeen(bdef, spots[i].x, spots[i].y, 0, Fog_Viewer()))
             continue;
         if (TAK_Cmd_EmitSelection(TAK_CMD_BUILD, spots[i].x, spots[i].y, -1,
-                                  (uint16_t)bdef, BuildLine_OrderArg(repeat)) != 0)
+                                  (uint16_t)bdef, BuildLine_OrderArg(front, repeat)) != 0)
             break;
         placed++;
     }
@@ -1230,7 +1233,9 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
         int hw = (abs(bx - ax) / 2 + 15) / 16, hh = (abs(by - ay) / 2 + 15) / 16;
         if (hw > 255) hw = 255;
         if (hh > 255) hh = 255;
-        uint16_t q = shift_held ? (uint16_t)TAK_CMD_ARG_QUEUE : 0;
+        uint16_t q = !shift_held ? 0
+                   : (mods & IG_CLICK_CTRL) ? (uint16_t)TAK_CMD_ARG_FRONT
+                   : (uint16_t)TAK_CMD_ARG_QUEUE;
         if (TAK_Cmd_EmitSelection(TAK_CMD_RECLAIM_FEATURE, (ax + bx) / 2,
                                   (ay + by) / 2, -1,
                                   (uint16_t)(hw << 8 | hh),
@@ -1652,9 +1657,13 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
     int cmd = HUD_GetCommandMode();
     int shift_held = (mods & IG_CLICK_SHIFT) != 0;
     /* Shift puts the order behind the ones the units hold, and Ctrl
-     * changes the one in hand and keeps those (manual section IV). */
-    const uint16_t q = shift_held ? (uint16_t)TAK_CMD_ARG_QUEUE
-                     : (mods & IG_CLICK_CTRL) ? (uint16_t)TAK_CMD_ARG_KEEP : 0;
+     * changes the one in hand and keeps those (manual section IV).
+     * Ctrl+Shift puts it ahead of them all, last in first out, as seen
+     * in the original. */
+    int ctrl_held = (mods & IG_CLICK_CTRL) != 0;
+    const uint16_t q = shift_held && ctrl_held ? (uint16_t)TAK_CMD_ARG_FRONT
+                     : shift_held ? (uint16_t)TAK_CMD_ARG_QUEUE
+                     : ctrl_held ? (uint16_t)TAK_CMD_ARG_KEEP : 0;
     int repeat = cmd == HUD_CMD_PLACE_BUILD && HUD_BuildPlacementRepeats();
     /* Every order on the ground takes the cell under the pointer, the
      * one that projects there (legacy:212277). Units draw lifted by
@@ -2620,6 +2629,8 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             InGame_WorldDrag(ig.drag_world_x, ig.drag_world_y,
                              world_click_x, world_click_y,
                              (shift_held ? IG_CLICK_SHIFT : 0) |
+                             ((keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL])
+                                  ? IG_CLICK_CTRL : 0) |
                              (ig.drag_no_monarch ? IG_DRAG_NO_MONARCH : 0));
             ig.drag_tracking = 0;
             ig.drag_active   = 0;

@@ -104,14 +104,23 @@ TEST(no_spot_overlaps_the_last_or_leaves_a_gap) {
     }
 }
 
-/* Every spot is queued with no facing bits, as the player sets none. */
+/* Shift queues every spot behind the last, first in first out, with no
+ * facing bits, as the player sets none. */
 TEST(each_spot_is_queued_at_the_default_facing) {
-    ASSERT_EQ_INT(TAK_CMD_ARG_QUEUE, BuildLine_OrderArg(0));
+    ASSERT_EQ_INT(TAK_CMD_ARG_QUEUE, BuildLine_OrderArg(0, 0));
 }
 
-/* A summons without end lays its one spot as its Shift click would. */
+/* Ctrl+Shift is last in first out, as in the original: each spot goes
+ * in front, so the release end is built first, never without end. */
+TEST(ctrl_shift_puts_each_spot_in_front) {
+    ASSERT_EQ_INT(TAK_CMD_ARG_FRONT, BuildLine_OrderArg(1, 0));
+}
+
+/* A summons without end lays its one spot as its click would: queued
+ * with Shift, and with Ctrl dropping Shift (legacy:39177-39180). */
 TEST(a_summons_sends_what_its_click_would) {
-    ASSERT_EQ_INT(TAK_CMD_ARG_QUEUE | TAK_CMD_ARG_ENDLESS, BuildLine_OrderArg(1));
+    ASSERT_EQ_INT(TAK_CMD_ARG_ENDLESS | TAK_CMD_ARG_QUEUE, BuildLine_OrderArg(0, 1));
+    ASSERT_EQ_INT(TAK_CMD_ARG_ENDLESS, BuildLine_OrderArg(1, 1));
 }
 
 int main(int argc, char *argv[]) {
@@ -126,6 +135,7 @@ int main(int argc, char *argv[]) {
     RUN(a_long_drag_stops_at_what_a_builder_holds);
     RUN(no_spot_overlaps_the_last_or_leaves_a_gap);
     RUN(each_spot_is_queued_at_the_default_facing);
+    RUN(ctrl_shift_puts_each_spot_in_front);
     RUN(a_summons_sends_what_its_click_would);
     TEST_REPORT();
 }

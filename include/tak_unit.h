@@ -1868,6 +1868,10 @@ int               Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued)
 /* Units_OrderLeg's queued for the manual's Ctrl-click: the order replaces
  * the one in hand and the queued ones stay behind it. */
 #define UNIT_ORDER_KEEP 2
+/* Units_OrderLeg's queued for Ctrl+Shift: the order goes in hand and the
+ * one it displaces waits ahead of the queued ones. A patrol, a load or a
+ * boarding in hand has no queued form and is replaced, as with Ctrl. */
+#define UNIT_ORDER_FRONT 3
 /* The orders a unit holds, the one in hand first and then each queued
  * leg, patrol points with the one the route comes back through, and a
  * factory's rally with its standing orders. Writes up to cap, returns

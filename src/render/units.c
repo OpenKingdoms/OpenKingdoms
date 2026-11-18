@@ -4971,6 +4971,60 @@ int Units_OrderMove(int handle, int32_t world_x, int32_t world_y) {
     return 1;
 }
 
+/* The order in hand as a leg that waits at the head of the queue. 0 for
+ * none, or one with no leg to wait as: a patrol, a load, a boarding. */
+static int hand_as_leg(const Unit *u, UnitMoveLeg *leg) {
+    memset(leg, 0, sizeof *leg);
+    leg->x = u->cmd_x;
+    leg->y = u->cmd_y;
+    int t = u->target;
+    uint32_t tid = t >= 0 && t < g_unit_count ? g_units[t].stable_id : 0u;
+    switch (u->cmd_kind) {
+        case UNIT_CMD_MOVE:
+            leg->kind = UNIT_LEG_MOVE;
+            leg->group = u->move_group;
+            leg->paced = u->move_paced ? 1 : 0;
+            leg->face = u->face_mode == UNIT_FACE_ARRIVE;
+            leg->heading = leg->face ? u->face_heading : 0;
+            return 1;
+        case UNIT_CMD_ATTACK:
+            if (!u->attack_explicit || !tid) return 0;
+            leg->kind = UNIT_LEG_ATTACK;
+            break;
+        case UNIT_CMD_ATTACK_GROUND: leg->kind = UNIT_LEG_ATTACK_GROUND; return 1;
+        case UNIT_CMD_GUARD:         leg->kind = UNIT_LEG_GUARD; break;
+        case UNIT_CMD_REPAIR:        leg->kind = UNIT_LEG_REPAIR; break;
+        case UNIT_CMD_RECLAIM:
+            leg->kind = tid ? UNIT_LEG_RECLAIM : UNIT_LEG_SWEEP;
+            leg->target = tid;
+            return 1;
+        case UNIT_CMD_RESURRECT:     leg->kind = UNIT_LEG_RAISE; return 1;
+        case UNIT_CMD_UNLOAD:        leg->kind = UNIT_LEG_UNLOAD; return 1;
+        case UNIT_CMD_BUILD: {
+            /* A frame already up is finished when its turn comes. A
+             * summons without end resumes on its spot, frame and all. */
+            int b = u->build_target;
+            if (!u->build_endless && b >= 0 && b < g_unit_count &&
+                g_units[b].alive == UNIT_ALIVE_ACTIVE &&
+                g_units[b].under_construction) {
+                leg->kind = UNIT_LEG_REPAIR;
+                leg->target = g_units[b].stable_id;
+                return 1;
+            }
+            if (!u->build_held && !u->build_endless) return 0;
+            leg->kind = UNIT_LEG_BUILD;
+            leg->def = u->build_def;
+            leg->facing = (uint8_t)(u->build_facing & 3u);
+            leg->endless = u->build_endless ? 1 : 0;
+            return 1;
+        }
+        default:
+            return 0;
+    }
+    leg->target = tid;
+    return tid != 0;
+}
+
 int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
     Unit *u = order_unit(handle);
     if (!u || !leg || leg->kind >= UNIT_LEG_KINDS) return 0;
@@ -4978,7 +5032,9 @@ int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
     const UnitDef *ud = Units_GetDef(u->def_idx);
     if (unit_def_is_factory(ud)) {
         if (leg->kind != UNIT_LEG_MOVE && leg->kind != UNIT_LEG_PATROL) return 0;
-        return factory_standing_order(u, leg->kind, leg->x, leg->y, queued);
+        /* Its standing orders take a front one behind, as Shift does. */
+        return factory_standing_order(u, leg->kind, leg->x, leg->y,
+                                      queued == UNIT_ORDER_FRONT ? 1 : queued);
     }
     /* A fight the unit picked for itself is no order to wait behind. */
     int busy = u->cmd_kind != UNIT_CMD_NONE &&
@@ -5000,6 +5056,22 @@ int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
             l->def = 0;
             l->facing = 0;
             l->endless = 0;
+        }
+        return 1;
+    }
+    if (queued == UNIT_ORDER_FRONT) {
+        UnitMoveLeg hand;
+        int waits = hand_as_leg(u, &hand);
+        int before = u->leg_count;
+        if (waits && before >= UNIT_MOVE_LEGS_MAX) return 0;
+        if (!unit_take_leg(handle, leg)) return 0;
+        /* A leg the take put ahead, a dragged sweep's own, stays ahead. */
+        int at = u->leg_count > before ? u->leg_count - before : 0;
+        if (waits && u->leg_count < UNIT_MOVE_LEGS_MAX) {
+            memmove(&u->legs[at + 1], &u->legs[at],
+                    sizeof u->legs[0] * (size_t)(u->leg_count - at));
+            u->legs[at] = hand;
+            u->leg_count++;
         }
         return 1;
     }
