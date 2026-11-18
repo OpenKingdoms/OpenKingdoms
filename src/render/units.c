@@ -20060,10 +20060,12 @@ static int tri_overlap_centre(const TriSort *p, const TriSort *q, float *cx, flo
     return 1;
 }
 
-/* Where `p` lies at the middle of its overlap with `q`: -1 behind, 1 in
- * front, 2 no overlap. Level there: 0 if within OV_LEVEL all over the
- * overlap, else 3, crossing. */
+/* Where `p` lies against `q` where they overlap: -1 behind, 1 in front,
+ * at the middle or else at every corner, 2 no overlap. Neither: 0 if
+ * within OV_LEVEL all over the overlap, else 3, crossing. */
 #define OV_LEVEL 4.0f
+/* Past float noise, which reaches about 0.026 on coplanar steep faces. */
+#define OV_APART 0.05f
 static int tri_overlap_side(const TriSort *p, const TriSort *q) {
     float cx, cy, dp, dq, px[9], py[9];
     int pn = 0;
@@ -20071,11 +20073,18 @@ static int tri_overlap_side(const TriSort *p, const TriSort *q) {
     if (!tri_depth_at(p, cx, cy, &dp) || !tri_depth_at(q, cx, cy, &dq)) return 2;
     if (dp < dq - 0.5f) return -1;
     if (dp > dq + 0.5f) return 1;
+    /* One face above the other at every corner of the overlap is in front
+     * however close, as a per pixel key shows it: cards a fraction apart. */
+    float lo = dp - dq, hi = dp - dq;
     for (int i = 0; i < pn; i++) {
-        if (!tri_depth_at(p, px[i], py[i], &dp) || !tri_depth_at(q, px[i], py[i], &dq)) return 2;
-        if (fabsf(dp - dq) > OV_LEVEL) return 3;
+        float a, b;
+        if (!tri_depth_at(p, px[i], py[i], &a) || !tri_depth_at(q, px[i], py[i], &b)) return 2;
+        lo = fminf(lo, a - b);
+        hi = fmaxf(hi, a - b);
     }
-    return 0;
+    if (lo > OV_APART) return 1;
+    if (hi < -OV_APART) return -1;
+    return fmaxf(-lo, hi) > OV_LEVEL ? 3 : 0;
 }
 
 /* ── Overlap order ───────────────────────────────────────────────────
@@ -20084,11 +20093,11 @@ static int tri_overlap_side(const TriSort *p, const TriSort *q) {
  * their tallest key gets that wrong when a tall face stands behind a
  * short one: the Veruna bastion's inner fins painted over its front
  * walls. So for a building or a ship, wherever two of its triangles
- * overlap on screen, the one lower at the middle of the overlap goes
- * first, of two level there the one the original draws first stays on
- * top as its key test keeps it, and the rest is free to keep to one
- * texture. A unit keeps what it found and works out again only the
- * triangles that moved since, a waving flag or a turning turret.
+ * overlap on screen, the one lower all over the overlap, else at its
+ * middle, goes first, of two level there the one the original draws
+ * first stays on top as its key test keeps it, and the rest is free to
+ * keep to one texture. A unit keeps what it found and works out again
+ * only the triangles that moved since, a waving flag or a turning turret.
  * Walkers keep the key order: every step moves most of their faces. */
 /* A triangle's id is its second vertex: a 3DO face is a fan over
  * vertices of its own, so no two triangles share it. */
