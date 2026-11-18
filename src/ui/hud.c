@@ -607,7 +607,7 @@ static void hud_load_cursor(TAK_Platform *plat, GAFFile *gaf,
         tak_free(pix);
         if (!t) break;
         GPU_SetTextureFilter(t, 0);
-        GPU_SetTextureBlend(t, 1);
+        GPU_SetTextureBlend(t, GPU_BLEND_ALPHA);
         uint32_t delay = *(const uint32_t *)(gaf->data + rec + 4);
         int k = anim->count++;
         anim->tex[k] = t;

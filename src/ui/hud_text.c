@@ -116,7 +116,7 @@ void HUDText_DrawString(TAK_Platform *plat, HUDText *t,
     GPU_Texture *tex = GPU_UploadRGBA(plat, (const uint32_t *)surf->pixels, w, h);
     SDL_FreeSurface(surf);
     if (!tex) return;
-    GPU_SetTextureBlend(tex, 1);
+    GPU_SetTextureBlend(tex, GPU_BLEND_ALPHA);
     GPU_SetTextureFilter(tex, 0);
     SDL_Rect dst = { x, y, w, h };
     GPU_DrawToWindow(plat, tex, NULL, &dst);

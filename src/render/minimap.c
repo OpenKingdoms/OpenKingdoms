@@ -104,7 +104,7 @@ static void blips_load(TAK_Platform *plat) {
             tak_free(px);
             if (!mb.tex[k][c]) continue;
             GPU_SetTextureFilter(mb.tex[k][c], 0);
-            GPU_SetTextureBlend(mb.tex[k][c], 1);
+            GPU_SetTextureBlend(mb.tex[k][c], GPU_BLEND_ALPHA);
             mb.w[k] = fh->width;
             mb.h[k] = fh->height;
             mb.ox[k] = fh->offset_x;
