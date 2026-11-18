@@ -268,6 +268,81 @@ TEST(a_walker_crosses_open_ground) {
     mv_end();
 }
 
+static int mv_walk_threads(const Unit *u) {
+    int n = 0;
+    for (int s = 0; s < COB_THREADS_PER_UNIT; s++)
+        n += Cob_ThreadRunsScript(u->cob, s, "walk");
+    return n;
+}
+
+/* A script whose watcher calls its own walk is left to it, so one walk
+ * runs and the cycle never plays twice. */
+TEST(a_script_that_walks_itself_runs_the_only_walk) {
+    ASSERT_NOT_NULL(mv_world());
+    static const uint32_t code[] = {
+        0x10021001u, 100u, 0x10013000u, 0x10065000u,   /* walk: sleep, return */
+        0x10061000u, 2u, 0u, 0x10065000u,              /* Create: start Watch */
+        0x10062000u, 0u, 0u, 0x10064000u, 8u,          /* Watch: call walk, loop */
+    };
+    static const char *const names[] = { "walk", "Create", "Watch" };
+    static const uint32_t offsets[] = { 0, 4, 8 };
+    ASSERT_EQ_INT(0, Units_DebugSetDefScript(MV_DEF_WALKER, code, 13, names, offsets, 3));
+    ASSERT_EQ_INT(1, Units_GetDef(MV_DEF_WALKER)->script_walks);
+    int h = Units_Spawn(MV_DEF_WALKER, 1, 0, 800, 800);
+    ASSERT(h >= 0);
+    Units_CommandMoveUnit(h, 1600, 800);
+    int moving = 0, worst = 0;
+    for (int t = 0; t < 300; t++) {
+        Units_TickEngines();
+        const Unit *u = mv_unit(h);
+        if (u->anim_state != UNIT_ANIM_MOVING) continue;
+        moving++;
+        ASSERT_EQ_INT(-1, (int)u->walk_thread_slot);
+        if (mv_walk_threads(u) > worst) worst = mv_walk_threads(u);
+    }
+    ASSERT(moving > 100);
+    ASSERT_EQ_INT(1, worst);
+    mv_end();
+}
+
+/* A script that leaves the walk to the engine keeps it. When the walk's
+ * slot is taken by another thread, the engine starts a new walk and its
+ * stop on arrival spares the other thread. */
+TEST(the_engine_walk_follows_its_thread_not_its_slot) {
+    ASSERT_NOT_NULL(mv_world());
+    static const uint32_t code[] = {
+        0x10021001u, 2000u, 0x10013000u, 0x10065000u,  /* walk */
+        0x10021001u, 5000u, 0x10013000u, 0x10065000u,  /* restore */
+    };
+    static const char *const names[] = { "walk", "restore" };
+    static const uint32_t offsets[] = { 0, 4 };
+    ASSERT_EQ_INT(0, Units_DebugSetDefScript(MV_DEF_WALKER, code, 8, names, offsets, 2));
+    ASSERT_EQ_INT(0, Units_GetDef(MV_DEF_WALKER)->script_walks);
+    int h = Units_Spawn(MV_DEF_WALKER, 1, 0, 800, 800);
+    ASSERT(h >= 0);
+    Units_CommandMoveUnit(h, 2400, 800);
+    mv_run(10);
+    const Unit *u = mv_unit(h);
+    ASSERT_EQ_INT(UNIT_ANIM_MOVING, (int)u->anim_state);
+    int ws = u->walk_thread_slot;
+    ASSERT(Cob_ThreadRunsScript(u->cob, ws, "walk"));
+    /* The walk ends and the script reuses its slot. */
+    Cob_StopThread(u->cob, ws);
+    int rs = Cob_StartThreadByName(u->cob, "restore", NULL, 0);
+    ASSERT_EQ_INT(ws, rs);
+    mv_run(1);
+    u = mv_unit(h);
+    ASSERT_EQ_INT(1, mv_walk_threads(u));
+    ASSERT(Cob_ThreadRunsScript(u->cob, u->walk_thread_slot, "walk"));
+    Units_OrderStop(h);
+    for (int t = 0; t < 120 && mv_unit(h)->anim_state == UNIT_ANIM_MOVING; t++) mv_run(1);
+    u = mv_unit(h);
+    ASSERT(u->anim_state != UNIT_ANIM_MOVING);
+    ASSERT_EQ_INT(0, mv_walk_threads(u));
+    ASSERT(Cob_ThreadRunsScript(u->cob, rs, "restore"));
+    mv_end();
+}
+
 /* Ported from the needs-data suite: a wall of passive friends lies
  * across the straight line and the mover has to go round it. */
 TEST(unit_walks_around_a_wall_of_friendly_units) {
@@ -2980,6 +3055,8 @@ int main(int argc, char **argv) {
     RUN(a_click_sends_the_unit_to_the_ground_under_the_pointer);
     RUN(a_marquee_takes_the_units_it_is_drawn_over);
     RUN(a_walker_crosses_open_ground);
+    RUN(a_script_that_walks_itself_runs_the_only_walk);
+    RUN(the_engine_walk_follows_its_thread_not_its_slot);
     RUN(unit_walks_around_a_wall_of_friendly_units);
     RUN(units_do_not_stack_on_one_another);
     RUN(two_units_walking_into_each_other_give_way);
