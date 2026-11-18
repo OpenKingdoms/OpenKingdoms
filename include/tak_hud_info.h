@@ -1,10 +1,10 @@
 #ifndef TAK_HUD_INFO_H
 #define TAK_HUD_INFO_H
 
-/* What the selected-unit panel of the bottom strip describes. The owner
- * saw the original pick, in this order, the unit under the pointer, the
- * feature under it, the selected unit when exactly one is selected, and
- * otherwise nothing. Presentation only, no world read. */
+/* What the selected-unit panel of the bottom strip describes, as in the
+ * original: the unit under the pointer, the feature under it, the selected
+ * unit when exactly one is selected, and otherwise nothing. Presentation
+ * only, no world read. */
 typedef enum HUDInfoKind {
     HUD_INFO_NONE = 0,
     HUD_INFO_UNIT,
