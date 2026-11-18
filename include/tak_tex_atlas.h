@@ -88,8 +88,9 @@ void TexAtlas_Shutdown(TAK_Platform *plat);
 #define STATUE_LIGHT_SCALE    18
 #define STATUE_LIGHT_AMBIENT  5
 
-/* An atlas stacks a copy of its art per .shd row from 15 to the brightest
- * level a building or a statue reaches, so a lit face draws its exact row. */
+/* An atlas can stack a copy of its art per .shd row from 15 to the brightest
+ * level a statue reaches, so a lit face draws its exact row. It keeps only the
+ * rows its meshes reach, and one copy when the GPU shades it. */
 #define TEX_SHADE_TOP_BUILDING (MODEL_LIGHT_AMBIENT + MODEL_LIGHT_SCALE)
 #define TEX_SHADE_TOP_STATUE   (STATUE_LIGHT_AMBIENT + STATUE_LIGHT_SCALE)
 #define TEX_SHADE_TOP      (TEX_SHADE_TOP_STATUE > TEX_SHADE_TOP_BUILDING ? \
@@ -97,9 +98,11 @@ void TexAtlas_Shutdown(TAK_Platform *plat);
 #define TEX_SHADE_BANDS    (TEX_SHADE_TOP - TEX_SHADE_IDENTITY + 1)
 
 /* Per shade level, the stacked copy a face samples and the vertex grey that
- * takes its row to the level. Copies sit `band_dv` apart. */
+ * takes its row to the level. Copies sit `band_dv` apart, `bands` of them
+ * uploaded; a level past them takes the last. */
 typedef struct TexShadeMap {
     float   band_dv;
+    uint8_t bands;
     uint8_t band[TEX_SHADE_LEVELS];
     uint8_t grey[TEX_SHADE_LEVELS];
 } TexShadeMap;
@@ -112,6 +115,19 @@ void TexAtlas_BuildShadeMap(const uint32_t *rgba, const uint8_t *shd,
 /* The shade map of an atlas TexAtlas_GetByName returned. Returns -1
  * and an identity map for any other texture. */
 int TexAtlas_ShadeMap(const GPU_Texture *atlas, TexShadeMap *out);
+
+/* GPU shading (the GL classic path): one index copy of an atlas and its
+ * palette's ramp. 1 with both, 0 when the atlas is drawn from its copies. */
+struct GL3D_Texture;
+int TexAtlas_GpuShade(const GPU_Texture *atlas, const struct GL3D_Texture **index,
+                      const struct GL3D_Texture **ramp);
+
+/* The band path keeps only the copies an atlas's meshes reach: note the
+ * brightest level each texture can take, then plan once, before any atlas
+ * goes to the GPU. 1 while a plan is still wanted. */
+int  TexAtlas_ShadePlanWanted(void);
+void TexAtlas_NoteShadeTop(const char *texture_name, int level);
+void TexAtlas_PlanShades(void);
 
 /* A data/palettes/ palette through every .shd row, `level * 256 + index`,
  * loaded on first use. NULL when it cannot be read. */

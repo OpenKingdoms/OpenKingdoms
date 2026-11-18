@@ -5,7 +5,8 @@
  * palette indices (every picture, side by side, for one played by
  * time), packs each GAF's entries into one CPU-side atlas via a simple
  * shelf packer, uploads it as a single GPU_Texture holding a copy of the
- * art per shade band, and indexes every texture name into a global
+ * art per shade band it needs (one, and an index copy, when the GPU
+ * shades it), and indexes every texture name into a global
  * lookup.
  *
  * Per-GAF (rather than one mega-atlas) keeps the packer trivial — each
@@ -24,6 +25,9 @@
 #include "tak_world.h"
 #include "tak_sides.h"
 #include "tak_memory.h"
+#include "tak_gl3d.h"
+#include "tak_settings.h"
+#include "tak_unit.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,6 +52,7 @@ typedef struct PalCacheEntry {
     uint8_t  magenta[256];    /* the 16-bit colour key, (128, 0, 128) */
     int      has_shd;
     int      valid;
+    GL3D_Texture *ramp_tex;   /* the ramp for GPU shading, on first use */
 } PalCacheEntry;
 
 static PalCacheEntry g_pal_cache[16];
@@ -142,6 +147,7 @@ void TexAtlas_BuildShadeMap(const uint32_t *rgba, const uint8_t *shd,
                             int bands, float band_dv, TexShadeMap *out) {
     if (bands < 1) bands = 1;
     out->band_dv = band_dv;
+    out->bands = (uint8_t)bands;
     /* A row's brightness against another: the summed luma of every
      * palette colour bright enough to count, through it. */
     double sum[TEX_SHADE_LEVELS];
@@ -178,6 +184,7 @@ void TexAtlas_BuildShadeMap(const uint32_t *rgba, const uint8_t *shd,
 typedef struct AtlasGroup {
     uint16_t    *base_idx;
     int          band_h, bands, atlas_h;
+    int          shade_top;             /* brightest level noted, 0 none */
     const PalCacheEntry *pal;
     TexShadeMap  shade;
     int          has_team_color;
@@ -186,6 +193,7 @@ typedef struct AtlasGroup {
     uint8_t     *team;                  /* per placement: team coloured */
     int          n_places;
     GPU_Texture *atlas_tex_per_color[TAK_PLAYER_COLOR_COUNT];
+    GL3D_Texture *index_per_color[TAK_PLAYER_COLOR_COUNT];
 } AtlasGroup;
 
 typedef struct AtlasEntry {
@@ -199,6 +207,10 @@ static AtlasGroup   *g_groups        = NULL;
 static int           g_group_count   = 0;
 static int           g_group_cap     = 0;
 static TAK_Platform *g_plat          = NULL;     /* cached for lazy variant build */
+/* GPU shading: atlases upload one copy, and the GL classic path shades it. */
+static int           g_gpu_shade     = 0;
+static int           g_shade_planned = 0;
+static double        g_uploaded_mb   = 0.0;
 
 TAK_Platform *TexAtlas__GetPlatform(void) { return g_plat; }
 
@@ -441,6 +453,7 @@ static GPU_Texture *upload_bands(TAK_Platform *plat, const AtlasGroup *g,
     GPU_Texture *t = GPU_UploadRGBA(plat, rgba, ATLAS_W, g->atlas_h);
     tak_free(rgba);
     if (!t) return NULL;
+    g_uploaded_mb += 4.0 * ATLAS_W * g->atlas_h / 1048576.0;
     /* Point sampling, like the original (legacy:265317 writes one
      * texel per pixel). It also keeps the half-texel inset safe. */
     GPU_SetTextureFilter(t, 0);
@@ -615,11 +628,14 @@ static int build_atlas_from_gaf(const char *vfs_path) {
     composite = NULL;
     grp->pal = pal;
     grp->band_h = used_h;
-    grp->bands = pal->has_shd ? ATLAS_MAX_H / used_h : 1;
-    if (grp->bands > TEX_SHADE_BANDS) grp->bands = TEX_SHADE_BANDS;
+    /* The look takes up to TEX_SHADE_BANDS rows; GPU shading uploads one. */
+    int look = pal->has_shd ? ATLAS_MAX_H / used_h : 1;
+    if (look > TEX_SHADE_BANDS) look = TEX_SHADE_BANDS;
+    grp->bands = g_gpu_shade ? 1 : look;
     grp->atlas_h = grp->bands * used_h;
-    TexAtlas_BuildShadeMap(pal->rgba, pal->has_shd ? pal->shd : NULL, grp->bands,
+    TexAtlas_BuildShadeMap(pal->rgba, pal->has_shd ? pal->shd : NULL, look,
                            (float)used_h / (float)grp->atlas_h, &grp->shade);
+    grp->shade.bands = (uint8_t)grp->bands;
     snprintf(grp->src_path, sizeof(grp->src_path), "%s", vfs_path);
     grp->places = (Placement *)tak_malloc((size_t)n * sizeof(Placement));
     if (grp->places) {
@@ -678,6 +694,104 @@ fail:
 
 /* ── Public API ──────────────────────────────────────────────────── */
 
+static const AtlasEntry *find_entry(const char *texture_name);
+
+/* Every atlas once, its copies and, shaded on the GPU, its index copy. */
+static double colour_mb(void) {
+    double mb = 0.0;
+    for (int i = 0; i < g_group_count; i++)
+        mb += (4.0 * g_groups[i].atlas_h + (g_gpu_shade ? 2.0 * g_groups[i].band_h : 0.0)) *
+              ATLAS_W / 1048576.0;
+    return mb;
+}
+
+/* GPU shading needs the GL classic path, on the desktop and in the browser.
+ * GpuShading=0 in options.cfg, or TAK_GPU_SHADING=0, keeps a lit copy per row. */
+static int choose_gpu_shade(TAK_Platform *plat) {
+    const char *e = getenv("TAK_GPU_SHADING");
+    const int want = e ? atoi(e) : Settings_GetInt("GpuShading", 1);
+    if (!want || !plat || !plat->renderer || !Units_ModelDepthReady(plat)) return 0;
+    return GL3D_ClassicShadeInit(plat->renderer) == 0;
+}
+
+int TexAtlas_ShadePlanWanted(void) { return g_entries_sorted && !g_shade_planned; }
+
+void TexAtlas_NoteShadeTop(const char *texture_name, int level) {
+    const AtlasEntry *e = find_entry(texture_name);
+    if (e && g_groups[e->group_idx].shade_top < level) g_groups[e->group_idx].shade_top = level;
+}
+
+void TexAtlas_PlanShades(void) {
+    if (!TexAtlas_ShadePlanWanted()) return;
+    g_shade_planned = 1;
+    for (int i = 0; i < g_group_count; i++)
+        for (int c = 0; c < TAK_PLAYER_COLOR_COUNT; c++)
+            if (g_groups[i].atlas_tex_per_color[c]) return;   /* too late: keep every copy */
+    for (int i = 0; i < g_group_count; i++) {
+        AtlasGroup *g = &g_groups[i];
+        int bands = g->shade_top - TEX_SHADE_IDENTITY + 1;
+        if (bands < 1) bands = 1;
+        if (bands >= g->bands) continue;
+        const float k = (float)g->bands / (float)bands;
+        for (int j = 0; j < g_entry_count; j++)
+            if (g_entries[j].group_idx == i) {
+                g_entries[j].v0 *= k;
+                g_entries[j].v1 *= k;
+            }
+        g->bands = bands;
+        g->atlas_h = bands * g->band_h;
+        g->shade.bands = (uint8_t)bands;
+        g->shade.band_dv = (float)g->band_h / (float)g->atlas_h;
+    }
+    int by[TEX_SHADE_BANDS + 1] = { 0 };
+    for (int i = 0; i < g_group_count; i++)
+        if (g_groups[i].bands <= TEX_SHADE_BANDS) by[g_groups[i].bands]++;
+    fprintf(stderr, "TexAtlas: copies kept to the levels used, %.1f MB a colour; atlases by copies:",
+            colour_mb());
+    for (int b = 1; b <= TEX_SHADE_BANDS; b++)
+        if (by[b]) fprintf(stderr, " %d at %d", by[b], b);
+    fputc('\n', stderr);
+}
+
+/* The index copy for GPU shading: luminance the palette index, alpha 255
+ * where the texel is not clear. */
+static GL3D_Texture *upload_index(const AtlasGroup *g, const uint16_t *idx) {
+    const size_t px = (size_t)ATLAS_W * (size_t)g->band_h;
+    uint8_t *la = (uint8_t *)tak_malloc(px * 2);
+    if (!la) return NULL;
+    for (size_t k = 0; k < px; k++) {
+        la[2 * k] = (uint8_t)(idx[k] & 0xFFu);
+        la[2 * k + 1] = idx[k] == PALETTE_TEXEL_CLEAR ? 0 : 255;
+    }
+    GL3D_Texture *t = GL3D_UploadClassicIndex(la, ATLAS_W, g->band_h);
+    tak_free(la);
+    if (t) g_uploaded_mb += 2.0 * (double)px / 1048576.0;
+    return t;
+}
+
+int TexAtlas_GpuShade(const GPU_Texture *atlas, const GL3D_Texture **index,
+                      const GL3D_Texture **ramp) {
+    static const GPU_Texture *last;
+    static const GL3D_Texture *last_index, *last_ramp;
+    if (!g_gpu_shade || !atlas) return 0;
+    if (atlas != last) {
+        last = atlas;
+        last_index = last_ramp = NULL;
+        for (int i = 0; i < g_group_count && !last_index; i++)
+            for (int c = 0; c < TAK_PLAYER_COLOR_COUNT; c++)
+                if (g_groups[i].atlas_tex_per_color[c] == atlas) {
+                    PalCacheEntry *pe = (PalCacheEntry *)g_groups[i].pal;
+                    if (!pe->ramp_tex) pe->ramp_tex = GL3D_UploadClassicRamp(pe->ramp);
+                    last_index = g_groups[i].index_per_color[c];
+                    last_ramp = pe->ramp_tex;
+                    break;
+                }
+    }
+    *index = last_index;
+    *ramp = last_ramp;
+    return last_index && last_ramp;
+}
+
 static int cmp_entry(const void *a, const void *b) {
     const AtlasEntry *ea = (const AtlasEntry *)a;
     const AtlasEntry *eb = (const AtlasEntry *)b;
@@ -691,6 +805,9 @@ int TexAtlas_LoadAll(TAK_Platform *plat) {
     if (g_entries_sorted) return 0;
 
     g_plat = plat;
+    g_gpu_shade = choose_gpu_shade(plat);
+    g_shade_planned = g_gpu_shade;
+    g_uploaded_mb = 0.0;
 
     const GameWorld *world = World_Get();
     const uint32_t *rgba_table = world ? world->terrain_rgba : NULL;
@@ -721,12 +838,11 @@ int TexAtlas_LoadAll(TAK_Platform *plat) {
     qsort(g_entries, g_entry_count, sizeof(AtlasEntry), cmp_entry);
     g_entries_sorted = 1;
 
-    double mb = 0.0;
-    for (int i = 0; i < g_group_count; i++) mb += 4.0 * ATLAS_W * g_groups[i].atlas_h / 1048576.0;
     fprintf(stderr,
         "TexAtlas_LoadAll: %d/%d GAFs built, %d entries registered, %d groups, "
-        "%.1f MB a colour, %d played by time\n",
-        built, n_gaf, g_entry_count, g_group_count, mb, g_anim_count);
+        "%.1f MB a colour, %d played by time, %s shading\n",
+        built, n_gaf, g_entry_count, g_group_count, colour_mb(), g_anim_count,
+        g_gpu_shade ? "GPU" : "band");
     return built > 0 ? 0 : -1;
 }
 
@@ -767,9 +883,12 @@ static GPU_Texture *build_color_variant(TAK_Platform *plat, AtlasGroup *g,
         }
         GPU_Texture *t = upload_bands(plat, g, g->base_idx);
         if (!t) return NULL;
+        GL3D_Texture *ix = g_gpu_shade ? upload_index(g, g->base_idx) : NULL;
         for (int p = 0; p < TAK_PLAYER_COLOR_COUNT; p++) {
             g->atlas_tex_per_color[p] = t;
+            g->index_per_color[p] = ix;
         }
+        fprintf(stderr, "TexAtlas: %.1f MB of atlases on the GPU\n", g_uploaded_mb);
         return t;
     }
 
@@ -782,9 +901,11 @@ static GPU_Texture *build_color_variant(TAK_Platform *plat, AtlasGroup *g,
     uint16_t *variant = color_variant_idx(g, color_idx);
     if (!variant) return NULL;
     GPU_Texture *t = upload_bands(plat, g, variant);
+    if (t && g_gpu_shade) g->index_per_color[color_idx] = upload_index(g, variant);
     tak_free(variant);
     if (!t) return NULL;
     g->atlas_tex_per_color[color_idx] = t;
+    fprintf(stderr, "TexAtlas: %.1f MB of atlases on the GPU\n", g_uploaded_mb);
     return t;
 }
 
@@ -862,6 +983,13 @@ void TexAtlas_Shutdown(TAK_Platform *plat) {
     /* Free cached index buffers and placements. */
     if (g_groups) {
         for (int i = 0; i < g_group_count; i++) {
+            for (int c = 0; c < TAK_PLAYER_COLOR_COUNT; c++) {
+                GL3D_Texture *ix = g_groups[i].index_per_color[c];
+                if (!ix) continue;
+                for (int d = c; d < TAK_PLAYER_COLOR_COUNT; d++)
+                    if (g_groups[i].index_per_color[d] == ix) g_groups[i].index_per_color[d] = NULL;
+                GL3D_FreeTexture(ix);
+            }
             if (g_groups[i].base_idx) tak_free(g_groups[i].base_idx);
             if (g_groups[i].places) tak_free(g_groups[i].places);
             if (g_groups[i].team) tak_free(g_groups[i].team);
@@ -880,6 +1008,11 @@ void TexAtlas_Shutdown(TAK_Platform *plat) {
     g_entry_cap = 0;
     g_entries_sorted = 0;
     g_plat = NULL;
+    for (int i = 0; i < g_pal_cache_count; i++) {
+        GL3D_FreeTexture(g_pal_cache[i].ramp_tex);
+        g_pal_cache[i].ramp_tex = NULL;
+    }
+    g_gpu_shade = g_shade_planned = 0;
 
     for (int i = 0; i < g_anim_count; i++) tak_free(g_anims[i].hold);
     if (g_anims) tak_free(g_anims);
