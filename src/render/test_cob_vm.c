@@ -155,6 +155,43 @@ static int run_selftests(void) {
     }
 
     {
+        /* A sleep lasts the original's frames, rounded down and at least
+         * one, two ticks each, and is counted from the tick it began in
+         * whether the thread ran in that tick's pass or before it, as
+         * Killed does at a death (legacy:306522). */
+        static const int32_t ms[3] = { 17, 100, 130 };
+        static const int ticks[3] = { 2, 6, 6 };
+        for (int k = 0; k < 3; k++) {
+            for (int early = 0; early < 2; early++) {
+                uint32_t code[] = { T_OP_PUSH_CONSTANT, (uint32_t)ms[k],
+                                    0x10013000u /* SLEEP */, T_OP_RETURN };
+                CobScript s;
+                selftest_script(&s, code, 4, 0, 0);
+                CobEngine e;
+                if (Cob_EngineInit(&e, &s, 0, NULL) != 0) return 1;
+                Cob_SetTick(5);
+                int slot = Cob_StartThread(&e, 0, NULL, 0);
+                if (early) Cob_RunThreadNow(&e, slot);
+                Cob_RunAllThreads(&e);
+                int woke = -1;
+                for (uint32_t tick = 6; tick < 40 && woke < 0; tick++) {
+                    Cob_SetTick(tick);
+                    Cob_RunAllThreads(&e);
+                    if (Cob_AliveThreadCount(&e) == 0) woke = (int)tick;
+                }
+                if (woke != 5 + ticks[k]) {
+                    fprintf(stderr, "selftest sleep of %d ms begun %s the pass woke on "
+                            "tick %d, not %d\n", ms[k], early ? "before" : "in",
+                            woke, 5 + ticks[k]);
+                    failed = 1;
+                }
+                Cob_EngineFree(&e);
+            }
+        }
+        Cob_SetTick(0);
+    }
+
+    {
         /* A script that never sleeps must still return control to the
          * game, with exactly the documented bounded work performed. */
         uint32_t code[] = {T_OP_PUSH_CONSTANT, 0x104, T_OP_EMIT_SFX, 0,
