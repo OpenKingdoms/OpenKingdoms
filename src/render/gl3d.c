@@ -131,6 +131,7 @@ static struct {
     int         ready;
     SDL_Window *window;
     SDL_Renderer *renderer;
+    SDL_GLContext context;
     Program     terrain, model, model_pbr, sprite;
     Program     classic;   /* the classic view's models, depth per model */
     Program     classic_shade;   /* the same, shaded through a palette ramp */
@@ -486,10 +487,12 @@ static char *format_model_vs(const char *fmt, int nodes) {
 /* ── Init ─────────────────────────────────────────────────────────── */
 
 int GL3D_Init(SDL_Window *window, SDL_Renderer *renderer) {
-    if (g.ready) return 0;
+    /* A helper still up from a renderer since destroyed holds nothing usable. */
+    if (g.ready && g.renderer == renderer && g.context == SDL_GL_GetCurrentContext()) return 0;
     memset(&g, 0, sizeof(g));
     if (!window || !renderer) return -1;
-    if (!SDL_GL_GetCurrentContext()) {
+    g.context = SDL_GL_GetCurrentContext();
+    if (!g.context) {
         fprintf(stderr, "GL3D: the renderer has no GL context\n");
         return -1;
     }
