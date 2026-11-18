@@ -140,6 +140,7 @@ set(TAK_UI_SOURCES
     ui/ingame.c
     ui/click_map.c
     ui/hud_layout.c
+    ui/hud_info.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
     ui/capture.c
@@ -437,6 +438,7 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/ingame.c
     ui/click_map.c
     ui/hud_layout.c
+    ui/hud_info.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
     ui/capture.c
@@ -727,6 +729,7 @@ add_executable(test_unit_stall
     ui/ingame.c
     ui/click_map.c
     ui/hud_layout.c
+    ui/hud_info.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
     ui/capture.c

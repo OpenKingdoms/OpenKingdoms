@@ -32,6 +32,7 @@
 #include "tak_net_match.h"
 #include "tak_replay_session.h"
 #include "tak_fog.h"
+#include "tak_features.h"
 #include "tak_font.h"
 #include "tak_hud_text.h"
 #include "tak_game_sound.h"
@@ -2077,6 +2078,32 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
 #undef IG_PRESSED
 }
 
+/* The unit, else the shown feature, under the pointer over the world,
+ * for the info panel. A feature on ground never seen is not named. */
+static void ig_info_pointer(TAK_Platform *platform, GameWorld *world) {
+    int unit = -1, feature = -1, mx = 0, my = 0;
+    int32_t x = 0, y = 0;
+    if (platform->has_focus) SDL_GetMouseState(&mx, &my);
+    if (g_dbg_mouse_on) { mx = g_dbg_mouse_x; my = g_dbg_mouse_y; }
+    if (platform->has_focus && !Minimap_IsLarge() && !InGameMenu_IsOpen() &&
+        !Briefing_IsOpen() && !ig.sd_ask && !HUD_HitTest(mx, my, platform) &&
+        ig_view()->pointer_to_world(world, platform, mx, my, &x, &y)) {
+        unit = ig_view()->pointer_to_unit(world, platform, mx, my);
+        /* A wall under the pointer is passed over (the owner saw no wall health). */
+        int n = 0;
+        const Unit *units = Units_GetActive(&n);
+        const UnitDef *d = (unit >= 0 && unit < n) ? Units_GetDef(units[unit].def_idx) : NULL;
+        if (d && d->is_feature) unit = -1;
+        if (unit < 0) {
+            int32_t gx = x, gy = y;
+            Units_GroundUnderPoint(x, y, &gx, &gy);
+            if (Fog_StateAt(world, gx, gy) != TAK_FOG_UNEXPLORED)
+                feature = Features_InfoAt(world, gx, gy);
+        }
+    }
+    HUD_SetPointerInfo(unit, feature);
+}
+
 int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     {
         static unsigned s_ticks;
@@ -2255,6 +2282,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     world->cam_y -= shake_y;
     if (have_clip) SDL_RenderSetClipRect(platform->renderer, NULL);
 
+    ig_info_pointer(platform, world);
     HUD_Draw(platform, world);
     Minimap_Draw(platform);
     InGame_DrawMarquee(platform, world);
