@@ -1861,8 +1861,9 @@ int               Units_OrderMoveLeg(int handle, const UnitMoveLeg *leg, int que
  * the unit's orders the way the Units_Order* call for it does. Queued it
  * goes behind the order in hand and the legs before it, as Shift does,
  * and runs when those are done (manual section IV). A unit that could
- * not take it, or a full queue, refuses it. A factory takes a move or a
- * patrol as a standing order for its products. */
+ * not take it, a full queue, or a builder holding a summons without end
+ * refuses it. A factory takes a move or a patrol as a standing order for
+ * its products. */
 int               Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued);
 /* Units_OrderLeg's queued for the manual's Ctrl-click: the order replaces
  * the one in hand and the queued ones stay behind it. */
