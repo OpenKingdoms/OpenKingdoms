@@ -111,7 +111,7 @@ static struct {
 
 /* ── State ────────────────────────────────────────────────────────── */
 
-struct GL3D_Texture { GLuint id; int w, h; };
+struct GL3D_Texture { GLuint id; int w, h; SDL_GLContext ctx; };
 struct GL3D_Mesh    { GLuint vbo, ibo; GL3D_Layout layout; int vert_count, index_count; };
 
 typedef struct Program {
@@ -817,6 +817,7 @@ GL3D_Texture *GL3D_UploadTextureRGBA(const uint32_t *rgba, int w, int h,
     GL3D_Texture *t = (GL3D_Texture *)tak_malloc(sizeof(*t));
     if (!t) return NULL;
     t->w = w; t->h = h;
+    t->ctx = SDL_GL_GetCurrentContext();
     GLF(GenTextures)(1, &t->id);
     GLF(BindTexture)(GL_TEXTURE_2D, t->id);
     unpack_tight(4);
@@ -843,6 +844,7 @@ GL3D_Texture *GL3D_UploadTextureGrey(const uint8_t *grey, int w, int h) {
     GL3D_Texture *t = (GL3D_Texture *)tak_malloc(sizeof(*t));
     if (!t) return NULL;
     t->w = w; t->h = h;
+    t->ctx = SDL_GL_GetCurrentContext();
     GLF(GenTextures)(1, &t->id);
     GLF(BindTexture)(GL_TEXTURE_2D, t->id);
     unpack_tight(1);
@@ -867,7 +869,9 @@ void GL3D_UpdateTextureGrey(GL3D_Texture *tex, const uint8_t *grey, int w, int h
 
 void GL3D_FreeTexture(GL3D_Texture *tex) {
     if (!tex) return;
-    if (g.ready && tex->id) GLF(DeleteTextures)(1, &tex->id);
+    /* The 3D view may have shut the helper down. A texture lives while its context does. */
+    if (tex->id && tex->ctx && tex->ctx == SDL_GL_GetCurrentContext())
+        GLF(DeleteTextures)(1, &tex->id);
     tak_free(tex);
 }
 
@@ -1233,6 +1237,7 @@ GL3D_Texture *GL3D_UploadClassicIndex(const uint8_t *la, int w, int h) {
     GL3D_Texture *t = (GL3D_Texture *)tak_malloc(sizeof(*t));
     if (!t) return NULL;
     t->w = w; t->h = h;
+    t->ctx = SDL_GL_GetCurrentContext();
     const int kept = keep_sdl_begin();
     GLF(GenTextures)(1, &t->id);
     GLF(BindTexture)(GL_TEXTURE_2D, t->id);

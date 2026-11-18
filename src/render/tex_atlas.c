@@ -709,7 +709,7 @@ static double colour_mb(void) {
  * GpuShading=0 in options.cfg, or TAK_GPU_SHADING=0, keeps a lit copy per row. */
 static int choose_gpu_shade(TAK_Platform *plat) {
     const char *e = getenv("TAK_GPU_SHADING");
-    const int want = e ? atoi(e) : Settings_GetInt("GpuShading", 1);
+    const int want = e ? atoi(e) : Settings_GetInt(TAK_SETTING_GPU_SHADING, 1);
     if (!want || !plat || !plat->renderer || !Units_ModelDepthReady(plat)) return 0;
     return GL3D_ClassicShadeInit(plat->renderer) == 0;
 }
@@ -769,10 +769,14 @@ static GL3D_Texture *upload_index(const AtlasGroup *g, const uint16_t *idx) {
     return t;
 }
 
+/* The last atlas TexAtlas_GpuShade looked up, cleared with the atlases. */
+static const GPU_Texture  *g_shade_last;
+static const GL3D_Texture *g_shade_last_index, *g_shade_last_ramp;
+
 int TexAtlas_GpuShade(const GPU_Texture *atlas, const GL3D_Texture **index,
                       const GL3D_Texture **ramp) {
-    static const GPU_Texture *last;
-    static const GL3D_Texture *last_index, *last_ramp;
+    const GPU_Texture *last = g_shade_last;
+    const GL3D_Texture *last_index = g_shade_last_index, *last_ramp = g_shade_last_ramp;
     if (!g_gpu_shade || !atlas) return 0;
     if (atlas != last) {
         last = atlas;
@@ -786,6 +790,9 @@ int TexAtlas_GpuShade(const GPU_Texture *atlas, const GL3D_Texture **index,
                     last_ramp = pe->ramp_tex;
                     break;
                 }
+        g_shade_last = last;
+        g_shade_last_index = last_index;
+        g_shade_last_ramp = last_ramp;
     }
     *index = last_index;
     *ramp = last_ramp;
@@ -1012,7 +1019,11 @@ void TexAtlas_Shutdown(TAK_Platform *plat) {
         GL3D_FreeTexture(g_pal_cache[i].ramp_tex);
         g_pal_cache[i].ramp_tex = NULL;
     }
+    GL3D_FreeTexture(g_fallback_pal.ramp_tex);
+    g_fallback_pal.ramp_tex = NULL;
     g_gpu_shade = g_shade_planned = 0;
+    g_shade_last = NULL;
+    g_shade_last_index = g_shade_last_ramp = NULL;
 
     for (int i = 0; i < g_anim_count; i++) tak_free(g_anims[i].hold);
     if (g_anims) tak_free(g_anims);

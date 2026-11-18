@@ -20924,7 +20924,7 @@ static int depth_ready(TAK_Platform *plat) {
     if (SDL_GetRendererInfo(plat->renderer, &info) != 0 || !info.name ||
         strncmp(info.name, "opengl", 6) != 0)
         return 0;
-    if (!GL3D_Available() && GL3D_Init(plat->window, plat->renderer) != 0) return 0;
+    if (GL3D_Init(plat->window, plat->renderer) != 0) return 0;
     if (GL3D_Renderer() != plat->renderer) return 0;
     g_depth_state = 1;
     return 1;
@@ -22405,9 +22405,20 @@ static void note_model_tops(const char *object_name, int top) {
 void Units_PlanShadeBands(void) {
     if (!TexAtlas_ShadePlanWanted()) return;
     const uint64_t t0 = SDL_GetPerformanceCounter();
-    for (int d = 0; d < g_def_count; d++)
-        if (g_defs[d].objectname[0])
-            note_model_tops(g_defs[d].objectname, face_light_top(model_def_light(&g_defs[d])));
+    const int shot_top = face_light_top(model_def_light(NULL));
+    for (int d = 0; d < g_def_count; d++) {
+        const UnitDef *def = &g_defs[d];
+        if (def->objectname[0])
+            note_model_tops(def->objectname, face_light_top(model_def_light(def)));
+        for (int w = 0; w < def->num_weapons + 2; w++) {
+            const int k = w - def->num_weapons;
+            const UnitWeapon *wp = k < 0 ? &def->weapons[w]
+                                 : (def->death_weapon_set >> k) & 1u ? &def->death_weapons[k] : NULL;
+            if (!wp || wp->art_kind != UNIT_WEAPON_ART_MODEL) continue;
+            note_model_tops(wp->art_name, shot_top);
+            if (wp->veteran_art_name[0]) note_model_tops(wp->veteran_art_name, shot_top);
+        }
+    }
     for (int f = 0; f < Features_GetCount(); f++) {
         const FeatureDef *fd = Features_GetByIndex(f);
         if (!fd || !fd->object[0]) continue;
@@ -22415,8 +22426,6 @@ void Units_PlanShadeBands(void) {
         if (paint) TexAtlas_NoteShadeTop(paint, face_light_top(feature_light(fd)));
         else note_model_tops(fd->object, face_light_top(feature_light(fd)));
     }
-    for (int i = 0; i < g_proj_model_count; i++)
-        note_model_tops(g_proj_models[i].name, face_light_top(model_def_light(NULL)));
     TexAtlas_PlanShades();
     fprintf(stderr, "Units_PlanShadeBands: %.0f ms%c",
             (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 / (double)SDL_GetPerformanceFrequency(), 10);
