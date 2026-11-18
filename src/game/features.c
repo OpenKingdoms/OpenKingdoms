@@ -21,6 +21,7 @@
 #include "tak_memory.h"
 #include "tak_util.h"
 #include "tak_hpi.h"
+#include "tak_gaf.h"
 #include "tak_sim_rand.h"
 #include "tak_terrain.h"
 #include "tak_unit.h"
@@ -843,6 +844,7 @@ static int seq_read_file(const char *path, const char *key) {
     int added = 0;
     if (size >= 12 && rd32(b) == 0x00010100u) {
         uint32_t n = rd32(b + 4);
+        const GAFFile view = { (uint8_t *)data, size, n };
         for (uint32_t e = 0; e < n && 12 + 4 * (e + 1) <= size; e++) {
             uint32_t off = rd32(b + 12 + 4 * e);
             if (off + 40 > size) continue;
@@ -854,7 +856,7 @@ static int seq_read_file(const char *path, const char *key) {
             uint16_t dur[512];
             if (frames > 512) frames = 512;
             for (int f = 0; f < frames; f++)
-                dur[f] = (uint16_t)rd32(b + off + 40 + 8 * (uint32_t)f + 4);
+                dur[f] = (uint16_t)GAF_FrameHold(&view, off, f);
             if (seq_add(key, name, frames, dur) >= 0) added++;
         }
     }

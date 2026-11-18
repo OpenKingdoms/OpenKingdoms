@@ -155,13 +155,16 @@ one is drawn.
 ## Pieces that move
 
 The unit's own script animates a custom model, the same script that
-rows the oars, swings the legs and blinks the lodestone's light in the
-original. It addresses pieces by name. An object in the model named
-like a piece of the shipped model takes that piece's turns, moves,
-hides and shows; an object with a name of its own stands still. The
-lodestone's light is two pieces, `aralode` and `aralode_off`, that the
-script shows in turn, so a model with those two objects blinks as the
-original does.
+rows the oars and swings the legs in the original. It addresses pieces
+by name. An object in the model named like a piece of the shipped model
+takes that piece's turns, moves, hides and shows; an object with a name
+of its own stands still. The lodestone's glow is not scripted: its
+plain card's texture has 10 pictures that play by the game clock, and
+the logo card behind it carries the team colour.
+
+A texture of one picture per player colour is taken as team colour
+only when its GAF's name contains `logo`. In a GAF named otherwise its
+10 pictures play in turn as an animation.
 
 For this to look right the object's origin sits where the shipped
 piece's pivot sits, an oar's at its oarlock, and the object rests in

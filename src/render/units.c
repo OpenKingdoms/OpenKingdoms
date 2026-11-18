@@ -8208,6 +8208,10 @@ static uint8_t  *g_scratch_wet   = NULL;
  * quantity the legacy rasteriser interpolates and depth-tests
  * (legacy:197697). Base offset dropped, only the order matters. */
 static float    *g_scratch_hkey  = NULL;
+/* One mesh's lit vertex colours and band offsets in v, by mesh vertex. */
+static uint32_t *g_lit_color     = NULL;
+static float    *g_lit_dv        = NULL;
+static float    *g_lit_du        = NULL;   /* a time-played texture's picture */
 static int       g_scratch_vcap  = 0;
 static uint16_t *g_scratch_idx   = NULL;
 static int       g_scratch_icap  = 0;
@@ -8902,11 +8906,9 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
 /* Recursive prim probe (debug diagnostic). Prints every prim with its
  * resolved atlas pointer and UV rect. Used to figure out what specific
  * geometry corresponds to visual artifacts. */
-/* The colours a model's untextured faces take: those of its side's
- * palette, the one its textures are drawn in (legacy:164721-164729), not
- * the map's. A model with no side takes the first side's, which every
- * shipped side shares. The map's is the last resort. */
-static const uint32_t *flat_palette(const char *side_prefix) {
+/* Untextured face colours through every level, from the side's palette
+ * (legacy:164721-164729), the first side's for none. NULL: unlit. */
+static const uint32_t *flat_ramp(const char *side_prefix) {
     /* Without game files or a canvas format a palette would be cached
      * empty, and the textures decoded from it later too. */
     int ready = VFS_IsInitialized() && UI_RGBAFormat();
@@ -8917,11 +8919,9 @@ static const uint32_t *flat_palette(const char *side_prefix) {
         snprintf(pcx, sizeof(pcx), "%s", si->palette);
         char *dot = strrchr(pcx, '.');
         if (dot && strlen(dot) == 4) memcpy(dot, ".pcx", 4);
-        const uint32_t *pal = TexAtlas_Palette(pcx);
-        if (pal) return pal;
+        return TexAtlas_ShadeRamp(pcx);
     }
-    const GameWorld *w = World_Get();
-    return w ? w->terrain_rgba : NULL;
+    return NULL;
 }
 
 static void zon_probe(const Obj3DNode *n, int depth, int color_idx) {
@@ -8960,8 +8960,11 @@ typedef struct BakeState {
     int          first_index[UNIT_MESH_MAX_BATCHES];
     int          v_writer[UNIT_MESH_MAX_BATCHES];
     int          i_writer[UNIT_MESH_MAX_BATCHES];
+    float        inset_v[UNIT_MESH_MAX_BATCHES];  /* half a texel of the atlas height */
     int          batch_count;
-    const uint32_t *palette;     /* flat_palette, color_idx -> RGBA */
+    const uint32_t *palette;     /* color_idx -> RGBA at the identity level */
+    UnitMeshFace *faces;
+    int          face_count;
     int          team_color_idx; /* 0..11; selects atlas variant */
     /* A statue's paint: every face takes this texture (legacy:197875-197886). */
     const char  *paint;
@@ -8978,6 +8981,9 @@ static int batch_find_or_add(BakeState *bs, GPU_Texture *atlas, const SDL_FRect 
     if (bs->batch_count >= UNIT_MESH_MAX_BATCHES) return -1;
     int idx = bs->batch_count++;
     bs->atlas[idx] = atlas;
+    int aw = 0, ah = 0;
+    bs->inset_v[idx] = (atlas && GPU_TextureSize(atlas, &aw, &ah) == 0 && ah > 0)
+                     ? 0.5f / (float)ah : 0.0f;
     if (uv) bs->uv_rect[idx] = *uv;
     else    { bs->uv_rect[idx].x = 0; bs->uv_rect[idx].y = 0;
               bs->uv_rect[idx].w = 0; bs->uv_rect[idx].h = 0; }
@@ -9017,6 +9023,7 @@ static void bake_discover(const Obj3DNode *n, BakeState *bs) {
         if (b < 0) continue;
         bs->vert_count_batch[b] += nv;
         bs->tri_count_batch[b]  += (nv - 2);
+        bs->face_count++;
     }
     for (Obj3DNode *c = n->first_child; c; c = c->next_sibling) {
         bake_discover(c, bs);
@@ -9033,8 +9040,7 @@ static void bake_discover(const Obj3DNode *n, BakeState *bs) {
  *     not -1, the first primitive of the node is the selection mesh
  *     and is skipped at render time. Per-NODE, not just root.
  *
- * Step A applies per-prim flat shading. Step B (next) replaces the
- * runtime tc_flag-based team color with per-player atlas variants. */
+ * Each prim is recorded as a face for the per-frame light. */
 static void bake_emit(const Obj3DNode *n,
                       float ax, float ay, float az,
                       int parent_node_idx,
@@ -9098,55 +9104,45 @@ static void bake_emit(const Obj3DNode *n,
         int b = batch_find_or_add(bs, atlas, &uv_rect);
         if (b < 0) continue;
 
-        /* Per-primitive flat shading. Compute the prim's face normal
-         * from the first three vertices (consistent with the decomp's
-         * 197710-197791 normal pass), dot with a fixed key-light, map
-         * to a subtle brightness range. All verts of this prim get the
-         * SAME color — flat shading per the original engine. */
-        float light_intensity = 1.0f;
-        if (nv >= 3) {
-            int vi0 = prim->vert_indices[0];
-            int vi1 = prim->vert_indices[1];
-            int vi2 = prim->vert_indices[2];
+        /* The face's outward normal from its first three vertices, lit
+         * each frame in world space (legacy:197710-197791). */
+        UnitMeshFace *face = bs->faces ? &bs->faces[bs->face_count++] : NULL;
+        if (face) {
+            memset(face, 0, sizeof(*face));
+            face->first_vert = (uint16_t)bs->v_writer[b];
+            face->vert_count = (uint16_t)nv;
+            face->node = (uint16_t)((this_node_idx >= 0) ? this_node_idx : 0);
+            face->batch = (uint8_t)b;
+            face->flat_idx = (uint8_t)prim->color_idx;
+            face->anim = (uint16_t)(tex[0] ? TexAtlas_AnimOf(tex) : 0);
+            const int vi0 = prim->vert_indices[0];
+            const int vi1 = prim->vert_indices[1];
+            const int vi2 = prim->vert_indices[2];
             if (vi0 >= 0 && vi0 < n->num_vertices &&
                 vi1 >= 0 && vi1 < n->num_vertices &&
-                vi2 >= 0 && vi2 < n->num_vertices)
-            {
-                float ex = n->vertices[vi1].x - n->vertices[vi0].x;
-                float ey = n->vertices[vi1].y - n->vertices[vi0].y;
-                float ez = n->vertices[vi1].z - n->vertices[vi0].z;
-                float fx = n->vertices[vi2].x - n->vertices[vi0].x;
-                float fy = n->vertices[vi2].y - n->vertices[vi0].y;
-                float fz = n->vertices[vi2].z - n->vertices[vi0].z;
-                float nrx = ey * fz - ez * fy;
-                float nry = ez * fx - ex * fz;
-                float nrz = ex * fy - ey * fx;
-                float len = sqrtf(nrx*nrx + nry*nry + nrz*nrz);
-                if (len > 1.0f) {
-                    nrx /= len; nry /= len; nrz /= len;
-                    /* Light from upper-front-left, modest contrast. */
-                    const float Lx = 0.4f, Ly = -0.85f, Lz = -0.3f;
-                    float dot = nrx * Lx + nry * Ly + nrz * Lz;
-                    light_intensity = 0.85f + 0.15f * dot;
-                    if (light_intensity < 0.70f) light_intensity = 0.70f;
-                    if (light_intensity > 1.0f)  light_intensity = 1.0f;
+                vi2 >= 0 && vi2 < n->num_vertices) {
+                const float ex = n->vertices[vi1].x - n->vertices[vi0].x;
+                const float ey = n->vertices[vi1].y - n->vertices[vi0].y;
+                const float ez = n->vertices[vi1].z - n->vertices[vi0].z;
+                const float fx = n->vertices[vi2].x - n->vertices[vi0].x;
+                const float fy = n->vertices[vi2].y - n->vertices[vi0].y;
+                const float fz = n->vertices[vi2].z - n->vertices[vi0].z;
+                const float nrx = ey * fz - ez * fy;
+                const float nry = ez * fx - ex * fz;
+                const float nrz = ex * fy - ey * fx;
+                const float len = sqrtf(nrx*nrx + nry*nry + nrz*nrz);
+                if (len > 0.0f) {
+                    face->normal[0] = nrx / len;
+                    face->normal[1] = nry / len;
+                    face->normal[2] = nrz / len;
                 }
             }
         }
 
-        /* Build the per-prim color. For textured prims this is a
-         * grey-scale modulator applied to the texture sample. For
-         * FLAT_COLOR prims it's the artist's palette[color_idx]. */
-        uint32_t prim_color;
-        if (atlas == NULL && bs->palette) {
-            prim_color = bs->palette[prim->color_idx & 0xFF];
-            /* Don't dim the artist's chosen flat color via lighting —
-             * keep it full intensity so banners and decals stay punchy. */
-        } else {
-            uint32_t L = (uint32_t)(light_intensity * 255.0f);
-            if (L > 255) L = 255;
-            prim_color = L | (L << 8) | (L << 16) | (0xFFu << 24);
-        }
+        /* Unlit colour: white under a texture, the artist's palette
+         * colour on a FLAT_COLOR face. */
+        uint32_t prim_color = 0xFFFFFFFFu;
+        if (atlas == NULL && bs->palette) prim_color = bs->palette[prim->color_idx & 0xFF];
 
         int base = bs->v_writer[b];   /* batch-local vertex base */
         for (int k = 0; k < nv; k++) {
@@ -9189,10 +9185,11 @@ static void bake_emit(const Obj3DNode *n,
                  * the model up: at 1.5 texels a lodestone lost the
                  * bottom of its card and stopped covering its pad. */
                 const float INSET = 0.5f / 1024.0f;
+                const float INSET_V = bs->inset_v[b];
                 float u0 = uv_rect.x + INSET;
-                float v0 = uv_rect.y + INSET;
+                float v0 = uv_rect.y + INSET_V;
                 float uw = uv_rect.w - 2.0f * INSET;
-                float vh = uv_rect.h - 2.0f * INSET;
+                float vh = uv_rect.h - 2.0f * INSET_V;
                 if (uw < 0.0f) uw = 0.0f;
                 if (vh < 0.0f) vh = 0.0f;
                 uvs[2 * slot + 0] = u0 + lu * uw;
@@ -9232,14 +9229,15 @@ static void bake_emit(const Obj3DNode *n,
     }
 }
 
-static UnitMesh *Mesh_BakePainted(const Obj3DFile *obj, const uint32_t *palette,
+static UnitMesh *Mesh_BakePainted(const Obj3DFile *obj, const uint32_t *ramp,
                                    int color_idx, const char *paint)
 {
     if (!obj || !obj->root) return NULL;
 
     BakeState bs;
     memset(&bs, 0, sizeof(bs));
-    bs.palette = palette;
+    const GameWorld *w = World_Get();
+    bs.palette = ramp ? ramp + TEX_SHADE_IDENTITY * 256 : (w ? w->terrain_rgba : NULL);
     bs.team_color_idx = color_idx;
     bs.paint = (paint && paint[0]) ? paint : NULL;
 
@@ -9273,18 +9271,23 @@ static UnitMesh *Mesh_BakePainted(const Obj3DFile *obj, const uint32_t *palette,
     m->indices       = (uint16_t *)tak_malloc(sizeof(uint16_t)     * (size_t)total_i);
     m->vert_node_idx = (uint16_t *)tak_malloc(sizeof(uint16_t)     * (size_t)total_v);
     m->tri_seq       = (uint32_t *)tak_malloc(sizeof(uint32_t) * ((size_t)total_i / 3));
+    m->faces         = (UnitMeshFace *)tak_malloc(sizeof(UnitMeshFace) * (size_t)bs.face_count);
     if (!m->positions || !m->uvs || !m->colors || !m->indices ||
-        !m->vert_node_idx || !m->tri_seq) {
+        !m->vert_node_idx || !m->tri_seq || !m->faces) {
         if (m->positions)     tak_free(m->positions);
         if (m->uvs)           tak_free(m->uvs);
         if (m->colors)        tak_free(m->colors);
         if (m->indices)       tak_free(m->indices);
         if (m->vert_node_idx) tak_free(m->vert_node_idx);
         if (m->tri_seq)       tak_free(m->tri_seq);
+        if (m->faces)         tak_free(m->faces);
         tak_free(m);
         return NULL;
     }
     bs.tri_seq = m->tri_seq;
+    bs.faces = m->faces;
+    bs.face_count = 0;
+    m->flat_ramp = ramp;
     bs.seq_counter = 0;
 
     m->aabb_min[0] = m->aabb_min[1] = m->aabb_min[2] = +1e30f;
@@ -9300,18 +9303,20 @@ static UnitMesh *Mesh_BakePainted(const Obj3DFile *obj, const uint32_t *palette,
 
     m->vert_count  = total_v;
     m->tri_count   = total_i / 3;
+    m->face_count  = bs.face_count;
     m->batch_count = bs.batch_count;
     for (int b = 0; b < bs.batch_count; b++) {
         m->batches[b].atlas_tex   = bs.atlas[b];
         m->batches[b].first_index = bs.first_index[b];
         m->batches[b].index_count = bs.tri_count_batch[b] * 3;
+        (void)TexAtlas_ShadeMap(bs.atlas[b], &m->batches[b].shade);
     }
     return m;
 }
 
-static UnitMesh *Mesh_Bake(const Obj3DFile *obj, const uint32_t *palette,
+static UnitMesh *Mesh_Bake(const Obj3DFile *obj, const uint32_t *ramp,
                             int color_idx) {
-    return Mesh_BakePainted(obj, palette, color_idx, NULL);
+    return Mesh_BakePainted(obj, ramp, color_idx, NULL);
 }
 
 static void Mesh_Free(UnitMesh *m) {
@@ -9324,6 +9329,7 @@ static void Mesh_Free(UnitMesh *m) {
     if (m->indices)       tak_free(m->indices);
     if (m->vert_node_idx) tak_free(m->vert_node_idx);
     if (m->tri_seq)       tak_free(m->tri_seq);
+    if (m->faces)         tak_free(m->faces);
     tak_free(m);
 }
 
@@ -9349,7 +9355,7 @@ static int ensure_mesh_baked(UnitDef *def, int color_idx) {
         return -1;
     }
 
-    const uint32_t *palette = flat_palette(def->side);
+    const uint32_t *ramp = flat_ramp(def->side);
 
     /* Diagnostic prim probe: set TAK_PRIM_PROBE=<unitname> to dump a
      * unit's full prim/texture/color resolution at bake time. */
@@ -9361,7 +9367,7 @@ static int ensure_mesh_baked(UnitDef *def, int color_idx) {
         fprintf(stderr, "----- end %s probe -----\n", def->unitname);
     }
 
-    UnitMesh *m = Mesh_Bake(obj, palette, color_idx);
+    UnitMesh *m = Mesh_Bake(obj, ramp, color_idx);
     Obj3D_Close(obj);                        /* tree no longer needed */
 
     if (!m) {
@@ -9388,13 +9394,19 @@ static int ensure_scratch(int need_verts, int need_idx) {
         float    *wy = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
         float    *hk = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
         uint8_t  *wt = (uint8_t *)tak_malloc((size_t)new_cap);
-        if (!xy || !cl || !uv || !wy || !hk || !wt) {
+        uint32_t *lc = (uint32_t *)tak_malloc(sizeof(uint32_t) * (size_t)new_cap);
+        float    *ld = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
+        float    *lu = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
+        if (!xy || !cl || !uv || !wy || !hk || !wt || !lc || !ld || !lu) {
             if (xy) tak_free(xy);
             if (cl) tak_free(cl);
             if (uv) tak_free(uv);
             if (wy) tak_free(wy);
             if (hk) tak_free(hk);
             if (wt) tak_free(wt);
+            if (lc) tak_free(lc);
+            if (ld) tak_free(ld);
+            if (lu) tak_free(lu);
             return -1;
         }
         if (g_scratch_xy)    tak_free(g_scratch_xy);
@@ -9403,8 +9415,12 @@ static int ensure_scratch(int need_verts, int need_idx) {
         if (g_scratch_wy)    tak_free(g_scratch_wy);
         if (g_scratch_hkey)  tak_free(g_scratch_hkey);
         if (g_scratch_wet)   tak_free(g_scratch_wet);
+        if (g_lit_color)     tak_free(g_lit_color);
+        if (g_lit_dv)        tak_free(g_lit_dv);
+        if (g_lit_du)        tak_free(g_lit_du);
         g_scratch_xy = xy; g_scratch_color = cl; g_scratch_uv = uv; g_scratch_wy = wy;
-        g_scratch_hkey = hk; g_scratch_wet = wt;
+        g_scratch_hkey = hk; g_scratch_wet = wt; g_lit_color = lc; g_lit_dv = ld;
+        g_lit_du = lu;
         g_scratch_vcap = new_cap;
     }
     /* Node xform scratch — sized to the largest mesh seen. */
@@ -9451,6 +9467,9 @@ static void scratch_free(void) {
     if (g_scratch_wy)    { tak_free(g_scratch_wy);    g_scratch_wy    = NULL; }
     if (g_scratch_wet)   { tak_free(g_scratch_wet);   g_scratch_wet   = NULL; }
     if (g_scratch_hkey)  { tak_free(g_scratch_hkey);  g_scratch_hkey  = NULL; }
+    if (g_lit_color)     { tak_free(g_lit_color);     g_lit_color     = NULL; }
+    if (g_lit_dv)        { tak_free(g_lit_dv);        g_lit_dv        = NULL; }
+    if (g_lit_du)        { tak_free(g_lit_du);        g_lit_du        = NULL; }
     if (g_scratch_idx)        { tak_free(g_scratch_idx);        g_scratch_idx        = NULL; }
     if (g_scratch_tri)        { tak_free(g_scratch_tri);        g_scratch_tri        = NULL; }
     if (g_scratch_node_xform) { tak_free(g_scratch_node_xform); g_scratch_node_xform = NULL; }
@@ -10159,6 +10178,7 @@ static void unit_forget_slot(int slot) {
 
 uint32_t Units_NextStableId(void) { return g_next_stable_unit_id; }
 uint32_t Units_SimTick(void) { return g_sim_tick; }
+uint32_t Units_ViewFrame(void) { return g_sim_tick / 2u; }
 void Units_SetSimTick(uint32_t tick) { g_sim_tick = tick; }
 
 /* Where a unit's sight is stamped from. The original re-stamps as
@@ -17948,21 +17968,6 @@ void Units_WarmPathCaches(const GameWorld *w) {
     }
 }
 
-void Units_DropAllMeshCaches(void) {
-    overlap_order_free();   /* its memos name the meshes freed here */
-    proj_model_drop_meshes();
-    corpse_art_drop_meshes();
-    if (!g_defs) return;
-    for (int i = 0; i < g_def_count; i++) {
-        for (int c = 0; c < 12; c++) {
-            if (g_defs[i].mesh_per_color[c]) {
-                Mesh_Free(g_defs[i].mesh_per_color[c]);
-                g_defs[i].mesh_per_color[c] = NULL;
-            }
-        }
-    }
-}
-
 int Units_BakeMonarchMeshes(void) {
     /* Pre-bake each monarch with its faction-default color. Other
      * colors will lazy-bake on first spawn. */
@@ -18932,6 +18937,109 @@ static uint32_t underwater_colour(uint32_t c) {
     return (c & 0xFF000000u) | r | (g << 8) | (b << 16);
 }
 
+/* The light in a posed model's frame: the inverse of the draw's roll,
+ * pitch and mirrored heading applied to the light (tak_tex_atlas.h). */
+static void model_light_in_frame(float heading, float pitch, float roll, float out[3]) {
+    const float n = sqrtf(MODEL_LIGHT_X * MODEL_LIGHT_X + MODEL_LIGHT_Y * MODEL_LIGHT_Y +
+                          MODEL_LIGHT_Z * MODEL_LIGHT_Z);
+    const float lx = MODEL_LIGHT_X / n, ly = MODEL_LIGHT_Y / n, lz = MODEL_LIGHT_Z / n;
+    const float ch = tak_cosf(heading), sh = tak_sinf(heading);
+    const float cp = tak_cosf(pitch),   sp = tak_sinf(pitch);
+    const float cr = tak_cosf(roll),    sr = tak_sinf(roll);
+    const float tx = -ch * lx - sh * lz, ty = ly, tz = -sh * lx + ch * lz;
+    const float uy = cp * ty + sp * tz, uz = -sp * ty + cp * tz;
+    out[0] = cr * tx + sr * uy;
+    out[1] = -sr * tx + cr * uy;
+    out[2] = uz;
+}
+
+/* How a mesh takes the model light: `part` of the way from 15 to the
+ * level its `scale` and `ambient` give. */
+typedef struct FaceLight { float part; int scale, ambient; } FaceLight;
+
+/* All of the light for a building (bmcode 0), UNIT_LIGHT_FACTOR for a
+ * mobile unit, whose shading is painted in, as in the original. */
+static FaceLight model_def_light(const UnitDef *d) {
+    FaceLight fl = { (!d || d->bmcode == 0) ? 1.0f : UNIT_LIGHT_FACTOR,
+                     MODEL_LIGHT_SCALE, MODEL_LIGHT_AMBIENT };
+    return fl;
+}
+
+/* A stone or ice statue takes the light at its own scale and ambient: the
+ * original's statues reach brighter rows than its buildings. */
+static FaceLight feature_light(const FeatureDef *fd) {
+    FaceLight fl = { 1.0f, MODEL_LIGHT_SCALE, MODEL_LIGHT_AMBIENT };
+    if (fd && (fd->is_stone || fd->is_frozen)) {
+        fl.scale = STATUE_LIGHT_SCALE;
+        fl.ambient = STATUE_LIGHT_AMBIENT;
+    }
+    return fl;
+}
+
+/* A face's level: the scaled cosine rounded plus the ambient, 15 with
+ * DONT-SHADE (legacy:197710-197791), `part` of the way from 15. */
+static int model_face_level(const float n[3], const float l[3], int shade_off,
+                            const FaceLight *fl) {
+    if (shade_off) return TEX_SHADE_IDENTITY;
+    const float dot = n[0] * l[0] + n[1] * l[1] + n[2] * l[2];
+    int level = (int)floorf(dot * (float)fl->scale + 0.5f) + fl->ambient;
+    if (level < 0) level = 0;
+    if (level > TEX_SHADE_LEVELS - 1) level = TEX_SHADE_LEVELS - 1;
+    if (fl->part < 1.0f)
+        level = TEX_SHADE_IDENTITY +
+                (int)floorf(fl->part * (float)(level - TEX_SHADE_IDENTITY) + 0.5f);
+    return level;
+}
+
+/* Light each face of `m` posed by `xf` into g_lit_color and g_lit_dv, and a
+ * played texture's u shift into g_lit_du. No faces keeps the unlit colours. */
+static void light_mesh_faces(const UnitMesh *m, const NodeXform *xf,
+                             const CobPiece *pieces, int piece_count,
+                             float heading, float pitch, float roll, FaceLight fl) {
+    const int V = m->vert_count;
+    if (!m->faces) {
+        for (int v = 0; v < V; v++) {
+            g_lit_color[v] = m->colors[v];
+            g_lit_dv[v] = 0.0f;
+            g_lit_du[v] = 0.0f;
+        }
+        return;
+    }
+    float l[3], node_l[UNIT_MESH_MAX_NODES][3];
+    model_light_in_frame(heading, pitch, roll, l);
+    /* Into each node's frame through its rotation's transpose. */
+    for (int i = 0; i < m->node_count; i++) {
+        const float *r = xf[i].rot;
+        node_l[i][0] = r[0] * l[0] + r[3] * l[1] + r[6] * l[2];
+        node_l[i][1] = r[1] * l[0] + r[4] * l[1] + r[7] * l[2];
+        node_l[i][2] = r[2] * l[0] + r[5] * l[1] + r[8] * l[2];
+    }
+    for (int f = 0; f < m->face_count; f++) {
+        const UnitMeshFace *fc = &m->faces[f];
+        const int shade_off = pieces && fc->node < piece_count && pieces[fc->node].shade_off;
+        const int level = model_face_level(fc->normal, node_l[fc->node], shade_off, &fl);
+        const UnitMeshBatch *b = &m->batches[fc->batch];
+        uint32_t rgb;
+        float dv = 0.0f;
+        if (b->atlas_tex) {
+            const uint32_t g = b->shade.grey[level];
+            rgb = g | (g << 8) | (g << 16);
+            dv = (float)b->shade.band[level] * b->shade.band_dv;
+        } else if (m->flat_ramp) {
+            rgb = m->flat_ramp[level * 256 + fc->flat_idx] & 0x00FFFFFFu;
+        } else {
+            rgb = m->colors[fc->first_vert] & 0x00FFFFFFu;
+        }
+        const float du = TexAtlas_AnimU(fc->anim);
+        for (int k = 0; k < fc->vert_count; k++) {
+            const int v = fc->first_vert + k;
+            g_lit_color[v] = (m->colors[v] & 0xFF000000u) | rgb;
+            g_lit_dv[v] = dv;
+            g_lit_du[v] = du;
+        }
+    }
+}
+
 /* Transform one unit's mesh into the scratch buffers at vertex offset
  * `v_off`: per-piece COB transform, heading rotation, projection, plus
  * the per-vertex height key the draw order needs. */
@@ -18972,6 +19080,9 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
     /* Per-piece transforms for THIS unit. Animation gives each unit its
      * own piece state, so this is recomputed per unit. */
     compose_node_xforms(m, u->cob ? u->cob->pieces : NULL, g_scratch_node_xform);
+    light_mesh_faces(m, g_scratch_node_xform, u->cob ? u->cob->pieces : NULL,
+                     u->cob ? u->cob->piece_count : 0, u->heading, u->pitch, u->roll,
+                     model_def_light(Units_GetDef(u->def_idx)));
 
     for (int v = 0; v < V; v++) {
         const NodeXform *x = &g_scratch_node_xform[m->vert_node_idx[v]];
@@ -19022,8 +19133,7 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
         g_scratch_hkey[i]       = model_height_key(my);
         g_scratch_wet[i]        = (uint8_t)(wet && wy <= sea);
         /* Colour is RGBA8888 little-endian (A in the high byte). */
-        uint32_t c = m->colors[v];
-        if (whiteout) c |= 0x00FFFFFFu;
+        uint32_t c = g_lit_color[v];
         if (alpha_mul != 255) {
             uint32_t a = (c >> 24) & 0xFFu;
             a = (a * alpha_mul) / 255u;
@@ -19031,8 +19141,8 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
         }
         if (g_scratch_wet[i]) c = underwater_colour(c);
         g_scratch_color[i] = c;
-        g_scratch_uv[2 * i + 0] = m->uvs[2 * v + 0];
-        g_scratch_uv[2 * i + 1] = m->uvs[2 * v + 1];
+        g_scratch_uv[2 * i + 0] = m->uvs[2 * v + 0] + g_lit_du[v];
+        g_scratch_uv[2 * i + 1] = m->uvs[2 * v + 1] + g_lit_dv[v];
     }
 }
 
@@ -20510,6 +20620,8 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
     if (deferred) return;
     const CobPiece *gpieces = gcob ? gcob->pieces : NULL;
     compose_node_xforms(m, gpieces, g_scratch_node_xform);
+    light_mesh_faces(m, g_scratch_node_xform, gpieces, gcob ? gcob->piece_count : 0,
+                     heading, 0.0f, 0.0f, model_def_light(def));
 
     /* Per-vertex tint: green-ish if valid, red-ish if blocked, none for
      * a queued building, plus the requested alpha. Multiply with each
@@ -20553,7 +20665,7 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
         g_scratch_hkey[v]       = model_height_key(my);
         /* Blend authored vertex colour with the tint and the ghost
          * alpha. RGB = mix(authored, tint, 0.5); A = authored.A * alpha255. */
-        uint32_t c = m->colors[v];
+        uint32_t c = g_lit_color[v];
         uint32_t cr = (c >>  0) & 0xFFu;
         uint32_t cg = (c >>  8) & 0xFFu;
         uint32_t cb = (c >> 16) & 0xFFu;
@@ -20565,8 +20677,8 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
         }
         ca = (ca * alpha255) / 255u;
         g_scratch_color[v] = cr | (cg << 8) | (cb << 16) | (ca << 24);
-        g_scratch_uv[2 * v + 0] = m->uvs[2 * v + 0];
-        g_scratch_uv[2 * v + 1] = m->uvs[2 * v + 1];
+        g_scratch_uv[2 * v + 0] = m->uvs[2 * v + 0] + g_lit_du[v];
+        g_scratch_uv[2 * v + 1] = m->uvs[2 * v + 1] + g_lit_dv[v];
     }
 
     /* One ordered pass over every triangle, the rule the live submit
@@ -20811,7 +20923,7 @@ static const UnitMesh *proj_model_mesh(int model_idx, int color_idx) {
         fprintf(stderr, "Projectiles: no model %s\n", path);
         return NULL;
     }
-    UnitMesh *m = Mesh_Bake(obj, flat_palette(NULL), color_idx);
+    UnitMesh *m = Mesh_Bake(obj, flat_ramp(NULL), color_idx);
     Obj3D_Close(obj);
     if (!m) { pm->failed[color_idx] = 1; return NULL; }
     pm->mesh_per_color[color_idx] = m;
@@ -20845,7 +20957,7 @@ static void submit_static_mesh_run(TAK_Platform *plat,
                                    const struct GameWorld *world,
                                    const UnitMesh *m,
                                    const StaticMeshInstance *inst, int n,
-                                   int all_pieces)
+                                   int all_pieces, FaceLight fl)
 {
     if (!m || m->vert_count == 0 || n <= 0) return;
     const int V = m->vert_count;
@@ -20879,6 +20991,7 @@ static void submit_static_mesh_run(TAK_Platform *plat,
             const float cp = tak_cosf(p->pitch),   sp = tak_sinf(p->pitch);
             const float cr = tak_cosf(p->roll),    sr = tak_sinf(p->roll);
             const int v_off = ci * V;
+            light_mesh_faces(m, g_scratch_node_xform, NULL, 0, p->heading, p->pitch, p->roll, fl);
             for (int v = 0; v < V; v++) {
                 const uint16_t node = m->vert_node_idx[v];
                 const NodeXform *x  = &g_scratch_node_xform[node];
@@ -20917,9 +21030,9 @@ static void submit_static_mesh_run(TAK_Platform *plat,
                 g_scratch_wy[i]     = wy;
                 g_scratch_wet[i]    = 0;
                 g_scratch_hkey[i]   = model_height_key(by);
-                g_scratch_color[i]  = m->colors[v];
-                g_scratch_uv[2*i+0] = m->uvs[2*v+0];
-                g_scratch_uv[2*i+1] = m->uvs[2*v+1];
+                g_scratch_color[i]  = g_lit_color[v];
+                g_scratch_uv[2*i+0] = m->uvs[2*v+0] + g_lit_du[v];
+                g_scratch_uv[2*i+1] = m->uvs[2*v+1] + g_lit_dv[v];
             }
         }
 
@@ -20948,7 +21061,7 @@ static void submit_projectile_run(TAK_Platform *plat,
         g_static_inst[i].pitch   = p->pitch;
         g_static_inst[i].roll    = p->roll;
     }
-    submit_static_mesh_run(plat, world, m, g_static_inst, n, 0);
+    submit_static_mesh_run(plat, world, m, g_static_inst, n, 0, model_def_light(NULL));
 }
 
 static void submit_projectile_models(TAK_Platform *plat,
@@ -21100,7 +21213,7 @@ static const UnitMesh *corpse_model_mesh(int feat_idx, int color_idx) {
         fprintf(stderr, "Corpses: no model %s\n", path);
         return NULL;
     }
-    UnitMesh *m = Mesh_BakePainted(obj, flat_palette(NULL), color_idx,
+    UnitMesh *m = Mesh_BakePainted(obj, flat_ramp(NULL), color_idx,
                                    Units_FeaturePaint(fd));
     Obj3D_Close(obj);
     if (!m) { ca->failed[color_idx] = 1; return NULL; }
@@ -21181,8 +21294,8 @@ static void submit_corpse_models(TAK_Platform *plat,
             si->roll    = angle16_to_heading(mf->roll);
         }
         if (m && run > 0)
-            submit_static_mesh_run(plat, world, m, g_static_inst, run,
-                                   CORPSE_ALL_PIECES);
+            submit_static_mesh_run(plat, world, m, g_static_inst, run, CORPSE_ALL_PIECES,
+                                   feature_light(Features_GetByIndex(key / 12)));
     }
 }
 
@@ -21662,8 +21775,8 @@ static void render_construction_effects(const struct GameWorld *world,
  * first sight we open the GAF, decode every frame of the named sequence
  * into RGBA buffers using the kingdom palette (world->terrain_rgba —
  * the same one Build_PaletteRGBATable produced for the active map's
- * kingdom). Animated features cycle frames on the same global tick the
- * construct effect uses; static ones (animating=0) just hold frame 0.
+ * kingdom). A sequence of more than one picture plays by the game
+ * clock (feature_frame_now).
  *
  * Cache key is (filename, seqname). Same filename, different seqname is
  * a separate entry — we open the GAF once but each sequence is its own
@@ -21679,6 +21792,7 @@ typedef struct FeatureSprite {
     int       *frame_h;
     int       *frame_off_x;
     int       *frame_off_y;
+    uint16_t  *hold;               /* original frames each picture shows */
     int        loaded_ok;          /* 1 if frames[*] valid; 0 = load failed, don't retry */
 } FeatureSprite;
 static FeatureSprite g_feat_sprites[256];
@@ -21727,12 +21841,14 @@ static FeatureSprite *load_feature_sprite(const char *filename,
     fs->frame_h      = (int *)tak_malloc(sizeof(int) * num_frames);
     fs->frame_off_x  = (int *)tak_malloc(sizeof(int) * num_frames);
     fs->frame_off_y  = (int *)tak_malloc(sizeof(int) * num_frames);
+    fs->hold         = (uint16_t *)tak_malloc(sizeof(uint16_t) * num_frames);
     if (!fs->frame_pixels || !fs->frame_w || !fs->frame_h ||
-        !fs->frame_off_x || !fs->frame_off_y) {
+        !fs->frame_off_x || !fs->frame_off_y || !fs->hold) {
         GAF_Close(gaf);
         return NULL;
     }
     for (int f = 0; f < num_frames; f++) {
+        fs->hold[f] = (uint16_t)GAF_FrameHold(gaf, (uint32_t)seq_off, f);
         FrameHeader *fh = NULL;
         if (GAF_GetFrameInfo(gaf, (uint32_t)seq_off, f, &fh) != 0 || !fh) {
             fs->frame_pixels[f] = NULL;
@@ -21891,8 +22007,10 @@ static int feature_screen_anchor(const struct GameWorld *world, int i,
     return 1;
 }
 
+/* A map feature plays its sequence by the game clock in the original's
+ * frames, each picture for its own count (legacy:255756-255795). */
 static int feature_frame_now(const FeatureSprite *fs) {
-    return fs->num_frames > 1 ? (int)((g_construct_anim_tick / 4) % fs->num_frames) : 0;
+    return GAF_LoopPicture(fs->hold, fs->num_frames, Units_ViewFrame());
 }
 
 static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
@@ -22837,7 +22955,7 @@ UnitMesh *Units_BakeObjectMeshPainted(const char *object_name, int color_idx,
     snprintf(path, sizeof(path), "objects3d/%s.3do", obj_lc);
     Obj3DFile *obj = NULL;
     if (Obj3D_Load(&obj, path) != 0 || !obj) return NULL;
-    UnitMesh *m = Mesh_BakePainted(obj, flat_palette(NULL), color_idx, paint);
+    UnitMesh *m = Mesh_BakePainted(obj, flat_ramp(NULL), color_idx, paint);
     Obj3D_Close(obj);
     return m;
 }

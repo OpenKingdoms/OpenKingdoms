@@ -79,3 +79,16 @@ void Palette_BuildRGBATable(const Palette *pal, SDL_PixelFormat *fmt, uint32_t *
 
     }
 }
+
+void Palette_KeyTextures(const uint32_t *src, uint32_t *rgba, uint8_t *magenta) {
+    for (int i = 0; i < 256; i++) {
+        const uint32_t c = src[i];
+        rgba[i] = c | 0xFF000000u;
+        magenta[i] = (c & 0xFFu) == 128 && ((c >> 8) & 0xFFu) == 0 &&
+                     ((c >> 16) & 0xFFu) == 128;
+    }
+}
+
+uint16_t Palette_KeyTexel(uint8_t index, const uint8_t *magenta) {
+    return magenta[index] ? (uint16_t)PALETTE_TEXEL_CLEAR : index;
+}

@@ -22,7 +22,7 @@
  *   Primitive, 32 bytes:
  *     uint32 color_idx, num_vert_indices, zero_at_0x08;
  *     uint32 offset_vert_list, offset_texture;
- *     uint32 unknown1, unknown2, unknown3;        // probably baked lighting
+ *     uint32 unknown1, unknown2, unknown3;        // not lighting, unread
  *
  * Vertex coords on disk are int32 x,y,z in TA units (1/65536 per
  * meter-ish). We convert to float at parse time so downstream code
@@ -43,22 +43,6 @@ typedef struct Obj3DPrimitive {
      * mesh-bake time. */
     int        num_vert_indices;
     uint16_t  *vert_indices;
-
-    /* Baked Gouraud lighting per vertex. The original 3DO format has
-     * three "unknown" uint32 fields per primitive that R2 found are
-     * non-zero in 70-80% of prims. Best fit (Spring RTS reference +
-     * empirical inspection): each is a 4-byte color in RGBA layout
-     * for one of the prim's first three vertices. The renderer
-     * interpolates these across triangle interiors via SDL's per-
-     * vertex color stream, giving the smooth Gouraud-style shading
-     * the original engine displayed.
-     *
-     * For triangles: lit[0..2] map directly.
-     * For quads:     v3 reuses lit[2] (closest gradient continuation).
-     * For 0-value fields: fall back to white at bake time. */
-    uint32_t   lit_v0;
-    uint32_t   lit_v1;
-    uint32_t   lit_v2;
 } Obj3DPrimitive;
 
 typedef struct Obj3DVertex {

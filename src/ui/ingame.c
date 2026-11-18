@@ -18,6 +18,7 @@
 #include "tak_ai.h"
 #include "tak_terrain.h"
 #include "tak_unit.h"
+#include "tak_tex_atlas.h"
 #include "tak_minimap.h"
 #include "tak_message_box.h"
 #include "tak_camera.h"
@@ -2250,6 +2251,9 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     ViewShake_Step(&shake_x, &shake_y);
     world->cam_x += shake_x;
     world->cam_y += shake_y;
+    /* Model textures play by the game clock, in the original's 30 Hz
+     * frames, so every display rate shows the same picture. */
+    TexAtlas_Animate(Units_ViewFrame());
     ig_view()->render(world, platform, have_clip ? &world_clip : NULL);
     world->cam_x -= shake_x;
     world->cam_y -= shake_y;

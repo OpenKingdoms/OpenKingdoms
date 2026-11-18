@@ -5,6 +5,7 @@
 #include "tak_platform.h"
 #include "tak_cob.h"      /* for CobScript */
 #include "tak_cob_vm.h"   /* for CobEngine, CobPiece */
+#include "tak_tex_atlas.h" /* for TexShadeMap */
 
 /* Forward-declared; Units_Render uses it in its signature but the
  * header doesn't dereference it. Files that actually consume a
@@ -44,7 +45,20 @@ typedef struct UnitMeshBatch {
     GPU_Texture *atlas_tex;     /* NULL = flat-color fallback batch */
     int          first_index;   /* offset into UnitMesh.indices */
     int          index_count;   /* triangle-count * 3 */
+    TexShadeMap  shade;         /* how its atlas draws each light level */
 } UnitMeshBatch;
+
+/* One 3DO primitive, lit flat as a whole each frame: its vertices are
+ * `vert_count` running from `first_vert`. */
+typedef struct UnitMeshFace {
+    float    normal[3];         /* outward unit normal, node-local */
+    uint16_t first_vert;
+    uint16_t vert_count;
+    uint16_t node;
+    uint8_t  batch;
+    uint8_t  flat_idx;          /* palette index of an untextured face */
+    uint16_t anim;              /* TexAtlas_AnimOf its texture, 0 when still */
+} UnitMeshFace;
 
 #define UNIT_MESH_MAX_BATCHES 32
 #define UNIT_MESH_MAX_NODES   128   /* shipped TAK monarchs have ≤50 */
@@ -85,7 +99,7 @@ typedef struct UnitMesh {
      * flat-fold positions. */
     float          *positions;   /* 3 * vert_count, node-local (TA units) */
     float          *uvs;         /* 2 * vert_count, atlas-space [0..1] */
-    uint32_t       *colors;      /* 1 * vert_count, RGBA8 — per-prim flat shade */
+    uint32_t       *colors;      /* 1 * vert_count, RGBA8, unlit */
     uint16_t       *indices;     /* 3 * tri_count, into positions */
     uint16_t       *vert_node_idx; /* vert_count entries; index into nodes[] */
     /* Authored draw order per triangle (global tri index → sequence in
@@ -101,6 +115,11 @@ typedef struct UnitMesh {
     float          *tangents;    /* 4 * vert_count, xyz and a sign, or NULL */
     int             vert_count;
     int             tri_count;
+    /* A baked 3DO's faces for the light, NULL for an artist's model.
+     * `flat_ramp`: the side palette through every level, or NULL. */
+    UnitMeshFace   *faces;
+    int             face_count;
+    const uint32_t *flat_ramp;
 
     UnitMeshBatch   batches[UNIT_MESH_MAX_BATCHES];
     int             batch_count;
@@ -1407,6 +1426,9 @@ uint32_t          Units_NextStableId(void);
  * after a battle ends, so it is saved rather than worked out. */
 uint32_t          Units_SimTick(void);
 void              Units_SetSimTick(uint32_t tick);
+/* The game clock in the original's 30 Hz frames, which pictures play
+ * by: half the tick. */
+uint32_t          Units_ViewFrame(void);
 /* Set every player's mana cap and income from the finished units they
  * hold, as the original does each frame (legacy:235842-235974). */
 struct GameWorld;
@@ -1773,11 +1795,6 @@ int               Units_DebugTransportSoundCount(int unload);
 int               Units_GetWeaponArtKind(int def_idx, int weapon_slot,
                                          char *out_name, int out_cap);
 
-/* Drop all per-color cached UnitDef meshes. Use after TexAtlas_Reload
- * so the next spawn re-bakes meshes against the new atlases. Active
- * unit instances remain in the array but won't render until next bake.
- * (Caller should typically Units_ClearInstances after this.) */
-void              Units_DropAllMeshCaches(void);
 /* Build the route planner's layers for every walking def now, at
  * load, rather than in the first tick that plans for each. */
 void              Units_WarmPathCaches(const struct GameWorld *w);

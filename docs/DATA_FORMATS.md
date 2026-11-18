@@ -26,7 +26,7 @@ otherwise noted.
 13. [PAL - Palette Files](#13-pal---palette-files)
 14. [WAV - Audio Files](#14-wav---audio-files)
 15. [ALP - Alpha/Transparency Lookup Tables](#15-alp---alphatransparency-lookup-tables)
-16. [SHD - Shadow Lookup Tables](#16-shd---shadow-lookup-tables)
+16. [SHD - Shade Ramp Tables](#16-shd---shade-ramp-tables)
 17. [LHT - Light Remap Tables](#17-lht---light-remap-tables)
 18. [GRY - Grayscale Remap Tables](#18-gry---grayscale-remap-tables)
 19. [BLU - Blue Channel Remap Tables](#19-blu---blue-channel-remap-tables)
@@ -1550,29 +1550,32 @@ Each faction and texture set has its own ALP table because the palettes differ.
 
 ---
 
-## 16. SHD - Shadow Lookup Tables
+## 16. SHD - Shade Ramp Tables
 
 **Location:** `data/palettes/`
 **File count:** 35 files
-**Size:** Always exactly 8,192 bytes (256 x 32)
-**Purpose:** Pre-computed shadow darkening lookup table
+**Size:** Always exactly 8,192 bytes (32 x 256)
+**Purpose:** The light ramp model faces are drawn through
 
 ### Format
 
-A 256x32 byte array with no header:
+32 rows of 256 palette indices with no header:
 
 ```c
-uint8_t shadowed_color = shd_table[color_index * 32 + shadow_level];
+uint8_t shaded_color = shd_table[level * 256 + color_index];
 ```
 
-Where `shadow_level` ranges from 0 (no shadow) to 31 (darkest shadow).
-The result is the palette index of the darkened color.
+Where `level` runs from 0 to 31. Row 0 is black. Row 15 maps almost every
+index to itself (246 of 256 in `ara_textures.shd`), and the rows below it
+darken step by step. The rows above it brighten, up to about 1.74 times the
+mean brightness at row 31, and lean toward white as they go. The original
+gives a face with shading off level 15. The result is the palette index of
+the shaded color.
 
 ### Note on Initial Data
 
 The `aiden.shd` file starts with all zeros for the first ~256+ bytes, which
-is correct: palette index 0 (typically black/transparent) darkened at any level
-remains index 0.
+is correct: row 0 maps every index to black.
 
 ---
 
@@ -1580,15 +1583,15 @@ remains index 0.
 
 **Location:** `data/palettes/`
 **File count:** 35 files
-**Size:** Always exactly 8,192 bytes (256 x 32)
+**Size:** Always exactly 8,192 bytes (32 x 256)
 **Purpose:** Pre-computed lighting/brightening lookup table
 
 ### Format
 
-A 256x32 byte array with no header. Similar structure to SHD:
+32 rows of 256 palette indices with no header, laid out like SHD:
 
 ```c
-uint8_t lit_color = lht_table[color_index * 32 + light_level];
+uint8_t lit_color = lht_table[light_level * 256 + color_index];
 ```
 
 Where `light_level` ranges from 0 (no extra light) to 31 (maximum brightness).
@@ -1943,14 +1946,14 @@ real-time effects. The palette ecosystem for each faction/texture set consists o
 Palette (.pal)         - 256 RGB colors (1024 bytes, 4 bytes per entry)
     |
     +-- Alpha (.alp)   - 256x256 blending table (65,536 bytes)
-    +-- Shadow (.shd)  - 256x32 darkening table (8,192 bytes)
-    +-- Light (.lht)   - 256x32 brightening table (8,192 bytes)
+    +-- Shade (.shd)   - 32x256 light ramp (8,192 bytes)
+    +-- Light (.lht)   - 32x256 brightening table (8,192 bytes)
     +-- Grayscale (.gry) - 256-byte desaturation map
     +-- Blue (.blu)    - 256-byte underwater tint map
 ```
 
 To render a translucent shadow on an Aramon unit:
-1. Look up the shadow color for the source pixel: `shd[aramon][src_color][shadow_depth]`
+1. Look up the shaded color for the source pixel: `shd[aramon][level][src_color]`
 2. Blend with the background: `alp[aramon][shadow_result][bg_color]`
 
 This avoids per-pixel floating-point math, which was critical for 1998-era hardware.
