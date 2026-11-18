@@ -1137,10 +1137,13 @@ static int ig_build_line_spots(int bdef, int32_t x0, int32_t y0,
     Units_GroundUnderPoint(x1, y1, &x1, &y1);
     Units_SnapBuildSiteFacing(bdef, 0, &x0, &y0);
     Units_SnapBuildSiteFacing(bdef, 0, &x1, &y1);
+    /* A summons without end lays the press end alone, as a Shift click
+     * does, since nothing queues behind it (legacy:39208-39219). */
+    int max = HUD_BuildPlacementRepeats() ? 1 : BUILD_LINE_MAX;
     /* The snap puts a centre at cell * 16 + footprint * 8. */
     int n = BuildLine_Cells((x0 - fx * 8) / 16, (y0 - fz * 8) / 16,
                             (x1 - fx * 8) / 16, (y1 - fz * 8) / 16,
-                            fx, fz, out, BUILD_LINE_MAX);
+                            fx, fz, out, max);
     for (int i = 0; i < n; i++) {
         out[i].x = out[i].x * 16 + fx * 8;
         out[i].y = out[i].y * 16 + fz * 8;
