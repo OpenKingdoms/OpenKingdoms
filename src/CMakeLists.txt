@@ -144,6 +144,7 @@ set(TAK_UI_SOURCES
     ui/ingame_keys.c
     ui/capture.c
     ui/save_browser.c
+    ui/build_line.c
     ui/message_box.c
     ui/briefing.c
     ui/game_info.c
@@ -441,6 +442,7 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/ingame_keys.c
     ui/capture.c
     ui/save_browser.c
+    ui/build_line.c
     ui/replay_session.c
     ui/web_stats.c
     ui/message_box.c
@@ -731,6 +733,7 @@ add_executable(test_unit_stall
     ui/ingame_keys.c
     ui/capture.c
     ui/save_browser.c
+    ui/build_line.c
     ui/replay_session.c
     ui/web_stats.c
     ui/message_box.c

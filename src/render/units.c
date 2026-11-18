@@ -6646,6 +6646,14 @@ static void build_site_cells(const UnitDef *d, int facing, int *fx, int *fz) {
     if (facing & 1) { int t = *fx; *fx = *fz; *fz = t; }
 }
 
+void Units_BuildSiteCells(int def_idx, int facing, int *out_fx, int *out_fz) {
+    const UnitDef *d = Units_GetDef(def_idx);
+    int fx = 0, fz = 0;
+    if (d) build_site_cells(d, Units_DefFacing(def_idx, facing), &fx, &fz);
+    if (out_fx) *out_fx = fx;
+    if (out_fz) *out_fz = fz;
+}
+
 void Units_SnapBuildSiteFacing(int def_idx, int facing,
                                int32_t *world_x, int32_t *world_y) {
     const UnitDef *d = Units_GetDef(def_idx);

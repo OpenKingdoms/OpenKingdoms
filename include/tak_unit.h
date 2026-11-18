@@ -2342,6 +2342,10 @@ void              Units_SnapBuildSite(int def_idx,
                                        int32_t *world_x, int32_t *world_y);
 void              Units_SnapBuildSiteFacing(int def_idx, int facing,
                                              int32_t *world_x, int32_t *world_y);
+/* The cells a build of this def turned `facing` covers, the snap's own:
+ * a walker's move class footprint, else its own, 2x2 when it names none. */
+void              Units_BuildSiteCells(int def_idx, int facing,
+                                       int *out_fx, int *out_fz);
 
 /* Yardmap cell-code bits, as the FBI parse assigns them
  * (legacy:163224-163256) and placement tests them (legacy:218804). */
