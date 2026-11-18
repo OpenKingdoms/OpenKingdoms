@@ -696,6 +696,16 @@ static int projectile_visible_to_local_player(const GameWorld *world,
     if (!p) return 0;
     if (!world) return 1;
     if (p->player_id == g_local_player) return 1;
+    if (p->is_beam) {
+        /* Ours (D-053): a beam goes with its shooter or either end. The far
+         * end is the old gate, unverified. */
+        if (p->shooter >= 0 && p->shooter < g_unit_count) {
+            const Unit *s = &g_units[p->shooter];
+            if (s->alive == UNIT_ALIVE_ACTIVE && s->player_id == p->player_id &&
+                unit_visible_to_local_player(world, s)) return 1;
+        }
+        if (Fog_ShowsAt(world, p->src_x, p->src_y)) return 1;
+    }
     return Fog_ShowsAt(world, p->world_x, p->world_y);
 }
 

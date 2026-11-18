@@ -2,17 +2,50 @@
  * view_classic.c -- the classic renderer behind the view seam.
  *
  * Delegation only: the calls are the ones the battle screen always
- * made, in the same order, and the pointer mapping is the flat one it
- * always used. The one addition is the Shift order overlay, drawn last.
+ * made, with the fog after the scene as the original draws it, and the
+ * pointer mapping is the flat one it always used. The one addition is
+ * the Shift order overlay, drawn last.
  */
 
 #include "tak_view.h"
 #include "tak_world.h"
 #include "tak_terrain.h"
 #include "tak_fog.h"
+#include "tak_fog_mist.h"
+#include "tak_sides.h"
 #include "tak_unit.h"
 #include "tak_click_map.h"
 #include "tak_order_overlay.h"
+
+static int g_mist_on = 1;
+static int g_sim_clock;
+
+void View_ClassicSetMist(int on) { g_mist_on = on ? 1 : 0; }
+void View_ClassicSetSimClock(int on) { g_sim_clock = on ? 1 : 0; }
+
+/* The software renderer keeps the original's overlay: the mist costs it
+ * tens of milliseconds a frame. */
+static int classic_mist(const TAK_Platform *plat) {
+    SDL_RendererInfo info;
+    if (!g_mist_on || SDL_GetRendererInfo(plat->renderer, &info) != 0) return 0;
+    return (info.flags & SDL_RENDERER_SOFTWARE) == 0;
+}
+
+static void classic_fog(const GameWorld *world, TAK_Platform *plat) {
+    if (!classic_mist(plat)) {
+        Fog_RenderOverlay(world, plat);
+        return;
+    }
+    /* Render time in play, so it drifts while paused, the sim tick under
+     * a capture. The tint is the side of the seat whose fog is shown. */
+    uint32_t clock_ms = g_sim_clock ? (uint32_t)((uint64_t)Units_SimTick() * 1000u / 60u)
+                                    : SDL_GetTicks();
+    int seat = Fog_Viewer() >= 1 ? Fog_Viewer() : Units_LocalPlayer();
+    const TakSideInfo *side = Sides_Get(Units_PlayerSide(seat));
+    static const uint8_t white[3] = { 255, 255, 255 };
+    FogMist_Render(world, plat, clock_ms, side ? side->name : NULL,
+                   side ? side->fog_rgb : white);
+}
 
 static int classic_init(TAK_Platform *plat) {
     (void)plat;
@@ -20,19 +53,19 @@ static int classic_init(TAK_Platform *plat) {
 }
 
 static void classic_shutdown(TAK_Platform *plat) {
-    (void)plat;
+    FogMist_Shutdown(plat);
 }
 
 static void classic_render(const GameWorld *world, TAK_Platform *plat,
                            const SDL_Rect *viewport) {
     (void)viewport;
     Terrain_Render(world, plat);
-    /* A feature is ground, and the fog covers ground: a dock whose
-     * planks reach past the known map ends where the black begins. */
     Units_RenderFeatures(world, plat);
-    Fog_RenderJamHaze(world, plat);
-    Fog_RenderOverlay(world, plat);
+    Fog_RenderJamHaze(world, plat);   /* on the ground, under units (D-045) */
     Units_Render(world, plat);
+    /* The original lays its fog over the whole scene, shots and flyers
+     * too (docs/notes/2026-09-04-rendering-visuals.md, frame order). */
+    classic_fog(world, plat);
     /* The selection's orders, while Shift is held. */
     (void)OrderOverlay_Draw(world, plat);
 }

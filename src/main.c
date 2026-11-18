@@ -48,6 +48,7 @@
 #include "tak_main_menu.h"
 #include "tak_battle_setup.h"
 #include "tak_ingame.h"
+#include "tak_view.h"
 #include "tak_view3d.h"
 #include "tak_ingame_menu.h"
 #include "tak_options.h"
@@ -382,6 +383,7 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
             g_cam3d_arg = argv[++i];
         } else if (strcmp(a, "--screenshot") == 0 && i + 1 < argc) {
             g_screenshot_path = argv[++i];
+            View_ClassicSetSimClock(1);
         } else if (strcmp(a, "--screenshot-tick") == 0 && i + 1 < argc) {
             g_screenshot_tick = atoi(argv[++i]);
         } else if (strcmp(a, "--map") == 0 || strcmp(a, "--seed") == 0 ||

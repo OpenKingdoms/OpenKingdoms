@@ -905,6 +905,7 @@ int InGame_Init(TAK_Platform *platform) {
     Units_SetHealthBarsOn(Settings_GetInt("DisplayDamageBars", 0));
     /* Visual Options: Shadows (legacy:197182), on unless turned off. */
     Units_SetShadowsOn(Settings_GetInt("DrawShadows", 1));
+    View_ClassicSetMist(Settings_GetInt(TAK_SETTING_FOG_MIST, 1));
     ConsoleCmd_ApplySettings();
 
     GameWorld *world = World_Get();
@@ -2589,7 +2590,8 @@ void InGame_Shutdown(void) {
     Ambient_Reset();
     /* Back to the interface's own music (legacy:241870). */
     TAK_Music_UseInterfaceList();
-    /* The 3D view's GPU resources go while the renderer is still up. */
+    /* The views' GPU resources go while the renderer is still up. */
+    View_Classic()->shutdown(ig.platform);
     if (View3D_IsReady()) View_3D()->shutdown(ig.platform);
     /* The 3D view's ghost hook goes with it, or the next battle, which
      * starts in 2D, would hand its ghost to a view that is not up. */

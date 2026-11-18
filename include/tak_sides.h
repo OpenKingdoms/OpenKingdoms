@@ -25,6 +25,7 @@ typedef struct TakSideInfo {
     char resurrectsparkle_anim[32]; /* resurrectsparklyanim */
     char buildpalette[32];          /* the Intangible Mass colours, "arabipal.pcx" */
     char palette[32];               /* its models' colours, "ara_textures.pal" */
+    char nimbus[32];                /* a cast's circle sheet, "nimbus_aramon" */
     /* The pictures a statue of the side is painted with, entries of
      * stonegaf and frozengaf, "" without both keys (legacy:164739-164756). */
     char stoneanim[32];             /* "basiliskstone" */
@@ -33,6 +34,9 @@ typedef struct TakSideInfo {
      * on this side plays, in a random order (legacy:164711). */
     int  music_tracks[16];
     int  music_track_count;
+    /* FogColor, R G B as written: the hardware mist's tint for a player
+     * of this side (legacy:164740-164817). White when the key is absent. */
+    unsigned char fog_rgb[3];
 } TakSideInfo;
 
 /* How the side setter treats a choice (legacy:134883-134942). */

@@ -17,6 +17,10 @@
 #define TAK_SETTING_SCREEN_W   "InGameScreenWidth"
 #define TAK_SETTING_SCREEN_H   "InGameScreenHeight"
 
+/* The classic view's fog on a hardware renderer: 1 the mist (D-053),
+ * 0 the original's dark overlay. */
+#define TAK_SETTING_FOG_MIST   "FogMist"
+
 /* Read the file. Missing file is not an error. Returns 0 on success. */
 int  Settings_Load(void);
 

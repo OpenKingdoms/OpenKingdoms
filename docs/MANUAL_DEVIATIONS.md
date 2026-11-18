@@ -2822,4 +2822,48 @@ Format per entry:
   are built into the FFmpeg the site and the Mac and Linux releases
   carry, the Windows release takes the full library.
 
+## D-053: The classic view's fog is a drifting mist on a hardware renderer
+
+- Change: on a hardware renderer the classic view draws explored
+  ground out of sight under a mist instead of the original's black at
+  alpha 120. The ground goes a little over half way to `FogColor` of the
+  side whose fog is shown (gamedata/sidedata.tdf) times a grey, so
+  Aramon's veil is grey and Taros' brown. Each side has its own density,
+  grey and cloud strength: Aramon 0.60, 0.50 and 0.45, Taros 0.54, 0.44
+  and 0.61, every other side 0.535, 0.58 and 0.3. An even veil of the
+  side's grey lies under two passes of one tiled cloud whose mean is that
+  grey and whose swing is the side's strength, at two scales and drifting
+  two ways, so the billows change shape as the passes cross. The clouds' share of the
+  density swells and fades about every 10 seconds, so the billows come
+  and go while the mist's mean holds. The cloud is in the colour, so it
+  shows in a light tint and hardly in a dark one. The clear ground round
+  what is seen is lit in full, and its edge scallops cell by cell and
+  feathers over about a cell. Ground never seen stays opaque black, and
+  with Line of Sight off there is no mist. The software renderer keeps
+  the original's overlay. `FogMist=0` in options.cfg turns the mist off.
+  Captures move the mist by the sim tick, so a frame repeats. The fog is
+  drawn over units, shots and flyers, and a lightning or flame beam
+  draws when its shooter is drawn or either of its ends is in sight, so
+  the fog veils the part of it in the dark.
+- Why: seen in the original in hardware mode: a soft pale mist over
+  fogged ground, washed out and billowing, with no cell staircase, and
+  brown on Taros.
+  No texture or speed ships in the data. Captures of the original
+  through dgVoodoo measured both sides' fog. The Aramon mist's spread
+  rises and falls back about every 6.5 seconds. At its peaks it moves
+  about 20 px a second, and at its troughs it stands still with little
+  more than the ground's own grain. The model does this, its values
+  fitted to the captures and then set by eye against the original. The
+  mist costs the software renderer tens of milliseconds a frame. A Mage
+  Tower's lightning into the fog did not show: the old gate tested the
+  far end alone. The far end clause is that old gate, kept, and is not
+  checked against the original.
+- Citation: the manual is silent. `FogColor` is in the side records
+  (legacy:164740-164817, docs/notes/2026-09-04-rendering-visuals.md).
+  The overlay it replaces is legacy:130167-130436, which the original
+  draws after the scene (the same note, frame order). Shots take the
+  units' test on their place (legacy:246721-246738), and lightning
+  flies from the muzzle (legacy:247147-247160), unverified for beams
+  (docs/notes/2026-09-27-shots-meet-what-they-fly-into.md).
+
 *(More entries added as deviations land.)*
