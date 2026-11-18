@@ -622,6 +622,18 @@ target_include_directories(test_hud_layout PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# The cursor the battle view shows, picked from the facts under the
+# pointer. Data free.
+add_executable(test_hud_cursor
+    ui/test_hud_cursor.c
+    ui/hud_cursor.c
+)
+target_include_directories(test_hud_cursor PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+target_compile_definitions(test_hud_cursor PRIVATE SDL_MAIN_HANDLED)
+target_link_libraries(test_hud_cursor PRIVATE SDL2::SDL2)
+
 if(EMSCRIPTEN)
     return()
 endif()
@@ -2670,6 +2682,7 @@ if(BUILD_TESTING)
     add_test(NAME test_trig        COMMAND test_trig)
     add_test(NAME test_click_map   COMMAND test_click_map)
     add_test(NAME test_hud_layout  COMMAND test_hud_layout)
+    add_test(NAME test_hud_cursor  COMMAND test_hud_cursor)
     add_test(NAME test_camera3d    COMMAND test_camera3d)
     add_test(NAME test_framework_self COMMAND test_framework_self)
     add_test(NAME test_hpi_vfs     COMMAND test_hpi_vfs)
