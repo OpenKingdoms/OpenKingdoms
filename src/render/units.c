@@ -19763,21 +19763,21 @@ typedef struct FaceLight { float part; int scale, ambient; } FaceLight;
 
 /* All of the light for a building (bmcode 0), UNIT_LIGHT_FACTOR for a
  * mobile unit, whose shading is painted in, as in the original. */
-static FaceLight model_def_light(const UnitDef *d) {
-    FaceLight fl = { (!d || d->bmcode == 0) ? 1.0f : UNIT_LIGHT_FACTOR,
-                     MODEL_LIGHT_SCALE, MODEL_LIGHT_AMBIENT };
+static FaceLight face_light(int mobile, int statue) {
+    FaceLight fl = { mobile ? UNIT_LIGHT_FACTOR : 1.0f,
+                     statue ? STATUE_LIGHT_SCALE : MODEL_LIGHT_SCALE,
+                     statue ? STATUE_LIGHT_AMBIENT : MODEL_LIGHT_AMBIENT };
     return fl;
+}
+
+static FaceLight model_def_light(const UnitDef *d) {
+    return face_light(d && d->bmcode != 0, 0);
 }
 
 /* A stone or ice statue takes the light at its own scale and ambient: the
  * original's statues reach brighter rows than its buildings. */
 static FaceLight feature_light(const FeatureDef *fd) {
-    FaceLight fl = { 1.0f, MODEL_LIGHT_SCALE, MODEL_LIGHT_AMBIENT };
-    if (fd && (fd->is_stone || fd->is_frozen)) {
-        fl.scale = STATUE_LIGHT_SCALE;
-        fl.ambient = STATUE_LIGHT_AMBIENT;
-    }
-    return fl;
+    return face_light(0, fd && (fd->is_stone || fd->is_frozen));
 }
 
 /* A face's level: the scaled cosine rounded plus the ambient, 15 with
@@ -19831,7 +19831,7 @@ static void light_mesh_faces(const UnitMesh *m, const NodeXform *xf,
             const uint32_t g = b->shade.grey[level];
             rgb = g | (g << 8) | (g << 16);
             band = b->shade.band[level];
-            dv = (float)(band < b->shade.bands ? band : b->shade.bands - 1) * b->shade.band_dv;
+            dv = TexAtlas_ShadeBandV(&b->shade, level);
         } else if (m->flat_ramp) {
             rgb = m->flat_ramp[level * 256 + fc->flat_idx] & 0x00FFFFFFu;
         } else {
@@ -22382,6 +22382,10 @@ const char *Units_FeaturePaint(const FeatureDef *fd) {
 static int face_light_top(FaceLight fl) {
     const float n[3] = { 1.0f, 0.0f, 0.0f };
     return model_face_level(n, n, 0, &fl);
+}
+
+int Units_LightTop(int mobile, int statue) {
+    return face_light_top(face_light(mobile, statue));
 }
 
 static void note_node_tops(const Obj3DNode *nd, int top) {

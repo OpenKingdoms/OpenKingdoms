@@ -126,6 +126,12 @@ int TexAtlas_GpuShade(const GPU_Texture *atlas, const struct GL3D_Texture **inde
  * brightest level each texture can take, then plan once, before any atlas
  * goes to the GPU. 1 while a plan is still wanted. */
 int  TexAtlas_ShadePlanWanted(void);
+/* The copies an atlas of `bands` keeps when its meshes reach `top` at most. */
+int  TexAtlas_PlanBands(int top, int bands);
+/* The band path's v offset for a face at `level`: its copy, or the last uploaded. */
+float TexAtlas_ShadeBandV(const TexShadeMap *map, int level);
+/* GPU shading wanted: TAK_GPU_SHADING (`env`) over the GpuShading setting. */
+int  TexAtlas_GpuShadeWanted(const char *env, int setting);
 void TexAtlas_NoteShadeTop(const char *texture_name, int level);
 void TexAtlas_PlanShades(void);
 

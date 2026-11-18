@@ -707,14 +707,28 @@ static double colour_mb(void) {
 
 /* GPU shading needs the GL classic path, on the desktop and in the browser.
  * GpuShading=0 in options.cfg, or TAK_GPU_SHADING=0, keeps a lit copy per row. */
+int TexAtlas_GpuShadeWanted(const char *env, int setting) {
+    return env ? atoi(env) != 0 : setting != 0;
+}
+
 static int choose_gpu_shade(TAK_Platform *plat) {
-    const char *e = getenv("TAK_GPU_SHADING");
-    const int want = e ? atoi(e) : Settings_GetInt(TAK_SETTING_GPU_SHADING, 1);
+    const int want = TexAtlas_GpuShadeWanted(getenv("TAK_GPU_SHADING"),
+                                             Settings_GetInt(TAK_SETTING_GPU_SHADING, 1));
     if (!want || !plat || !plat->renderer || !Units_ModelDepthReady(plat)) return 0;
     return GL3D_ClassicShadeInit(plat->renderer) == 0;
 }
 
 int TexAtlas_ShadePlanWanted(void) { return g_entries_sorted && !g_shade_planned; }
+
+int TexAtlas_PlanBands(int top, int bands) {
+    const int need = top - TEX_SHADE_IDENTITY + 1;
+    return need < 1 ? 1 : need < bands ? need : bands;
+}
+
+float TexAtlas_ShadeBandV(const TexShadeMap *map, int level) {
+    const int band = map->band[level];
+    return (float)(band < map->bands ? band : map->bands - 1) * map->band_dv;
+}
 
 void TexAtlas_NoteShadeTop(const char *texture_name, int level) {
     const AtlasEntry *e = find_entry(texture_name);
@@ -729,8 +743,7 @@ void TexAtlas_PlanShades(void) {
             if (g_groups[i].atlas_tex_per_color[c]) return;   /* too late: keep every copy */
     for (int i = 0; i < g_group_count; i++) {
         AtlasGroup *g = &g_groups[i];
-        int bands = g->shade_top - TEX_SHADE_IDENTITY + 1;
-        if (bands < 1) bands = 1;
+        const int bands = TexAtlas_PlanBands(g->shade_top, g->bands);
         if (bands >= g->bands) continue;
         const float k = (float)g->bands / (float)bands;
         for (int j = 0; j < g_entry_count; j++)
