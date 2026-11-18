@@ -2809,7 +2809,7 @@ Format per entry:
   height, the Grenadier's `vetmodel` as its veteran shot model and the
   Wisp's weapon `soundclass` as its hit class. A unit whose
   `soundcategory` names no sound class voices from its `soundclass`.
-  The right key wins where a file has both.
+  For the other three the right key wins where a file has both.
 - Why: without them the Flying Builder cruises at height 0, eight
   variant units are silent, a veteran model ships unused and the Wisp's
   strike has no sound. Nothing shows whether the original reads them.
