@@ -333,6 +333,7 @@ typedef struct DecodedEntry {
     char        name[32];
     int         w, h;
     int         nframes;     /* GAF entry frame count */
+    uint32_t    entry_off;   /* its entry header in the GAF */
     uint16_t   *texels;      /* palette index or PALETTE_TEXEL_CLEAR; tak_malloc'd */
 } DecodedEntry;
 
@@ -401,6 +402,7 @@ static int decode_gaf_entries(const char *vfs_path, const PalCacheEntry *pal,
         e->w       = frame->width;
         e->h       = frame->height;
         e->nframes = nframes;
+        e->entry_off = entry_off;
         e->texels  = tx;
     }
 
@@ -486,8 +488,7 @@ static void lay_strips(const char *vfs_path, const PalCacheEntry *pal, DecodedEn
         DecodedEntry *e = &entries[i];
         if (team[i] || e->nframes < 2 || e->w * e->nframes > ATLAS_W) continue;
         if (!gaf && GAF_Open(&gaf, vfs_path) != 0) return;
-        const int seq = GAF_FindSequence(gaf, e->name);
-        if (seq < 0 || ensure_anim_cap() != 0) continue;
+        if (ensure_anim_cap() != 0) continue;
         const int pics = e->nframes, w = e->w, h = e->h, sw = w * pics;
         AnimTex *a = &g_anims[g_anim_count];
         a->hold = (uint16_t *)tak_malloc((size_t)pics * sizeof(uint16_t));
@@ -498,7 +499,7 @@ static void lay_strips(const char *vfs_path, const PalCacheEntry *pal, DecodedEn
             continue;
         }
         for (int k = 0; k < pics; k++) {
-            a->hold[k] = (uint16_t)GAF_FrameHold(gaf, (uint32_t)seq, k);
+            a->hold[k] = (uint16_t)GAF_FrameHold(gaf, e->entry_off, k);
             for (int y = 0; y < h; y++)
                 memcpy(strip + (size_t)y * sw + (size_t)k * w, e->texels + (size_t)y * w,
                        (size_t)w * sizeof(uint16_t));
@@ -574,6 +575,7 @@ static int build_atlas_from_gaf(const char *vfs_path) {
     /* Pack. */
     uint16_t *composite = NULL;
     int used_h = 0;
+    const int anim_first = g_anim_count;   /* this GAF's records, dropped on failure */
     ShelfRect *rects = (ShelfRect *)tak_malloc(n * sizeof(ShelfRect));
     Placement *places = (Placement *)tak_malloc(n * sizeof(Placement));
     uint8_t *team = (uint8_t *)tak_malloc((size_t)n);
@@ -657,6 +659,8 @@ static int build_atlas_from_gaf(const char *vfs_path) {
     return 0;
 
 fail:
+    for (int i = anim_first; i < g_anim_count; i++) tak_free(g_anims[i].hold);
+    g_anim_count = anim_first;
     if (composite) tak_free(composite);
     if (rects)  tak_free(rects);
     if (places) tak_free(places);
@@ -734,6 +738,9 @@ static uint16_t *color_variant_idx(const AtlasGroup *g, int color_idx) {
         int lim = (ncv < g->n_places) ? ncv : g->n_places;
         for (int i = 0; i < lim; i++) {
             if (!cvs[i].texels || !g->team[i]) continue;
+            /* The atlas is cut to the rows its art uses: never write past it. */
+            if (g->places[i].x + cvs[i].w > ATLAS_W || g->places[i].y + cvs[i].h > g->band_h)
+                continue;
             place_entry(variant, &cvs[i], &g->places[i]);
         }
     }

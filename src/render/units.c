@@ -102,7 +102,7 @@ static int32_t  g_flame_body[TAK_MAX_PROJECTILES][2];
 static uint8_t  g_flame_body_set[TAK_MAX_PROJECTILES];
 /* Where a breath's walk met what it struck, before the strike point is
  * set on the target's middle: the flames run out there. */
-static int32_t  g_flame_stop[TAK_MAX_PROJECTILES][2];
+static int32_t  g_flame_stop[TAK_MAX_PROJECTILES][3];   /* x, y and height */
 static UnitsBlastHook g_blast_hook = NULL;
 
 static int slot_of_projectile(const Projectile *p) {
@@ -1061,6 +1061,7 @@ typedef struct ProjSpriteArt {
     /* A sparkle's star and halo, baked added into one picture a frame:
      * each picture's place in the strip and its hot spot within it. */
     GPU_Texture  *glow;
+    uint8_t       glow_failed;  /* its halo would not upload on this renderer */
     SDL_Rect     *gsrc;
     int          *gox, *goy;
     int           probe_frames; /* header frame count, -1 for none   */
@@ -1097,7 +1098,7 @@ static int              g_proj_effect_count = 0;
 /* Lightning bolts as drawn: a copy of the beam at fire with its own age,
  * so the picture can outlive the sim's hold. Neither saved nor hashed. */
 #define TAK_BOLTS_MAX 128
-static struct { Projectile p; int16_t age, life; } g_bolts[TAK_BOLTS_MAX];
+static struct { Projectile p; int16_t age, life; uint32_t sid; } g_bolts[TAK_BOLTS_MAX];
 static int              g_bolt_count = 0;
 
 /* explosions.tdf: each class lists numbered variants, each naming a GAF
@@ -1508,13 +1509,20 @@ static void bolt_note(const Projectile *b, const UnitWeapon *wp) {
     g_bolts[g_bolt_count].p = *b;
     g_bolts[g_bolt_count].age = 0;
     g_bolts[g_bolt_count].life = wp->bolt_ticks;
+    g_bolts[g_bolt_count].sid = b->shooter >= 0 && b->shooter < g_unit_count
+                              ? g_units[b->shooter].stable_id : 0;
     g_bolt_count++;
 }
 
 static void bolts_tick(void) {
     int n = 0;
-    for (int i = 0; i < g_bolt_count; i++)
+    for (int i = 0; i < g_bolt_count; i++) {
+        /* A slot taken by another unit is not the caster. */
+        const int s = g_bolts[i].p.shooter;
+        if (s >= 0 && (s >= g_unit_count || g_units[s].stable_id != g_bolts[i].sid))
+            g_bolts[i].p.shooter = -1;
         if (++g_bolts[i].age < g_bolts[i].life) g_bolts[n++] = g_bolts[i];
+    }
     g_bolt_count = n;
 }
 static void spell_effects_at(const UnitWeapon *wp, int shot, int32_t x, int32_t y,
@@ -6642,14 +6650,15 @@ static int build_sparkle_sprite(const UnitDef *d) {
 /* A faller on the worker's ring and a riser on the target's in turn, none
  * while a ring is full (legacy:12253-12257, 198995-198999, a capture). */
 static void build_sparkles(Unit *bt, int bt_idx, const UnitDef *btd,
-                           const UnitDef *magic_def, const Unit *worker,
+                           const UnitDef *magic_def, Unit *worker,
                            int worker_idx, const UnitDef *worker_def) {
     if (!g_build_sparkles_on) return;
     int sprite = build_sparkle_sprite(magic_def);
     if (sprite < 0) return;
     uint32_t seq = bt->build_fx_seq++;
-    int rising = (int)(seq & 1u);
     if (!worker_def) worker = NULL;
+    /* Each worker keeps its own turn, so two on one site both get fallers. */
+    int rising = (int)((worker ? worker->build_fx_seq++ : seq) & 1u);
     const Unit *on = rising || !worker ? bt : worker;
     int on_idx = on == bt ? bt_idx : worker_idx;
     int radius, count, height;
@@ -9731,9 +9740,12 @@ static UnitMesh *Mesh_BakePainted(const Obj3DFile *obj, const uint32_t *ramp,
     m->indices       = (uint16_t *)tak_malloc(sizeof(uint16_t)     * (size_t)total_i);
     m->vert_node_idx = (uint16_t *)tak_malloc(sizeof(uint16_t)     * (size_t)total_v);
     m->tri_seq       = (uint32_t *)tak_malloc(sizeof(uint32_t) * ((size_t)total_i / 3));
-    m->faces         = (UnitMeshFace *)tak_malloc(sizeof(UnitMeshFace) * (size_t)bs.face_count);
+    /* Optional: without it the mesh keeps its unlit colours, so a failed
+     * allocation never costs a unit its script. */
+    m->faces = bs.face_count > 0
+             ? (UnitMeshFace *)tak_malloc(sizeof(UnitMeshFace) * (size_t)bs.face_count) : NULL;
     if (!m->positions || !m->uvs || !m->colors || !m->indices ||
-        !m->vert_node_idx || !m->tri_seq || !m->faces) {
+        !m->vert_node_idx || !m->tri_seq) {
         if (m->positions)     tak_free(m->positions);
         if (m->uvs)           tak_free(m->uvs);
         if (m->colors)        tak_free(m->colors);
@@ -14765,12 +14777,14 @@ static void fire_weapon_shot_now(Unit *u, int shooter_idx, int slot,
                           t->world_x, t->world_y, ex, ey);
             g_flame_stop[bslot][0] = ex;
             g_flame_stop[bslot][1] = ey;
+            g_flame_stop[bslot][2] = (int32_t)eh;
             if (kind == TAK_SHOT_UNIT && struck == target_handle) {
                 ex = t->world_x; ey = t->world_y; eh = aim;
             }
         } else {
             g_flame_stop[bslot][0] = ex;
             g_flame_stop[bslot][1] = ey;
+            g_flame_stop[bslot][2] = (int32_t)eh;
         }
         b->src_x     = bx;
         b->src_y     = by;
@@ -15083,7 +15097,8 @@ static void flame_particle(const Projectile *p, int idx) {
     /* It runs out where the walk met what it struck, short of a target's
      * middle, as the original's spout and wagon flames do. */
     int32_t tx = g_flame_stop[idx][0], ty = g_flame_stop[idx][1];
-    if (!tx && !ty) { tx = p->world_x; ty = p->world_y; }
+    float th = (float)g_flame_stop[idx][2];
+    if (!tx && !ty) { tx = p->world_x; ty = p->world_y; th = p->height; }
     float dx = (float)tx - ox, dy = (float)ty - oy;
     float len = sqrtf(dx * dx + dy * dy);
     if (len < 1.0f) return;
@@ -15107,7 +15122,7 @@ static void flame_particle(const Projectile *p, int idx) {
     /* It falls or climbs to where the ray stopped as it gets there. */
     ProjectileEffect *e = spawn_unit_fx_moving(s_flame, (int32_t)floorf(ox),
                                                (int32_t)floorf(oy), (int32_t)h0,
-                                               (int32_t)((p->height - h0) / flight * 65536.0f));
+                                               (int32_t)((th - h0) / flight * 65536.0f));
     if (!e) return;
     e->vx_fp = (int32_t)((dx * pace * jx + cvx) * 65536.0f);
     e->vy_fp = (int32_t)((dy * pace * jy + cvy) * 65536.0f);
@@ -15155,6 +15170,7 @@ static void fire_ground_shot_now(Unit *u, int shooter_idx, int slot,
     }
     g_flame_stop[slot_idx][0] = ex;
     g_flame_stop[slot_idx][1] = ey;
+    g_flame_stop[slot_idx][2] = (int32_t)eh;
     b->src_x     = bx;
     b->src_y     = by;
     b->world_x   = ex;
@@ -19820,7 +19836,8 @@ static void light_mesh_faces(const UnitMesh *m, const NodeXform *xf,
 int Units_DebugLightMesh(const UnitMesh *m, const UnitDef *def, const CobPiece *pieces,
                          int piece_count, float heading, float pitch, float roll,
                          uint32_t *out) {
-    if (!m || !out || ensure_scratch(m->vert_count, 0) != 0) return -1;
+    if (!m || !out || (pieces && piece_count < m->node_count) ||
+        ensure_scratch(m->vert_count, 0) != 0) return -1;
     compose_node_xforms(m, pieces, g_scratch_node_xform);
     light_mesh_faces(m, g_scratch_node_xform, pieces, piece_count, heading, pitch, roll,
                      model_def_light(def));
@@ -22298,6 +22315,7 @@ static int proj_sprite_ensure(TAK_Platform *plat, int sprite_idx) {
         GPU_AbandonTexture(ps->glow);
         ps->strip = NULL;
         ps->glow = NULL;
+        ps->glow_failed = 0;
         ps->owner = NULL;
         ps->owner_gen = 0;
     }
@@ -22336,6 +22354,7 @@ static void proj_art_release_textures(void) {
         GPU_AbandonTexture(ps->glow);
         ps->strip = NULL;
         ps->glow = NULL;
+        ps->glow_failed = 0;
         ps->owner = NULL;
         ps->owner_gen = 0;
     }
@@ -22524,7 +22543,14 @@ static int sparkle_glow_bake(TAK_Platform *plat, ProjSpriteArt *ps) {
 static void blit_sparkle(TAK_Platform *plat, ProjSpriteArt *ps,
                          const ProjectileEffect *e, int frame, int sx, int sy) {
     if (!sparkle_shown(e)) return;
-    if (!ps->glow && sparkle_glow_bake(plat, ps) != 0) return;
+    if (!ps->glow && !ps->glow_failed && sparkle_glow_bake(plat, ps) != 0) ps->glow_failed = 1;
+    if (!ps->glow) {
+        /* No halo: the star alone, added. */
+        GPU_SetTextureBlend(ps->strip, GPU_BLEND_ADD);
+        blit_proj_sprite(plat, e->sprite_idx, frame, sx, sy);
+        GPU_SetTextureBlend(ps->strip, GPU_BLEND_ALPHA);
+        return;
+    }
     const SDL_Rect *g = &ps->gsrc[frame];
     if (g->w <= 0 || g->h <= 0) return;
     SDL_Rect dst = { sx - ps->gox[frame], sy - ps->goy[frame], g->w, g->h };
@@ -22788,7 +22814,13 @@ static void render_projectiles(const struct GameWorld *world,
         /* A beam ends where its ray stopped, a shot is where it flies. */
         int sx = p->world_x - world->cam_x;
         int sy = p->world_y - world->cam_y - (int)(p->height * g_tan_tilt);
-        if (p->is_beam) continue;   /* drawn from g_bolts below */
+        if (p->is_beam) {
+            /* A bolt from a save has no record in g_bolts: drawn for its hold. */
+            if (g_proj_def[i] < 0)
+                draw_bolt(world, plat, r, p, p->src_x * 31 + p->world_y, p->age_ticks,
+                          p->age_ticks + p->ttl_ticks);
+            continue;
+        }
         uint8_t hr = 255, hg = 220, hb = 90;
         uint8_t cr = 255, cg = 180, cb = 40;
         int halo_max = 14;
