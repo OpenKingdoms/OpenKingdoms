@@ -773,6 +773,54 @@ TEST(a_drag_with_the_broom_clears_the_box) {
     ASSERT_EQ_INT(1, outside);
 }
 
+/* A Ctrl+Shift dragged sweep keeps its box as a leg ahead of the order
+ * it displaces, so near a full queue it is refused rather than losing
+ * the order in hand. */
+TEST(a_front_sweep_near_a_full_queue_keeps_the_order_in_hand) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    FeatureDef fd;
+    memset(&fd, 0, sizeof fd);
+    strncpy(fd.name, "TESTTREE", sizeof(fd.name) - 1);
+    strncpy(fd.category, "trees", sizeof(fd.category) - 1);
+    fd.footprint_x = 1;
+    fd.footprint_z = 1;
+    fd.height = 60;
+    fd.blocking = 1;
+    fd.reclaimable = 1;
+    fd.damage = 100;
+    ASSERT_EQ_INT(1, Features_DebugSetDefs(&fd, 1));
+    ASSERT(Features_AddInstance(w, 0, 70, 60, 70 * 16 + 8, 60 * 16 + 8, 0, -1) >= 0);
+    ((UnitDef *)Units_GetDef(OQ_BUILDER))->cap_flags |= UNIT_CAP_RECLAIM;
+    int b = Units_Spawn(OQ_BUILDER, 1, 0, 66 * 16, 61 * 16);
+    ASSERT(b >= 0);
+    const int box = 3 << 8 | 3;
+    const int sweep = TAK_CMD_ARG_AREA | TAK_CMD_ARG_FRONT;
+    for (int room = 0; room < 2; room++) {
+        int queued = UNIT_MOVE_LEGS_MAX - 1 - room;
+        ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, b, OQ_CX - 200, OQ_CY, -1, -1, 0));
+        for (int k = 0; k < queued; k++)
+            ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, b, OQ_CX - 200, OQ_CY + 8 * k,
+                                        -1, -1, TAK_CMD_ARG_QUEUE));
+        int took = oq_command(TAK_CMD_RECLAIM_FEATURE, b, 70 * 16 + 8, 60 * 16 + 8,
+                              -1, box, sweep);
+        const Unit *u = oq_unit(b);
+        if (!room) {
+            ASSERT_EQ_INT(0, took);
+            ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)u->cmd_kind);
+            ASSERT_EQ_INT(queued, (int)u->leg_count);
+        } else {
+            ASSERT_EQ_INT(1, took);
+            ASSERT_EQ_INT(UNIT_MOVE_LEGS_MAX, (int)u->leg_count);
+            ASSERT_EQ_INT(UNIT_LEG_SWEEP_AREA, (int)u->legs[0].kind);
+            ASSERT_EQ_INT(UNIT_LEG_MOVE, (int)u->legs[1].kind);
+            ASSERT_EQ_INT(OQ_CX - 200, u->legs[1].x);
+            ASSERT_EQ_INT(OQ_CY, u->legs[1].y);
+        }
+    }
+    oq_end();
+}
+
 /* A queued order carries a def only when it is a building, so what a
  * save keeps is what the hash counts. */
 TEST(a_queued_move_carries_no_def) {
@@ -3043,6 +3091,7 @@ int main(int argc, char **argv) {
     RUN(a_soldier_lost_on_the_pad_is_not_trained_again);
     RUN(soldiers_with_no_orders_step_off_to_spots_of_their_own);
     RUN(a_drag_with_the_broom_clears_the_box);
+    RUN(a_front_sweep_near_a_full_queue_keeps_the_order_in_hand);
     RUN(a_queued_move_carries_no_def);
     RUN(ctrl_changes_the_order_in_hand_and_keeps_the_queue);
     RUN(a_cancelled_frame_frees_its_site);

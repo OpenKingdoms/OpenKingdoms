@@ -5063,9 +5063,11 @@ int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
         UnitMoveLeg hand;
         int waits = hand_as_leg(u, &hand);
         int before = u->leg_count;
-        if (waits && before >= UNIT_MOVE_LEGS_MAX) return 0;
+        /* A dragged sweep keeps its box as a leg ahead, so it needs room
+         * for that too, or the order in hand would be lost. */
+        int own = leg->kind == UNIT_LEG_SWEEP_AREA;
+        if (waits && before + own >= UNIT_MOVE_LEGS_MAX) return 0;
         if (!unit_take_leg(handle, leg)) return 0;
-        /* A leg the take put ahead, a dragged sweep's own, stays ahead. */
         int at = u->leg_count > before ? u->leg_count - before : 0;
         if (waits && u->leg_count < UNIT_MOVE_LEGS_MAX) {
             memmove(&u->legs[at + 1], &u->legs[at],
