@@ -8,6 +8,7 @@
 #include "tak_sound.h"
 #include "tak_fallen_cue.h"
 #include "tak_game_sound.h"
+#include "tak_soundclass.h"
 #include "tak_memory.h"
 #include "tak_hpi.h"
 
@@ -235,6 +236,40 @@ TEST(wav_cache_drops_what_it_cannot_keep) {
     ASSERT((int)end.live_alloc_count <= (int)before.live_alloc_count);
 }
 
+#define VOICE_TEST_TDF CACHE_TEST_ROOT "/gamedata/soundclasses/vbase.tdf"
+
+/* A variant names itself in soundcategory, which no class file has,
+ * and its base class in soundclass, as the Darkest Priest does. A unit
+ * whose soundcategory exists keeps it. */
+TEST(a_unit_voices_from_soundclass_when_soundcategory_has_no_class) {
+    tsnd_mkdir(CACHE_TEST_ROOT);
+    tsnd_mkdir(CACHE_TEST_ROOT "/gamedata");
+    tsnd_mkdir(CACHE_TEST_ROOT "/gamedata/soundclasses");
+    FILE *f = fopen(VOICE_TEST_TDF, "wb");
+    ASSERT(f != NULL);
+    fputs("[VBASE]\n{\n\tprioritized=1;\n\t[select]\n\t{\n\t\tVSEL=1.0;\n\t}\n}\n"
+          "[VOWN]\n{\n\tprioritized=1;\n\t[select]\n\t{\n\t\tVOWN=1.0;\n\t}\n}\n", f);
+    fclose(f);
+    int vfs = VFS_Init(CACHE_TEST_ROOT, CACHE_TEST_ROOT);
+    int loaded = SoundClass_LoadAll();
+    const char *variant = GameSound_UnitVoiceClass("VBASE2", "VBASE");
+    const char *own = GameSound_UnitVoiceClass("VOWN", "VBASE");
+    const char *none = GameSound_UnitVoiceClass("VWALL", "");
+    int variant_ok = variant && strcmp(variant, "VBASE") == 0;
+    int own_ok = own && strcmp(own, "VOWN") == 0;
+    SoundClass_FreeAll();
+    VFS_Shutdown();
+    remove(VOICE_TEST_TDF);
+    tsnd_rmdir(CACHE_TEST_ROOT "/gamedata/soundclasses");
+    tsnd_rmdir(CACHE_TEST_ROOT "/gamedata");
+    tsnd_rmdir(CACHE_TEST_ROOT);
+    ASSERT_EQ_INT(0, vfs);
+    ASSERT_EQ_INT(0, loaded);
+    ASSERT(variant_ok);
+    ASSERT(own_ok);
+    ASSERT(none == NULL);
+}
+
 #ifndef TAK_SOURCE_DIR
 #define TAK_SOURCE_DIR "."
 #endif
@@ -389,5 +424,6 @@ int main(void) {
     RUN(wav_cache_keeps_every_name);
     RUN(wav_cache_drops_what_it_cannot_keep);
     RUN(sources_carry_no_double_encoded_utf8);
+    RUN(a_unit_voices_from_soundclass_when_soundcategory_has_no_class);
     TEST_REPORT();
 }

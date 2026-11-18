@@ -3144,6 +3144,55 @@ TEST(the_unit_file_gives_the_standing_order) {
     ASSERT_EQ_INT(0, steady_roams);
 }
 
+/* The shipped misspellings: the base Flying Builder's cruisalt, the
+ * Grenadier's vetmodel and the Wisp's weapon soundclass. The right
+ * spelling wins where a file has both. */
+static const char LF_FBI_TYPO[] =
+    "[UNITINFO]\n{\n\tUnitName=FBITYPO;\n\tcanfly=1;\n\tcruisalt=200;\n"
+    "\tsoundcategory=FBITYPO2;\n\tsoundclass=FBITYPO;\n}\n"
+    "[WEAPON1]\n{\n\tname=Bolt;\n\ttype=Ballistic;\n\trange=300;\n"
+    "\tmodel=typoshot;\n\tvetmodel=typoshot_vet;\n\tsoundclass=lightning;\n"
+    "\t[DAMAGE]\n\t{\n\t\tdefault=10;\n\t}\n}\n";
+static const char LF_FBI_BOTH[] =
+    "[UNITINFO]\n{\n\tUnitName=FBIBOTH;\n\tcanfly=1;\n\tcruisalt=50;\n"
+    "\tcruisealt=120;\n\tsoundclass=FBIBOTH;\n}\n"
+    "[WEAPON1]\n{\n\tname=Bolt;\n\ttype=Ballistic;\n\trange=300;\n"
+    "\tmodel=bothshot;\n\tvetmodel=wrongshot;\n\tveteranmodel=bothshot_vet;\n"
+    "\tsoundclass=fire;\n\tsoundhitclass=arrow;\n"
+    "\t[DAMAGE]\n\t{\n\t\tdefault=10;\n\t}\n}\n";
+
+TEST(the_unit_file_takes_the_shipped_misspellings) {
+    VFS_Shutdown();
+    lf_mkdir(LF_FBI_DIR);
+    TestHPIEntry e[] = {
+        { "units/fbitypo.fbi", LF_FBI_TYPO, 100, 0 },
+        { "units/fbiboth.fbi", LF_FBI_BOTH, 100, 0 },
+    };
+    ASSERT_EQ_INT(0, test_write_hpi(LF_FBI_DIR "/a.hpi", e, 2));
+    int loaded = (VFS_Init(LF_FBI_DIR, NULL) == 0) ? Units_LoadDefs() : -1;
+    const UnitDef *typo = Units_GetDef(Units_FindDefByName("FBITYPO"));
+    const UnitDef *both = Units_GetDef(Units_FindDefByName("FBIBOTH"));
+    int typo_alt = typo ? typo->cruise_alt : -1;
+    int both_alt = both ? both->cruise_alt : -1;
+    int typo_class = typo && strcmp(typo->soundclass, "FBITYPO") == 0;
+    int typo_vet = typo && strcmp(typo->weapons[0].veteran_art_name, "typoshot_vet") == 0;
+    int both_vet = both && strcmp(both->weapons[0].veteran_art_name, "bothshot_vet") == 0;
+    int typo_hit = typo && strcmp(typo->weapons[0].hit_sound_class, "lightning") == 0;
+    int both_hit = both && strcmp(both->weapons[0].hit_sound_class, "arrow") == 0;
+    VFS_Shutdown();
+    Units_FreeDefs();
+    remove(LF_FBI_DIR "/a.hpi");
+    lf_rmdir(LF_FBI_DIR);
+    ASSERT_EQ_INT(2, loaded);
+    ASSERT_EQ_INT(200, typo_alt);
+    ASSERT_EQ_INT(120, both_alt);
+    ASSERT(typo_class);
+    ASSERT(typo_vet);
+    ASSERT(both_vet);
+    ASSERT(typo_hit);
+    ASSERT(both_hit);
+}
+
 /* canattack on a unit with no weapon, a weapon with no canattack, and
  * unitstandorders = 0. */
 static const char LF_FBI_TAMER[] =
@@ -4907,6 +4956,7 @@ int main(int argc, char **argv) {
     RUN(a_weapon_is_melee_by_its_type);
     RUN(a_unit_is_born_with_its_standing_order);
     RUN(the_unit_file_gives_the_standing_order);
+    RUN(the_unit_file_takes_the_shipped_misspellings);
     RUN(a_weapon_gives_the_attack_order_and_unitstandorders_the_stances);
     RUN(the_unit_file_names_its_statues_and_who_can_be_turned);
     RUN(a_freeze_beam_turns_a_walker_to_ice_and_passes_over_the_rest);
