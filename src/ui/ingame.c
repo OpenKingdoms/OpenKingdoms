@@ -1159,10 +1159,13 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
 
 /* Whether a unit of the player's own in the selection can move. */
 static int ig_selection_walks(void) {
-    int n = 0;
+    int n = 0, count = 0;
     const int *sel = Units_GetSelection(&n);
-    for (int i = 0; sel && i < n; i++)
-        if (g_units_get_player(sel[i]) == Units_LocalPlayer() &&
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; sel && units && i < n; i++)
+        if (sel[i] >= 0 && sel[i] < count &&
+            units[sel[i]].alive == UNIT_ALIVE_ACTIVE &&
+            g_units_get_player(sel[i]) == Units_LocalPlayer() &&
             Units_CanWalk(sel[i]))
             return 1;
     return 0;
