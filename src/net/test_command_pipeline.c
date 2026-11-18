@@ -2493,6 +2493,29 @@ TEST(an_order_list_rides_a_ship_and_walks_on_from_where_it_lands) {
     cp_end();
 }
 
+/* A list given to a unit aboard sets its `o` there, as any list's last
+ * `o` holds from the start (D-018). */
+TEST(an_order_list_sets_the_standing_orders_of_a_rider) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    UnitDef *cd = (UnitDef *)Units_GetDef(CP_DEF_CARRIER);
+    cd->transport_distance = 300;
+    cd->transport_capacity = 1;
+    int boat = Units_Spawn(CP_DEF_CARRIER, 2, 1, 900, 800);
+    int rider = Units_Spawn(CP_DEF_WALKER, 2, 1, 840, 800);
+    ASSERT(boat >= 0 && rider >= 0);
+    ASSERT_EQ_INT(1, Units_BoardAtOnce(rider, boat));
+    ASSERT_EQ_INT(UNIT_ALIVE_TRANSPORTED, (int)cp_unit(rider)->alive);
+    ASSERT_EQ_INT(UNIT_AGGRO_OFFENSIVE, (int)cp_unit(rider)->aggro_mode);
+    ASSERT_EQ_INT(0, MissionScript_Begin(NULL, 1, 0));
+    ASSERT_EQ_INT(1, MissionOrders_Give(rider, "o 0, w 1"));
+    ASSERT_EQ_INT(UNIT_AGGRO_PASSIVE, (int)cp_unit(rider)->aggro_mode);
+    InGame_DebugRunSimTicks(90);
+    ASSERT_EQ_INT(UNIT_AGGRO_PASSIVE, (int)cp_unit(rider)->aggro_mode);
+    MissionScript_End();
+    cp_end();
+}
+
 /* A gift leaves out a transport with riders (legacy:155789). */
 TEST(a_loaded_transport_is_not_given_away) {
     GameWorld *w = cp_world();
@@ -3948,6 +3971,7 @@ int main(int argc, char **argv) {
     RUN(a_captured_transports_riders_die_with_the_old_unit);
     RUN(a_captured_transport_takes_a_monarch_aboard_down);
     RUN(an_order_list_rides_a_ship_and_walks_on_from_where_it_lands);
+    RUN(an_order_list_sets_the_standing_orders_of_a_rider);
     RUN(a_unit_aboard_still_pays_into_the_pool);
     RUN(a_sunk_transport_takes_its_riders_down);
     RUN(a_monarch_aboard_goes_down_with_the_ship);
