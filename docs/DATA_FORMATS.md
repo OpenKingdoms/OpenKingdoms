@@ -1567,10 +1567,10 @@ uint8_t shaded_color = shd_table[level * 256 + color_index];
 
 Where `level` runs from 0 to 31. Row 0 is black. Row 15 maps almost every
 index to itself (246 of 256 in `ara_textures.shd`), and the rows below it
-darken step by step. The rows above it brighten, up to about 1.74 times the
-mean brightness at row 31, and lean toward white as they go. The original
-gives a face with shading off level 15. The result is the palette index of
-the shaded color.
+darken step by step. The rows above it brighten, to about 1.6 times the
+mean brightness at row 31 (1.7 in `zhon_textures.shd`), and lean toward
+white as they go. The original gives a face with shading off level 15.
+The result is the palette index of the shaded color.
 
 ### Note on Initial Data
 

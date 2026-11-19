@@ -712,7 +712,7 @@ static int projectile_visible_to_local_player(const GameWorld *world,
     if (p->player_id == g_local_player) return 1;
     if (p->is_beam) {
         /* Ours (D-053): a beam goes with its shooter or either end. The far
-         * end is the old gate, unverified. */
+         * end is unverified against the original. */
         if (p->shooter >= 0 && p->shooter < g_unit_count) {
             const Unit *s = &g_units[p->shooter];
             if (s->alive == UNIT_ALIVE_ACTIVE && s->player_id == p->player_id &&
@@ -6638,7 +6638,7 @@ static int build_sparkle_sprite(const UnitDef *d) {
 }
 
 /* The worker's ring holds this many sixteenths of its count, fitted to
- * the original's 0.068 builder stars to a site's (construction-arakeep). */
+ * a capture of the original's keep going up. */
 #define BUILD_WORKER_SHARE16 8
 
 /* A faller on the worker's ring and a riser on the target's in turn, none
@@ -12261,16 +12261,6 @@ static void body_bloom(const UnitMesh *m, const NodeXform *xf, float heading,
 
 /* EXPLODE's burst: a picture of each class it names at the piece, for a
  * seen unit (legacy:306894-306899). Thrown pieces are not drawn yet. */
-unsigned Units_DebugExplodeBurst(const UnitMesh *m, const CobPiece *pieces, int node,
-                                 int32_t how, float heading, int32_t out[3]) {
-    if (!m || m->node_count > UNIT_MESH_MAX_NODES || node < 0 || node >= m->node_count)
-        return 0;
-    NodeXform xf[UNIT_MESH_MAX_NODES];
-    compose_node_xforms(m, pieces, xf);
-    piece_offset(&xf[node], heading, out);
-    return explode_classes(how);
-}
-
 static void cob_host_explode(void *user, int node, int32_t how) {
     const Unit *u = (const Unit *)user;
     if (u < g_units || u >= g_units + TAK_MAX_UNITS || node < 0 ||
@@ -19848,18 +19838,6 @@ static void light_mesh_faces(const UnitMesh *m, const NodeXform *xf,
     }
 }
 
-int Units_DebugLightMesh(const UnitMesh *m, const UnitDef *def, const CobPiece *pieces,
-                         int piece_count, float heading, float pitch, float roll,
-                         uint32_t *out) {
-    if (!m || !out || (pieces && piece_count < m->node_count) ||
-        ensure_scratch(m->vert_count, 0) != 0) return -1;
-    compose_node_xforms(m, pieces, g_scratch_node_xform);
-    light_mesh_faces(m, g_scratch_node_xform, pieces, piece_count, heading, pitch, roll,
-                     model_def_light(def));
-    memcpy(out, g_lit_color, sizeof(uint32_t) * (size_t)m->vert_count);
-    return 0;
-}
-
 /* Transform one unit's mesh into the scratch buffers at vertex offset
  * `v_off`: per-piece COB transform, heading rotation, projection, plus
  * the per-vertex height key the draw order needs. */
@@ -20853,7 +20831,7 @@ static void emit_copy_orders(TAK_Platform *plat, const UnitMesh *m, int n_inst,
 #define DEPTH_SPAN  640.0f
 #define DEPTH_STEPS 16384
 
-float Units_DepthKey(int slot, int slots, float height, float base) {
+static float Units_DepthKey(int slot, int slots, float height, float base) {
     /* Whole steps, so a key is exact in a float whatever the slice; the
      * first step stays nearer than a cleared buffer. */
     int k = 1 + (int)floorf((height - base) * ((float)DEPTH_STEPS / DEPTH_SPAN));
@@ -20864,14 +20842,14 @@ float Units_DepthKey(int slot, int slots, float height, float base) {
 }
 
 /* Slices of DEPTH_STEPS a buffer of `bits` holds, 0 under 16 bits. */
-int Units_DepthSlots(int bits) {
+static int Units_DepthSlots(int bits) {
     if (bits < 16) return 0;
     return 1 << (bits - 14 > 10 ? 10 : bits - 14);
 }
 
 /* Copies the next group of a run takes. A see-through copy goes alone,
  * so its colour pass lands before the next copy writes depth over it. */
-int Units_DepthGroupSize(int remaining, int free_slots, int translucent) {
+static int Units_DepthGroupSize(int remaining, int free_slots, int translucent) {
     int n = translucent ? 1 : remaining;
     if (n > remaining) n = remaining;
     if (n > free_slots) n = free_slots;
@@ -20880,7 +20858,7 @@ int Units_DepthGroupSize(int remaining, int free_slots, int translucent) {
 
 /* 1 when the GL helper has to be started (again): a cached yes holds only
  * while the helper is up on this renderer, as the 3D view shuts it down. */
-int Units_DepthNeedsInit(int state, int gl_ready, int same_renderer) {
+static int Units_DepthNeedsInit(int state, int gl_ready, int same_renderer) {
     if (state < 0) return 0;
     return state == 0 || !gl_ready || !same_renderer;
 }
@@ -21372,41 +21350,6 @@ int Units_DebugOrderMismatch(int handle, const struct GameWorld *world, int *out
     g_ov_key = NULL;
     return bad;
 }
-
-int Units_DebugOverlapOrder(const float *xy, const float *h, int n, int *order) {
-    static UnitMesh mesh;
-    const int V = 3 * n;
-    if (n < 1 || V > 65535 || !xy || !h || !order || ensure_scratch(V, V) != 0) return -1;
-    mesh.vert_count = V;
-    mesh.tri_count = n;
-    mesh.batch_count = 1;
-    for (int v = 0; v < V; v++) {
-        g_scratch_xy[2 * v] = xy[2 * v];
-        g_scratch_xy[2 * v + 1] = xy[2 * v + 1];
-        g_scratch_wy[v] = g_scratch_hkey[v] = h[v];
-        g_scratch_color[v] = 0xFFFFFFFFu;
-    }
-    for (int t = 0; t < n; t++) {
-        TriSort *s = &g_scratch_tri[t];
-        s->i0 = (uint16_t)(3 * t);
-        s->i1 = (uint16_t)(3 * t + 1);
-        s->i2 = (uint16_t)(3 * t + 2);
-        s->batch = 0;
-        s->hkey = tri_height_key(g_scratch_hkey, s->i0, s->i1, s->i2);
-        s->key = (float)t;
-    }
-    /* A memo slot past the ships', dropped after so every call looks afresh. */
-    g_emit_unit = TAK_MAX_UNITS + OV_BUCKETS;
-    g_emit_bucketed = 0;
-    g_emit_ax = g_emit_ay = g_emit_ah = 0.0f;
-    order_by_overlap(&mesh, g_scratch_tri, n);
-    for (int i = 0; i < OV_SLOTS; i++)
-        if (g_ov_memo[i].unit == g_emit_unit && g_ov_memo[i].m == &mesh) ov_memo_clear(&g_ov_memo[i]);
-    g_emit_unit = -1;
-    for (int k = 0; k < n; k++) order[k] = (int)g_scratch_tri[k].key;
-    return n;
-}
-
 
 
 /* Persistent "preview unit" CobEngine — one per Units_RenderBuildGhost
@@ -24734,14 +24677,6 @@ int Units_FindSpriteArt(const char *name) {
         if (tak_stricmp(g_proj_sprites[i].file, name) == 0) return i;
     }
     return -1;
-}
-
-int Units_SheetAdded(const char *file) {
-    int idx = proj_sprite_index(file, file);
-    if (idx < 0) return -1;
-    ProjSpriteArt *ps = &g_proj_sprites[idx];
-    if (!ps->pixels && proj_sprite_decode(ps) != 0) return -1;
-    return ps->add;
 }
 
 const char *Units_SpriteArtFile(int idx) {

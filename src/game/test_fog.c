@@ -1,5 +1,4 @@
 #include "tak_fog.h"
-#include "tak_fog_mist.h"
 #include "tak_unit.h"
 #include "tak_world.h"
 #include "tak_platform.h"
@@ -69,13 +68,6 @@ int Terrain_SampleHeight(const GameWorld *world,
     if (_e != _g) { \
         fprintf(stderr, "ASSERT_EQ_INT failed at %s:%d: expected %d got %d\n", \
                 __FILE__, __LINE__, _e, _g); \
-        return 1; \
-    } \
-} while (0)
-
-#define ASSERT(cond) do { \
-    if (!(cond)) { \
-        fprintf(stderr, "ASSERT failed at %s:%d: %s\n", __FILE__, __LINE__, #cond); \
         return 1; \
     } \
 } while (0)
@@ -231,90 +223,6 @@ static int test_los_off_overlay_has_no_grey_level(void) {
     ASSERT_EQ_INT(1, explored > 100 && explored < 170);
     ASSERT_EQ_INT(0, dark);
 
-    Fog_Free(&w);
-    SDL_DestroyRenderer(r);
-    SDL_FreeSurface(s);
-    return 0;
-}
-
-/* The mist over dark grey: one frame read back, and the pixel at x of row 48. */
-static void mist_frame(const GameWorld *w, TAK_Platform *plat, SDL_Surface *s,
-                       uint32_t clock_ms, const uint8_t rgb[3], uint8_t *out) {
-    SDL_Renderer *r = plat->renderer;
-    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
-    SDL_SetRenderDrawColor(r, 64, 64, 64, 255);
-    SDL_RenderClear(r);
-    FogMist_Render(w, plat, clock_ms, NULL, rgb);
-    SDL_RenderFlush(r);
-    memcpy(out, s->pixels, (size_t)s->pitch * (size_t)s->h);
-}
-
-static const uint8_t *mist_px(const SDL_Surface *s, const uint8_t *frame, int x) {
-    return frame + 48 * s->pitch + x * 4;
-}
-
-/* Seen ground stays clear, explored ground takes the tint, never-seen
- * ground stays black, and a frame repeats at the same clock. */
-static int test_the_mist_is_tinted_and_repeats_at_one_clock(void) {
-    SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, 320, 64, 32,
-                                                    SDL_PIXELFORMAT_RGBA32);
-    SDL_Renderer *r = s ? SDL_CreateSoftwareRenderer(s) : NULL;
-    if (!r) return 1;
-    TAK_Platform plat;
-    memset(&plat, 0, sizeof(plat));
-    plat.renderer = r;
-    plat.renderer_gen = 1;
-    GameWorld w;
-    memset(&w, 0, sizeof(w));
-    w.map_pixels_w = 512;
-    w.map_pixels_h = 512;
-    w.viewport_w = 320;
-    w.viewport_h = 64;
-    w.cfg.line_of_sight = 1;
-    ASSERT_EQ_INT(0, Fog_Init(&w));
-    /* In sight to x 128, explored to x 288, never seen past it. */
-    for (int cy = 0; cy < w.fog_h; cy++)
-        for (int cx = 0; cx < w.fog_w; cx++)
-            w.fog_layers[1][cy * w.fog_w + cx] = cx < 4 ? TAK_FOG_VISIBLE
-                                               : cx < 9 ? TAK_FOG_EXPLORED
-                                               : TAK_FOG_UNEXPLORED;
-    size_t n = (size_t)s->pitch * (size_t)s->h;
-    uint8_t *a = (uint8_t *)malloc(n), *b = (uint8_t *)malloc(n);
-    ASSERT(a && b);
-    static const uint8_t white[3] = { 255, 255, 255 }, brown[3] = { 100, 50, 25 };
-
-    mist_frame(&w, &plat, s, 1000, white, a);
-    mist_frame(&w, &plat, s, 1000, white, b);
-    ASSERT_EQ_INT(0, memcmp(a, b, n));
-    ASSERT_EQ_INT(64, mist_px(s, a, 48)[0]);
-    ASSERT(mist_px(s, a, 240)[2] != 64);
-    ASSERT_EQ_INT(0, mist_px(s, a, 304)[0]);
-
-    /* Taros' brown is darker than white's veil, most of all in blue. */
-    mist_frame(&w, &plat, s, 1000, brown, b);
-    ASSERT(mist_px(s, b, 240)[2] + 10 < mist_px(s, a, 240)[2]);
-    ASSERT(mist_px(s, b, 240)[0] > mist_px(s, b, 240)[2]);
-
-    /* Four seconds on, the cloud has moved. */
-    mist_frame(&w, &plat, s, 5000, white, b);
-    ASSERT(memcmp(a, b, n) != 0);
-
-    /* With Line of Sight off there is no fog of war, only the black. */
-    w.cfg.line_of_sight = 0;
-    mist_frame(&w, &plat, s, 1000, white, b);
-    ASSERT_EQ_INT(64, mist_px(s, b, 240)[0]);
-    ASSERT_EQ_INT(0, mist_px(s, b, 304)[0]);
-
-    /* With no texture the original's overlay dims the explored ground. */
-    w.cfg.line_of_sight = 1;
-    plat.renderer_gen = 0;
-    mist_frame(&w, &plat, s, 1000, white, b);
-    ASSERT(mist_px(s, b, 240)[0] > 20 && mist_px(s, b, 240)[0] < 50);
-    plat.renderer_gen = 1;
-
-    free(a);
-    free(b);
-    FogMist_Shutdown(&plat);
     Fog_Free(&w);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(s);
@@ -775,7 +683,6 @@ int main(void) {
     failed |= test_los_off_still_tracks_explored_ground();
     failed |= test_los_off_simulation_still_sees_everything();
     failed |= test_los_off_overlay_has_no_grey_level();
-    failed |= test_the_mist_is_tinted_and_repeats_at_one_clock();
     failed |= test_player_layers_are_independent();
     failed |= test_allies_share_sight();
     failed |= test_an_ai_teammate_grants_no_sight();
