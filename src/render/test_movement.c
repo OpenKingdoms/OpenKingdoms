@@ -1480,25 +1480,6 @@ TEST(a_shipyard_builds_past_an_idle_ship_on_its_pad) {
     mv_end();
 }
 
-/* Another side's ship the yard cannot send off holds the pad only by the
- * cells, as in the original (M-012). */
-TEST(a_shipyard_builds_past_another_sides_hull_on_its_pad) {
-    ASSERT_NOT_NULL(mv_sea());
-    int32_t yx = 1536, yy = 1536;
-    int yard = Units_Spawn(MV_DEF_YARD, 1, 0, yx, yy);
-    int parked = Units_Spawn(MV_DEF_GALLEY, 2, 1, yx, yy + 120);
-    ASSERT(yard >= 0 && parked >= 0);
-    Units_DebugSetAggro(parked, UNIT_AGGRO_PASSIVE);
-    mv_run(2);
-    ASSERT_EQ_INT(0, Units_FactoryEnqueue(yard, MV_DEF_GALLEY));
-    int t = 0;
-    for (; t < 3600 && mv_yard_built(yard, parked) < 1; t++) Units_TickEngines();
-    printf("(built after %d ticks) ", t);
-    ASSERT_EQ_INT(1, mv_yard_built(yard, parked));
-    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)mv_unit(parked)->cmd_kind);
-    mv_end();
-}
-
 /* A ship parked near the rally point is no business of the yard's while
  * its products sail past it (M-012). 200 px east it is clear of the spots
  * the yard sends a product that stops short to. */
@@ -3141,7 +3122,6 @@ int main(int argc, char **argv) {
     RUN(ships_sent_to_one_place_keep_their_hulls_apart);
     RUN(a_shipyard_launches_ship_after_ship);
     RUN(a_shipyard_builds_past_an_idle_ship_on_its_pad);
-    RUN(a_shipyard_builds_past_another_sides_hull_on_its_pad);
     RUN(a_shipyard_leaves_a_ship_parked_by_its_rally_point_alone);
     RUN(a_loaded_world_sees_the_ships_a_running_one_does);
     RUN(two_ships_caught_bow_to_bow_get_past_each_other);

@@ -1642,25 +1642,16 @@ Format per entry:
   and never moves anything (legacy:9373-9382). The Sea Fort's pad lies
   108 px in front of its centre, and without the push a ship stopped on
   its way out kept the next from going up.
-- Change, the jam: the hull rules give way before a jam can last. Two
-  ships that have both closed no ground for two rungs of the M-006
-  ladder, 8 s, the one pressing on the other, stop holding each other. A
-  ship standing with no move order stops holding a stalled one that holds
-  up a yard or is on another hull. A stalled ship going through a hull
-  keeps its rung until it is clear, and goes by the cells alone meanwhile,
-  as every ship does in the original. A ship on the water of a pad a hull
-  holds does not settle there. A launch goes for a spot its class can
-  stand on and reach and no other launch is bound for, with water under
-  the first 256 px of the straight way there and nothing built on it, or
-  failing that one with a route whose first steps it can take. A hull on
-  the pad the yard cannot move, another side's, one stopped on an order
-  or one with nowhere to go, leaves the pad to the original's test of its
-  cells (legacy:9363-9382).
-- Change, auras: an aura between two ships reaches from hull line to
-  hull line where the original measures centre to centre
-  (legacy:237131-237139). A Repair Skiff against a Man of War's bow
-  stands 155 px from its centre, past the 150 px of its AdjustJoy, where
-  the original's cells let it close to about 56 px.
+- Change, jams: two ships that have closed no ground for 8 s, one
+  pressing on the other, stop holding each other, and a stalled ship
+  sails through a hull by the cells alone, as in the original. A ship
+  leaving its yard goes for a spot it can reach by a straight way or a
+  route. Ships gathered at the yard's rally point are left there unless
+  they are on the pad. A hull the yard cannot move leaves the pad to the
+  original's cell test (legacy:9363-9382).
+- Change, auras: between two ships an aura reaches from hull line to
+  hull line, not centre to centre (legacy:237131-237139), so a Repair
+  Skiff at a ship's bow mends it.
 - Why: the original keeps units apart by the cells of their move
   class alone (legacy:163193-163195, legacy:219329-219340), and a
   ship's class is a square one and a half to three times shorter than
