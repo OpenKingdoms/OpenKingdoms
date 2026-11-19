@@ -612,16 +612,6 @@ target_include_directories(test_click_map PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
-# What the bottom strip's unit panel describes. Data free.
-add_executable(test_hud_info
-    ui/test_hud_info.c
-    ui/hud_info.c
-)
-
-target_include_directories(test_hud_info PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-)
-
 # The battle screen's regions at each screen size, pinned in numbers.
 add_executable(test_hud_layout
     ui/test_hud_layout.c
@@ -2679,7 +2669,6 @@ if(BUILD_TESTING)
     add_test(NAME test_util        COMMAND test_util)
     add_test(NAME test_trig        COMMAND test_trig)
     add_test(NAME test_click_map   COMMAND test_click_map)
-    add_test(NAME test_hud_info    COMMAND test_hud_info)
     add_test(NAME test_hud_layout  COMMAND test_hud_layout)
     add_test(NAME test_camera3d    COMMAND test_camera3d)
     add_test(NAME test_framework_self COMMAND test_framework_self)

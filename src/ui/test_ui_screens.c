@@ -11442,7 +11442,7 @@ TEST(hud_idle_frames_selection_and_queue_badges) {
     ASSERT_EQ_INT(0, HUD_WidgetHidden("CrystalBall"));
 
     /* Per-unit widgets go down, every copy of each name. The bars stay
-     * up empty (the owner, from the original). */
+     * up, empty, as their backings do in the original. */
     ASSERT_EQ_INT(1, HUD_WidgetHidden("UnitText"));
     ASSERT_EQ_INT(0, HUD_WidgetHidden("HealthBar"));
     ASSERT_EQ_INT(0, HUD_WidgetHidden("ManaBar"));

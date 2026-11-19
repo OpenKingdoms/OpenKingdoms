@@ -82,7 +82,7 @@ static int parse_feature_tdf(const char *vfs_path) {
                 copy_str(f->name,     sizeof(f->name),     name);
                 copy_str(f->description, sizeof(f->description),
                          TDF_ReadString(t, "description", ""));
-                f->no_display_info = (uint8_t)(TDF_ReadInt(t, "nodisplayinfo", 0) != 0);
+                f->no_display_info = (uint8_t)(TDF_ReadInt(t, "nodisplayinfo", 0) & 1);
                 copy_str(f->world,    sizeof(f->world),
                          TDF_ReadString(t, "world",    ""));
                 copy_str(f->category, sizeof(f->category),

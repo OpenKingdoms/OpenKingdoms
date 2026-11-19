@@ -141,8 +141,9 @@ static SDL_Rect g_minimap_dlg  = { 512,   0, 128, 128 };
  * UnitInfo1 describes what HUD_PickInfo picks and UnitInfo2 the target
  * (legacy:152113-152143 refreshes each through the same routine). We
  * resolve the child indices once so each panel can be driven alone. */
-/* is_bar: a gauge or its backing, up whether or not anything fills it
- * (the owner, from the original). */
+/* is_bar: a gauge or its backing, kept up. The original hides backings by
+ * the names HealthBack and ManaBack (legacy:152277-152296), which no side's
+ * .gui uses (they are Static0), and an empty gauge draws nothing. */
 typedef struct { int index; int is_xp; int is_bar; int is_kills; } HUDPanelWidget;
 #define HUD_MAX_PANEL_WIDGETS 16
 static HUDPanelWidget g_panel1[HUD_MAX_PANEL_WIDGETS];
@@ -1073,7 +1074,7 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
     HUDInfoShown info = hud_info_shown(world, HUD_PickInfo(g_ptr_unit, g_ptr_feature,
                                                           sel, sel_count));
     /* No portrait of its own leaves the panel without one, never an
-     * empty frame (the owner, from the original's skirmish). */
+     * empty frame (reported from play). */
     const HudPixels *portrait = info.def_idx >= 0 ? portrait_pixels_for_def(info.def_idx)
                                                   : NULL;
 
@@ -1148,10 +1149,8 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         }
 
         /* Unit-info panels. With nothing to describe the name, the rank
-         * pip and the kill tally go (legacy:152277-152296,
-         * legacy:152496-152506). Both bars stay up, empty (the owner,
-         * from the original). The second panel describes the
-         * selection's TARGET (legacy:152140-152143). */
+         * pip and the kill tally go (legacy:152277-152296, 152496-152506).
+         * The second describes the selection's TARGET (legacy:152140-152143). */
         int show_xp = info.rank >= 0;
         int tgt_rank = (tgt && tgt_handle >= 0)
                      ? HUD_RankShieldFrame(Units_GetVeteranLevel(tgt_handle)) : -1;

@@ -2089,7 +2089,7 @@ static void ig_info_pointer(TAK_Platform *platform, GameWorld *world) {
         !Briefing_IsOpen() && !ig.sd_ask && !HUD_HitTest(mx, my, platform) &&
         ig_view()->pointer_to_world(world, platform, mx, my, &x, &y)) {
         unit = ig_view()->pointer_to_unit(world, platform, mx, my);
-        /* A wall under the pointer is passed over (the owner saw no wall health). */
+        /* A wall under the pointer is passed over (reported from play). */
         int n = 0;
         const Unit *units = Units_GetActive(&n);
         const UnitDef *d = (unit >= 0 && unit < n) ? Units_GetDef(units[unit].def_idx) : NULL;

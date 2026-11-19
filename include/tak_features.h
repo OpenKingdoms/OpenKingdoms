@@ -18,8 +18,8 @@
 
 typedef struct FeatureDef {
     char     name[40];          /* section name e.g. "AraHenge01"     */
-    /* The name the info panel shows, and nodisplayinfo, which keeps the
-     * feature out of the panel (inferred, not observed). */
+    /* The name the info panel shows, and nodisplayinfo's low bit, which
+     * keeps the feature out of it (legacy:127365, 152056-152060). */
     char     description[40];
     uint8_t  no_display_info;
     char     world[16];         /* "Aramon" / "Taros" / "Veruna" / "Zhon" / "All Worlds" */
