@@ -9618,7 +9618,7 @@ static int cob_walks_itself(const CobScript *cs) {
             int n = Cob_OperandWords(cs->code[pc]);
             if (n < 0) break;
             if ((op == 0x10061000u || op == 0x10062000u) &&
-                pc + 1 < cs->num_code_words && cs->code[pc + 1] == (uint32_t)walk)
+                pc + 1 < end && cs->code[pc + 1] == (uint32_t)walk)
                 return 1;
             pc += 1u + (uint32_t)n;
         }

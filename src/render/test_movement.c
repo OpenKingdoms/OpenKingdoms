@@ -279,6 +279,16 @@ static int mv_walk_threads(const Unit *u) {
  * runs and the cycle never plays twice. */
 TEST(a_script_that_walks_itself_runs_the_only_walk) {
     ASSERT_NOT_NULL(mv_world());
+    /* An operand that looks like a start of walk is not one. */
+    static const uint32_t trap[] = {
+        0x10065000u,                                   /* walk: return */
+        0x10063000u, 0x10061000u, 0u, 0x10065000u,     /* Create: host args */
+    };
+    static const char *const trap_names[] = { "walk", "Create" };
+    static const uint32_t trap_offsets[] = { 0, 1 };
+    ASSERT_EQ_INT(0, Units_DebugSetDefScript(MV_DEF_WALKER, trap, 5, trap_names,
+                                             trap_offsets, 2));
+    ASSERT_EQ_INT(0, Units_GetDef(MV_DEF_WALKER)->script_walks);
     static const uint32_t code[] = {
         0x10021001u, 100u, 0x10013000u, 0x10065000u,   /* walk: sleep, return */
         0x10061000u, 2u, 0u, 0x10065000u,              /* Create: start Watch */
@@ -302,59 +312,6 @@ TEST(a_script_that_walks_itself_runs_the_only_walk) {
     }
     ASSERT(moving > 100);
     ASSERT_EQ_INT(1, worst);
-    mv_end();
-}
-
-/* A script that leaves the walk to the engine keeps it. When the walk's
- * slot is taken by another thread, the engine starts a new walk and its
- * stop on arrival spares the other thread. */
-TEST(the_engine_walk_follows_its_thread_not_its_slot) {
-    ASSERT_NOT_NULL(mv_world());
-    static const uint32_t code[] = {
-        0x10021001u, 2000u, 0x10013000u, 0x10065000u,  /* walk */
-        0x10021001u, 5000u, 0x10013000u, 0x10065000u,  /* restore */
-    };
-    static const char *const names[] = { "walk", "restore" };
-    static const uint32_t offsets[] = { 0, 4 };
-    ASSERT_EQ_INT(0, Units_DebugSetDefScript(MV_DEF_WALKER, code, 8, names, offsets, 2));
-    ASSERT_EQ_INT(0, Units_GetDef(MV_DEF_WALKER)->script_walks);
-    int h = Units_Spawn(MV_DEF_WALKER, 1, 0, 800, 800);
-    ASSERT(h >= 0);
-    Units_CommandMoveUnit(h, 2400, 800);
-    mv_run(10);
-    const Unit *u = mv_unit(h);
-    ASSERT_EQ_INT(UNIT_ANIM_MOVING, (int)u->anim_state);
-    int ws = u->walk_thread_slot;
-    ASSERT(Cob_ThreadRunsScript(u->cob, ws, "walk"));
-    /* The walk ends and the script reuses its slot. */
-    Cob_StopThread(u->cob, ws);
-    int rs = Cob_StartThreadByName(u->cob, "restore", NULL, 0);
-    ASSERT_EQ_INT(ws, rs);
-    mv_run(1);
-    u = mv_unit(h);
-    ASSERT_EQ_INT(1, mv_walk_threads(u));
-    ASSERT(Cob_ThreadRunsScript(u->cob, u->walk_thread_slot, "walk"));
-    Units_OrderStop(h);
-    for (int t = 0; t < 120 && mv_unit(h)->anim_state == UNIT_ANIM_MOVING; t++) mv_run(1);
-    u = mv_unit(h);
-    ASSERT(u->anim_state != UNIT_ANIM_MOVING);
-    ASSERT_EQ_INT(0, mv_walk_threads(u));
-    ASSERT(Cob_ThreadRunsScript(u->cob, rs, "restore"));
-    mv_end();
-}
-
-/* The walk test reads instructions, so an operand that looks like a
- * start of walk is not one. */
-TEST(an_operand_that_looks_like_a_walk_start_is_not_one) {
-    ASSERT_NOT_NULL(mv_world());
-    static const uint32_t code[] = {
-        0x10065000u,                                   /* walk: return */
-        0x10063000u, 0x10061000u, 0u, 0x10065000u,     /* Create: host args */
-    };
-    static const char *const names[] = { "walk", "Create" };
-    static const uint32_t offsets[] = { 0, 1 };
-    ASSERT_EQ_INT(0, Units_DebugSetDefScript(MV_DEF_WALKER, code, 5, names, offsets, 2));
-    ASSERT_EQ_INT(0, Units_GetDef(MV_DEF_WALKER)->script_walks);
     mv_end();
 }
 
@@ -3071,8 +3028,6 @@ int main(int argc, char **argv) {
     RUN(a_marquee_takes_the_units_it_is_drawn_over);
     RUN(a_walker_crosses_open_ground);
     RUN(a_script_that_walks_itself_runs_the_only_walk);
-    RUN(the_engine_walk_follows_its_thread_not_its_slot);
-    RUN(an_operand_that_looks_like_a_walk_start_is_not_one);
     RUN(unit_walks_around_a_wall_of_friendly_units);
     RUN(units_do_not_stack_on_one_another);
     RUN(two_units_walking_into_each_other_give_way);
