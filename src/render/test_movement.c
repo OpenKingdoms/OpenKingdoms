@@ -343,6 +343,21 @@ TEST(the_engine_walk_follows_its_thread_not_its_slot) {
     mv_end();
 }
 
+/* The walk test reads instructions, so an operand that looks like a
+ * start of walk is not one. */
+TEST(an_operand_that_looks_like_a_walk_start_is_not_one) {
+    ASSERT_NOT_NULL(mv_world());
+    static const uint32_t code[] = {
+        0x10065000u,                                   /* walk: return */
+        0x10063000u, 0x10061000u, 0u, 0x10065000u,     /* Create: host args */
+    };
+    static const char *const names[] = { "walk", "Create" };
+    static const uint32_t offsets[] = { 0, 1 };
+    ASSERT_EQ_INT(0, Units_DebugSetDefScript(MV_DEF_WALKER, code, 5, names, offsets, 2));
+    ASSERT_EQ_INT(0, Units_GetDef(MV_DEF_WALKER)->script_walks);
+    mv_end();
+}
+
 /* Ported from the needs-data suite: a wall of passive friends lies
  * across the straight line and the mover has to go round it. */
 TEST(unit_walks_around_a_wall_of_friendly_units) {
@@ -3057,6 +3072,7 @@ int main(int argc, char **argv) {
     RUN(a_walker_crosses_open_ground);
     RUN(a_script_that_walks_itself_runs_the_only_walk);
     RUN(the_engine_walk_follows_its_thread_not_its_slot);
+    RUN(an_operand_that_looks_like_a_walk_start_is_not_one);
     RUN(unit_walks_around_a_wall_of_friendly_units);
     RUN(units_do_not_stack_on_one_another);
     RUN(two_units_walking_into_each_other_give_way);

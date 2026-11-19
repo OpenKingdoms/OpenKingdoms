@@ -9606,10 +9606,22 @@ static int cob_walks_itself(const CobScript *cs) {
     if (!cs || !cs->code) return 0;
     int walk = Cob_FindScript(cs, "walk");
     if (walk < 0) return 0;
-    for (uint32_t i = 0; i + 1 < cs->num_code_words; i++) {
-        if ((cs->code[i] == 0x10061000u || cs->code[i] == 0x10062000u) &&
-            cs->code[i + 1] == (uint32_t)walk)
-            return 1;
+    /* Decode each body by instruction, so an operand never reads as an opcode. */
+    for (uint16_t s = 0; s < cs->num_scripts; s++) {
+        uint32_t pc = cs->script_offsets[s], end = cs->num_code_words;
+        for (uint16_t k = 0; k < cs->num_scripts; k++) {
+            uint32_t o = cs->script_offsets[k];
+            if (o > pc && o < end) end = o;
+        }
+        while (pc < end) {
+            uint32_t op = cs->code[pc] & 0x100ff000u;
+            int n = Cob_OperandWords(cs->code[pc]);
+            if (n < 0) break;
+            if ((op == 0x10061000u || op == 0x10062000u) &&
+                pc + 1 < cs->num_code_words && cs->code[pc + 1] == (uint32_t)walk)
+                return 1;
+            pc += 1u + (uint32_t)n;
+        }
     }
     return 0;
 }
