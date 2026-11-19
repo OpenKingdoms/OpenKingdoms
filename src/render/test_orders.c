@@ -2186,7 +2186,7 @@ TEST(ctrl_through_both_clicks_summons_without_end) {
 
 /* With Shift the summons queues and the placement still ends after the
  * one click (legacy:242531-242540). Nothing Shift places goes behind it,
- * a building (legacy:39208-39219) or a move (reported from play). */
+ * a building (legacy:39208-39219) or a move (legacy:238562-238574). */
 TEST(a_shift_click_queues_a_summons_and_nothing_goes_behind_it) {
     ASSERT_NOT_NULL(oq_world());
     int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
