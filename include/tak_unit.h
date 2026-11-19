@@ -1794,8 +1794,6 @@ float       Units_BeamStartHeight(const Projectile *p);
 const char *Units_ProjectileModelName(int art_idx);
 /* The art slot a sequence name resolved to, -1 when never seen. */
 int         Units_FindSpriteArt(const char *name);
-/* Test hook: 1 when an anims sheet draws added, 0 laid over, -1 unread. */
-int         Units_SheetAdded(const char *file);
 /* The anims file a sprite slot reads, NULL for none, and the slot for
  * a file, added on first ask. A save names a wandering shot's art. */
 const char *Units_SpriteArtFile(int idx);
@@ -2166,16 +2164,6 @@ int               Units_ConstructFxFrames(const char *side_prefix);
 /* The build sparkles a site carries: how many are playing on it now,
  * and how many its ring holds (legacy:198576). */
 int               Units_DebugBuildSparkles(int handle);
-/* Test hook: light `m` of `def` (NULL a building) posed by `pieces` and the
- * pose, its vertex colours into `out`. 0 on success. */
-int               Units_DebugLightMesh(const UnitMesh *m, const UnitDef *def,
-                                       const CobPiece *pieces, int piece_count,
-                                       float heading, float pitch, float roll,
-                                       uint32_t *out);
-/* Test hook: an EXPLODE of `node` with type word `how`: the classes it
- * bursts, bit k for class k, and where, into `out`. */
-unsigned          Units_DebugExplodeBurst(const UnitMesh *m, const CobPiece *pieces, int node,
-                                          int32_t how, float heading, int32_t out[3]);
 int               Units_DebugBuildSparkleCap(int handle);
 int               Units_DebugBuildSparkleRadius(int handle);
 int               Units_CanStandAt(int handle, int32_t x, int32_t y);
