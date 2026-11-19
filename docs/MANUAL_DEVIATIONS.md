@@ -1920,9 +1920,7 @@ Format per entry:
     unit's own patrol order to each point in turn with the next queued
     behind it, and goes on once the unit is within 64 pixels or has
     turned for the next point. The original queues patrol orders on the
-    unit. A save made mid-round before this rule, with a flyer on such a
-    patrol, loads with no queued leg, and the flyer shuttles as it did
-    until its list is given again.
+    unit.
   - `w N` is taken as N seconds, which is how the order was documented
     for Total Annihilation. The original scales the number in floating
     point code the listing does not show, so the unit is inferred.
@@ -1931,17 +1929,10 @@ Format per entry:
     damage would also raise.
   - `a TYPE` picks the nearest unit of the type. The original adds a
     random part to each distance first, up to half of it.
-  - `a X Z` on a unit with no weapon sends it to the place. Nothing
-    seen in the original settles that case. An armed unit attacks the
-    ground there, as in the original. What follows the attack was not
-    seen either, since the test list ended with it. Here the rest of
-    the list waits behind it, as behind an attack on a named unit.
-    Every shipped mission has `a X Z` only as the last step of a list,
-    so no mission meets that case.
-  - `o` is set as the list is given, the last one winning, as in the
-    original. A save made before `o` was read this way keeps any `o`
-    it had not reached as a step, and that step is skipped on loading,
-    so the unit keeps the orders it had.
+  - The rest of a list waits behind `a X Z`, an attack on the ground
+    that does not end, as behind an attack on a named unit. What
+    follows it in the original was not seen. No shipped list has a
+    step after it.
   - `i NAME` puts the unit aboard at once, as the original does, and
     the rest of its list waits until it is set down. A `w` still runs
     out aboard. The original runs the rest of the list while the unit
@@ -2718,11 +2709,7 @@ Format per entry:
 - Why: the formation move, the edge push and the air to air mission are
   missions the engine does not have yet, and the run's own legs cover
   the approach. A patrol leg walked to within 8 px braked every flyer to
-  a stop on each point, which the playtest saw on Parrots. A mission's
-  patrol of several points gives the unit each point with the next
-  queued as a patrol leg, and goes on round once the unit has turned
-  for the next point, so a flyer that turns 128 px short still flies
-  the whole round.
+  a stop on each point, which the playtest saw on Parrots.
 - Citation: the run (legacy:28491-29118), the reach test and formation
   move (legacy:28572-28630), the edge push (legacy:28854-28924) and the
   flying target and dropped key handed elsewhere (legacy:28524-28545).

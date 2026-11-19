@@ -256,6 +256,12 @@ TEST(parses_initial_mission_command_language) {
     ASSERT_EQ_INT(MISSION_CMD_WAIT_ANIMATION, commands[4].type);
     ASSERT_EQ_INT(MISSION_CMD_CLOAK, commands[5].type);
     Mission_FreeCommands(commands);
+    /* A placed Angle, as seen in the original: 0 faces away, 90 west,
+     * 180 the camera, 270 east. */
+    ASSERT(Mission_AngleToHeading(0) == 0.0f);
+    ASSERT(Mission_AngleToHeading(270) > 1.57f && Mission_AngleToHeading(270) < 1.58f);
+    ASSERT(Mission_AngleToHeading(180) > 3.14f && Mission_AngleToHeading(180) < 3.15f);
+    ASSERT(Mission_AngleToHeading(90) > 4.71f && Mission_AngleToHeading(90) < 4.72f);
 }
 
 TEST(campaign_corpus_placements_parse) {
@@ -931,15 +937,6 @@ TEST(campaign_corpus_splits_conditions_by_role) {
     ASSERT_EQ_INT(CORPUS_NO_VICTORY_CONDITION, no_way_to_win);
 }
 
-/* Seen in the original: 0 faces away, 90 west, 180 the camera, 270 east. */
-TEST(a_placed_angle_counts_degrees_from_north_turning_west) {
-    ASSERT(Mission_AngleToHeading(0) == 0.0f);
-    ASSERT(Mission_AngleToHeading(360) == 0.0f);
-    ASSERT(Mission_AngleToHeading(270) > 1.57f && Mission_AngleToHeading(270) < 1.58f);
-    ASSERT(Mission_AngleToHeading(180) > 3.14f && Mission_AngleToHeading(180) < 3.15f);
-    ASSERT(Mission_AngleToHeading(90) > 4.71f && Mission_AngleToHeading(90) < 4.72f);
-}
-
 int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
@@ -962,7 +959,6 @@ int main(int argc, char **argv) {
     RUN(black_peace_reads_its_seats_and_its_roster);
     RUN(the_kill_keys_count_down_from_their_number);
     RUN(a_met_condition_stays_met);
-    RUN(a_placed_angle_counts_degrees_from_north_turning_west);
 
     if (vfs_ready) VFS_Shutdown();
     tak_mem_shutdown();

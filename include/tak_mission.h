@@ -171,7 +171,8 @@ void Mission_NoteUnitGone(MissionData *mission, const char *unitname, int owner)
 /* 1 when the roster names the type, or when there is no roster. */
 int  Mission_RosterAllows(const MissionData *mission, const char *unitname);
 /* A placed unit's Angle as a heading in radians. The file counts
- * degrees from north turning west, the heading turns east. */
+ * degrees (legacy:169614-169623) from north turning west, as the
+ * original draws them. The heading turns east. */
 float Mission_AngleToHeading(int angle);
 int  Mission_ParseInitialMission(const char *text,
                                   MissionCommand **out_commands,

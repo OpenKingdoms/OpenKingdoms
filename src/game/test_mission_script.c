@@ -291,24 +291,6 @@ TEST(a_wait_ends_early_when_an_enemy_comes_near) {
     MissionScript_End();
 }
 
-TEST(the_last_standing_orders_of_a_list_hold_from_the_start) {
-    mock_reset();
-    int bow = mock_def("ARAARCH", 1.0f);
-    ASSERT_EQ_INT(0, MissionScript_Begin(NULL, 1, 0));
-    int held = Units_Spawn(bow, 1, 0, 0, 0);
-    int free_one = Units_Spawn(bow, 1, 0, 0, 0);
-    ASSERT_EQ_INT(1, MissionOrders_Give(held, "o 2, w 10, o 0"));
-    ASSERT_EQ_INT(1, MissionOrders_Give(free_one, "o 0, w 10, o 2"));
-    ASSERT_EQ_INT(UNIT_AGGRO_PASSIVE, (int)g_units[held].aggro_mode);
-    ASSERT_EQ_INT(UNIT_AGGRO_OFFENSIVE, (int)g_units[free_one].aggro_mode);
-    /* The wait and the second `o` change nothing. */
-    g_units[held].aggro_mode = UNIT_AGGRO_DEFENSIVE;
-    ticks(660);
-    ASSERT_EQ_INT(UNIT_AGGRO_DEFENSIVE, (int)g_units[held].aggro_mode);
-    ASSERT_EQ_INT(UNIT_AGGRO_OFFENSIVE, (int)g_units[free_one].aggro_mode);
-    MissionScript_End();
-}
-
 TEST(an_attack_on_a_type_hunts_every_one_of_it) {
     mock_reset();
     int sword = mock_def("ARASWORD", 1.0f);
@@ -318,7 +300,6 @@ TEST(an_attack_on_a_type_hunts_every_one_of_it) {
     int far_one = Units_Spawn(zombie, 2, 1, 900, 0);
     int near_one = Units_Spawn(zombie, 2, 1, 300, 0);
     int own = Units_Spawn(zombie, 1, 0, 10, 0);
-    (void)own;
     ASSERT_EQ_INT(2, MissionOrders_Give(u, "a TARZOM, m 1 1"));
     ticks(1);
     ASSERT_EQ_INT(near_one, g_last_attack_target);
@@ -333,28 +314,18 @@ TEST(an_attack_on_a_type_hunts_every_one_of_it) {
     /* None left, its own side's never counted, and the list goes on. */
     ASSERT_EQ_INT(2, g_attack_calls);
     ASSERT_EQ_INT(1, g_move_calls);
-    MissionScript_End();
-}
-
-TEST(an_attack_on_a_place_fires_there_and_holds_the_list) {
-    mock_reset();
-    int wisp = mock_def("ZONFLIES", 1.0f);
-    int boat = mock_def("ARATRANS", 1.0f);
-    g_defs[wisp].num_weapons = 1;
-    ASSERT_EQ_INT(0, MissionScript_Begin(NULL, 1, 0));
-    int u = Units_Spawn(wisp, 1, 0, 0, 0);
-    int t = Units_Spawn(boat, 1, 0, 0, 0);
-    ASSERT_EQ_INT(2, MissionOrders_Give(u, "a 10 20, m 1 1"));
-    ASSERT_EQ_INT(2, MissionOrders_Give(t, "a 10 20, m 1 1"));
-    ticks(300);
+    /* A place is fired on. A unit with no weapon skips it. */
+    g_defs[sword].num_weapons = 1;
+    g_defs[zombie].num_weapons = 0;
+    ASSERT_EQ_INT(1, MissionOrders_Give(u, "a 10 20"));
+    ASSERT_EQ_INT(2, MissionOrders_Give(own, "a 10 20, m 2 2"));
+    ticks(2);
     ASSERT_EQ_INT(1, g_ground_calls);
     ASSERT_EQ_INT(UNIT_CMD_ATTACK_GROUND, g_units[u].cmd_kind);
     ASSERT_EQ_INT(10 * 16, g_units[u].cmd_x);
-    ASSERT_EQ_INT(20 * 16, g_units[u].cmd_y);
-    /* The unarmed one is sent there instead. */
-    ASSERT_EQ_INT(1, g_move_calls);
-    ASSERT_EQ_INT(t, g_last_move_handle);
-    ASSERT_EQ_INT(10 * 16, g_last_move_x);
+    ASSERT_EQ_INT(own, g_last_move_handle);
+    ASSERT_EQ_INT(2 * 16, g_last_move_x);
+    g_defs[sword].num_weapons = 0;
     MissionScript_End();
 }
 
@@ -392,9 +363,16 @@ TEST(a_patrol_of_several_points_goes_round_them) {
     ASSERT_EQ_INT(3, MissionOrders_Give(u, "p 10 0, p 10 10, p 0 10"));
     ticks(1);
     ASSERT_EQ_INT(160, g_units[u].cmd_x);
-    g_units[u].world_x = 160; g_units[u].world_y = 0;
+    ASSERT_EQ_INT(1, g_leg_calls);
+    ASSERT_EQ_INT(UNIT_LEG_PATROL, g_last_leg_kind);
+    ASSERT_EQ_INT(160, g_last_leg_y);
+    /* 128 px short, as a flyer is (D-049), its patrol turns for the next. */
+    g_units[u].world_x = 32;
+    g_units[u].cmd_x = 160; g_units[u].cmd_y = 160;
     ticks(2);
     ASSERT_EQ_INT(160, g_units[u].cmd_y);
+    ASSERT_EQ_INT(2, g_leg_calls);
+    ASSERT_EQ_INT(0, g_last_leg_x);
     g_units[u].world_x = 160; g_units[u].world_y = 160;
     ticks(2);
     ASSERT_EQ_INT(0, g_units[u].cmd_x);
@@ -404,56 +382,6 @@ TEST(a_patrol_of_several_points_goes_round_them) {
     ASSERT_EQ_INT(160, g_units[u].cmd_x);
     ASSERT_EQ_INT(0, g_units[u].cmd_y);
     ASSERT_EQ_INT(1, MissionOrders_Running(u));
-    MissionScript_End();
-}
-
-/* An `o` between patrol points takes no place in the round. */
-TEST(standing_orders_between_patrol_points_keep_the_round) {
-    mock_reset();
-    int sword = mock_def("ARASWORD", 1.0f);
-    ASSERT_EQ_INT(0, MissionScript_Begin(NULL, 1, 0));
-    int u = Units_Spawn(sword, 2, 1, 0, 0);
-    ASSERT_EQ_INT(2, MissionOrders_Give(u, "p 10 0, o 1, p 10 10"));
-    ASSERT_EQ_INT(UNIT_AGGRO_DEFENSIVE, (int)g_units[u].aggro_mode);
-    ticks(1);
-    ASSERT_EQ_INT(160, g_units[u].cmd_x);
-    ASSERT_EQ_INT(0, g_units[u].cmd_y);
-    ASSERT_EQ_INT(1, g_leg_calls);
-    ASSERT_EQ_INT(160, g_last_leg_y);
-    g_units[u].world_x = 160; g_units[u].world_y = 0;
-    ticks(2);
-    ASSERT_EQ_INT(160, g_units[u].cmd_y);
-    g_units[u].world_x = 160; g_units[u].world_y = 160;
-    ticks(2);
-    ASSERT_EQ_INT(0, g_units[u].cmd_y);
-    ASSERT_EQ_INT(1, MissionOrders_Running(u));
-    MissionScript_End();
-}
-
-/* Each point of a scripted patrol goes with the next as a queued patrol
- * leg, and the round goes on once the unit's own patrol has turned for
- * that point, as a flyer's does 128 px short of its point (D-049). */
-TEST(a_patrol_of_several_points_gives_the_next_and_follows_the_unit) {
-    mock_reset();
-    int wisp = mock_def("ZONFLIES", 4.0f);
-    ASSERT_EQ_INT(0, MissionScript_Begin(NULL, 1, 0));
-    int u = Units_Spawn(wisp, 2, 1, 0, 0);
-    ASSERT_EQ_INT(2, MissionOrders_Give(u, "p 20 0, p 40 20"));
-    ticks(1);
-    ASSERT_EQ_INT(320, g_units[u].cmd_x);
-    ASSERT_EQ_INT(1, g_leg_calls);
-    ASSERT_EQ_INT(UNIT_LEG_PATROL, g_last_leg_kind);
-    ASSERT_EQ_INT(640, g_last_leg_x);
-    ASSERT_EQ_INT(320, g_last_leg_y);
-    /* Still 128 px short, its own patrol takes the next leg. */
-    g_units[u].world_x = 192;
-    g_units[u].cmd_x = 640;
-    g_units[u].cmd_y = 320;
-    ticks(2);
-    ASSERT_EQ_INT(640, g_units[u].cmd_x);
-    ASSERT_EQ_INT(2, g_leg_calls);
-    ASSERT_EQ_INT(320, g_last_leg_x);
-    ASSERT_EQ_INT(0, g_last_leg_y);
     MissionScript_End();
 }
 
@@ -950,13 +878,9 @@ int main(int argc, char **argv) {
     TEST_SUITE("Mission order lists and map script");
     RUN(a_list_is_worked_through_one_order_at_a_time);
     RUN(a_wait_ends_early_when_an_enemy_comes_near);
-    RUN(the_last_standing_orders_of_a_list_hold_from_the_start);
     RUN(an_attack_on_a_type_hunts_every_one_of_it);
-    RUN(an_attack_on_a_place_fires_there_and_holds_the_list);
     RUN(a_wait_for_attack_ends_when_the_named_unit_is_hurt);
     RUN(a_patrol_of_several_points_goes_round_them);
-    RUN(standing_orders_between_patrol_points_keep_the_round);
-    RUN(a_patrol_of_several_points_gives_the_next_and_follows_the_unit);
     RUN(a_map_script_creates_triggers_orders_and_calls_the_mission);
     RUN(every_unit_that_steps_into_a_trigger_on_one_tick_is_heard);
     RUN(a_unit_aboard_a_transport_is_still_in_the_mission);

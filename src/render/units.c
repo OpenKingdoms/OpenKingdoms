@@ -5589,7 +5589,7 @@ int Units_OrderSetAggro(int handle, int aggro_mode) {
     if (aggro_mode < UNIT_AGGRO_PASSIVE || aggro_mode > UNIT_AGGRO_OFFENSIVE)
         return 0;
     Unit *u = order_unit(handle);
-    /* A rider takes one too: a mission list's `o` is set as it is given (D-018). */
+    /* A rider takes one too, as a mission list sets its `o` when given. */
     if (!u && handle >= 0 && handle < g_unit_count &&
         g_units[handle].alive == UNIT_ALIVE_TRANSPORTED) u = &g_units[handle];
     if (!u) return 0;

@@ -279,7 +279,8 @@ int MissionOrders_Give(int handle, const char *text) {
         return 0;
     }
     if (n > 0xffff) n = 0xffff;
-    /* `o` is not a step: the last one in the list holds from the start. */
+    /* `o` is no step. Each one sets the standing orders as the list is
+     * read, so the last holds from the start (legacy:228595). */
     int level = -1, steps = 0;
     for (int i = 0; i < n; i++) {
         if (cmds[i].type != MISSION_CMD_ORDERS) steps++;
@@ -407,10 +408,10 @@ static int ms_step_run(MsProgram *p, int handle, const Unit *u) {
             int took;
             if (s->type == MS_STEP_UNLOAD) {
                 took = Units_OrderUnload(handle, s->a * MS_CELL, s->b * MS_CELL);
-            } else if (s->type == MS_STEP_ATTACK_PLACE &&
-                       Units_OrderAttackGround(handle, s->a * MS_CELL, s->b * MS_CELL)) {
-                /* Fires on the place until another order. Unarmed units go there. */
-                took = 1;
+            } else if (s->type == MS_STEP_ATTACK_PLACE) {
+                /* Fires on the place until another order. A unit with no
+                 * weapon takes none and skips it (legacy:228354, legacy:186915). */
+                took = Units_OrderAttackGround(handle, s->a * MS_CELL, s->b * MS_CELL);
             } else {
                 took = Units_OrderMove(handle, s->a * MS_CELL, s->b * MS_CELL);
             }
