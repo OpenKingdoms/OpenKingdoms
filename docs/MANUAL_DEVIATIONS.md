@@ -2803,6 +2803,19 @@ Format per entry:
   no letter to the camera, which pans on the arrows and the edge. The
   manual is silent.
 
+## D-052: The engine reads three misspellings in the shipped data
+
+- Change: the base Flying Builder's `cruisalt` is read as its cruise
+  height, the Grenadier's `vetmodel` as its veteran shot model and the
+  Wisp's weapon `soundclass` as its hit class. The right key wins where
+  a file has both.
+- Why: the files plainly mean the right keys. The original reads only
+  `cruisealt` (legacy:162970), `veteranmodel` (legacy:250080) and
+  `soundhitclass` or `soundhit` (legacy:250169-250175), so its base
+  Flying Builder flies at ground height, the veteran model goes unused
+  and the Wisp's strike is silent.
+- Citation: the shipped unit files. The manual is silent.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

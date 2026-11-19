@@ -32,13 +32,15 @@ the lowest and, among equals, the oldest, or it is dropped
 ## Sound classes
 
 `gamedata/soundclasses/*.tdf` hold one class per unit, named by the
-FBI key `soundcategory` (the FBI also carries `soundclass` with the
-same value). Sections inside a class are actions (`select`, `move`,
-`attack`, `guard`, `patrol`, `default`) and each entry is a wav name
-with a weight when `prioritized = 1`, or equal weights otherwise
-(:221394). Playing an action picks by weight with the C runtime
-generator, not the simulation one (:221705). An action the class does
-not have plays the first section in file order (:221615).
+FBI key `soundclass`, or `unit_default` when the key is absent
+(:162820). The game never reads `soundcategory`, which eight variants
+set to a class that does not exist. Sections inside a class are
+actions (`select`, `move`, `attack`, `guard`, `patrol`, `default`)
+and each entry is a wav name with a weight when `prioritized = 1`, or
+equal weights otherwise (:221394). Playing an action picks by weight
+with the C runtime generator, not the simulation one (:221705). An
+action the class does not have plays the first section in file order
+(:221615).
 
 `soundclasses.tdf` holds the hit classes (`sword`, `arrow`, `cannon`,
 `fire`, `hammer`, `fist`, `staff`, `rock`, `lightning`). Their sections

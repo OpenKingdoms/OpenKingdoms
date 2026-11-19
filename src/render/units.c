@@ -8384,8 +8384,9 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
                  TDF_ReadString(tdf, "category", ""));
     copy_bounded(out->damage_category, sizeof(out->damage_category),
                  TDF_ReadString(tdf, "damagecategory", ""));
-    copy_bounded(out->soundcategory, sizeof(out->soundcategory),
-                 TDF_ReadString(tdf, "soundcategory", ""));
+    /* The voice is soundclass, not soundcategory (legacy:162820). */
+    copy_bounded(out->soundclass, sizeof(out->soundclass),
+                 TDF_ReadString(tdf, "soundclass", "unit_default"));
     copy_bounded(out->bodytype, sizeof(out->bodytype),
                  TDF_ReadString(tdf, "bodytype", "default"));
     out->unitnumber     = TDF_ReadInt(tdf, "unitnumber", 0);
@@ -8412,7 +8413,9 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->radar_jam_distance = TDF_ReadInt(tdf, "radardistancejam", 0);
     out->sight_jam_distance = TDF_ReadInt(tdf, "sightdistancejam", 0);
     out->can_fly        = TDF_ReadInt(tdf, "canfly", 0);
-    out->cruise_alt     = TDF_ReadInt(tdf, "cruisealt", 0);
+    /* The base Flying Builder spells it cruisalt. The right spelling wins. */
+    out->cruise_alt     = TDF_ReadInt(tdf, "cruisealt",
+                                      TDF_ReadInt(tdf, "cruisalt", 0));
     out->hover_attack   = (uint8_t)(TDF_ReadInt(tdf, "hoverattack", 0) & 1);
     out->hover_attack_dist =
         (int16_t)TDF_ReadInt(tdf, "hoverattackdistance", 0);
@@ -8624,8 +8627,10 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
                      TDF_ReadString(tdf, "model", ""));
         copy_bounded(w->subtype, sizeof(w->subtype),
                      TDF_ReadString(tdf, "subtype", ""));
+        /* The Wisp's lightning names its hit class under soundclass. */
         copy_bounded(w->hit_sound_class, sizeof(w->hit_sound_class),
-                     TDF_ReadString(tdf, "soundhitclass", ""));
+                     TDF_ReadString(tdf, "soundhitclass",
+                                    TDF_ReadString(tdf, "soundclass", "")));
         copy_bounded(w->hit_sound, sizeof(w->hit_sound),
                      TDF_ReadString(tdf, "soundhit", ""));
         w->range          = TDF_ReadInt(tdf, "range", 0);
@@ -8743,10 +8748,11 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         } else {
             w->art_kind = UNIT_WEAPON_ART_NONE;
         }
-        /* veteranmodel is resolved like model and veteranlevel
-         * defaults to 10 (legacy:250079-250086). */
+        /* veteranmodel resolves like model, veteranlevel defaults to 10
+         * (legacy:250079-250086). The Grenadier spells it vetmodel. */
         model_basename(w->veteran_art_name, sizeof(w->veteran_art_name),
-                       TDF_ReadString(tdf, "veteranmodel", ""));
+                       TDF_ReadString(tdf, "veteranmodel",
+                                      TDF_ReadString(tdf, "vetmodel", "")));
         w->veteran_level = TDF_ReadInt(tdf, "veteranlevel", 10);
         /* Bind explosionclass to its effect entry once (legacy:250135). */
         w->explosion_idx = (int16_t)explosion_class_index(w->explosion_class);
