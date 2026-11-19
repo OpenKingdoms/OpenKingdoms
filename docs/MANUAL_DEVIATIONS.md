@@ -1309,25 +1309,12 @@ Format per entry:
 
 ## R-009: Build sparkles drawn fewer and added, with a halo
 
-- Change: A build sparkle draws added, at its art's size, over a
-  faint copy of itself 1.75 times as large for a halo. Only ten in
-  sixteen of a ring's sparkles draw. A raise ring's sparkles use the
-  same art and draw the same way.
-- Why: screenshots of the original show soft, haloed stars that stay
-  distinct points, fewer of them than our full ring of a keep puts on
-  screen. No data file supports a smaller count. sidedata.tdf names
-  only the sparkle art, and the only fact in the art is that each
-  picture holds two to four stars. The ring is sized from the model's
-  box less the flat build pad, as checked in the original
-  (legacy:198540-198551). With the pad the box widened a keep's ring
-  from 69 to 101 px. A capture of the original's keep being built
-  shows its sparkles crowded on the building, and at ten in sixteen our
-  ring puts about 93 sparkles a frame on screen against the original's
-  121. The share and the halo were checked against the original. The
-  ring's rate and motion stay as the note records.
-- Citation: Manual is silent on construction visuals. Observation:
-  screenshots and captures of the original. Behaviour note:
-  docs/notes/2026-09-14-build-sparkles.md.
+- Change: a build or raise sparkle draws added over a faint copy 1.75
+  times its size, and ten in sixteen of a ring's sparkles draw.
+- Why: the original shows fewer, softer stars than our full ring. The
+  data names only the art, so the share and the halo come from captures.
+- Citation: the ring box (legacy:198540-198551),
+  docs/notes/2026-09-14-build-sparkles.md. The manual is silent.
 
 ## D-005: A map pack contributes only its map
 
@@ -2847,112 +2834,41 @@ Format per entry:
 
 ## D-053: The classic view's fog is a drifting mist on a hardware renderer
 
-- Change: on a hardware renderer the classic view draws explored
-  ground out of sight under a mist instead of the original's black at
-  alpha 120. The ground goes a little over half way to `FogColor` of the
-  side whose fog is shown (gamedata/sidedata.tdf) times a grey, so
-  Aramon's veil is grey and Taros' brown. Each side has its own density,
-  grey and cloud strength: Aramon 0.60, 0.50 and 0.45, Taros 0.54, 0.44
-  and 0.61, every other side 0.535, 0.58 and 0.3. An even veil of the
-  side's grey lies under two passes of one tiled cloud whose mean is that
-  grey and whose swing is the side's strength, at two scales and drifting
-  two ways, so the billows change shape as the passes cross. The clouds' share of the
-  density swells and fades about every 10 seconds, so the billows come
-  and go while the mist's mean holds. The cloud is in the colour, so it
-  shows in a light tint and hardly in a dark one. The clear ground round
-  what is seen is lit in full, and its edge scallops cell by cell and
-  feathers over about a cell. Ground never seen stays opaque black, and
-  with Line of Sight off there is no mist. The software renderer keeps
-  the original's overlay. `FogMist=0` in options.cfg turns the mist off.
-  Captures move the mist by the sim tick, so a frame repeats. The fog is
-  drawn over units, shots and flyers, and a lightning or flame beam
-  draws when its shooter is drawn or either of its ends is in sight, so
-  the fog veils the part of it in the dark.
-- Why: seen in the original in hardware mode: a soft pale mist over
-  fogged ground, washed out and billowing, with no cell staircase, and
-  brown on Taros.
-  No texture or speed ships in the data. Captures of the original
-  through dgVoodoo measured both sides' fog. The Aramon mist's spread
-  rises and falls back about every 6.5 seconds. At its peaks it moves
-  about 20 px a second, and at its troughs it stands still with little
-  more than the ground's own grain. The model does this, its values
-  fitted to the captures and then set by eye against the original. The
-  mist costs the software renderer tens of milliseconds a frame. A Mage
-  Tower's lightning into the fog did not show: the old gate tested the
-  far end alone. The far end clause is that old gate, kept, and is not
-  checked against the original.
-- Citation: the manual is silent. `FogColor` is in the side records
-  (legacy:164740-164817, docs/notes/2026-09-04-rendering-visuals.md).
-  The overlay it replaces is legacy:130167-130436, which the original
-  draws after the scene (the same note, frame order). Shots take the
-  units' test on their place (legacy:246721-246738), and lightning
-  flies from the muzzle (legacy:247147-247160), unverified for beams
-  (docs/notes/2026-09-27-shots-meet-what-they-fly-into.md).
+- Change: on a hardware renderer, explored ground out of sight lies under
+  a pale drifting mist in the viewing side's `FogColor` instead of black
+  at alpha 120. The software renderer keeps the overlay, `FogMist=0` in
+  options.cfg turns the mist off, and a beam draws when its shooter or
+  either end is in sight.
+- Why: the original in hardware mode shows such a mist. Nothing in the
+  data shapes it, so ours is fitted to captures and set by eye.
+- Citation: `FogColor` (legacy:164740-164817), the overlay
+  (legacy:130167-130436). The manual is silent.
 
 ## D-054: A storm's falling drop lands its head on its burst
 
-- Change: each drop of a Remote Effect storm (`subtype = hailstorm`)
-  bursts where it falls, but its picture is drawn shifted, so that the
-  head comes down on the burst. The head is half the drop picture's
-  width up from its lowest opaque row, across at the middle of that
-  end. Up and down, the head meets the burst's origin. Across, it meets
-  the middle of the boxes of the burst class's first eight pictures.
-  The shift is read from the art. A paletted GAF drop is not decoded,
-  and its box's bottom and middle stand in. For `meteor` over
-  `fireball explosion` (Fire Storm, Wrath) the picture is drawn 23 px
-  up and 9 px right. For `iceballspin` over `iceballexp` (Hail Shower,
-  Ice Storm, Ice Storms) it is drawn 1 px left. The classic view
-  shifts the picture on screen. The 3D view shifts the billboard in
-  its own plane, so the head stays on the burst whichever way the
-  camera turns. Drawing only. The storm's damage and the sim hash do
-  not change.
-- Why: in the original TARMAGE's Fire Storm meteors match up with
-  their explosions, but not entirely. Ours line them up. Every `meteor` picture trails its head 21 to 24 px below
-  its origin and 2 to 3 px left of it, and `explodeb` centres 6 to 9 px
-  right of its origin as it starts. A drop whose origin lands on the
-  burst leaves its head that far from it. A capture of the original's
-  Fire Storm shows the original's own miss: a burst opens 8 to 9 px
-  right of and 12 to 14 px above where its meteor's head was last
-  drawn, the same on every pair that could be told apart.
-- Citation: the manual is silent. The fall itself is
-  docs/notes/2026-09-16-spells-draw-from-their-data.md.
+- Change: each drop of a `hailstorm` storm is drawn shifted so its head
+  meets its burst, the shift read from the art. Drawing only.
+- Why: the original's Fire Storm meteors land a few px off their bursts,
+  which reads as a miss.
+- Citation: captures of the original's Fire Storm. The manual is silent.
 
 ## D-055: Storm puffs from the first cast
 
-- Change: each drop of a Remote Effect storm (`subtype = hailstorm`)
-  leaves a short trail of soft white puffs from the first cast of the
-  battle. The original shows them only once something in the battle
-  has died. A cast that takes mana always casts. On one map the
-  original's storm stopped casting after enough casts while still
-  taking the mana, and the engine does not copy that.
-- What is drawn: a drop lays one bigsmoke puff, drawn alpha added,
-  where it is on each of its first 3 or 4 frames of fall. The puffs are
-  22 to 23 px apart, each a frame older than the one below. The art,
-  its size, the blend, the trail, the spacing and the count of up to 4
-  are read from the original's best case of the puffs playing. The
-  count picked per drop between 3 and 4, and each puff starting at
-  bigsmoke's picture 4 and playing on by the sheet's holds, are chosen
-  to look right in that case. Drawing only.
-- Why: both behaviours read as limits of a rushed particle system, and
-  the puffs as the storms' intended look. Every capture of the original
-  without a death first shows none, so the needs-a-death rule would
-  leave them unseen in most battles.
-- Citation: the manual is silent. Tests and stills of the original, and
-  docs/notes/2026-09-16-spells-draw-from-their-data.md.
+- Change: each drop of a `hailstorm` storm leaves 3 or 4 bigsmoke puffs
+  from the battle's first cast, and a cast that takes mana always casts.
+- Why: the original shows the puffs only once something has died, and on
+  one map its storm stopped casting while still taking mana. Both read as
+  limits of its particle system.
+- Citation: captures of the original. The manual is silent.
 
 ## D-056: Lightning is one jagged bolt, not the original's fading strands
 
-- Change: a lightning weapon's bolt is drawn as one jagged line of its
-  inner colour laid over in a soft band, at its full length from its
-  first frame, for its measured life. Known deviation, kept until a
-  later rendering pass of our own.
-- Why: in the original a bolt is the `lightning` particle system of
-  `effects.tdf`: fine jagged strands, two new ones a frame, the older
-  ones fading and smearing round them, growing from the muzzle at the
-  weapon's `weaponvelocity`, with the strike's flare when the front gets
-  there. The Mage Tower's, the Wisp's and the Death Totem's bolts all
-  look this way in the original.
-- Citation: captures of the original's Mage Tower, Wisp and Death
-  Totem bolts. The manual is silent.
+- Change: a lightning bolt is one jagged line of its inner colour in a
+  soft band, at full length for its measured life.
+- Why: the original's `lightning` system in `effects.tdf` grows fine
+  strands from the muzzle that fade. One bolt stands in until a rendering
+  pass of our own.
+- Citation: captures of the original's Mage Tower, Wisp and Death Totem.
+  The manual is silent.
 
 *(More entries added as deviations land.)*

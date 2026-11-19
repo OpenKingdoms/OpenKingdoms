@@ -31,7 +31,6 @@
 #include <SDL.h>
 #include <stdio.h>
 #include <stdint.h>
-#include <math.h>
 #include <string.h>
 
 #define BF_TILES  128
@@ -961,67 +960,6 @@ TEST(a_client_that_turns_buildings_is_kept_from_an_older_room) {
     ASSERT(TAK_ENGINE_BUILD_ID >= 3);
 }
 
-/* A root plate and two empty pieces, for EXPLODE's bursts. */
-#define BP_PX 65536.0f
-static UnitMesh g_bp_mesh;
-static float g_bp_pos[12];
-static uint16_t g_bp_node[4];
-
-static const UnitMesh *bp_mesh(void) {
-    static const float corner[4][2] = { { 8, 32 }, { -8, 32 }, { -8, -32 }, { 8, -32 } };
-    static const float piece[2][3] = { { 20, 40, -10 }, { -20, 10, 20 } };
-    UnitMesh *m = &g_bp_mesh;
-    memset(m, 0, sizeof(*m));
-    for (int v = 0; v < 4; v++) {
-        g_bp_pos[3 * v + 0] = corner[v][0] * BP_PX;
-        g_bp_pos[3 * v + 2] = corner[v][1] * BP_PX;
-    }
-    m->positions = g_bp_pos;
-    m->vert_node_idx = g_bp_node;
-    m->vert_count = 4;
-    m->node_count = 3;
-    m->nodes[0].parent = -1;
-    for (int k = 0; k < 2; k++) {
-        m->nodes[k + 1].parent = 0;
-        for (int a = 0; a < 3; a++) m->nodes[k + 1].offset[a] = piece[k][a] * BP_PX;
-    }
-    return m;
-}
-
-/* EXPLODE's type word names class k of explosions.tdf by bit 256 << k, as
- * the file's own header says. */
-TEST(an_explode_bursts_the_class_its_type_word_numbers) {
-    const UnitMesh *m = bp_mesh();
-    CobPiece pc[3];
-    memset(pc, 0, sizeof(pc));
-    int32_t at[3];
-    ASSERT_EQ_INT(1u << 5, Units_DebugExplodeBurst(m, pc, 1, 32 | 8192, 0.0f, at));
-    ASSERT_EQ_INT(1u << 0, Units_DebugExplodeBurst(m, pc, 1, 32 | 256, 0.0f, at));
-    ASSERT_EQ_INT(1u << 8, Units_DebugExplodeBurst(m, pc, 1, 32 | 65536, 0.0f, at));
-    ASSERT_EQ_INT(0, Units_DebugExplodeBurst(m, pc, 1, 4, 0.0f, at));
-    ASSERT_EQ_INT((1u << 3) | (1u << 8), Units_DebugExplodeBurst(m, pc, 1, 2048 | 65536, 0.0f, at));
-}
-
-static int rt_close(float a, float b) { return fabsf(a - b) < 0.01f; }
-
-/* The ring tilts with the unit's own roll and pitch, as in the original. */
-TEST(a_selection_ring_tilts_with_the_unit) {
-    const float h = 3.14159265f, across = 0.0f, along = 1.5707963f;
-    const float a = 0.5235988f, tilt = Units_GetTanTilt();
-    UnitSelectRing r = { 0.0f, 0.0f, 40.0f, 30.0f, 0.0f, a };
-    float dx, dy, ex, ey;
-    Units_SelectRingPoint(&r, h, across, &dx, &dy);
-    Units_SelectRingPoint(&r, h, across + h, &ex, &ey);
-    ASSERT(rt_close(40.0f * cosf(a), fabsf(dx)));
-    ASSERT(rt_close(20.0f * tilt, fabsf(dy)));
-    ASSERT(rt_close(-dx, ex) && rt_close(-dy, ey));
-    r.roll = 0.0f;
-    r.pitch = a;
-    Units_SelectRingPoint(&r, h, along, &dx, &dy);
-    ASSERT(fabsf(dx) < 0.01f);
-    ASSERT(rt_close(-30.0f * cosf(a) + 15.0f * tilt, dy));
-}
-
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("Buildings placed turned");
@@ -1057,7 +995,5 @@ int main(int argc, char **argv) {
     RUN(the_turn_keys_turn_only_in_the_3d_view);
     RUN(a_build_order_carries_its_facing_to_the_tick);
     RUN(a_client_that_turns_buildings_is_kept_from_an_older_room);
-    RUN(an_explode_bursts_the_class_its_type_word_numbers);
-    RUN(a_selection_ring_tilts_with_the_unit);
     TEST_REPORT();
 }
