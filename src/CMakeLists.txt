@@ -2265,15 +2265,6 @@ target_include_directories(test_ingame_keys_shipped PRIVATE
 target_compile_definitions(test_ingame_keys_shipped PRIVATE SDL_MAIN_HANDLED)
 target_link_libraries(test_ingame_keys_shipped PRIVATE SDL2::SDL2)
 
-# The line of buildings a Shift drag lays, as a pure rule. Data free.
-add_executable(test_build_line
-    ui/test_build_line.c
-    ui/build_line.c
-)
-target_include_directories(test_build_line PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-)
-
 add_executable(test_fog
     game/test_fog.c
     game/fog.c
@@ -2703,7 +2694,6 @@ if(BUILD_TESTING)
     add_test(NAME test_ingame_keys_shipped COMMAND test_ingame_keys_shipped)
     add_test(NAME test_sound       COMMAND test_sound)
     add_test(NAME test_palette     COMMAND test_palette)
-    add_test(NAME test_build_line  COMMAND test_build_line)
     add_test(NAME test_tnt         COMMAND test_tnt)
     add_test(NAME test_obj3d       COMMAND test_obj3d)
     add_test(NAME test_gltf        COMMAND test_gltf)

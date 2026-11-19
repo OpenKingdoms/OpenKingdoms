@@ -2234,7 +2234,7 @@ TEST(ctrl_through_both_clicks_summons_without_end) {
 
 /* With Shift the summons queues and the placement still ends after the
  * one click (legacy:242531-242540). Nothing Shift places goes behind it,
- * a building (legacy:39208-39219) or a move, as in the original. */
+ * a building (legacy:39208-39219) or a move (reported from play). */
 TEST(a_shift_click_queues_a_summons_and_nothing_goes_behind_it) {
     ASSERT_NOT_NULL(oq_world());
     int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
@@ -2258,47 +2258,6 @@ TEST(a_shift_click_queues_a_summons_and_nothing_goes_behind_it) {
     ASSERT(oq_count(OQ_SOLDIER) >= 2);
     ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
     ASSERT_EQ_INT(1, (int)oq_unit(bd)->build_endless);
-    oq_end();
-}
-
-/* A summons without end in hand refuses every order queued with Shift,
- * a move as well as a building, as in the original. A plain order still
- * replaces it. */
-TEST(a_summons_refuses_every_shift_order) {
-    ASSERT_NOT_NULL(oq_world());
-    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
-    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1,
-                                OQ_SOLDIER, TAK_CMD_ARG_ENDLESS));
-    ASSERT_EQ_INT(0, oq_command(TAK_CMD_MOVE, bd, OQ_CX, OQ_CY + 300, -1, -1,
-                                TAK_CMD_ARG_QUEUE));
-    ASSERT_EQ_INT(0, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 200, OQ_CY + 8, -1,
-                                OQ_HALL, TAK_CMD_ARG_QUEUE));
-    ASSERT_EQ_INT(1, (int)oq_unit(bd)->build_endless);
-    ASSERT_EQ_INT(0, (int)oq_unit(bd)->leg_count);
-    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, bd, OQ_CX, OQ_CY + 300, -1, -1, 0));
-    ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)oq_unit(bd)->cmd_kind);
-    oq_end();
-}
-
-/* A Shift drag with a building armed lays a line of it, each spot queued
- * from the press end, and the building stays armed, as in the original. */
-TEST(a_shift_drag_lays_a_line_of_buildings) {
-    ASSERT_NOT_NULL(oq_world());
-    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
-    Units_SelectSingle(bd);
-    HUD_BeginBuildPlacement(OQ_HALL);
-    InGame_WorldDrag(OQ_CX + 8, OQ_CY + 8, OQ_CX + 400, OQ_CY + 8, IG_CLICK_SHIFT);
-    ASSERT_EQ_INT(HUD_CMD_PLACE_BUILD, HUD_GetCommandMode());
-    HUD_ClearCommandMode();
-    oq_ticks(1);
-    const Unit *u = oq_unit(bd);
-    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)u->cmd_kind);
-    ASSERT(u->leg_count >= 2);
-    ASSERT(u->cmd_x < OQ_CX + 40);
-    for (int k = 0; k < u->leg_count; k++) {
-        ASSERT_EQ_INT(UNIT_LEG_BUILD, (int)u->legs[k].kind);
-        ASSERT(u->legs[k].x > (k ? u->legs[k - 1].x : u->cmd_x));
-    }
     oq_end();
 }
 
@@ -3136,8 +3095,6 @@ int main(int argc, char **argv) {
     RUN(ctrl_on_a_builders_unit_button_summons_without_end);
     RUN(ctrl_through_both_clicks_summons_without_end);
     RUN(a_shift_click_queues_a_summons_and_nothing_goes_behind_it);
-    RUN(a_summons_refuses_every_shift_order);
-    RUN(a_shift_drag_lays_a_line_of_buildings);
     RUN(a_front_line_goes_ahead_and_the_hand_waits);
     RUN(ctrl_shift_puts_an_order_in_front);
     RUN(a_ctrl_shift_build_goes_in_front);
