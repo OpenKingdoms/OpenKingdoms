@@ -1098,7 +1098,7 @@ static int              g_proj_effect_count = 0;
 /* Lightning bolts as drawn: a copy of the beam at fire with its own age,
  * so the picture can outlive the sim's hold. Neither saved nor hashed. */
 #define TAK_BOLTS_MAX 128
-static struct { Projectile p; int16_t age, life; uint32_t sid; } g_bolts[TAK_BOLTS_MAX];
+static struct { Projectile p; int16_t age, life; } g_bolts[TAK_BOLTS_MAX];
 static int              g_bolt_count = 0;
 
 /* explosions.tdf: each class lists numbered variants, each naming a GAF
@@ -1509,20 +1509,13 @@ static void bolt_note(const Projectile *b, const UnitWeapon *wp) {
     g_bolts[g_bolt_count].p = *b;
     g_bolts[g_bolt_count].age = 0;
     g_bolts[g_bolt_count].life = wp->bolt_ticks;
-    g_bolts[g_bolt_count].sid = b->shooter >= 0 && b->shooter < g_unit_count
-                              ? g_units[b->shooter].stable_id : 0;
     g_bolt_count++;
 }
 
 static void bolts_tick(void) {
     int n = 0;
-    for (int i = 0; i < g_bolt_count; i++) {
-        /* A slot taken by another unit is not the caster. */
-        const int s = g_bolts[i].p.shooter;
-        if (s >= 0 && (s >= g_unit_count || g_units[s].stable_id != g_bolts[i].sid))
-            g_bolts[i].p.shooter = -1;
+    for (int i = 0; i < g_bolt_count; i++)
         if (++g_bolts[i].age < g_bolts[i].life) g_bolts[n++] = g_bolts[i];
-    }
     g_bolt_count = n;
 }
 static void spell_effects_at(const UnitWeapon *wp, int shot, int32_t x, int32_t y,
@@ -10651,6 +10644,8 @@ static void unit_forget_slot(int slot) {
         }
         if (p->shooter == slot) p->shooter = -1;
     }
+    for (int i = 0; i < g_bolt_count; i++)
+        if (g_bolts[i].p.shooter == slot) g_bolts[i].p.shooter = -1;
     g_selection_count = slot_list_drop(g_selection, g_selection_count, slot);
     for (int g = 0; g < 10; g++) {
         g_ctrl_group_count[g] =
@@ -22814,13 +22809,7 @@ static void render_projectiles(const struct GameWorld *world,
         /* A beam ends where its ray stopped, a shot is where it flies. */
         int sx = p->world_x - world->cam_x;
         int sy = p->world_y - world->cam_y - (int)(p->height * g_tan_tilt);
-        if (p->is_beam) {
-            /* A bolt from a save has no record in g_bolts: drawn for its hold. */
-            if (g_proj_def[i] < 0)
-                draw_bolt(world, plat, r, p, p->src_x * 31 + p->world_y, p->age_ticks,
-                          p->age_ticks + p->ttl_ticks);
-            continue;
-        }
+        if (p->is_beam) continue;   /* drawn as bolts below */
         uint8_t hr = 255, hg = 220, hb = 90;
         uint8_t cr = 255, cg = 180, cb = 40;
         int halo_max = 14;
@@ -22859,11 +22848,12 @@ static void render_projectiles(const struct GameWorld *world,
         SDL_Rect spark = { sx - 1, sy - 1, 2, 2 };
         SDL_RenderFillRect(r, &spark);
     }
-    for (int i = 0; i < g_bolt_count; i++) {
-        const Projectile *p = &g_bolts[i].p;
-        if (!projectile_visible_to_local_player(world, p)) continue;
-        draw_bolt(world, plat, r, p, p->src_x * 31 + p->world_y, g_bolts[i].age,
-                  g_bolts[i].life);
+    const int bolts = Units_GetBoltCount();
+    for (int i = 0; i < bolts; i++) {
+        int age = 0, life = 0;
+        const Projectile *p = Units_GetBolt(i, &age, &life);
+        if (!p || !projectile_visible_to_local_player(world, p)) continue;
+        draw_bolt(world, plat, r, p, p->src_x * 31 + p->world_y, age, life);
     }
     SDL_SetRenderDrawBlendMode(r, prev_blend);
 }
@@ -24374,13 +24364,35 @@ int Units_SpriteArtSlot(const char *file) {
     return proj_sprite_index(lc, lc);
 }
 
-int Units_GetBoltCount(void) { return g_bolt_count; }
+/* A lightning beam from a save has no record in g_bolts: it draws from
+ * the pool for its remaining hold. */
+static int restored_bolt(int i) {
+    return g_projectiles[i].alive && !g_projectiles[i].hidden && g_projectiles[i].is_beam &&
+           g_projectiles[i].visual_kind != UNIT_PROJECTILE_VIS_FLAME && g_proj_def[i] < 0;
+}
+
+int Units_GetBoltCount(void) {
+    int n = g_bolt_count;
+    for (int i = 0; i < g_projectile_count; i++) n += restored_bolt(i);
+    return n;
+}
 
 const Projectile *Units_GetBolt(int i, int *out_age, int *out_life) {
-    if (i < 0 || i >= g_bolt_count) return NULL;
-    if (out_age) *out_age = g_bolts[i].age;
-    if (out_life) *out_life = g_bolts[i].life;
-    return &g_bolts[i].p;
+    if (i < 0) return NULL;
+    if (i < g_bolt_count) {
+        if (out_age) *out_age = g_bolts[i].age;
+        if (out_life) *out_life = g_bolts[i].life;
+        return &g_bolts[i].p;
+    }
+    i -= g_bolt_count;
+    for (int k = 0; k < g_projectile_count; k++) {
+        if (!restored_bolt(k) || i-- > 0) continue;
+        const Projectile *p = &g_projectiles[k];
+        if (out_age) *out_age = p->age_ticks;
+        if (out_life) *out_life = p->age_ticks + p->ttl_ticks;
+        return p;
+    }
+    return NULL;
 }
 
 int Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y) {

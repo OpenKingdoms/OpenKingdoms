@@ -1807,8 +1807,8 @@ int         Units_SpriteArtSlot(const char *file);
 int         Units_SpriteArtPictures(int idx);
 /* Fires weapon `slot` of a unit at the ground, for tests. 1 when it fired. */
 int         Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y);
-/* Lightning bolts being drawn: a copy of the beam at fire, its age and
- * drawn life in ticks, and its strength then out of 256. */
+/* Lightning bolts being drawn, beams from a save among them: the beam, its
+ * age and drawn life in ticks, and its strength then out of 256. */
 int               Units_GetBoltCount(void);
 const Projectile *Units_GetBolt(int i, int *out_age, int *out_life);
 int               Units_BoltStrength(int age, int life);

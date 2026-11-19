@@ -294,6 +294,7 @@ typedef struct ShelfRect {
 
 typedef struct Placement {
     int x, y;
+    int w, h;        /* the entry's frame 0 laid there */
 } Placement;
 
 static int cmp_shelf_rect_by_height(const void *a, const void *b) {
@@ -600,7 +601,11 @@ static int build_atlas_from_gaf(const char *vfs_path) {
     composite = (uint16_t *)tak_malloc((size_t)ATLAS_W * (size_t)used_h * sizeof(uint16_t));
     if (!composite) goto fail;
     for (size_t k = 0; k < (size_t)ATLAS_W * (size_t)used_h; k++) composite[k] = PALETTE_TEXEL_CLEAR;
-    for (int i = 0; i < n; i++) place_entry(composite, &entries[i], &places[i]);
+    for (int i = 0; i < n; i++) {
+        places[i].w = entries[i].w;
+        places[i].h = entries[i].h;
+        place_entry(composite, &entries[i], &places[i]);
+    }
 
     /* GPU textures are built on first lookup per colour. */
     if (ensure_group_cap() != 0) goto fail;
@@ -738,9 +743,8 @@ static uint16_t *color_variant_idx(const AtlasGroup *g, int color_idx) {
         int lim = (ncv < g->n_places) ? ncv : g->n_places;
         for (int i = 0; i < lim; i++) {
             if (!cvs[i].texels || !g->team[i]) continue;
-            /* The atlas is cut to the rows its art uses: never write past it. */
-            if (g->places[i].x + cvs[i].w > ATLAS_W || g->places[i].y + cvs[i].h > g->band_h)
-                continue;
+            /* A colour frame of another size would spill out of its slot. */
+            if (cvs[i].w != g->places[i].w || cvs[i].h != g->places[i].h) continue;
             place_entry(variant, &cvs[i], &g->places[i]);
         }
     }
