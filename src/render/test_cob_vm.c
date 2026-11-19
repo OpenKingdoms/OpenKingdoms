@@ -155,10 +155,9 @@ static int run_selftests(void) {
     }
 
     {
-        /* A sleep lasts the original's frames, rounded down and at least
-         * one, two ticks each, and is counted from the tick it began in
-         * whether the thread ran in that tick's pass or before it, as
-         * Killed does at a death (legacy:306522). */
+        /* A sleep is its 30 Hz frames rounded down, at least one, two ticks
+         * each, counted from the tick it began in, in the pass or before it
+         * as Killed is at a death (legacy:306522). */
         static const int32_t ms[3] = { 17, 100, 130 };
         static const int ticks[3] = { 2, 6, 6 };
         for (int k = 0; k < 3; k++) {
