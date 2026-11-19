@@ -1843,9 +1843,6 @@ int               Units_BakeMonarchMeshes(void);
 /* The band path: note the brightest level each atlas's meshes can reach,
  * from every unit, feature and shot model, before the first bake. */
 void              Units_PlanShadeBands(void);
-/* The brightest .shd level a mobile unit's, or a statue's, or else a
- * building's faces reach under the model light. */
-int               Units_LightTop(int mobile, int statue);
 /* 1 when models draw through the GL classic path's depth. */
 int               Units_ModelDepthReady(struct TAK_Platform *plat);
 

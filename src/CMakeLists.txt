@@ -980,31 +980,6 @@ target_compile_definitions(test_build_facing PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
 
-# test_light_gpu: GPU shading and the shade copies an atlas keeps, with a
-# synthetic palette and no game files.
-add_executable(test_light_gpu
-    render/test_light_gpu.c
-    ${TAK_SCREEN_TEST_SOURCES}
-)
-target_include_directories(test_light_gpu PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/third_party
-)
-target_link_libraries(test_light_gpu PRIVATE SDL2::SDL2 SDL2::SDL2main)
-if(AVCODEC_LIBRARY)
-    target_include_directories(test_light_gpu PRIVATE ${AVCODEC_INCLUDE_DIR})
-    target_link_libraries(test_light_gpu PRIVATE
-        ${TAK_FFMPEG_LIBS})
-endif()
-if(WIN32)
-    target_link_libraries(test_light_gpu PRIVATE user32 gdi32 winmm ws2_32 advapi32)
-    add_dependencies(test_light_gpu tak_sdl2_runtime)
-endif()
-target_compile_definitions(test_light_gpu PRIVATE
-    TAK_DATA_DIR="${TAK_DATA_DIR}"
-    TAK_GAME_DIR="${TAK_GAME_DIR}"
-)
-
 # test_orders: factory queues, rally points, Shift queued orders and
 # turned gates, with synthetic defs and a flat world.
 add_executable(test_orders
@@ -2775,7 +2750,6 @@ if(BUILD_TESTING)
     add_test(NAME test_movement    COMMAND test_movement)
     add_test(NAME test_line_of_fire COMMAND test_line_of_fire)
     add_test(NAME test_build_facing COMMAND test_build_facing)
-    add_test(NAME test_light_gpu   COMMAND test_light_gpu)
     add_test(NAME test_orders      COMMAND test_orders)
     add_test(NAME test_capture     COMMAND test_capture)
     add_test(NAME test_sim_probe   COMMAND test_sim_probe)

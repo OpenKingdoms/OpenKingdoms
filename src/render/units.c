@@ -22327,10 +22327,6 @@ static int face_light_top(FaceLight fl) {
     return model_face_level(n, n, 0, &fl);
 }
 
-int Units_LightTop(int mobile, int statue) {
-    return face_light_top(face_light(mobile, statue));
-}
-
 static void note_node_tops(const Obj3DNode *nd, int top) {
     for (; nd; nd = nd->next_sibling) {
         for (int p = 0; p < nd->num_primitives; p++)

@@ -707,7 +707,7 @@ static double colour_mb(void) {
 
 /* GPU shading needs the GL classic path, on the desktop and in the browser.
  * GpuShading=0 in options.cfg, or TAK_GPU_SHADING=0, keeps a lit copy per row. */
-int TexAtlas_GpuShadeWanted(const char *env, int setting) {
+static int TexAtlas_GpuShadeWanted(const char *env, int setting) {
     return env ? atoi(env) != 0 : setting != 0;
 }
 
@@ -720,7 +720,7 @@ static int choose_gpu_shade(TAK_Platform *plat) {
 
 int TexAtlas_ShadePlanWanted(void) { return g_entries_sorted && !g_shade_planned; }
 
-int TexAtlas_PlanBands(int top, int bands) {
+static int TexAtlas_PlanBands(int top, int bands) {
     const int need = top - TEX_SHADE_IDENTITY + 1;
     return need < 1 ? 1 : need < bands ? need : bands;
 }
