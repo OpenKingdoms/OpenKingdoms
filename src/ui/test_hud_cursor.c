@@ -82,11 +82,40 @@ TEST(a_map_point_shows_the_order_a_press_there_gives) {
     ASSERT_EQ_INT(HUD_CUR_NORMAL, HUD_PickMapCursor(NULL));
 }
 
+/* An armed order shows its own cursor, but revive over a body the sweep
+ * raises, too far over an enemy no weapon takes, and the pointer over a
+ * unit the transport cannot carry (legacy:186387-186402). */
+TEST(an_armed_order_shows_its_cursor_with_three_exceptions) {
+    HUDCursorFacts f = walkers();
+    f.armed = HUD_CMD_CLEAR;
+    ASSERT_EQ_INT(HUD_CMD_CLEAR, HUD_PickCursor(&f));
+    f.raise = 1;
+    ASSERT_EQ_INT(HUD_CUR_REVIVE, HUD_PickCursor(&f));
+    f = over_unit(walkers(), 1);
+    f.armed = HUD_CMD_ATTACK;
+    f.weapons = 2;
+    f.weapons_take = 1;
+    ASSERT_EQ_INT(HUD_CMD_ATTACK, HUD_PickCursor(&f));
+    f.weapons_take = 0;
+    ASSERT_EQ_INT(HUD_CUR_TOOFAR, HUD_PickCursor(&f));
+    f = over_unit(walkers(), 0);
+    f.armed = HUD_CMD_LOAD;
+    ASSERT_EQ_INT(HUD_CMD_LOAD, HUD_PickCursor(&f));
+    f.load_refused = 1;
+    ASSERT_EQ_INT(HUD_CUR_NORMAL, HUD_PickCursor(&f));
+    /* Over the ground Load keeps its cursor. */
+    f = walkers();
+    f.armed = HUD_CMD_LOAD;
+    f.load_refused = 1;
+    ASSERT_EQ_INT(HUD_CMD_LOAD, HUD_PickCursor(&f));
+}
+
 int main(void) {
     TEST_SUITE("HUD cursor");
     RUN(ground_is_a_move_for_a_selection_that_can_move);
     RUN(an_enemy_shows_attack_too_far_or_its_ground);
     RUN(a_frame_is_its_ground);
     RUN(a_map_point_shows_the_order_a_press_there_gives);
+    RUN(an_armed_order_shows_its_cursor_with_three_exceptions);
     TEST_REPORT();
 }
