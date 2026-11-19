@@ -15,11 +15,9 @@ static int hud_armed_cursor(const HUDCursorFacts *f) {
     return f->armed;
 }
 
-/* With nothing armed: heal over a unit the selection can mend
- * (legacy:186541-186545), attack or too far over an enemy
- * (legacy:186135-186330), the select hand over any other unit, then on
- * the ground revive, sweep (legacy:186587-186599) and move for a
- * selection that can move (legacy:186603). */
+/* With nothing armed: heal (legacy:186541-186545), attack or too far
+ * over an enemy (legacy:186135-186330), the select hand over another
+ * unit, then revive, sweep (legacy:186587-186599) or move (legacy:186603). */
 int HUD_PickCursor(const HUDCursorFacts *f) {
     if (!f) return HUD_CUR_NORMAL;
     if (f->armed != HUD_CMD_NONE) return hud_armed_cursor(f);
