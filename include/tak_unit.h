@@ -2031,13 +2031,6 @@ void              Units_RenderFeatures(const struct GameWorld *world,
 /* Ground shadows under units and features, the DrawShadows video
  * setting (legacy:197182). Default on. */
 void              Units_SetShadowsOn(int on);
-/* Which pass lays a unit's ground shadow: none, the ground pass before
- * any body, or its own row just before its body (a wall). */
-enum { UNITS_SHADOW_NONE = 0, UNITS_SHADOW_GROUND = 1, UNITS_SHADOW_IN_ROW = 2 };
-int               Units_ShadowPass(const UnitDef *d, int under_construction);
-/* 1 when a map feature casts a model silhouette. */
-struct FeatureDef;
-int               Units_FeatureCastsShadow(const struct FeatureDef *fd);
 /* Build sparkles off, for a probe that measures a model alone. */
 void              Units_SetBuildSparklesOn(int on);
 int               Units_GetShadowsOn(void);
