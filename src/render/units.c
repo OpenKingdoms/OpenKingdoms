@@ -4984,8 +4984,8 @@ int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
     int busy = u->cmd_kind != UNIT_CMD_NONE &&
                !(u->cmd_kind == UNIT_CMD_ATTACK && !u->attack_explicit);
     /* Nothing queued with Shift goes behind a summons without end, which
-     * would never come to it: a building (legacy:39208-39219), and in the
-     * original any other order too. */
+     * would never come to it: a building (legacy:39208-39219), and any
+     * other order too (reported from play). */
     if (queued == 1 && builder_summons_of(u) >= 0)
         return 0;
     if (queued == 1 && (busy || u->leg_count > 0)) {
