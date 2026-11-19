@@ -3105,6 +3105,21 @@ static const char LF_FBI_NONE[] =
     "[UNITINFO]\n{\n\tUnitName=FBINONE;\n}\n";
 static const char LF_FBI_STEADY[] =
     "[UNITINFO]\n{\n\tUnitName=FBISTEADY;\n\tstandingmoveorder=1;\n}\n";
+/* The shipped misspellings read as fallbacks, and the right key winning
+ * where a file has both. */
+static const char LF_FBI_TYPO[] =
+    "[UNITINFO]\n{\n\tUnitName=FBITYPO;\n\tcanfly=1;\n\tcruisalt=200;\n"
+    "\tsoundcategory=FBITYPO2;\n\tsoundclass=FBITYPO;\n}\n"
+    "[WEAPON1]\n{\n\tname=Bolt;\n\ttype=Ballistic;\n\trange=300;\n"
+    "\tmodel=typoshot;\n\tvetmodel=typoshot_vet;\n\tsoundclass=lightning;\n"
+    "\t[DAMAGE]\n\t{\n\t\tdefault=10;\n\t}\n}\n";
+static const char LF_FBI_BOTH[] =
+    "[UNITINFO]\n{\n\tUnitName=FBIBOTH;\n\tcanfly=1;\n\tcruisalt=50;\n"
+    "\tcruisealt=120;\n}\n"
+    "[WEAPON1]\n{\n\tname=Bolt;\n\ttype=Ballistic;\n\trange=300;\n"
+    "\tmodel=bothshot;\n\tvetmodel=wrongshot;\n\tveteranmodel=bothshot_vet;\n"
+    "\tsoundclass=fire;\n\tsoundhitclass=arrow;\n"
+    "\t[DAMAGE]\n\t{\n\t\tdefault=10;\n\t}\n}\n";
 
 TEST(the_unit_file_gives_the_standing_order) {
     VFS_Shutdown();
@@ -3114,8 +3129,10 @@ TEST(the_unit_file_gives_the_standing_order) {
         { "units/fbirove.fbi", LF_FBI_ROVE, 100, 0 },
         { "units/fbinone.fbi", LF_FBI_NONE, 100, 0 },
         { "units/fbisteady.fbi", LF_FBI_STEADY, 100, 0 },
+        { "units/fbitypo.fbi", LF_FBI_TYPO, 100, 0 },
+        { "units/fbiboth.fbi", LF_FBI_BOTH, 100, 0 },
     };
-    ASSERT_EQ_INT(0, test_write_hpi(LF_FBI_DIR "/a.hpi", e, 4));
+    ASSERT_EQ_INT(0, test_write_hpi(LF_FBI_DIR "/a.hpi", e, 6));
     int loaded = (VFS_Init(LF_FBI_DIR, NULL) == 0) ? Units_LoadDefs() : -1;
     const UnitDef *hold = Units_GetDef(Units_FindDefByName("FBIHOLD"));
     const UnitDef *rove = Units_GetDef(Units_FindDefByName("FBIROVE"));
@@ -3130,51 +3147,13 @@ TEST(the_unit_file_gives_the_standing_order) {
     int hold_roams = hold ? hold->roams : -1;
     int none_roams = none ? none->roams : -1;
     int steady_roams = steady ? steady->roams : -1;
-    VFS_Shutdown();
-    Units_FreeDefs();
-    remove(LF_FBI_DIR "/a.hpi");
-    lf_rmdir(LF_FBI_DIR);
-    ASSERT_EQ_INT(4, loaded);
-    ASSERT_EQ_INT(1, hold_has);
-    ASSERT_EQ_INT(UNIT_AGGRO_DEFENSIVE, hold_order);
-    ASSERT_EQ_INT(UNIT_AGGRO_OFFENSIVE, rove_order);
-    ASSERT_EQ_INT(0, none_has);
-    ASSERT_EQ_INT(0, hold_roams);
-    ASSERT_EQ_INT(1, none_roams);
-    ASSERT_EQ_INT(0, steady_roams);
-}
-
-/* The shipped misspellings: the base Flying Builder's cruisalt, the
- * Grenadier's vetmodel and the Wisp's weapon soundclass. The right
- * spelling wins where a file has both. */
-static const char LF_FBI_TYPO[] =
-    "[UNITINFO]\n{\n\tUnitName=FBITYPO;\n\tcanfly=1;\n\tcruisalt=200;\n"
-    "\tsoundcategory=FBITYPO2;\n\tsoundclass=FBITYPO;\n}\n"
-    "[WEAPON1]\n{\n\tname=Bolt;\n\ttype=Ballistic;\n\trange=300;\n"
-    "\tmodel=typoshot;\n\tvetmodel=typoshot_vet;\n\tsoundclass=lightning;\n"
-    "\t[DAMAGE]\n\t{\n\t\tdefault=10;\n\t}\n}\n";
-static const char LF_FBI_BOTH[] =
-    "[UNITINFO]\n{\n\tUnitName=FBIBOTH;\n\tcanfly=1;\n\tcruisalt=50;\n"
-    "\tcruisealt=120;\n\tsoundclass=FBIBOTH;\n}\n"
-    "[WEAPON1]\n{\n\tname=Bolt;\n\ttype=Ballistic;\n\trange=300;\n"
-    "\tmodel=bothshot;\n\tvetmodel=wrongshot;\n\tveteranmodel=bothshot_vet;\n"
-    "\tsoundclass=fire;\n\tsoundhitclass=arrow;\n"
-    "\t[DAMAGE]\n\t{\n\t\tdefault=10;\n\t}\n}\n";
-
-TEST(the_unit_file_takes_the_shipped_misspellings) {
-    VFS_Shutdown();
-    lf_mkdir(LF_FBI_DIR);
-    TestHPIEntry e[] = {
-        { "units/fbitypo.fbi", LF_FBI_TYPO, 100, 0 },
-        { "units/fbiboth.fbi", LF_FBI_BOTH, 100, 0 },
-    };
-    ASSERT_EQ_INT(0, test_write_hpi(LF_FBI_DIR "/a.hpi", e, 2));
-    int loaded = (VFS_Init(LF_FBI_DIR, NULL) == 0) ? Units_LoadDefs() : -1;
     const UnitDef *typo = Units_GetDef(Units_FindDefByName("FBITYPO"));
     const UnitDef *both = Units_GetDef(Units_FindDefByName("FBIBOTH"));
     int typo_alt = typo ? typo->cruise_alt : -1;
     int both_alt = both ? both->cruise_alt : -1;
-    int typo_class = typo && strcmp(typo->soundclass, "FBITYPO") == 0;
+    /* The voice is soundclass, unit_default without it (legacy:162820). */
+    int typo_voice = typo && strcmp(typo->soundclass, "FBITYPO") == 0;
+    int hold_voice = hold && strcmp(hold->soundclass, "unit_default") == 0;
     int typo_vet = typo && strcmp(typo->weapons[0].veteran_art_name, "typoshot_vet") == 0;
     int both_vet = both && strcmp(both->weapons[0].veteran_art_name, "bothshot_vet") == 0;
     int typo_hit = typo && strcmp(typo->weapons[0].hit_sound_class, "lightning") == 0;
@@ -3183,10 +3162,18 @@ TEST(the_unit_file_takes_the_shipped_misspellings) {
     Units_FreeDefs();
     remove(LF_FBI_DIR "/a.hpi");
     lf_rmdir(LF_FBI_DIR);
-    ASSERT_EQ_INT(2, loaded);
+    ASSERT_EQ_INT(6, loaded);
+    ASSERT_EQ_INT(1, hold_has);
+    ASSERT_EQ_INT(UNIT_AGGRO_DEFENSIVE, hold_order);
+    ASSERT_EQ_INT(UNIT_AGGRO_OFFENSIVE, rove_order);
+    ASSERT_EQ_INT(0, none_has);
+    ASSERT_EQ_INT(0, hold_roams);
+    ASSERT_EQ_INT(1, none_roams);
+    ASSERT_EQ_INT(0, steady_roams);
     ASSERT_EQ_INT(200, typo_alt);
     ASSERT_EQ_INT(120, both_alt);
-    ASSERT(typo_class);
+    ASSERT(typo_voice);
+    ASSERT(hold_voice);
     ASSERT(typo_vet);
     ASSERT(both_vet);
     ASSERT(typo_hit);
@@ -4956,7 +4943,6 @@ int main(int argc, char **argv) {
     RUN(a_weapon_is_melee_by_its_type);
     RUN(a_unit_is_born_with_its_standing_order);
     RUN(the_unit_file_gives_the_standing_order);
-    RUN(the_unit_file_takes_the_shipped_misspellings);
     RUN(a_weapon_gives_the_attack_order_and_unitstandorders_the_stances);
     RUN(the_unit_file_names_its_statues_and_who_can_be_turned);
     RUN(a_freeze_beam_turns_a_walker_to_ice_and_passes_over_the_rest);
