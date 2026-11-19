@@ -1309,14 +1309,12 @@ Format per entry:
 
 ## R-009: Build sparkles drawn fewer and added, with a halo
 
-- Change: a build or raise sparkle draws added at its art's size over a
-  faint copy of itself 1.75 times as large, and ten in sixteen of a
-  ring's sparkles draw.
-- Why: the original shows soft haloed stars, fewer than our full ring put
-  on screen. The data names only the art, so the halo and the share were
-  set from captures of a keep going up.
-- Citation: the manual is silent. The ring box (legacy:198540-198551),
-  docs/notes/2026-09-14-build-sparkles.md.
+- Change: a build or raise sparkle draws added over a faint copy 1.75
+  times its size, and ten in sixteen of a ring's sparkles draw.
+- Why: the original shows fewer, softer stars than our full ring. The
+  data names only the art, so the share and the halo come from captures.
+- Citation: the ring box (legacy:198540-198551),
+  docs/notes/2026-09-14-build-sparkles.md. The manual is silent.
 
 ## D-005: A map pack contributes only its map
 
@@ -2837,50 +2835,40 @@ Format per entry:
 ## D-053: The classic view's fog is a drifting mist on a hardware renderer
 
 - Change: on a hardware renderer, explored ground out of sight lies under
-  a pale mist in the viewing side's `FogColor`, an even veil under two
-  passes of one tiled cloud that drift and swell, where the engine drew
-  the software mode's black at alpha 120. Ground never seen stays black,
-  Line of Sight off draws no mist, the software renderer keeps the
-  overlay, and `FogMist=0` in options.cfg turns the mist off. A beam
-  draws when its shooter or either end is in sight.
-- Why: the original in hardware mode shows a soft billowing mist in the
-  side's colour with no cell staircase. No cloud texture or speed ships
-  in the data, so the mist is fitted to captures and set by eye.
-- Citation: the manual is silent. `FogColor` (legacy:164740-164817), the
-  overlay drawn after the scene (legacy:130167-130436),
-  docs/notes/2026-09-04-rendering-visuals.md.
+  a pale drifting mist in the viewing side's `FogColor` instead of black
+  at alpha 120. The software renderer keeps the overlay, `FogMist=0` in
+  options.cfg turns the mist off, and a beam draws when its shooter or
+  either end is in sight.
+- Why: the original in hardware mode shows such a mist. Nothing in the
+  data shapes it, so ours is fitted to captures and set by eye.
+- Citation: `FogColor` (legacy:164740-164817), the overlay
+  (legacy:130167-130436). The manual is silent.
 
 ## D-054: A storm's falling drop lands its head on its burst
 
-- Change: each drop of a `hailstorm` Remote Effect storm is drawn shifted
-  so its head comes down on its burst, the shift read from the drop's and
-  the burst's art. Drawing only.
-- Why: in the original the meteors of a Fire Storm land a few px off
-  their bursts. Ours line up.
-- Citation: the manual is silent. Captures of the original's Fire Storm,
-  docs/notes/2026-09-16-spells-draw-from-their-data.md.
+- Change: each drop of a `hailstorm` storm is drawn shifted so its head
+  meets its burst, the shift read from the art. Drawing only.
+- Why: the original's Fire Storm meteors land a few px off their bursts,
+  which reads as a miss.
+- Citation: captures of the original's Fire Storm. The manual is silent.
 
 ## D-055: Storm puffs from the first cast
 
-- Change: each drop of a `hailstorm` storm leaves 3 or 4 bigsmoke puffs,
-  drawn added, from the battle's first cast. In the original they show
-  only once something in the battle has died, and on one map its storm
-  stopped casting while still taking the mana. A cast that takes mana
-  here always casts.
-- Why: both read as limits of the original's particle system, and the
-  puffs as the storms' intended look.
-- Citation: the manual is silent. Captures of the original,
-  docs/notes/2026-09-16-spells-draw-from-their-data.md.
+- Change: each drop of a `hailstorm` storm leaves 3 or 4 bigsmoke puffs
+  from the battle's first cast, and a cast that takes mana always casts.
+- Why: the original shows the puffs only once something has died, and on
+  one map its storm stopped casting while still taking mana. Both read as
+  limits of its particle system.
+- Citation: captures of the original. The manual is silent.
 
 ## D-056: Lightning is one jagged bolt, not the original's fading strands
 
-- Change: a lightning weapon's bolt is one jagged line of its inner
-  colour laid over in a soft band, at full length from its first frame,
-  for its measured life.
-- Why: the original's bolt is the `lightning` system of `effects.tdf`,
-  fine strands that grow from the muzzle and fade. One bolt stands in
-  until a rendering pass of our own.
-- Citation: the manual is silent. Captures of the original's Mage Tower,
-  Wisp and Death Totem.
+- Change: a lightning bolt is one jagged line of its inner colour in a
+  soft band, at full length for its measured life.
+- Why: the original's `lightning` system in `effects.tdf` grows fine
+  strands from the muzzle that fade. One bolt stands in until a rendering
+  pass of our own.
+- Citation: captures of the original's Mage Tower, Wisp and Death Totem.
+  The manual is silent.
 
 *(More entries added as deviations land.)*
