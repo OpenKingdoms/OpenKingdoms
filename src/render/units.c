@@ -7410,9 +7410,13 @@ static int ship_water_lane(const GameWorld *w, const Unit *u, const UnitDef *d,
 }
 
 static int unit_step_refused(const GameWorld *w, const UnitDef *def,
+                             const MoveClassDef *mc,
                              const Unit *u, int self_h,
                              int escaping, int occ_escape,
                              int32_t nx, int32_t ny);
+static int unit_body_bad_mc(const GameWorld *w, const Unit *u,
+                            const UnitDef *def, const MoveClassDef *mc,
+                            int32_t x, int32_t y);
 
 /* Whether ship u has a route to (x, y) it can take the first steps of. */
 static int ship_route_starts(const GameWorld *w, const Unit *u, const UnitDef *d,
@@ -7431,12 +7435,12 @@ static int ship_route_starts(const GameWorld *w, const Unit *u, const UnitDef *d
     int n = TAK_PathPlanQuery(w, u->world_x, u->world_y, x, y, &q, &path);
     g_path_work_this_tick += TAK_PathLastWork();
     if (n <= 0) return 0;
-    int escaping = !unit_terrain_walkable(w, d, u->world_x, u->world_y);
+    int escaping = unit_body_bad_mc(w, u, d, q.move_class, u->world_x, u->world_y);
     int occ_escape = occ_step_blocked(w, u, self, u->world_x, u->world_y);
     float dx = (float)(path.x[0] - u->world_x), dy = (float)(path.y[0] - u->world_y);
     float len = sqrtf(dx * dx + dy * dy);
     for (float s = 2.0f; s < len && s <= 32.0f; s += 2.0f)
-        if (unit_step_refused(w, d, u, self, escaping, occ_escape,
+        if (unit_step_refused(w, d, q.move_class, u, self, escaping, occ_escape,
                               u->world_x + (int32_t)(dx * s / len),
                               u->world_y + (int32_t)(dy * s / len)))
             return 0;
@@ -7562,7 +7566,17 @@ static int ship_holds_up_yard(const Unit *u, const UnitDef *hd) {
     return 0;
 }
 
-/* A yard waiting on its pad sends the side's own idle ships in its way off
+/* Whether ship o has gathered at yard f's rally point, within the two
+ * of its lengths a fleet packs in there (M-012). */
+static int ship_by_rally(const Unit *f, const Unit *o, const UnitDef *ohd) {
+    if (!f->rally_set) return 0;
+    int64_t reach = 2 * (ohd->hull_fore_px + ohd->hull_aft_px);
+    int64_t dx = o->world_x - f->rally_x, dy = o->world_y - f->rally_y;
+    return dx * dx + dy * dy <= reach * reach;
+}
+
+/* A yard waiting on its pad sends the side's own idle ships in its way off,
+ * but leaves those gathered at its rally point unless they are on the pad
  * (M-012). 0 when a hull stands on the pad that this will not move, and the
  * yard then takes the original's test of the pad's cells. */
 static int ship_clear_pad(const Unit *f, int32_t pad_x, int32_t pad_y,
@@ -7582,6 +7596,9 @@ static int ship_clear_pad(const Unit *f, int32_t pad_x, int32_t pad_y,
             o->cmd_kind == UNIT_CMD_NONE &&
             ship_in_yard_way(&yw, ohd, g_ships[k], o->world_x, o->world_y, o->heading,
                              SHIP_PAD_CLEAR) &&
+            (!ship_by_rally(f, o, ohd) ||
+             !ship_hulls_apart(ohd, o->world_x, o->world_y, o->heading, pd, pad_x,
+                               pad_y, yw.pad_heading, SHIP_PAD_CLEAR)) &&
             ship_launch_spot(f, fx, fz, o, Units_GetDef(o->def_idx), ohd, &yw)) {
             if (yw.n_movers < 32) yw.movers[yw.n_movers++] = g_ships[k];
             continue;
