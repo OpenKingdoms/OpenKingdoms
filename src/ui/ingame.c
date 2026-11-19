@@ -1151,10 +1151,9 @@ static int ig_build_line_spots(int bdef, int32_t x0, int32_t y0,
     return n;
 }
 
-/* Each spot the cursor's test passes is sent in order from the press
- * and a blocked one is passed over. With Ctrl held too each goes in
- * front, so the release end is built first. 0 when the drag lays no
- * line. */
+/* Each spot the cursor's test passes is sent in order from the press, a
+ * blocked one passed over, and with Ctrl too each goes in front, so the
+ * release end is built first. 0 when the drag lays no line. */
 static int ig_build_line_drag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                               int mods) {
     int bdef = ig_build_line_def((mods & IG_CLICK_SHIFT) != 0);
@@ -1656,10 +1655,9 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
     if (!world || !world->loaded) return;
     int cmd = HUD_GetCommandMode();
     int shift_held = (mods & IG_CLICK_SHIFT) != 0;
-    /* Shift puts the order behind the ones the units hold, and Ctrl
-     * changes the one in hand and keeps those (manual section IV).
-     * Ctrl+Shift puts it ahead of them all, last in first out, as seen
-     * in the original. */
+    /* Shift puts the order behind the ones the units hold, Ctrl changes
+     * the one in hand and keeps those (manual section IV), and Ctrl+Shift
+     * puts it ahead of them all (legacy:181685-181689). */
     int ctrl_held = (mods & IG_CLICK_CTRL) != 0;
     const uint16_t q = shift_held && ctrl_held ? (uint16_t)TAK_CMD_ARG_FRONT
                      : shift_held ? (uint16_t)TAK_CMD_ARG_QUEUE

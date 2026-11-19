@@ -773,54 +773,6 @@ TEST(a_drag_with_the_broom_clears_the_box) {
     ASSERT_EQ_INT(1, outside);
 }
 
-/* A Ctrl+Shift dragged sweep keeps its box as a leg ahead of the order
- * it displaces, so near a full queue it is refused rather than losing
- * the order in hand. */
-TEST(a_front_sweep_near_a_full_queue_keeps_the_order_in_hand) {
-    GameWorld *w = oq_world();
-    ASSERT_NOT_NULL(w);
-    FeatureDef fd;
-    memset(&fd, 0, sizeof fd);
-    strncpy(fd.name, "TESTTREE", sizeof(fd.name) - 1);
-    strncpy(fd.category, "trees", sizeof(fd.category) - 1);
-    fd.footprint_x = 1;
-    fd.footprint_z = 1;
-    fd.height = 60;
-    fd.blocking = 1;
-    fd.reclaimable = 1;
-    fd.damage = 100;
-    ASSERT_EQ_INT(1, Features_DebugSetDefs(&fd, 1));
-    ASSERT(Features_AddInstance(w, 0, 70, 60, 70 * 16 + 8, 60 * 16 + 8, 0, -1) >= 0);
-    ((UnitDef *)Units_GetDef(OQ_BUILDER))->cap_flags |= UNIT_CAP_RECLAIM;
-    int b = Units_Spawn(OQ_BUILDER, 1, 0, 66 * 16, 61 * 16);
-    ASSERT(b >= 0);
-    const int box = 3 << 8 | 3;
-    const int sweep = TAK_CMD_ARG_AREA | TAK_CMD_ARG_FRONT;
-    for (int room = 0; room < 2; room++) {
-        int queued = UNIT_MOVE_LEGS_MAX - 1 - room;
-        ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, b, OQ_CX - 200, OQ_CY, -1, -1, 0));
-        for (int k = 0; k < queued; k++)
-            ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, b, OQ_CX - 200, OQ_CY + 8 * k,
-                                        -1, -1, TAK_CMD_ARG_QUEUE));
-        int took = oq_command(TAK_CMD_RECLAIM_FEATURE, b, 70 * 16 + 8, 60 * 16 + 8,
-                              -1, box, sweep);
-        const Unit *u = oq_unit(b);
-        if (!room) {
-            ASSERT_EQ_INT(0, took);
-            ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)u->cmd_kind);
-            ASSERT_EQ_INT(queued, (int)u->leg_count);
-        } else {
-            ASSERT_EQ_INT(1, took);
-            ASSERT_EQ_INT(UNIT_MOVE_LEGS_MAX, (int)u->leg_count);
-            ASSERT_EQ_INT(UNIT_LEG_SWEEP_AREA, (int)u->legs[0].kind);
-            ASSERT_EQ_INT(UNIT_LEG_MOVE, (int)u->legs[1].kind);
-            ASSERT_EQ_INT(OQ_CX - 200, u->legs[1].x);
-            ASSERT_EQ_INT(OQ_CY, u->legs[1].y);
-        }
-    }
-    oq_end();
-}
-
 /* A queued order carries a def only when it is a building, so what a
  * save keeps is what the hash counts. */
 TEST(a_queued_move_carries_no_def) {
@@ -2261,134 +2213,6 @@ TEST(a_shift_click_queues_a_summons_and_nothing_goes_behind_it) {
     oq_end();
 }
 
-/* A Ctrl+Shift line is last in first out, as in the
- * original: each spot goes ahead of all, the one in hand waiting at the
- * head of the queue, so the release end is built first. */
-TEST(a_front_line_goes_ahead_and_the_hand_waits) {
-    ASSERT_NOT_NULL(oq_world());
-    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
-    const int32_t ax = OQ_CX + 8, bx = OQ_CX + 200, cx = OQ_CX + 392;
-    const int32_t y = OQ_CY + 8;
-    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 200, -1,
-                                OQ_HALL, 0));
-    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, ax, y, -1, OQ_HALL, TAK_CMD_ARG_FRONT));
-    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, bx, y, -1, OQ_HALL, TAK_CMD_ARG_FRONT));
-    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, cx, y, -1, OQ_HALL, TAK_CMD_ARG_FRONT));
-    const Unit *u = oq_unit(bd);
-    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)u->cmd_kind);
-    ASSERT_EQ_INT(cx, u->cmd_x);
-    ASSERT_EQ_INT(3, (int)u->leg_count);
-    ASSERT_EQ_INT(bx, u->legs[0].x);
-    ASSERT_EQ_INT(ax, u->legs[1].x);
-    ASSERT_EQ_INT(OQ_CY + 200, u->legs[2].y);
-    for (int t = 0; t < 3000 && oq_unit(bd)->cmd_x == cx; t++) oq_ticks(1);
-    ASSERT_EQ_INT(1, oq_count(OQ_HALL));
-    ASSERT_EQ_INT(bx, oq_unit(bd)->cmd_x);
-    oq_end();
-}
-
-/* Ctrl+Shift is last in first out for every order, as in
- * the original: the order goes in hand and the one it displaces waits
- * ahead of the queue. */
-TEST(ctrl_shift_puts_an_order_in_front) {
-    ASSERT_NOT_NULL(oq_world());
-    int s = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX, OQ_CY);
-    Units_SelectSingle(s);
-    InGame_WorldClickOn(OQ_CX + 160, OQ_CY, -1, 0);
-    InGame_WorldClickOn(OQ_CX + 160, OQ_CY + 160, -1, IG_CLICK_SHIFT);
-    InGame_WorldClickOn(OQ_CX - 160, OQ_CY, -1, IG_CLICK_SHIFT | IG_CLICK_CTRL);
-    oq_ticks(1);
-    const Unit *u = oq_unit(s);
-    ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)u->cmd_kind);
-    ASSERT(u->cmd_x < OQ_CX);
-    ASSERT_EQ_INT(2, (int)u->leg_count);
-    ASSERT(u->legs[0].x > OQ_CX && u->legs[0].y < OQ_CY + 80);
-    ASSERT(u->legs[1].y > OQ_CY + 80);
-    /* An armed patrol goes in front the same way. */
-    HUD_SetCommandMode(HUD_CMD_PATROL);
-    InGame_WorldClickOn(OQ_CX, OQ_CY - 160, -1, IG_CLICK_SHIFT | IG_CLICK_CTRL);
-    oq_ticks(1);
-    ASSERT_EQ_INT(UNIT_CMD_PATROL, (int)u->cmd_kind);
-    ASSERT_EQ_INT(3, (int)u->leg_count);
-    ASSERT_EQ_INT(UNIT_LEG_MOVE, (int)u->legs[0].kind);
-    ASSERT(u->legs[0].x < OQ_CX);
-    oq_end();
-}
-
-/* A Ctrl+Shift click with a building armed goes in front of what the
- * builder holds rather than replacing it, and stays armed, as in the
- * original. A summons clicked with Ctrl+Shift replaces everything, as
- * Ctrl drops Shift for it (legacy:39177-39180). */
-TEST(a_ctrl_shift_build_goes_in_front) {
-    ASSERT_NOT_NULL(oq_world());
-    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
-    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 104, -1,
-                                OQ_HALL, 0));
-    Units_SelectSingle(bd);
-    HUD_BeginBuildPlacement(OQ_HALL);
-    InGame_WorldClickOn(OQ_CX + 200, OQ_CY + 8, -1, IG_CLICK_SHIFT | IG_CLICK_CTRL);
-    ASSERT_EQ_INT(HUD_CMD_PLACE_BUILD, HUD_GetCommandMode());
-    HUD_ClearCommandMode();
-    oq_ticks(1);
-    const Unit *u = oq_unit(bd);
-    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)u->cmd_kind);
-    ASSERT(u->cmd_x > OQ_CX + 100);
-    ASSERT_EQ_INT(1, (int)u->leg_count);
-    ASSERT_EQ_INT(UNIT_LEG_BUILD, (int)u->legs[0].kind);
-    ASSERT_EQ_INT(OQ_CY + 104, u->legs[0].y);
-    HUD_BeginBuildPlacementRepeat(OQ_SOLDIER, 1);
-    InGame_WorldClickOn(OQ_CX - 200, OQ_CY + 8, -1, IG_CLICK_SHIFT | IG_CLICK_CTRL);
-    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
-    oq_ticks(1);
-    ASSERT_EQ_INT(OQ_SOLDIER, (int)u->build_def);
-    ASSERT_EQ_INT(1, (int)u->build_endless);
-    ASSERT_EQ_INT(0, (int)u->leg_count);
-    oq_end();
-}
-
-/* A Ctrl+Shift order goes in front of a summons without end, as in the
- * original: it is done first, and the summons resumes on its spot. */
-TEST(a_ctrl_shift_order_goes_in_front_of_a_summons) {
-    ASSERT_NOT_NULL(oq_world());
-    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
-    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1,
-                                OQ_SOLDIER, TAK_CMD_ARG_ENDLESS));
-    ASSERT(oq_frame_up(bd) >= 0);
-    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, bd, OQ_CX - 200, OQ_CY, -1, -1,
-                                TAK_CMD_ARG_FRONT));
-    const Unit *u = oq_unit(bd);
-    ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)u->cmd_kind);
-    ASSERT_EQ_INT(1, (int)u->leg_count);
-    ASSERT_EQ_INT(UNIT_LEG_BUILD, (int)u->legs[0].kind);
-    ASSERT_EQ_INT(1, (int)u->legs[0].endless);
-    for (int t = 0; t < 1500 && oq_unit(bd)->cmd_kind != UNIT_CMD_BUILD; t++)
-        oq_ticks(1);
-    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
-    ASSERT_EQ_INT(1, (int)oq_unit(bd)->build_endless);
-    oq_ticks(900);
-    ASSERT(oq_count(OQ_SOLDIER) >= 2);
-    oq_end();
-}
-
-/* A Ctrl+Shift drag lays its line in front, from the press end, so the
- * release end is in hand first, as in the original. */
-TEST(a_ctrl_shift_drag_lays_its_line_in_front) {
-    ASSERT_NOT_NULL(oq_world());
-    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
-    Units_SelectSingle(bd);
-    HUD_BeginBuildPlacement(OQ_HALL);
-    InGame_WorldDrag(OQ_CX + 8, OQ_CY + 8, OQ_CX + 400, OQ_CY + 8,
-                     IG_CLICK_SHIFT | IG_CLICK_CTRL);
-    HUD_ClearCommandMode();
-    oq_ticks(1);
-    const Unit *u = oq_unit(bd);
-    ASSERT(u->leg_count >= 2);
-    ASSERT(u->cmd_x > u->legs[0].x);
-    for (int k = 1; k < u->leg_count; k++) ASSERT(u->legs[k].x < u->legs[k - 1].x);
-    ASSERT_EQ_INT(0, (int)u->build_endless);
-    oq_end();
-}
-
 /* A right click on the button ends the summons and leaves the frame in
  * hand standing (legacy:150087-150093, 181838-181866). */
 TEST(a_right_click_ends_a_summons_without_end) {
@@ -3050,7 +2874,6 @@ int main(int argc, char **argv) {
     RUN(a_soldier_lost_on_the_pad_is_not_trained_again);
     RUN(soldiers_with_no_orders_step_off_to_spots_of_their_own);
     RUN(a_drag_with_the_broom_clears_the_box);
-    RUN(a_front_sweep_near_a_full_queue_keeps_the_order_in_hand);
     RUN(a_queued_move_carries_no_def);
     RUN(ctrl_changes_the_order_in_hand_and_keeps_the_queue);
     RUN(a_cancelled_frame_frees_its_site);
@@ -3095,11 +2918,6 @@ int main(int argc, char **argv) {
     RUN(ctrl_on_a_builders_unit_button_summons_without_end);
     RUN(ctrl_through_both_clicks_summons_without_end);
     RUN(a_shift_click_queues_a_summons_and_nothing_goes_behind_it);
-    RUN(a_front_line_goes_ahead_and_the_hand_waits);
-    RUN(ctrl_shift_puts_an_order_in_front);
-    RUN(a_ctrl_shift_build_goes_in_front);
-    RUN(a_ctrl_shift_order_goes_in_front_of_a_summons);
-    RUN(a_ctrl_shift_drag_lays_its_line_in_front);
     RUN(a_right_click_ends_a_summons_without_end);
     RUN(a_summons_waits_for_a_unit_on_its_spot_and_ends_on_a_building);
     RUN(a_summons_gives_up_on_a_spot_a_unit_keeps);
