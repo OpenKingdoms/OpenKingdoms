@@ -82,7 +82,7 @@ REAL_COMMITS = [
         "src/ui/test_ui_screens.c",
     ]),
     ("51077e4", "Playtest fixes: kill counts, sight-gated targeting", 2, [
-        "docs/notes/2026-09-04-p2-gates.md",
+        "docs/notes/pathing.md",
         "include/tak_fog.h",
         "include/tak_unit.h",
         "src/game/fog.c",
@@ -124,7 +124,7 @@ REAL_COMMITS = [
     ]),
     ("a9eba7e", "A versioned, checksummed save container", 2, [
         "cmake/tak_build_stamp.h.in",
-        "docs/notes/2026-09-11-save-container.md",
+        "docs/notes/saves.md",
         "include/tak_bytes.h",
         "include/tak_savefile.h",
         "src/CMakeLists.txt",
@@ -133,7 +133,7 @@ REAL_COMMITS = [
         "src/net/commands.c",
     ]),
     ("38c5265", "Settings persist in the browser", 2, [
-        "docs/notes/2026-09-11-where-files-are-written.md",
+        "docs/notes/files.md",
         "include/tak_paths.h",
         "scripts/web-smoke.js",
         "src/CMakeLists.txt",
@@ -180,7 +180,7 @@ REAL_SLICES = [
     ("51077e4", "fog plus its own test", 1,
      ["src/game/fog.c", "src/game/test_fog.c"]),
     ("51077e4", "fog plus a note", 1,
-     ["src/game/fog.c", "docs/notes/2026-09-04-p2-gates.md"]),
+     ["src/game/fog.c", "docs/notes/pathing.md"]),
     ("998ede3", "the sound files on their own", 1,
      ["src/sound/sound.c", "src/sound/game_sound.c", "src/sound/soundclass.c",
       "src/sound/ambient.c"]),

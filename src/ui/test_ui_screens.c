@@ -1809,7 +1809,7 @@ TEST(select_game_shows_the_hosts_ping_and_your_own) {
 /* A determinism class is one float environment. Every platform is in
  * the same one now, because the simulation carries its own
  * trigonometry rather than the platform's, and the session has to send
- * what the build actually is (docs/notes/2026-09-14-float-determinism.md).
+ * what the build actually is (docs/notes/2026-09-04-multiplayer-hapinet.md).
  * What makes the claim true is test_libm_guard and test_sim_probe, not
  * this case. */
 TEST(a_build_tells_the_server_which_float_environment_it_is) {
@@ -15014,7 +15014,7 @@ TEST(an_archer_against_a_swordsman_ends_as_the_originals_rules_give) {
 }
 
 /* ── The Harpy's mind control ───────────────────────────────────────
- * docs/notes/2026-09-19-the-harpy-takes-units-over.md, The shot's flight. */
+ * docs/notes/2026-09-04-combat-mechanics.md, The shot's flight. */
 
 #define MC_DUEL_TICKS 900
 #define MC_DUEL_SLOTS 512
@@ -22955,7 +22955,7 @@ static int tr_deep(const GameWorld *w, int32_t x, int32_t y) {
     return 1;
 }
 
-/* Hulls come from the shipped 3DOs (docs/notes/2026-10-02-ship-hulls.md)
+/* Hulls come from the shipped 3DOs (docs/notes/pathing.md, Ship hulls)
  * and nothing else has one. A real fleet sent onto one point of open sea
  * ends with no hull on another (M-012). */
 TEST(ship_hulls_come_from_their_models) {

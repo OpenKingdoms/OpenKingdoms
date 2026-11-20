@@ -6,7 +6,7 @@
 #include <stddef.h>
 
 /* The victory and defeat statistics screen the original shows three
- * seconds after the banner (docs/notes/2026-09-10-end-of-battle.md).
+ * seconds after the banner (docs/notes/gameflow.md).
  * It loads defeat.gui or victory<side>.gui, fills one row per player
  * from the world's tallies, and leaves on the two authored buttons:
  * Main Menu (cancel.wav) and Proceed (ok.wav, the skirmish battle

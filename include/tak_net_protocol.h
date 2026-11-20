@@ -355,7 +355,7 @@ typedef enum TAK_NetHashGroup {
 /* A room's determinism class. Only clients of the same class share a
  * room, and every build that carries the engine's own trigonometry is
  * in one class, so Windows, macOS, Linux and the browser play together
- * (docs/notes/2026-09-14-float-determinism.md). */
+ * (docs/notes/2026-09-04-multiplayer-hapinet.md). */
 typedef enum TAK_NetClass {
     TAK_CLASS_UNKNOWN  = 0,
     TAK_CLASS_BROWSER  = 1,   /* retired, a browser build that used libm */

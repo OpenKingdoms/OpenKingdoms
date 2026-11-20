@@ -8,7 +8,7 @@
  * opens on a 64 bit macOS or Linux build.
  *
  * Nothing here touches a platform or a window. See
- * docs/notes/2026-09-11-save-sections.md.
+ * docs/notes/saves.md.
  */
 
 #include "tak_savegame.h"

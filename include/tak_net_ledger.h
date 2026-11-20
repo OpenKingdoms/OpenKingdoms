@@ -10,7 +10,8 @@
  * The ledger: every finished multiplayer match the relay has been told
  * about, and the sums the leaderboard shows.
  *
- * Design in docs/notes/2026-09-14-multiplayer-leaderboard.md. The short
+ * Design in docs/notes/2026-09-04-multiplayer-hapinet.md, The
+ * leaderboard. The short
  * version: one append only file of records written with the protocol's
  * own bounded codec, read whole into this struct at start, and every
  * question the site asks is answered from memory. No database, no
@@ -64,7 +65,7 @@ typedef struct TAK_LedgerSeat {
     uint8_t  ident;           /* TAK_LedgerIdent */
     uint64_t player_id;       /* 0 for a computer or a client with no token */
     char     name[TAK_NET_NAME_MAX];
-    /* The end screen's columns (docs/notes/2026-09-10-end-of-battle.md). */
+    /* The end screen's columns (docs/notes/gameflow.md). */
     int32_t  units_built;
     int32_t  kills;
     int32_t  losses;

@@ -443,7 +443,7 @@ way and pull two machines apart over a match. Two gates in CI keep it that
 way, and a build old enough to predate them is still refused rather than
 desynced, listed greyed with the reason. The measurement and what was done
 about it are in
-[docs/notes/2026-09-14-float-determinism.md](docs/notes/2026-09-14-float-determinism.md).
+[docs/notes/2026-09-04-multiplayer-hapinet.md](docs/notes/2026-09-04-multiplayer-hapinet.md#which-builds-may-share-a-room).
 
 Everyone in a room has to be on the same version of the game. A room
 started on a different version is greyed in the list with the reason. The

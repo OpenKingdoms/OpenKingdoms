@@ -128,8 +128,8 @@ typedef struct GameWorld {
     uint8_t      mission_cond_celebrated[TAK_MISSION_MAX_CONDITIONS];
 
     /* Skirmish end-state. Campaign maps use MissionData objectives;
-     * skirmish maps use the original's unit-count rule (docs/notes/
-     * 2026-09-10-end-of-battle.md). */
+     * skirmish maps use the original's unit-count rule
+     * (docs/notes/gameflow.md). */
     int          skirmish_elapsed_ticks;
     int          skirmish_game_over;
     int          skirmish_winner_team;   /* 0 = none/draw, else normalized team */
