@@ -375,16 +375,60 @@ Format per entry:
   the tiles it stamps there are the tiles the planner tested, and the
   line between two points that are kept runs over placements that were
   each found legal. A compressed route keeps a point where that chain
-  turns and the last. Only a cell a pinched route merely crosses, where
-  no placement is legal, keeps the cell centre. The original anchors
-  its own sweep on the unit's position rounded to the tile grid
-  (legacy:184166-184186), so it has no 32 pixel cell to be in step
-  with. This entry used to record a parity artefact here: a footprint
-  was judged at one placement per cell, so a band of walkable ground
-  one cell wide was ground at one parity against the cell grid and no
-  ground at all at the other, however wide it was. Enumerating the
-  placements removed it.
-- Citation: `docs/notes/2026-09-10-clearance-grid.md`.
+  turns and the last. The first point is kept when the line past it,
+  from where the route begins, would take the body off ground it may
+  stand on or cut a corner the step will not. It is kept too when the
+  step would not walk the unit along that line from where it really
+  stands: its body onto more bad ground than it stands on, at a corner
+  or not, or its centre into water it may not enter. Structures under
+  the unit's real body are still judged from the placement's body line,
+  so a unit off its placement can still meet the corner of a building
+  and slide. The same holds for every first leg judged from the unit, a
+  walk out's and a field route's included: that test is of ground and
+  water, not of what is built. The step tests buildings on the tiles it
+  stamps, anchored on its position less half the body, up to a tile from
+  the rounded anchor its ground test uses. Uncompressed routes, which
+  only tests ask for, keep a point a cell and are not judged leg by leg.
+  A route whose first leg the step would refuse from where the unit
+  stands is planned again as a trapped start. A unit whose body fits no
+  placement of its own cell, or whose body, wholly on its ground, can
+  reach none of them in a line without meeting bad ground, a building or
+  a corner, is walked out first, body by body by the step's own rule, to
+  the bodies that are a legal placement, and the route begins with that
+  walk at its turns. Its first steps are judged by the step's own test
+  from where the unit stands. After them its centre meets no water it
+  may not enter at any pixel, the body never takes on more bad ground
+  than it stands on, beside a diagonal too, in the order the step meets
+  the tiles, and what is built is crossed only while the body already
+  stands on some, as the mover allows. A walk out whose first leg the
+  step would still refuse is no route. These checks hold for the route
+  as the planner lays it. The mover passes a first point within 32 px,
+  or 16 px beside an obstacle (M-001), without walking to it, and where
+  the line from the unit to the next point is one the step refuses, the
+  unit is refused, slides, or drops its route and plans again. A tile of
+  a walk out in a cell with no legal placement costs a cell's worth of
+  detour, half of
+  PATH_PINCH_COST, as the crossings of 32 pixel cells it replaced did,
+  and the cell it starts the search from adds its half of bad ground, as
+  any step into that cell does. Those crossings took a cell with one
+  walkable tile as ground to cross, beside the last one or not, and
+  routed a 2 by 2 unit in the corner of a one tile ridge straight
+  through it. A unit in a pocket of a few cells that ground or buildings
+  shut in is walked out the same way when its search runs out within 64
+  cells, to placements outside the pocket. Where the body cannot get
+  out, neither can the walk, and there is no route. The step tests the
+  whole body, as the original's does. A body crossing a
+  tile corner must pass the bodies either side of it too, which is the
+  engine's own rule: the original's for corners is not established. The
+  original anchors its own sweep on the unit's position rounded to the
+  tile grid (legacy:184166-184186), so it has no 32 pixel cell to be in
+  step with. This entry used to record a parity artefact here: a
+  footprint was judged at one placement per cell, so a band of walkable
+  ground one cell wide was ground at one parity against the cell grid
+  and no ground at all at the other, however wide it was. Enumerating
+  the placements removed it.
+- Citation: `docs/notes/2026-09-10-clearance-grid.md`,
+  `docs/notes/2026-11-15-a-route-out-of-a-trapped-start.md`.
 
 ---
 
@@ -1284,8 +1328,14 @@ Format per entry:
 - Change: A unit with a live move order that has not closed 32 pixels
   of ground on its goal for 240 ticks gets a fresh search, and after
   four of those have not moved it on the order is ended as
-  unreachable. The original scales every retry delay by a per def
-  speed byte derived from maxvelocity (legacy:162838-162851,
+  unreachable. The order is kept instead while the ground joins the
+  unit to its point and no friend that has stopped stands at its edge.
+  The ladder then goes on counting its rungs as kept ones. A kept order
+  searches once every 240 ticks and not between, unless the tick's
+  search budget refused it, and ends after 30 kept rungs, two minutes
+  with no ground closed. Ground closed starts the ladder over from its
+  first rung. The original scales every retry delay by a per def speed
+  byte derived from maxvelocity (legacy:162838-162851,
   legacy:184656-184658), so a slow unit waits several times longer
   than a fast one.
 - What counts as closing ground: with a route, the way still left to
@@ -1337,22 +1387,33 @@ Format per entry:
   several near miss cases. An owner parity call, not one the reference
   settles.
 - Also: where the way is blocked by another unit and the corridor is
-  too narrow to pass it, there is no other route to take and the order
-  is ended. The original does not command the blocker to move either:
-  legacy:191265-191388 re-runs the search on a delay scaled by that
-  same speed byte and never touches the unit in the way. Making a
-  blocking unit stand aside would be a new behaviour, not parity, and
-  is what issue #60's "or another unit" clause still wants.
+  too narrow to pass it, the order is kept on a kept rung, so the unit
+  searches again every 240 ticks. The original does not
+  command the blocker to move either: legacy:191265-191388 re-runs the
+  search on a delay scaled by that same speed byte and never touches
+  the unit in the way. Seen in the original: twelve swordsmen sent
+  through a gap exactly one body wide, with the goal well past it.
+  Three to six get through, and the rest back up and cycle, then find
+  another way or try again later. None stands for good. Until
+  2026-11-15 the order was ended here, and on a gap one body wide the
+  units that gave up stood at the wall face or in the gap and held the
+  rest back for good.
+  A unit whose body comes within 32 px of a friend that has stopped,
+  or a ship within its arrival reach of one, still ends its order,
+  which is how a crowd sent to one point packs. Making a blocking unit stand
+  aside would be a new behaviour, not parity, and is what issue #60's
+  "or another unit" clause still wants.
 - Measured: on the reported band fixture the ladder is what turns the
   one case a route cannot serve, a monarch bracketed by two of his own
   on a 48 pixel band, from nine thousand ticks of grinding into an
   order that ends. Every other case in that fixture is served by the
   route search alone and never reaches the first rung, so the ladder
   is a safety net and is meant to be one. The data free case is
-  a_unit_that_covers_ground_without_closing_on_its_goal_gives_up in
-  test_movement: a unit pacing a walled pocket for 2023 px with the
-  way out facing away from its goal, which the old ladder never gave
-  up on and this one ends at tick 1592.
+  a_unit_that_covers_ground_without_closing_on_its_goal_climbs_the_ladder
+  in test_movement: a unit pacing a walled pocket with the way out
+  facing away from its goal, which the old ladder never climbed. This
+  one climbs all four rungs, and since the ground joins the pocket to
+  the goal it keeps the order on a kept rung.
 - Citation: Issue #60. Manual is silent.
 
 ---
@@ -1583,6 +1644,16 @@ Format per entry:
   and never moves anything (legacy:9373-9382). The Sea Fort's pad lies
   108 px in front of its centre, and without the push a ship stopped on
   its way out kept the next from going up.
+- Change, jams: two ships that have closed no ground for 8 s, one
+  pressing on the other, stop holding each other, and a stalled ship
+  sails through a hull by the cells alone, as in the original. A ship
+  leaving its yard goes for a spot it can reach by a straight way or a
+  route. Ships gathered at the yard's rally point are left there unless
+  they are on the pad. A hull the yard cannot move leaves the pad to the
+  original's cell test (legacy:9363-9382).
+- Change, auras: between two ships an aura reaches from hull line to
+  hull line, not centre to centre (legacy:237131-237139), so a Repair
+  Skiff at a ship's bow mends it.
 - Why: the original keeps units apart by the cells of their move
   class alone (legacy:163193-163195, legacy:219329-219340), and a
   ship's class is a square one and a half to three times shorter than
@@ -1967,7 +2038,12 @@ Format per entry:
   original's does, with the chapter, the chapter's title and the
   mission's text dealt out over the panel's eight lines. It closes, and
   the clock starts, on a press of the mouse or of Enter, Escape, Space
-  or Pause.
+  or Pause. F2 raises it again during the mission, and putting it away
+  then leaves the clock as F2 found it, so a paused battle stays paused.
+  While it is up it owns the keys and the mouse. The key or press that
+  puts it away goes no further: Enter opens no chat line, F1 opens no
+  menu under it, and the click gives the selection no order. A press
+  held on the battle while it comes up gives no order when it is let go.
 - Why: the original builds the panel as the battle screen is built and
   pauses the game under it. How it is dismissed is in a handler the
   listing does not name, so the keys are ours. The panel has no button
@@ -2637,11 +2713,18 @@ Format per entry:
   units Ctrl+M takes. Shift with it adds them to the selection and keeps
   the units already selected. It works in both views. With Ctrl held, M
   is still Ctrl+M, and while a chat line is open M is a typed letter.
+  The press of M arms Move, as it does in the original, and a box
+  dragged with M held drops the Move it armed. Three things follow from
+  the shared key. A click with M held that moves less than 4 px is not
+  a box, so it gives the armed Move to that spot. A drag with M held
+  that is let go over the HUD is no box either, and leaves Move
+  armed. A press of M while Move is armed from its button disarms it,
+  as a second click on the button does.
 - Why: the owner asked for a quick way to take an army into a fight and
   leave the monarch behind.
 - Citation: the original's Keys.TDF binds M, LOWER_M and UPPER_M, to
-  UnitCommand Move, which this engine has never bound, so M did nothing
-  in battle before. The manual is silent.
+  UnitCommand Move, and the engine binds it so. The box rule is ours
+  and shares the key with Move. The manual is silent.
 
 ## D-047: Battle chat is larger, in the sender's colour, on a plate
 
@@ -2713,6 +2796,24 @@ Format per entry:
   and flies its legs round the order point at its weapon's range plus
   160 px, a shape the engine does not copy. The manual is silent.
   docs/notes/2026-11-14-air-attacks-and-dropped-shots.md has the detail.
+
+## D-050: W, A, S and D pan, and Attack and Stop sit on B and N
+
+- Change: W, A, S and D pan the camera in both views, as the arrows and
+  the screen edge do, except while Ctrl is held, when they are select
+  keys. B arms Attack and N gives Stop, in upper and lower case alike,
+  where the original has A and S. The other order letters are the
+  original's: M, G, P, L, U, H, C, K and O.
+- Why: letter panning ranks above the original's two letters, and A and
+  S cannot both pan and give orders. B and N are free in both views,
+  sit by the index finger beside WASD, and keep their labels on QWERTZ
+  and AZERTY. Ctrl+B and Ctrl+N stay the select keys, which no order
+  letter answers.
+- Citation: the original's Keys.TDF binds LOWER_A and UPPER_A to
+  UnitCommand Attack and LOWER_S and UPPER_S to Stop, leaves B empty,
+  gives N to MoveToNextUnit, which the engine does not have, and binds
+  no letter to the camera, which pans on the arrows and the edge. The
+  manual is silent.
 
 ## R-008: A reel's soundtrack goes through the game's mixer
 

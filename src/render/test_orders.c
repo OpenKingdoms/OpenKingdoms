@@ -1014,8 +1014,9 @@ TEST(the_heal_cursor_shows_over_a_damaged_unit_a_walker_could_mend) {
     oq_end();
 }
 
-/* A frame is never selected, so with nobody to help it the pointer is
- * the ground's and not the select hand (legacy:186553, 186603). */
+/* A frame is never selected, so with nobody to help it the cursor is
+ * the ground's, a move for a walker, and not the select hand
+ * (legacy:186553, 186603). */
 TEST(a_frame_nobody_selected_can_help_shows_no_select_hand) {
     ASSERT_NOT_NULL(oq_world());
     int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 50, OQ_CY);
@@ -1023,7 +1024,7 @@ TEST(a_frame_nobody_selected_can_help_shows_no_select_hand) {
     ASSERT(frame >= 0);
     int s = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX + 300, OQ_CY);
     Units_SelectSingle(s);
-    ASSERT_EQ_INT(HUD_CUR_NORMAL, InGame_HoverCursorOn(frame, OQ_CX, OQ_CY));
+    ASSERT_EQ_INT(HUD_CMD_MOVE, InGame_HoverCursorOn(frame, OQ_CX, OQ_CY));
     Units_SelectSingle(-1);
     ASSERT_EQ_INT(HUD_CUR_NORMAL, InGame_HoverCursorOn(frame, OQ_CX, OQ_CY));
     oq_end();
@@ -2019,7 +2020,7 @@ TEST(ctrl_letters_select_by_category_and_ctrl_a_takes_all) {
 }
 
 /* M held on a box drag takes everything in it but your monarch, with
- * Shift too. Ctrl+M still takes the monarch and a plain M does nothing. */
+ * Shift too. Ctrl+M still takes the monarch and a plain M arms Move. */
 TEST(m_on_a_box_drag_leaves_the_monarch_out) {
     GameWorld *w = oq_world();
     ASSERT_NOT_NULL(w);
@@ -2060,7 +2061,7 @@ TEST(m_on_a_box_drag_leaves_the_monarch_out) {
     ASSERT(oq_selected(king));
     oq_chord(0, SDL_SCANCODE_M);
     ASSERT_EQ_INT(1, oq_selection_count());
-    ASSERT_EQ_INT(0, HUD_GetCommandMode());
+    ASSERT_EQ_INT(HUD_CMD_MOVE, HUD_GetCommandMode());
     ASSERT_EQ_INT(cam_x, w->cam_x);
     ASSERT_EQ_INT(cam_y, w->cam_y);
     oq_end();

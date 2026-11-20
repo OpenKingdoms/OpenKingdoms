@@ -24,6 +24,7 @@
 #include "tak_ui.h"
 #include "tak_debug_panel.h"
 #include "tak_hud.h"
+#include "tak_hud_cursor.h"
 #include "tak_click_map.h"
 #include "tak_command_emit.h"
 #include "tak_command_queue.h"
@@ -32,6 +33,7 @@
 #include "tak_net_match.h"
 #include "tak_replay_session.h"
 #include "tak_fog.h"
+#include "tak_features.h"
 #include "tak_font.h"
 #include "tak_hud_text.h"
 #include "tak_game_sound.h"
@@ -82,6 +84,10 @@ static struct {
     uint8_t mm_look;
     /* A dialog is up and the clock has stopped. */
     uint8_t paused;
+    /* What the briefing found when F2 raised it, to leave as it was. */
+    uint8_t brief_resume_paused;
+    /* Camera bookmarks, F5 to F8. They last the battle and are not saved. */
+    struct { int32_t x, y; uint8_t set; } bookmark[4];
     /* Ctrl+D's question is up, and whether the clock ran before it. */
     uint8_t sd_ask;
     uint8_t sd_was_paused;
@@ -718,12 +724,15 @@ const char *InGame_SeatNotice(void) {
     return ig.seat_notice;
 }
 
+static void ig_mouse_away(const TAK_Platform *platform);
+
 /* The battle hidden while it rejoins the others. */
 static void ig_rejoin_plate(TAK_Platform *platform, SDL_Surface *off) {
     if (off) SDL_FillRect(off, NULL, SDL_MapRGBA(off->format, 0, 0, 0, 255));
     HUD_DrawMessageLine(platform, "Rejoining the battle...");
     UI_Present(platform);
     memcpy(ig.prev_keys, SDL_GetKeyboardState(NULL), sizeof(ig.prev_keys));
+    ig_mouse_away(platform);
 }
 
 /* The relay asked for this world to rebuild one that parted. It goes
@@ -1138,7 +1147,10 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
             return;
         }
     }
-    /* M held on the drag leaves out what Ctrl+M would take. */
+    /* M held on the drag leaves out what Ctrl+M would take. Its press
+     * also armed Move, which a box drag has no use for. */
+    if ((mods & IG_DRAG_NO_MONARCH) && HUD_GetCommandMode() == HUD_CMD_MOVE)
+        HUD_ClearCommandMode();
     int n = Units_SelectInRectExcept(x0, y0, x1, y1, shift_held,
                                      (mods & IG_DRAG_NO_MONARCH) ? "MONARCH" : NULL);
     /* Shift adds to the selection without a voice (legacy:237803). */
@@ -1146,48 +1158,58 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     fprintf(stderr, "Marquee select: %d units\n", n);
 }
 
-/* An enemy under the pointer, for the selection: the best any one unit
- * answers (legacy:238791-238838). Attack when a weapon in hand can take
- * it, too far when the armed ones all cannot, and with nobody armed the
- * click is on the ground there (legacy:186135-186330). */
-static int ig_enemy_cursor(int hover) {
-    int armed = 0;
-    if (Units_SelectionCanAttack(hover, &armed) > 0) return HUD_CMD_ATTACK;
-    return armed > 0 ? HUD_CUR_TOOFAR : -1;
+/* Whether a unit of the player's own in the selection can move. */
+static int ig_selection_walks(void) {
+    int n = 0, count = 0;
+    const int *sel = Units_GetSelection(&n);
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; sel && units && i < n; i++)
+        if (sel[i] >= 0 && sel[i] < count &&
+            units[sel[i]].alive == UNIT_ALIVE_ACTIVE &&
+            g_units_get_player(sel[i]) == Units_LocalPlayer() &&
+            Units_CanWalk(sel[i]))
+            return 1;
+    return 0;
 }
 
-/* The cursor the world shows under a point with no command armed
- * (legacy manual §IV.2): heal over your own frame or a damaged unit at
- * peace with you that the selection can mend (legacy:186541-186545),
- * attack over an enemy one of your selected units can hit, the select
- * hand over any other unit, then revive over a body the selection can
- * raise, sweep over a feature it can clear (legacy:186587-186599), and
- * the pointer otherwise. */
-int InGame_HoverCursorOn(int hover, int32_t world_x, int32_t world_y) {
-    if (hover >= 0) {
-        if (Units_SelectionCanRepair(hover)) return HUD_CMD_HEAL;
-        /* Only an enemy is something to attack. An ally's unit takes
-         * no order from us, and the sword over it said otherwise. */
-        int enemy = Units_PlayersAreEnemies(Units_LocalPlayer(),
-                                            g_units_get_player(hover));
-        /* A frame is never selected, so one nobody can help is the
-         * ground under it, as its click is (legacy:186553, 186603). */
-        if (!enemy && !Units_IsSelectable(hover)) {
-            hover = -1;
-        } else {
-            if (!enemy || Units_SelectionOwnedCount() == 0) return HUD_CUR_SELECT;
-            int cur = ig_enemy_cursor(hover);
-            if (cur >= 0) return cur;
+/* What the cursor pick reads: the selection, the unit under the pointer
+ * and the ground under it. An armed order reads only what it needs. */
+static void ig_cursor_facts(int mode, int hit, int32_t world_x, int32_t world_y,
+                            HUDCursorFacts *f) {
+    memset(f, 0, sizeof *f);
+    f->armed = mode;
+    f->own_selected = Units_SelectionOwnedCount() > 0;
+    f->own_walker = mode == HUD_CMD_NONE && f->own_selected && ig_selection_walks();
+    f->unit = hit >= 0;
+    if (f->unit) {
+        f->selectable = Units_IsSelectable(hit);
+        f->enemy = Units_PlayersAreEnemies(Units_LocalPlayer(),
+                                           g_units_get_player(hit));
+        if (mode == HUD_CMD_NONE) f->mend = Units_SelectionCanRepair(hit);
+        /* The best any one unit answers (legacy:238791-238838). */
+        if (f->enemy && f->own_selected &&
+            (mode == HUD_CMD_NONE || mode == HUD_CMD_ATTACK))
+            f->weapons_take = Units_SelectionCanAttack(hit, &f->weapons);
+        if (mode == HUD_CMD_LOAD) {
+            int carrier = Units_SelectedTransport();
+            f->load_refused = carrier >= 0 && !Units_CanCarry(carrier, hit);
         }
     }
+    if (mode != HUD_CMD_NONE && mode != HUD_CMD_CLEAR) return;
     /* Bodies are looked up on the ground under the pointer, which the
      * terrain lift puts further down the map than the flat reading. */
     int32_t gx = world_x, gy = world_y;
     Units_GroundUnderPoint(world_x, world_y, &gx, &gy);
-    if (Units_SelectionRaiseModeAt(gx, gy) >= 0)
-        return HUD_CUR_REVIVE;
-    if (Units_SelectionCanReclaimAt(gx, gy)) return HUD_CMD_CLEAR;
-    return HUD_CUR_NORMAL;
+    f->raise = Units_SelectionRaiseModeAt(gx, gy) >= 0;
+    if (mode == HUD_CMD_NONE) f->sweep = Units_SelectionCanReclaimAt(gx, gy);
+}
+
+/* The cursor the world shows under a point with no command armed: the
+ * order a click there gives (HUD_PickCursor). */
+int InGame_HoverCursorOn(int hover, int32_t world_x, int32_t world_y) {
+    HUDCursorFacts f;
+    ig_cursor_facts(HUD_CMD_NONE, hover, world_x, world_y, &f);
+    return HUD_PickCursor(&f);
 }
 
 int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
@@ -1195,24 +1217,22 @@ int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
                                 world_x, world_y);
 }
 
-/* The cursor an armed command shows: the sweep cursor turns to revive
- * over a body the selection would raise instead of sweep. */
+/* The cursor an armed command shows over a point. */
 int InGame_CommandCursorAt(int mode, int32_t world_x, int32_t world_y) {
     return InGame_CommandCursorOn(mode, Units_PickAt(world_x, world_y, 0),
                                   world_x, world_y);
 }
 
 int InGame_CommandCursorOn(int mode, int hit, int32_t world_x, int32_t world_y) {
-    int32_t gx = world_x, gy = world_y;
-    Units_GroundUnderPoint(world_x, world_y, &gx, &gy);
-    if (mode == HUD_CMD_CLEAR && Units_SelectionRaiseModeAt(gx, gy) >= 0)
-        return HUD_CUR_REVIVE;
-    /* An armed attack on an enemy no weapon in hand can take. */
-    if (mode == HUD_CMD_ATTACK && hit >= 0 &&
-        Units_PlayersAreEnemies(Units_LocalPlayer(), g_units_get_player(hit)) &&
-        ig_enemy_cursor(hit) == HUD_CUR_TOOFAR)
-        return HUD_CUR_TOOFAR;
-    return mode;
+    HUDCursorFacts f;
+    ig_cursor_facts(mode, hit, world_x, world_y, &f);
+    return HUD_PickCursor(&f);
+}
+
+int InGame_MapCursorOn(int mode, int hit, int32_t map_x, int32_t map_y) {
+    HUDCursorFacts f;
+    ig_cursor_facts(mode, hit, map_x, map_y, &f);
+    return HUD_PickMapCursor(&f);
 }
 
 /* One left click on the game world, in world coordinates. The tick
@@ -1465,6 +1485,17 @@ void InGame_DebugMouse(int on, int win_x, int win_y, uint32_t buttons) {
     g_dbg_mouse_buttons = buttons;
 }
 
+/* A frame a dialog or a plate takes. Its buttons are no press on the
+ * battle, and a drag in flight is cancelled, as a release elsewhere is. */
+static void ig_mouse_away(const TAK_Platform *platform) {
+    uint32_t b = (platform && platform->has_focus) ? SDL_GetMouseState(NULL, NULL) : 0u;
+    if (g_dbg_mouse_on) b = g_dbg_mouse_buttons;
+    ig.prev_left  = (uint8_t)((b & SDL_BUTTON_LMASK) != 0);
+    ig.prev_right = (uint8_t)((b & SDL_BUTTON_RMASK) != 0);
+    ig.drag_tracking = 0;
+    ig.drag_active   = 0;
+}
+
 void InGame_DebugKeyFrame(int scancode, const char *text_in) {
     static uint8_t frame_keys[SDL_NUM_SCANCODES];
     memset(frame_keys, 0, sizeof(frame_keys));
@@ -1494,7 +1525,7 @@ static void ig_debug_keys(const uint8_t *frame_keys, const char *text_in) {
     if (Briefing_IsOpen()) {
         if (ig_briefing_keys(1, frame_keys)) {
             Briefing_Close();
-            InGame_SetPaused(0);
+            InGame_SetPaused(ig.brief_resume_paused);
         }
         memcpy(ig.prev_keys, frame_keys, sizeof(ig.prev_keys));
         return;
@@ -1687,15 +1718,17 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
 
 /* Centre the view on a map point, kept on the map (legacy:120800-120815,
  * legacy:120384-120400). The 3D view follows the classic camera. */
-static void ig_center_camera(GameWorld *world, int32_t x, int32_t y) {
-    int32_t cx = x - world->viewport_w / 2;
-    int32_t cy = y - world->viewport_h / 2;
+static void ig_set_camera(GameWorld *world, int32_t cx, int32_t cy) {
     if (cx < 0) cx = 0;
     if (cy < 0) cy = 0;
     if (cx > world->map_pixels_w - world->viewport_w) cx = world->map_pixels_w - world->viewport_w;
     if (cy > world->map_pixels_h - world->viewport_h) cy = world->map_pixels_h - world->viewport_h;
     world->cam_x = cx;
     world->cam_y = cy;
+}
+
+static void ig_center_camera(GameWorld *world, int32_t x, int32_t y) {
+    ig_set_camera(world, x - world->viewport_w / 2, y - world->viewport_h / 2);
 }
 
 /* The minimap under the original's left click interface. The right
@@ -1827,6 +1860,71 @@ static void ig_world_click_rest(GameWorld *world, int32_t world_x, int32_t world
             TAK_Cmd_EmitSelection(TAK_CMD_MOVE, gx, gy, -1, 0, q);
             ig_play_order_ack(world, "Move");
             fprintf(stderr, "Move -> (%d,%d)\n", gx, gy);
+        }
+    }
+}
+
+/* An order letter presses its sidebar button, so a key and a click cannot
+ * differ. O presses whichever of the gate pair is not lit, as K does. */
+static void ig_order_key(InGameOrderKey k) {
+    int mode = HUD_CMD_NONE;
+    switch (k) {
+    case IG_ORDER_MOVE:   mode = HUD_CMD_MOVE;   break;
+    case IG_ORDER_ATTACK: mode = HUD_CMD_ATTACK; break;
+    case IG_ORDER_GUARD:  mode = HUD_CMD_GUARD;  break;
+    case IG_ORDER_PATROL: mode = HUD_CMD_PATROL; break;
+    case IG_ORDER_LOAD:   mode = HUD_CMD_LOAD;   break;
+    case IG_ORDER_UNLOAD: mode = HUD_CMD_UNLOAD; break;
+    case IG_ORDER_HEAL:   mode = HUD_CMD_HEAL;   break;
+    case IG_ORDER_CLEAR:  mode = HUD_CMD_CLEAR;  break;
+    case IG_ORDER_STOP:   mode = HUD_CMD_STOP;   break;
+    case IG_ORDER_GATE:
+        mode = Units_SelectedOnOffState() == 1 ? HUD_CMD_DEACTIVATE : HUD_CMD_ACTIVATE;
+        break;
+    case IG_ORDER_NONE:
+    default: return;
+    }
+    (void)HUD_PressOrder(mode);
+}
+
+/* Keys.TDF's other keys. Pause is not bound in a live match (N-004), and
+ * a replay keeps its own. */
+static void ig_fn_keys(const GameWorld *world, const Uint8 *keys) {
+    int live = TAK_Match_IsLive();
+    switch (InGame_FnKey(keys, ig.prev_keys)) {
+    case IG_FN_PAUSE:
+        if (!live && !Replay_IsPlaying()) InGame_SetPaused(!InGame_IsPaused());
+        break;
+    case IG_FN_BRIEFING:
+        if (!live && !Briefing_IsOpen()) {
+            ig.brief_resume_paused = (uint8_t)InGame_IsPaused();
+            InGame_OpenBriefing(world);
+        }
+        break;
+    case IG_FN_CLEAR_CHAT:
+        Chat_Reset();
+        break;
+    case IG_FN_SAVE:
+        (void)InGameMenu_OpenBrowser(0);
+        break;
+    case IG_FN_LOAD:
+        (void)InGameMenu_OpenBrowser(1);
+        break;
+    case IG_FN_NONE:
+    default: break;
+    }
+    int w = InGame_WeaponKey(keys, ig.prev_keys);
+    if (w >= 0) (void)HUD_PressOrder(HUD_CMD_W_PRIMARY + w);
+    int store = 0;
+    int b = InGame_BookmarkKey(keys, ig.prev_keys, &store);
+    if (b >= 0 && b < 4) {
+        GameWorld *mw = World_Get();
+        if (store) {
+            ig.bookmark[b].x = mw->cam_x;
+            ig.bookmark[b].y = mw->cam_y;
+            ig.bookmark[b].set = 1;
+        } else if (ig.bookmark[b].set) {
+            ig_set_camera(mw, ig.bookmark[b].x, ig.bookmark[b].y);
         }
     }
 }
@@ -1983,8 +2081,36 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
             if (cloak >= 0)
                 HUD_TriggerCommand(cloak == 1 ? HUD_CMD_CLOAK_OFF : HUD_CMD_CLOAK_ON);
         }
+        ig_order_key(InGame_OrderKey(keys, ig.prev_keys));
+        ig_fn_keys(world, keys);
     }
 #undef IG_PRESSED
+}
+
+/* The unit, else the shown feature, under the pointer over the world,
+ * for the info panel. A feature on ground never seen is not named. */
+static void ig_info_pointer(TAK_Platform *platform, GameWorld *world) {
+    int unit = -1, feature = -1, mx = 0, my = 0;
+    int32_t x = 0, y = 0;
+    if (platform->has_focus) SDL_GetMouseState(&mx, &my);
+    if (g_dbg_mouse_on) { mx = g_dbg_mouse_x; my = g_dbg_mouse_y; }
+    if (platform->has_focus && !Minimap_IsLarge() && !InGameMenu_IsOpen() &&
+        !Briefing_IsOpen() && !ig.sd_ask && !HUD_HitTest(mx, my, platform) &&
+        ig_view()->pointer_to_world(world, platform, mx, my, &x, &y)) {
+        unit = ig_view()->pointer_to_unit(world, platform, mx, my);
+        /* A wall under the pointer is passed over (reported from play). */
+        int n = 0;
+        const Unit *units = Units_GetActive(&n);
+        const UnitDef *d = (unit >= 0 && unit < n) ? Units_GetDef(units[unit].def_idx) : NULL;
+        if (d && d->is_feature) unit = -1;
+        if (unit < 0) {
+            int32_t gx = x, gy = y;
+            Units_GroundUnderPoint(x, y, &gx, &gy);
+            if (Fog_StateAt(world, gx, gy) != TAK_FOG_UNEXPLORED)
+                feature = Features_InfoAt(world, gx, gy);
+        }
+    }
+    HUD_SetPointerInfo(unit, feature);
 }
 
 int InGame_Tick(TAK_Platform *platform, Timer *timer) {
@@ -2165,6 +2291,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     world->cam_y -= shake_y;
     if (have_clip) SDL_RenderSetClipRect(platform->renderer, NULL);
 
+    ig_info_pointer(platform, world);
     HUD_Draw(platform, world);
     Minimap_Draw(platform);
     InGame_DrawMarquee(platform, world);
@@ -2215,26 +2342,29 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * the battle stays drawn behind it and every key and click goes to
      * the dialog (legacy:154694-154752). */
     const Uint8 *keys = SDL_GetKeyboardState(NULL);
-    /* Ctrl+D's question takes Enter, which would open a chat line. */
-    int console_keys = ig.sd_ask ? 0 : ig_console_keys(platform->has_focus, keys,
-                                                       platform->text_in);
-    if (platform->has_focus && !console_keys && keys[SDL_SCANCODE_F1] &&
-        !ig.prev_keys[SDL_SCANCODE_F1] && !InGameMenu_IsOpen() && !ig.sd_ask) {
-        (void)InGameMenu_Open();
-    }
     /* A campaign mission opens under its briefing, and the clock waits
-     * for the player to put it away (legacy:153077). */
+     * for the player to put it away (legacy:153077). It owns the keys
+     * before the console and F1, as in ig_debug_keys. */
     if (Briefing_IsOpen()) {
         int bmx = 0, bmy = 0;
         uint32_t bbuttons = platform->has_focus ? SDL_GetMouseState(&bmx, &bmy) : 0u;
+        if (g_dbg_mouse_on) { bmx = g_dbg_mouse_x; bmy = g_dbg_mouse_y; bbuttons = g_dbg_mouse_buttons; }
         int dismiss = ig_briefing_keys(platform->has_focus, keys);
         if (Briefing_Tick(bmx, bmy, (bbuttons & SDL_BUTTON_LMASK) != 0, dismiss)) {
-            InGame_SetPaused(0);
+            InGame_SetPaused(ig.brief_resume_paused);
         }
+        ig_mouse_away(platform);
         SDL_ShowCursor(SDL_ENABLE);
         UI_Present(platform);
         memcpy(ig.prev_keys, keys, sizeof(ig.prev_keys));
         return GAMESTATE_IN_GAME;
+    }
+    /* Ctrl+D's question takes Enter, which would open a chat line. */
+    int console_keys = ig.sd_ask ? 0 : ig_console_keys(platform->has_focus, keys,
+                                                       platform->text_in);
+    if (platform->has_focus && !console_keys && InGame_MenuKey(keys, ig.prev_keys) &&
+        !InGameMenu_IsOpen() && !ig.sd_ask) {
+        (void)InGameMenu_Open();
     }
     if (InGameMenu_IsOpen()) {
         int next = InGameMenu_Tick(platform);
@@ -2243,6 +2373,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         DebugPanel_Draw();
         UI_Present(platform);
         memcpy(ig.prev_keys, keys, sizeof(ig.prev_keys));
+        ig_mouse_away(platform);
         return next;
     }
     /* Ctrl+D's question owns the keys and the mouse while it stands,
@@ -2252,6 +2383,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         SDL_ShowCursor(SDL_ENABLE);
         UI_Present(platform);
         memcpy(ig.prev_keys, keys, sizeof(ig.prev_keys));
+        ig_mouse_away(platform);
         return GAMESTATE_IN_GAME;
     }
 
@@ -2283,6 +2415,14 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             }
         } else if (over_world) {
             int cur_id = InGame_HoverCursorOn(hover_unit, hover_x, hover_y);
+            drew_cursor = HUD_DrawCursorById(platform, cur_id, mx, my);
+        } else if (platform->has_focus &&
+                   Minimap_PointToWorld(platform, mx, my, 0, &hover_x, &hover_y)) {
+            /* The minimap and the Tab map show what a press there gives,
+             * on the blip ig_minimap hands that press. */
+            int cur_id = InGame_MapCursorOn(HUD_GetCommandMode(),
+                                            Minimap_UnitAt(platform, mx, my),
+                                            hover_x, hover_y);
             drew_cursor = HUD_DrawCursorById(platform, cur_id, mx, my);
         }
         SDL_ShowCursor(drew_cursor ? SDL_DISABLE : SDL_ENABLE);

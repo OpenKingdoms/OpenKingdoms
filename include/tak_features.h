@@ -18,6 +18,10 @@
 
 typedef struct FeatureDef {
     char     name[40];          /* section name e.g. "AraHenge01"     */
+    /* The name the info panel shows, and nodisplayinfo's low bit, which
+     * keeps the feature out of it (legacy:127365, 152056-152060). */
+    char     description[40];
+    uint8_t  no_display_info;
     char     world[16];         /* "Aramon" / "Taros" / "Veruna" / "Zhon" / "All Worlds" */
     char     category[24];      /* "mana" / "rocks" / "trees" / etc.  */
     char     filename[40];      /* GAF stem for sprite                */
@@ -118,6 +122,17 @@ struct GameWorld;
 int  Features_FindReclaimableAt(const struct GameWorld *world,
                                 int32_t world_x, int32_t world_y);
 
+/* Index into world->features of the instance the info panel names at
+ * (world_x, world_y): its footprint covers the point and its def does
+ * not carry nodisplayinfo. Nearest centre wins. -1 for none. */
+int  Features_InfoAt(const struct GameWorld *world,
+                     int32_t world_x, int32_t world_y);
+/* What instance `idx` can still take of a blast and what it took new,
+ * by the rule a hit uses. 0 when it has no health to show: no blast can
+ * break it, or its def gives it none. */
+int  Features_InstanceHealth(const struct GameWorld *world, int idx,
+                             int *out_hp, int *out_max);
+
 /* Centre of instance `idx` in world pixels. Returns 0 on success. */
 int  Features_InstanceCentre(const struct GameWorld *world, int idx,
                              int32_t *out_x, int32_t *out_y);
@@ -162,7 +177,7 @@ void Features_SetEventHook(FeatureEventHook hook);
 /* Moves on whenever a sacred site joins or leaves a feature list, or a
  * list is replaced whole, so an index of the sites knows to rebuild. */
 uint32_t Features_SacredGeneration(void);
-void     Features_NoteListReplaced(void);
+void     Features_NoteListReplaced(void);  /* also drops the walkable grid */
 
 /* Place a feature instance with its footprint's top-left corner on
  * cell (cell_x, cell_z), its model at (world_x, world_y) facing
@@ -191,8 +206,8 @@ void Features_InstanceFootprint(const struct GameWorld *world, int idx,
 /* Test hook: replace the feature registry with synthetic defs. */
 int  Features_DebugSetDefs(const FeatureDef *defs, int count);
 
-/* Anything that writes world->features says so here, so the per cell
- * feature heights shots read are rebuilt before their next use. */
+/* Anything that writes world->features says so here, so the shot
+ * heights and the walkable grid are rebuilt before their next use. */
 void Features_MarkChanged(struct GameWorld *world);
 
 /* What stands on the 16 px cell (cell_x, cell_z) for a shot: 0 for no

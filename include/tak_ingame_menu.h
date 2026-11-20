@@ -38,6 +38,10 @@ int  InGameMenu_Tick(TAK_Platform *platform);
 
 void InGameMenu_Close(void);
 
+/* Ctrl+S and Ctrl+L: the menu with its save or load dialog up. -1 and
+ * nothing opened in a match, or for a save in a replay. */
+int  InGameMenu_OpenBrowser(int load);
+
 /* What the save or load dialog just did. GAMESTATE_GAME_LOADING when
  * a save was chosen and the battle it names is being brought up,
  * GAMESTATE_IN_GAME otherwise. The menu calls this itself each

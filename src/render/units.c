@@ -435,8 +435,8 @@ static int ship_hulls_apart(const UnitDef *d, int32_t x, int32_t y,
                             float heading, const UnitDef *e, int32_t ex,
                             int32_t ey, float eheading, float margin);
 static void ships_rebuild(void);
-static void ship_clear_pad(const Unit *f, int32_t pad_x, int32_t pad_y,
-                           const UnitDef *pd);
+static int ship_clear_pad(const Unit *f, int32_t pad_x, int32_t pad_y,
+                          const UnitDef *pd);
 static int ship_lane_clear(const UnitDef *d, int self, int32_t x0, int32_t y0,
                            float h0, int32_t x1, int32_t y1);
 static int unit_start_script(Unit *u, const char *name,
@@ -4040,20 +4040,6 @@ static void unit_alarm_on_damage(const Unit *victim, int shooter_handle) {
     unit_alarm_on_damage_impl(victim, shooter_handle);
 }
 
-const char *Units_GetSelectedName(void) {
-    if (g_selection_count == 0) return NULL;
-    int h = g_selection[0];
-    if (h < 0 || h >= g_unit_count || g_units[h].alive < 1) return NULL;
-    const UnitDef *d = Units_GetDef(g_units[h].def_idx);
-    if (!d) return NULL;
-    /* FBI's `name` field is the character's display name ("Elsin",
-     * "Lokken", "Kirenna", "Thirsha" for monarchs). Fall through
-     * to description (faction tag) then unitname as a last resort. */
-    if (d->display_name[0]) return d->display_name;
-    if (d->description[0])  return d->description;
-    return d->unitname;
-}
-
 /* A unit's mission: the key the original shows it by, from
  * english/translate/unitmissions.tdf, and that file's English text for
  * when the table is missing. The order is the original's reading of a
@@ -4147,13 +4133,6 @@ uint32_t Units_PlayersWithUnits(void) {
     return mask;
 }
 
-int Units_GetSelectedKills(void) {
-    if (g_selection_count == 0) return 0;
-    int h = g_selection[0];
-    if (h < 0 || h >= g_unit_count || g_units[h].alive < 1) return 0;
-    return g_units[h].kills;
-}
-
 int Units_GetSelectedCargoCount(void) {
     if (g_selection_count == 0) return 0;
     int h = g_selection[0];
@@ -4197,15 +4176,12 @@ void Units_DebugSetVeteranLevel(int handle, int level) {
     u->experience_pts = level * d->kill_xp_value;
 }
 
-int Units_GetSelectedVeteranLevel(void) {
-    if (g_selection_count <= 0) return 0;
-    return Units_GetVeteranLevel(g_selection[0]);
-}
-
 static int unit_terrain_walkable(const GameWorld *w, const UnitDef *def,
                                  int32_t x, int32_t y);
 static const MoveClassDef *unit_move_class(const GameWorld *w,
                                            const UnitDef *def);
+static int unit_body_bad(const GameWorld *w, const Unit *u,
+                         const UnitDef *def, int32_t x, int32_t y);
 
 /* Could this unit legally stand at (x,y)? Terrain/water rules only. */
 int Units_CanStandAt(int handle, int32_t world_x, int32_t world_y) {
@@ -7072,13 +7048,17 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
                                           build_heading_for_def(bd), world_x,
                                           world_y, 0, 0.0f, 0, 0) : 0;
         if (held) {
-            ship_clear_pad(u, world_x, world_y, hd);
-            return -1;
+            /* Where it waits, for the ships that read it (ship_holds_up_yard). */
+            if (u->cmd_kind == UNIT_CMD_NONE) {
+                u->cmd_x = world_x;
+                u->cmd_y = world_y;
+            }
+            if (ship_clear_pad(u, world_x, world_y, hd)) return -1;
         }
         /* Nor does one go up on a unit standing on the pad: the
          * placement test at the spot counts units, and the factory looks
          * again shortly (legacy:9363-9382, legacy:219134-219147). */
-        if (!hd && factory_pad_held(builder_handle, bd, world_x, world_y))
+        if ((!hd || held) && factory_pad_held(builder_handle, bd, world_x, world_y))
             return -1;
     } else if (!Units_IsBuildSiteFreeFacing(building_def_idx, world_x, world_y,
                                             facing)) {
@@ -7361,13 +7341,95 @@ static int ship_in_yard_way(const ShipYardWay *yw, const UnitDef *d, int self,
     return 0;
 }
 
+/* Whether another ship leaving the yard is bound for where ship d would
+ * stand at (x, y). */
+static int ship_spot_spoken_for(const ShipYardWay *yw, const UnitDef *d, int self,
+                                int32_t x, int32_t y, float heading) {
+    for (int i = 0; i < yw->n_movers; i++) {
+        const Unit *m = &g_units[yw->movers[i]];
+        const UnitDef *md = def_hull(m->def_idx);
+        if (yw->movers[i] == self || !md) continue;
+        float there = tak_atan2f((float)(m->cmd_x - m->world_x),
+                                 (float)(m->world_y - m->cmd_y));
+        if (!ship_hulls_apart(d, x, y, heading, md, m->cmd_x, m->cmd_y, there,
+                              SHIP_LAUNCH_SLACK))
+            return 1;
+    }
+    return 0;
+}
+
+/* Cells the searches of one tick may open before the rest wait for the
+ * next. A search that cannot reach its goal opens 8192, and sixteen of
+ * them in one tick was a 35 ms tick. Counted, so every machine agrees. */
+#define UNIT_PATH_TICK_WORK (3 * 8192)
+static int g_path_work_this_tick;
+static int occ_step_blocked(const GameWorld *w, const Unit *u, int handle,
+                            int32_t x, int32_t y);
+
+/* Whether the first of the way straight to (x1, y1), which ship u sails while
+ * it has no route, has water under it and nothing built on it. */
+static int ship_water_lane(const GameWorld *w, const Unit *u, const UnitDef *d,
+                           int32_t x1, int32_t y1) {
+    int self = (int)(u - g_units);
+    int on_yard = occ_step_blocked(w, u, self, u->world_x, u->world_y) == 2;
+    float dx = (float)(x1 - u->world_x), dy = (float)(y1 - u->world_y);
+    float len = sqrtf(dx * dx + dy * dy);
+    for (float s = 16.0f; s < len && s <= 256.0f; s += 16.0f) {
+        int32_t x = u->world_x + (int32_t)(dx * s / len);
+        int32_t y = u->world_y + (int32_t)(dy * s / len);
+        if (!unit_water_depth_ok(w, d, x, y)) return 0;
+        if (!on_yard && occ_step_blocked(w, u, self, x, y) == 2) return 0;
+    }
+    return 1;
+}
+
+static int unit_step_refused(const GameWorld *w, const UnitDef *def,
+                             const MoveClassDef *mc,
+                             const Unit *u, int self_h,
+                             int escaping, int occ_escape,
+                             int32_t nx, int32_t ny);
+static int unit_body_bad_mc(const GameWorld *w, const Unit *u,
+                            const UnitDef *def, const MoveClassDef *mc,
+                            int32_t x, int32_t y);
+
+/* Whether ship u has a route to (x, y) it can take the first steps of. */
+static int ship_route_starts(const GameWorld *w, const Unit *u, const UnitDef *d,
+                             int32_t x, int32_t y) {
+    if (g_path_work_this_tick >= UNIT_PATH_TICK_WORK) return 0;
+    int self = (int)(u - g_units);
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.move_class = unit_move_class(w, d);
+    q.fallback_max_slope = d->max_slope;
+    q.player_id = u->player_id;
+    q.self_plus1 = self + 1;
+    unit_occ_fp(u, &q.footprint_x, &q.footprint_z);
+    q.compress = 1;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(w, u->world_x, u->world_y, x, y, &q, &path);
+    g_path_work_this_tick += TAK_PathLastWork();
+    if (n <= 0) return 0;
+    int escaping = unit_body_bad_mc(w, u, d, q.move_class, u->world_x, u->world_y);
+    int occ_escape = occ_step_blocked(w, u, self, u->world_x, u->world_y);
+    float dx = (float)(path.x[0] - u->world_x), dy = (float)(path.y[0] - u->world_y);
+    float len = sqrtf(dx * dx + dy * dy);
+    for (float s = 2.0f; s < len && s <= 32.0f; s += 2.0f)
+        if (unit_step_refused(w, d, q.move_class, u, self, escaping, occ_escape,
+                              u->world_x + (int32_t)(dx * s / len),
+                              u->world_y + (int32_t)(dy * s / len)))
+            return 0;
+    return 1;
+}
+
 /* Where a ship leaves its yard for, clear of the yard, the hulls and the
  * yard's way, a spot ahead with a clear way there first, or 0 (M-012).
  * One it must turn or push to reach can stop it short in the yard. */
-static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
+static int ship_spot_search(const GameWorld *w, const Unit *f, int fx, int fz, Unit *bt,
                             const UnitDef *btd, const UnitDef *hd,
                             const ShipYardWay *yw) {
-    const GameWorld *w = World_Get();
+    const MoveClassDef *mc = unit_move_class(w, btd);
+    int cfx = 1, cfz = 1;
+    unit_mobile_footprint(w, btd, &cfx, &cfz);
     int self = (int)(bt - g_units);
     int fore = hd->hull_fore_px, aft = hd->hull_aft_px;
     int reach = (int)ceilf(hull_reach(hd));
@@ -7375,38 +7437,50 @@ static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
     int along = fore + aft + 8;
     int abeam = 2 * hd->hull_half_beam_px + 8;
     static const int lateral[5] = { 0, 1, -1, 2, -2 };
-    static const int ways[4][2] = { { 0, 1 }, { 1, 0 }, { -1, 0 }, { 0, -1 } };
+    static const float ways[8][2] = { { 0.0f, 1.0f }, { 1.0f, 0.0f }, { -1.0f, 0.0f },
+                                      { 0.0f, -1.0f }, { 0.7071f, 0.7071f },
+                                      { -0.7071f, 0.7071f }, { 0.7071f, -0.7071f },
+                                      { -0.7071f, -0.7071f } };
     float px = (float)(bt->world_x - f->world_x);
     float py = (float)(bt->world_y - f->world_y);
     float plen = sqrtf(px * px + py * py);
     float hx = tak_sinf(bt->heading), hy = -tak_cosf(bt->heading);
-    for (int pass = 0; pass < 2; pass++)
-    for (int way = -1; way < 4; way++) {
+    for (int pass = 0; pass < 3; pass++)
+    for (int way = -1; way < 8; way++) {
         float dx, dy;
         if (way < 0) {
             if (plen < 1.0f) continue;
             dx = px / plen;
             dy = py / plen;
         } else {
-            dx = (float)ways[way][0];
-            dy = (float)ways[way][1];
+            dx = ways[way][0];
+            dy = ways[way][1];
         }
         float heading = tak_atan2f(dx, -dy);
-        for (int k = 0; k < 6; k++) {
+        int asked = 0;
+        for (int k = 0; k < 12; k++) {
             for (int j = 0; j < 5; j++) {
-                float dist = (float)(base + k * along);
+                float dist = (float)base + (float)(k * along) * 0.5f;
                 float side = (float)(lateral[j] * abeam);
                 int32_t cx = f->world_x + (int32_t)(dx * dist - dy * side);
                 int32_t cy = f->world_y + (int32_t)(dy * dist + dx * side);
-                if (!w || cx < reach || cy < reach ||
+                if (cx < reach || cy < reach ||
                     cx >= w->map_pixels_w - reach ||
                     cy >= w->map_pixels_h - reach) continue;
                 if (!unit_terrain_walkable(w, btd, cx, cy)) continue;
+                /* A spot its class can stand on and reach. */
+                if (TAK_PathClearanceAt(w, mc, btd->max_slope,
+                                        Occ_TileOf(cx - cfx * 8),
+                                        Occ_TileOf(cy - cfz * 8)) < cfx ||
+                    !TAK_PathGroundConnected(w, mc, btd->max_slope, bt->world_x,
+                                             bt->world_y, cx, cy))
+                    continue;
                 if (ship_hull_blocked(hd, self, UNIT_HULL_MARGIN, heading,
                                       cx, cy, 0, 0.0f, 0, 0))
                     continue;
                 if (ship_in_yard_way(yw, hd, self, cx, cy, heading,
-                                     SHIP_PAD_CLEAR + SHIP_LAUNCH_SLACK))
+                                     SHIP_PAD_CLEAR + SHIP_LAUNCH_SLACK) ||
+                    ship_spot_spoken_for(yw, hd, self, cx, cy, heading))
                     continue;
                 if (pass == 0 &&
                     (hx * (float)(cx - bt->world_x) +
@@ -7414,6 +7488,13 @@ static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
                      !ship_lane_clear(hd, self, bt->world_x, bt->world_y,
                                       bt->heading, cx, cy)))
                     continue;
+                /* Last, one route asked for each way, for a ship wedged where
+                 * no straight line leaves. */
+                if (pass < 2 ? !ship_water_lane(w, bt, btd, cx, cy)
+                             : (asked || !ship_route_starts(w, bt, btd, cx, cy))) {
+                    asked = pass == 2;
+                    continue;
+                }
                 bt->cmd_kind = UNIT_CMD_MOVE;
                 bt->cmd_x = cx;
                 bt->cmd_y = cy;
@@ -7425,27 +7506,83 @@ static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
     return 0;
 }
 
-/* A yard waiting on its pad at (pad_x, pad_y), where a ship of def pd is
- * to go up, sends the side's own idle ships in its way off (M-012). */
-static void ship_clear_pad(const Unit *f, int32_t pad_x, int32_t pad_y,
-                           const UnitDef *pd) {
+/* A look tests many spots, so the features round the yard are laid out once. */
+static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
+                            const UnitDef *btd, const UnitDef *hd,
+                            const ShipYardWay *yw) {
+    const GameWorld *w = World_Get();
+    if (!w) return 0;
+    Terrain_BlockingBegin(w, f->world_x - SHIP_LAUNCH_REACH, f->world_y - SHIP_LAUNCH_REACH,
+                          f->world_x + SHIP_LAUNCH_REACH, f->world_y + SHIP_LAUNCH_REACH);
+    int found = ship_spot_search(w, f, fx, fz, bt, btd, hd, yw);
+    Terrain_BlockingEnd();
+    return found;
+}
+
+/* Whether ship u stands on the water of a pad a hull holds, at a yard of its
+ * side with a ship to begin, and so must not settle there (M-012). */
+static int ship_holds_up_yard(const Unit *u, const UnitDef *hd) {
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *f = &g_units[i];
+        if (f->prod_queue_len == 0 || f->alive != UNIT_ALIVE_ACTIVE ||
+            f->player_id != u->player_id || f->cmd_kind != UNIT_CMD_NONE ||
+            factory_in_hand(f) >= 0)
+            continue;
+        const UnitDef *pd = def_hull(f->prod_queue[0]);
+        if (!pd) continue;
+        float ph = build_heading_for_def(Units_GetDef(f->prod_queue[0]));
+        if (!ship_hulls_apart(hd, u->world_x, u->world_y, u->heading, pd, f->cmd_x,
+                              f->cmd_y, ph, SHIP_PAD_CLEAR) &&
+            ship_hull_blocked(pd, -1, UNIT_HULL_MARGIN, ph, f->cmd_x, f->cmd_y, 0,
+                              0.0f, 0, 0))
+            return 1;
+    }
+    return 0;
+}
+
+/* Whether ship o has gathered at yard f's rally point, within the two
+ * of its lengths a fleet packs in there (M-012). */
+static int ship_by_rally(const Unit *f, const Unit *o, const UnitDef *ohd) {
+    if (!f->rally_set) return 0;
+    int64_t reach = 2 * (ohd->hull_fore_px + ohd->hull_aft_px);
+    int64_t dx = o->world_x - f->rally_x, dy = o->world_y - f->rally_y;
+    return dx * dx + dy * dy <= reach * reach;
+}
+
+/* A yard waiting on its pad sends the side's own idle ships in its way off,
+ * but leaves those gathered at its rally point unless they are on the pad
+ * (M-012). 0 when a hull stands on the pad that this will not move, and the
+ * yard then takes the original's test of the pad's cells. */
+static int ship_clear_pad(const Unit *f, int32_t pad_x, int32_t pad_y,
+                          const UnitDef *pd) {
     const UnitDef *fd = Units_GetDef(f->def_idx);
-    if (!fd || !pd) return;
+    if (!fd || !pd) return 0;
     int fx = fd->footprint_x > 0 ? fd->footprint_x : 2;
     int fz = fd->footprint_z > 0 ? fd->footprint_z : 2;
     ShipYardWay yw;
     ship_yard_way(f, pad_x, pad_y, pd, &yw);
+    int clears = 1;
     for (int k = 0; k < g_ship_count; k++) {
         Unit *o = &g_units[g_ships[k]];
         const UnitDef *ohd = def_hull(o->def_idx);
-        if (!ohd || o->alive != UNIT_ALIVE_ACTIVE || o->carried_by >= 0 ||
-            o->player_id != f->player_id || o->under_construction ||
-            o->cmd_kind != UNIT_CMD_NONE)
+        if (!ohd || o->alive != UNIT_ALIVE_ACTIVE || o->carried_by >= 0) continue;
+        if (o->player_id == f->player_id && !o->under_construction &&
+            o->cmd_kind == UNIT_CMD_NONE &&
+            ship_in_yard_way(&yw, ohd, g_ships[k], o->world_x, o->world_y, o->heading,
+                             SHIP_PAD_CLEAR) &&
+            (!ship_by_rally(f, o, ohd) ||
+             !ship_hulls_apart(ohd, o->world_x, o->world_y, o->heading, pd, pad_x,
+                               pad_y, yw.pad_heading, SHIP_PAD_CLEAR)) &&
+            ship_launch_spot(f, fx, fz, o, Units_GetDef(o->def_idx), ohd, &yw)) {
+            if (yw.n_movers < 32) yw.movers[yw.n_movers++] = g_ships[k];
             continue;
-        if (ship_in_yard_way(&yw, ohd, g_ships[k], o->world_x, o->world_y,
-                             o->heading, SHIP_PAD_CLEAR))
-            ship_launch_spot(f, fx, fz, o, Units_GetDef(o->def_idx), ohd, &yw);
+        }
+        if (o->cmd_kind != UNIT_CMD_MOVE && o->cur_speed_ppt <= 0.0f &&
+            !ship_hulls_apart(ohd, o->world_x, o->world_y, o->heading, pd, pad_x,
+                              pad_y, yw.pad_heading, UNIT_HULL_MARGIN))
+            clears = 0;
     }
+    return clears;
 }
 
 /* Whether a unit other than skip is walking to a point within reach px
@@ -12040,6 +12177,32 @@ static int unit_water_depth_ok(const GameWorld *w, const UnitDef *def,
     return 1;
 }
 
+/* Tiles of the body at (x, y) on ground the route search refuses: the
+ * whole footprint (legacy:219089-219131), anchored on the position
+ * rounded to the tile grid (legacy:184166-184186). */
+static int unit_body_bad_mc(const GameWorld *w, const Unit *u,
+                            const UnitDef *def, const MoveClassDef *mc,
+                            int32_t x, int32_t y) {
+    if (!w || !def || def->can_fly) return 0;
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    return TAK_PathBodyBad(w, mc, def->max_slope, fx, fz,
+                           Occ_TileOf(x - fx * 8 + 8), Occ_TileOf(y - fz * 8 + 8));
+}
+
+static int unit_body_bad(const GameWorld *w, const Unit *u,
+                         const UnitDef *def, int32_t x, int32_t y) {
+    return unit_body_bad_mc(w, u, def, unit_move_class(w, def), x, y);
+}
+
+/* Whether a step to (x, y) moves the body's tiles along both axes. */
+static int unit_body_crosses_corner(const Unit *u, int32_t x, int32_t y) {
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    return Occ_TileOf(x - fx * 8 + 8) != Occ_TileOf(u->world_x - fx * 8 + 8) &&
+           Occ_TileOf(y - fz * 8 + 8) != Occ_TileOf(u->world_y - fz * 8 + 8);
+}
+
 static int unit_terrain_walkable(const GameWorld *w,
                                  const UnitDef *def,
                                  int32_t x,
@@ -12223,6 +12386,37 @@ static void ships_rebuild(void) {
     }
 }
 
+/* Rungs of the ladder, 8 s closing no ground, before a ship may go through
+ * another by the cells alone (M-012). */
+#define SHIP_STALL_PASS 2
+
+/* Whether stalled ship u may go through ship o: o stands with no move order
+ * and u holds up a yard or is on a hull, or o has stalled as long pressing
+ * on u. One behind a ship that is getting on waits. */
+static int ship_gives_way(const Unit *u, const UnitDef *d, int self, const Unit *o,
+                          const UnitDef *od, const ShipHull *me) {
+    if (o->cmd_kind != UNIT_CMD_MOVE && o->cur_speed_ppt <= 0.0f)
+        return ship_holds_up_yard(u, d) ||
+               ship_hull_blocked(d, self, -UNIT_HULL_TURN_SLACK, u->heading,
+                                 u->world_x, u->world_y, 0, 0.0f, 0, 0);
+    if (o->stall_esc < SHIP_STALL_PASS) return 0;
+    ShipHull now, ahead;
+    ship_hull_at(od, o->world_x, o->world_y, o->heading, &now);
+    ship_hull_at(od, o->world_x + (int32_t)(tak_sinf(o->heading) * 8.0f),
+                 o->world_y - (int32_t)(tak_cosf(o->heading) * 8.0f),
+                 o->heading, &ahead);
+    float dn = sqrtf(ship_hull_d2(&now, me)), da = sqrtf(ship_hull_d2(&ahead, me));
+    return da < ahead.r + me->r + UNIT_HULL_MARGIN && dn - da >= 2.0f;
+}
+
+/* A stalled ship going through a hull keeps its rung until it is clear. */
+static int ship_still_passing(const Unit *u) {
+    if (u->stall_esc < SHIP_STALL_PASS) return 0;
+    const UnitDef *d = def_hull(u->def_idx);
+    return d && ship_hull_blocked(d, (int)(u - g_units), -UNIT_HULL_TURN_SLACK,
+                                  u->heading, u->world_x, u->world_y, 0, 0.0f, 0, 0);
+}
+
 /* The first ship (handle + 1) whose hull ship d at (x, y) would come
  * within margin of, or 0. With a pose it comes from, only one it would
  * come closer to counts, so ships pressed together can always part. */
@@ -12255,7 +12449,11 @@ static int ship_hull_blocked(const UnitDef *d, int self, float margin,
             have_from = 1;
         }
         /* A quarter px squared absorbs rounding between touching hulls. */
-        if (dn2 + 0.25f < ship_hull_d2(&hc, &ho)) return j + 1;
+        if (dn2 + 0.25f >= ship_hull_d2(&hc, &ho)) continue;
+        if (self >= 0 && g_units[self].stall_esc >= SHIP_STALL_PASS &&
+            ship_gives_way(&g_units[self], d, self, o, od, &hc))
+            continue;
+        return j + 1;
     }
     return 0;
 }
@@ -12349,11 +12547,6 @@ extern double g_path_plan_calls;
 extern double g_path_prof_ms;
 static double eng_now_ms(void);
 static int g_path_budget_this_tick = 8;
-/* Cells the searches of one tick may open before the rest wait for the
- * next. A search that cannot reach its goal opens 8192, and sixteen of
- * them in one tick was a 35 ms tick. Counted, so every machine agrees. */
-#define UNIT_PATH_TICK_WORK (3 * 8192)
-static int g_path_work_this_tick;
 
 /* Ticks without closing on the current target before the route is
  * dropped and planned again from here. The original replans after a
@@ -12390,10 +12583,10 @@ static int g_path_work_this_tick;
  * deliberate deviation in docs/MANUAL_DEVIATIONS.md (M-006). */
 #define UNIT_NO_PROGRESS_TICKS 240
 #define UNIT_NO_PROGRESS_PX    32
-/* Plain replans before the order is given up as unreachable. #60 asks
- * for another route to the SAME destination, so a fresh search is the
- * whole of the ladder and giving up is the last rung, never the first.
- * Four of them is sixteen seconds of a unit closing no ground.
+/* Plain replans before the last rung. #60 asks for another route to the
+ * SAME destination, so a fresh search is the whole of the ladder. The
+ * last rung ends the order or keeps it (unit_move_kept), never the
+ * first. Four of them is sixteen seconds of a unit closing no ground.
  *
  * There used to be rungs above the replan that aimed at points ringing
  * the goal. They fired in exactly one measured case, the escorts on a
@@ -12402,6 +12595,10 @@ static int g_path_work_this_tick;
  * no route can end on, and unit_effective_goal serves a goal the
  * planner had to move. Deleted rather than left looking reassuring. */
 #define UNIT_STALL_ESCALATIONS 4
+/* A kept order searches once a rung, not between, for at most 30 rungs
+ * (two minutes). The one body gap sweep used 22 at most. */
+#define UNIT_STALL_KEPT (UNIT_STALL_ESCALATIONS + 1)
+#define UNIT_STALL_KEPT_RUNGS 30
 
 /* Route check interval. The original re-examines the route every
  * "speed class" frames, a per-def byte derived from maxvelocity
@@ -12612,6 +12809,48 @@ static int unit_stall_progress(int32_t m, int32_t *best, int32_t *mark) {
     return 0;
 }
 
+/* Stopped friends whose bodies come this near are the edge of a crowd
+ * that has packed. */
+#define UNIT_PACKED_GAP_PX 32
+
+static int unit_arrive_px(const Unit *u);
+static int64_t unit_body_gap_d2(const Unit *u, const Unit *t);
+
+/* Does a friend that has stopped stand at this unit's edge? A fleet
+ * packs by its hulls (unit_arrive_px), walkers by their bodies. */
+static int unit_packed_beside(const Unit *u, const Unit *o) {
+    if (def_hull(u->def_idx)) {
+        int64_t dx = (int64_t)o->world_x - u->world_x;
+        int64_t dy = (int64_t)o->world_y - u->world_y;
+        int64_t r = unit_arrive_px(u);
+        return dx * dx + dy * dy <= r * r;
+    }
+    return unit_body_gap_d2(u, o) <= (int64_t)UNIT_PACKED_GAP_PX * UNIT_PACKED_GAP_PX;
+}
+
+/* Is a move kept from the ladder's last rung? Jammed units try again later
+ * in the original (legacy:191265-191388, M-006), unless they have packed. */
+static int unit_move_kept(const Unit *u, const UnitDef *def,
+                          const GameWorld *w,
+                          int32_t final_x, int32_t final_y) {
+    if (u->cmd_kind != UNIT_CMD_MOVE) return 0;
+    /* The label check answers yes where it cannot tell. The rung bound
+     * covers that, and a goal the body cannot reach ends at the shore. */
+    if (!TAK_PathGroundConnected(w, unit_move_class(w, def), def->max_slope,
+                                 u->world_x, u->world_y, final_x, final_y))
+        return 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *o = &g_units[i];
+        if (o == u || o->alive != UNIT_ALIVE_ACTIVE || o->carried_by >= 0) continue;
+        if (o->under_construction) continue;
+        if (o->player_id != u->player_id || o->cmd_kind != UNIT_CMD_NONE) continue;
+        const UnitDef *od = Units_GetDef(o->def_idx);
+        if (!od || od->can_fly || od->max_velocity <= 0.0f) continue;
+        if (unit_packed_beside(u, o)) return 0;
+    }
+    return 1;
+}
+
 /* Plan bookkeeping for one tick: replans, the pending hold, and the
  * stall watchdog. */
 static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
@@ -12636,7 +12875,9 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
     }
     if (unit_path_goal_changed(u, final_x, final_y)) {
         unit_replan_path(u, def, w, final_x, final_y);
-    } else if (u->path_failed && u->path_len == 0) {
+    } else if (u->path_failed && u->path_len == 0 &&
+               (u->stall_esc < UNIT_STALL_KEPT || u->path_pending)) {
+        /* A kept order waits for its rung, unless the budget refused it. */
         /* No route from here — retry periodically. The unit keeps
          * moving meanwhile: the original walks a straight two point
          * route when the search fails (legacy:22536-22551). */
@@ -12650,10 +12891,10 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
     /* ── The #60 watchdog ──────────────────────────────────────────
      * Route or no route, a live move order that has not closed any
      * ground on its goal gets a fresh search: the first is a plain replan, the
-     * next once whoever was in the way has had time to move or park,
-     * and after four of them the order is ended rather than ground at
-     * for ever. Every rung plans to the same destination, which is
-     * what #60 asks for.
+     * next once whoever was in the way has had time to move or park.
+     * After four of them the order is ended, or kept and searched again
+     * once a rung (unit_move_kept). Every rung plans to the same
+     * destination, which is what #60 asks for.
      * It sits outside the "has a route" gate on purpose: the cases in
      * the report are the ones where the search returns nothing, and
      * the old watchdog could not run at all without a route. */
@@ -12708,14 +12949,17 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
         }
         if (improved) {
             u->stall_ticks = 0;
-            u->stall_esc = 0;
+            if (!ship_still_passing(u)) u->stall_esc = 0;
         } else if (u->stall_ticks < 0x7fff) {
             u->stall_ticks++;
         }
         if (u->stall_ticks > UNIT_NO_PROGRESS_TICKS) {
             u->stall_ticks = 0;
-            if (u->stall_esc >= UNIT_STALL_ESCALATIONS) return NAV_GIVE_UP;
-            u->stall_esc++;
+            if (u->stall_esc < UNIT_STALL_ESCALATIONS) u->stall_esc++;
+            else if (u->stall_esc < UNIT_STALL_ESCALATIONS + UNIT_STALL_KEPT_RUNGS &&
+                     unit_move_kept(u, def, w, final_x, final_y))
+                u->stall_esc++;
+            else return NAV_GIVE_UP;
             unit_drop_route(u);
             unit_replan_path(u, def, w, final_x, final_y);
         }
@@ -12853,7 +13097,7 @@ static void unit_aim_point(const Unit *u,
 static int unit_neighbour_blocks(const GameWorld *w, const Unit *u,
                                  const UnitDef *def, int self_h,
                                  int32_t nx, int32_t ny) {
-    if (!unit_terrain_walkable(w, def, nx, ny)) return 1;
+    if (unit_body_bad(w, u, def, nx, ny)) return 1;
     if (!w->occ) return 0;
     int fx, fz;
     unit_occ_fp(u, &fx, &fz);
@@ -12950,15 +13194,22 @@ static void unit_route_check(Unit *u, const UnitDef *def,
 /* Would a step to (nx, ny) be refused? The escape hatches let a unit
  * already on illegal ground or on someone's footprint step out. */
 static int unit_step_refused(const GameWorld *w, const UnitDef *def,
+                             const MoveClassDef *mc,
                              const Unit *u, int self_h,
                              int escaping, int occ_escape,
                              int32_t nx, int32_t ny) {
     if (!w) return 0;
-    /* The escape hatch relaxes slope and features so a unit can leave
-     * illegal ground, but never the water window: that window is the
-     * only thing keeping a boat off dry land (legacy:219155-219157). */
+    /* The water window at the centre is never relaxed: it is the only
+     * thing keeping a boat off dry land (legacy:219155-219157). */
     if (!unit_water_depth_ok(w, def, nx, ny)) return 1;
-    if (!escaping && !unit_terrain_walkable(w, def, nx, ny)) return 1;
+    /* The body may not take on more bad ground than it stands on now. */
+    if (unit_body_bad_mc(w, u, def, mc, nx, ny) > escaping) return 1;
+    /* Across a tile corner, the bodies either side too, as a route's
+     * diagonal asks, so no unit slips into ground no route leaves. */
+    if (unit_body_crosses_corner(u, nx, ny) &&
+        (unit_body_bad_mc(w, u, def, mc, nx, u->world_y) > escaping ||
+         unit_body_bad_mc(w, u, def, mc, u->world_x, ny) > escaping))
+        return 1;
     if (!occ_escape) {
         int k = occ_step_blocked(w, u, self_h, nx, ny);
         if (k == 1) return 2;   /* another unit */
@@ -13227,6 +13478,22 @@ static void unit_face_toward(Unit *u, const UnitDef *def,
     unit_face_bearing(u, def, (float)dx, (float)dy);
 }
 
+/* A mobile at its work turns onto it at its turninplacerate, scaled by
+ * its ground, when that comes to min_rate. A ship has none and holds its
+ * heading (legacy:12172-12186, legacy:13407-13421, legacy:14642-14676).
+ * A flyer still turns at once. */
+static void unit_face_work(Unit *u, const UnitDef *def, int64_t dx, int64_t dy,
+                           float min_rate) {
+    if ((dx == 0 && dy == 0) || !def || def->max_velocity <= 0.0f) return;
+    float want = tak_atan2f((float)dx, -(float)dy);
+    if (def->can_fly) {
+        u->heading = want;
+        return;
+    }
+    float rate = def->turn_in_place_rate * unit_ground_scale(World_Get(), u, def);
+    if (rate >= min_rate) unit_turn_at(u, rate, want);
+}
+
 /* Onto a unit, from where both truly are: a walker's drift is then the
  * small turn it is, not a whole pixel's worth every other tick. */
 static void unit_face_unit(Unit *u, const UnitDef *def, const Unit *t) {
@@ -13475,9 +13742,10 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     /* A unit already standing on illegal ground (mission placement,
      * factory exit) must be allowed to step OUT, otherwise every
      * candidate fails the same predicate and it is immobilised. */
-    int escaping = (w && !unit_terrain_walkable(w, def, u->world_x,
-                                                u->world_y));
-    int refused = unit_step_refused(w, def, u, self_h, escaping,
+    /* The class is resolved once a step: the step asks the body often. */
+    const MoveClassDef *body_mc = unit_move_class(w, def);
+    int escaping = unit_body_bad_mc(w, u, def, body_mc, u->world_x, u->world_y);
+    int refused = unit_step_refused(w, def, body_mc, u, self_h, escaping,
                                     occ_escape, nx, ny);
     if (refused) {
         const int32_t rx = nx, ry = ny;
@@ -13485,11 +13753,11 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
          * and lets the other keep moving (legacy:184190-184230). */
         int slid = 0;
         if (mx != 0 && my != 0 &&
-            !unit_step_refused(w, def, u, self_h, escaping, occ_escape,
+            !unit_step_refused(w, def, body_mc, u, self_h, escaping, occ_escape,
                                u->world_x + mx, u->world_y)) {
             ny = u->world_y; my = 0; slid = 1;
         } else if (mx != 0 && my != 0 &&
-                   !unit_step_refused(w, def, u, self_h, escaping,
+                   !unit_step_refused(w, def, body_mc, u, self_h, escaping,
                                       occ_escape, u->world_x,
                                       u->world_y + my)) {
             nx = u->world_x; mx = 0; slid = 1;
@@ -13528,7 +13796,8 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
                 if (settle && (occ_escape ||
                                ship_hull_blocked(hd, self_h, 0.0f, u->heading,
                                                  u->world_x, u->world_y, 0,
-                                                 0.0f, 0, 0)))
+                                                 0.0f, 0, 0) ||
+                               ship_holds_up_yard(u, hd)))
                     settle = 0;
             }
             if (settle) return 1;
@@ -13551,7 +13820,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
             int close_px = u->move_group ? UNIT_FORMATION_ARRIVE_PX : 48;
             if (u->path_index >= u->path_len && gd2 <= (int64_t)close_px * close_px) return 1;
             if (refused == 1 && u->path_len == 0 && !u->path_pending &&
-                !unit_terrain_walkable(w, def, gx, gy)) {
+                unit_body_bad_mc(w, u, def, body_mc, gx, gy)) {
                 return 1;
             }
             if (u->blocked_ticks > UNIT_TERRAIN_BLOCK_TICKS)
@@ -16641,10 +16910,11 @@ static void Units_TickCombat(void) {
             /* Immobile units never swing their base — legacy aims the
              * turret/bowmen PIECES via the COB AimWeapon script while
              * the structure itself stays put. A walker faces its target
-             * once there: on the way the walker owns the heading. */
-            if (desired != UNIT_ANIM_MOVING && (dx != 0 || dy != 0) &&
-                def->max_velocity > 0.0f)
-                u->heading = tak_atan2f((float)dx, -(float)dy);
+             * once there: on the way the walker owns the heading. A
+             * guard turns only at a turninplacerate over 999
+             * (legacy:14270-14283). */
+            if (desired != UNIT_ANIM_MOVING)
+                unit_face_work(u, def, dx, dy, 1000.0f);
         } else if ((u->cmd_kind == UNIT_CMD_RECLAIM ||
                     u->cmd_kind == UNIT_CMD_RESURRECT) &&
                    u->target < 0 && u->reclaim_tile_x >= 0) {
@@ -16688,9 +16958,8 @@ static void Units_TickCombat(void) {
                 } else {
                     desired = UNIT_ANIM_BUILDING;
                 }
-                if (desired != UNIT_ANIM_MOVING && (dx != 0 || dy != 0) &&
-                    def->max_velocity > 0.0f)
-                    u->heading = tak_atan2f((float)dx, -(float)dy);
+                if (desired != UNIT_ANIM_MOVING)
+                    unit_face_work(u, def, dx, dy, 1.0f);
             }
         } else if (u->cmd_kind == UNIT_CMD_LOAD && u->target >= 0 &&
                    (def->cap_flags & UNIT_CAP_TRANSPORT)) {
@@ -16743,9 +17012,8 @@ static void Units_TickCombat(void) {
              * turret/bowmen PIECES via the COB AimWeapon script while
              * the structure itself stays put. A walker faces its target
              * once there: on the way the walker owns the heading. */
-            if (desired != UNIT_ANIM_MOVING && (dx != 0 || dy != 0) &&
-                def->max_velocity > 0.0f)
-                u->heading = tak_atan2f((float)dx, -(float)dy);
+            if (desired != UNIT_ANIM_MOVING)
+                unit_face_work(u, def, dx, dy, 1.0f);
         } else if (u->target >= 0 &&
                    hover_attacks(u, def, &g_units[u->target])) {
             const Unit *t = &g_units[u->target];
@@ -16942,9 +17210,7 @@ static void Units_TickCombat(void) {
                 /* Face the building so the build animation plays
                  * facing the work, not whatever heading we approached
                  * from. Immobile builders stay put. */
-                if ((vx != 0 || vy != 0) && def->max_velocity > 0.0f) {
-                    u->heading = tak_atan2f((float)vx, -(float)vy);
-                }
+                unit_face_work(u, def, vx, vy, 1.0f);
             }
             if (arrived_at_site && target_alive_inprog) {
                 desired = UNIT_ANIM_BUILDING;
@@ -17672,6 +17938,21 @@ static int aura_takes(const Unit *s, const UnitAura *a, const Unit *t, int64_t *
         return 0;
     int64_t dx = (int64_t)t->world_x - s->world_x, dy = (int64_t)t->world_y - s->world_y;
     int64_t d2 = dx * dx + dy * dy;
+    /* Hulls hold two ships end on a hull's length apart where the
+     * original's cells let them close, so between ships it reaches from
+     * hull line to hull line (M-012). */
+    const UnitDef *sh = s->alive == UNIT_ALIVE_ACTIVE ? def_hull(s->def_idx) : NULL;
+    const UnitDef *th = sh && t->alive == UNIT_ALIVE_ACTIVE ? def_hull(t->def_idx) : NULL;
+    if (th) {
+        float lim = (float)a->radius + hull_reach(sh) + hull_reach(th);
+        if ((float)d2 < lim * lim) {
+            ShipHull hs, ht;
+            ship_hull_at(sh, s->world_x, s->world_y, s->heading, &hs);
+            ship_hull_at(th, t->world_x, t->world_y, t->heading, &ht);
+            int64_t l2 = (int64_t)ship_hull_d2(&hs, &ht);
+            if (l2 < d2) d2 = l2;
+        }
+    }
     if (d2 > (int64_t)a->radius * a->radius) return 0;
     int allied = !unit_players_are_enemies(s->player_id, t->player_id);
     if (allied == (a->affects_enemy != 0)) return 0;

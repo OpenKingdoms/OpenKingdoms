@@ -195,8 +195,13 @@
  * castles train cheap troops when its mana runs short, its units give up
  * a fight at their leash, and Zhon's beast producers are paced. 75: a
  * flyer without hoverattack attacks in runs, a dropped shot falls onto its
- * aim, a flyer on patrol keeps its speed, and a shot waits for its aim. */
-#define TAK_ENGINE_BUILD_ID           75
+ * aim, a flyer on patrol keeps its speed, and a shot waits for its aim. 76:
+ * a unit wedged at a ridge or in a pocket is routed out, a tower fires once
+ * its turret is on the target, a landing flyer keeps its pose, and a unit's
+ * step tests its whole body. 77: a Sea Fort on tight water launches its
+ * queue, ships caught bow to bow get past each other, a unit turns onto its
+ * work at its own rate, and a Repair Skiff mends a ship hull to hull. */
+#define TAK_ENGINE_BUILD_ID           77
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

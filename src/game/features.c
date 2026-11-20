@@ -80,6 +80,9 @@ static int parse_feature_tdf(const char *vfs_path) {
                 FeatureDef *f = &g_feats[g_feat_count];
                 memset(f, 0, sizeof(*f));
                 copy_str(f->name,     sizeof(f->name),     name);
+                copy_str(f->description, sizeof(f->description),
+                         TDF_ReadString(t, "description", ""));
+                f->no_display_info = (uint8_t)(TDF_ReadInt(t, "nodisplayinfo", 0) & 1);
                 copy_str(f->world,    sizeof(f->world),
                          TDF_ReadString(t, "world",    ""));
                 copy_str(f->category, sizeof(f->category),
@@ -346,6 +349,23 @@ static int find_offering_at(const struct GameWorld *world,
     return best;
 }
 
+int Features_InfoAt(const struct GameWorld *world, int32_t world_x, int32_t world_y) {
+    if (!world || !world->features) return -1;
+    int best = -1;
+    int64_t best_d2 = 0;
+    for (int i = 0; i < world->feature_count; i++) {
+        const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
+        if (!fd || fd->no_display_info) continue;
+        if (!feat_footprint_hit(fd, &world->features[i], world_x, world_y)) continue;
+        int32_t cx, cy;
+        if (Features_InstanceCentre(world, i, &cx, &cy) != 0) continue;
+        int64_t dx = cx - world_x, dy = cy - world_y;
+        int64_t d2 = dx * dx + dy * dy;
+        if (best < 0 || d2 < best_d2) { best = i; best_d2 = d2; }
+    }
+    return best;
+}
+
 int Features_FindReclaimableAt(const struct GameWorld *world,
                                int32_t world_x, int32_t world_y) {
     return find_offering_at(world, world_x, world_y, FEAT_WANT_RECLAIM);
@@ -405,6 +425,7 @@ int Features_AddInstance(struct GameWorld *world, int global_idx,
 }
 
 static int  feat_top_current(const struct GameWorld *w);
+static void feat_top_stale(struct GameWorld *w);
 static void feat_top_stamp(struct GameWorld *w, int i, int x0, int z0,
                            int x1, int z1);
 
@@ -447,6 +468,8 @@ int Features_AddInstanceFacing(struct GameWorld *world, int global_idx,
         Features_RemoveInstance(world, i);
     }
     int grid_current = feat_top_current(world);
+    const void *was_src = world->features;
+    int was_count = world->feature_count;
 
     if (world->feature_count >= world->feature_cap) {
         int cap = world->feature_cap ? world->feature_cap * 2 : 64;
@@ -480,13 +503,16 @@ int Features_AddInstanceFacing(struct GameWorld *world, int global_idx,
     if (fd->sacred_site > 0.0f) Features_NoteListReplaced();
     int idx = world->feature_count++;
     g_spark_cells_ok = 0;
+    int bx1 = Features_InstanceBlocks(world, idx) ? cell_x + fp_x - 1 : cell_x - 1;
+    Terrain_FeaturesChanged(world, was_src, was_count, cell_x, cell_z, bx1,
+                            cell_z + fp_z - 1);
     /* The shot grid takes the new feature in place when it was current. */
     if (grid_current) {
         feat_top_stamp(world, idx, 0, 0, world->feat_top_w, world->feat_top_h);
         world->feat_top_count = world->feature_count;
         world->feat_top_src = world->features;
     } else {
-        Features_MarkChanged(world);
+        feat_top_stale(world);
     }
     /* Route planning caches terrain blocking, so a body that blocks
      * has to tell it (the original's placement tells the pathfinder
@@ -543,13 +569,18 @@ int Features_InstanceSinkTicks(const struct GameWorld *world, int idx) {
 
 static uint32_t g_sacred_gen;
 uint32_t Features_SacredGeneration(void) { return g_sacred_gen; }
-void     Features_NoteListReplaced(void) { g_sacred_gen++; }
+void     Features_NoteListReplaced(void) {
+    g_sacred_gen++;
+    Terrain_FeaturesReplaced();
+}
 
 int Features_RemoveInstance(struct GameWorld *world, int idx) {
     if (!world || !world->features) return -1;
     if (idx < 0 || idx >= world->feature_count) return -1;
     if (g_remove_kind >= 0)
         feat_event(world, g_remove_kind, idx, world->features[idx].global_idx, -1, 0, 0, 0);
+    const void *was_src = world->features;
+    int was_count = world->feature_count;
     const FeatureDef *fd =
         Features_GetByIndex(world->features[idx].global_idx);
     int blocked = Features_InstanceBlocks(world, idx);
@@ -575,13 +606,13 @@ int Features_RemoveInstance(struct GameWorld *world, int idx) {
         if (rx1 > world->feat_top_w) rx1 = world->feat_top_w;
         if (rz1 > world->feat_top_h) rz1 = world->feat_top_h;
     }
-    /* Compact rather than tombstone: every consumer (walkability,
-     * rendering, sacred-site scan) walks the array live, so the cleared
-     * cell stops blocking on the next query with no other edits. */
+    /* Compact rather than tombstone: rendering and the sacred-site scan
+     * walk the array live, and the walkable grid is patched here. */
     for (int i = idx; i + 1 < world->feature_count; i++)
         world->features[i] = world->features[i + 1];
     world->feature_count--;
     hold_note_removed(idx);
+    Terrain_FeaturesChanged(world, was_src, was_count, bx0, bz0, bx1, bz1);
     /* The shot grid gives up the feature's cells to whatever else stands
      * on them, in place when it was current. */
     if (grid_current) {
@@ -598,7 +629,7 @@ int Features_RemoveInstance(struct GameWorld *world, int idx) {
         }
         world->feat_top_count = world->feature_count;
     } else {
-        Features_MarkChanged(world);
+        feat_top_stale(world);
     }
     if (blocked) TAK_PathCacheFeatureChanged(world, bx0, bz0, bx1, bz1);
     return 0;
@@ -611,8 +642,12 @@ int Features_SweepInstance(struct GameWorld *world, int idx) {
     return r;
 }
 
+static void feat_top_stale(struct GameWorld *w) { w->feat_top_clean = 0; }
+
 void Features_MarkChanged(struct GameWorld *world) {
-    if (world) world->feat_top_clean = 0;
+    if (!world) return;
+    feat_top_stale(world);
+    Terrain_FeaturesReplaced();
 }
 
 /* The grid is built and matches the feature list. */
@@ -1015,6 +1050,23 @@ static int remaster_breakable_hp(const FeatureDef *fd) {
     return 0;
 }
 
+/* The same health feat_hit counts a blast against. */
+int Features_InstanceHealth(const struct GameWorld *world, int idx,
+                            int *out_hp, int *out_max) {
+    if (out_hp) *out_hp = 0;
+    if (out_max) *out_max = 0;
+    if (!world || idx < 0 || idx >= world->feature_count) return 0;
+    const struct MapFeature *mf = &world->features[idx];
+    const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+    if (!fd) return 0;
+    int hp = fd->damage & 0xffff;
+    if (fd->indestructible) hp = world->cfg.remastered ? remaster_breakable_hp(fd) : 0;
+    if (hp <= 0) return 0;
+    if (out_max) *out_max = hp;
+    if (out_hp) *out_hp = hp > mf->damage_taken ? hp - mf->damage_taken : 0;
+    return 1;
+}
+
 /* A wall, a model wall or a building leaves rubble that blocks. */
 static int remaster_leaves_rubble(const FeatureDef *fd) {
     if (!fd) return 0;
@@ -1028,7 +1080,7 @@ static int remaster_leaves_rubble(const FeatureDef *fd) {
 /* The cells of [x0, x1) by [z0, z1) take their shot heights again from
  * whatever stands on them. */
 static void feat_top_refresh(struct GameWorld *w, int x0, int z0, int x1, int z1) {
-    if (!feat_top_current(w)) { Features_MarkChanged(w); return; }
+    if (!feat_top_current(w)) { feat_top_stale(w); return; }
     if (x0 < 0) x0 = 0;
     if (z0 < 0) z0 = 0;
     if (x1 > w->feat_top_w) x1 = w->feat_top_w;
@@ -1122,8 +1174,11 @@ static void feat_replace(struct GameWorld *w, int idx, int next, int kind) {
     mf->rubble = rubble;
     int fx_w = ofx > nfx ? ofx : nfx, fx_h = ofz > nfz ? ofz : nfz;
     feat_top_refresh(w, tx, tz, tx + fx_w, tz + fx_h);
-    if (was_blocking || Features_InstanceBlocks(w, idx))
+    if (was_blocking || Features_InstanceBlocks(w, idx)) {
+        Terrain_FeaturesChanged(w, w->features, w->feature_count,
+                                tx, tz, tx + fx_w - 1, tz + fx_h - 1);
         TAK_PathCacheFeatureChanged(w, tx, tz, tx + fx_w - 1, tz + fx_h - 1);
+    }
     feat_event(w, kind, idx, old, next, 0, 0, 0);
 }
 
