@@ -21,6 +21,10 @@
  * 0 the original's dark overlay. */
 #define TAK_SETTING_FOG_MIST   "FogMist"
 
+/* Models on the GL classic path: 1 shaded on the GPU from one atlas copy,
+ * 0 a lit copy per .shd row. Read when the atlases load. */
+#define TAK_SETTING_GPU_SHADING "GpuShading"
+
 /* Read the file. Missing file is not an error. Returns 0 on success. */
 int  Settings_Load(void);
 

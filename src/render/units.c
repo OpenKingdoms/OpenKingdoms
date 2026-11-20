@@ -54,6 +54,7 @@
 #include "tak_palette.h"
 #include "tak_ui.h"
 #include "tak_view_shake.h"
+#include "tak_gl3d.h"
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -8886,6 +8887,9 @@ static float    *g_scratch_hkey  = NULL;
 static uint32_t *g_lit_color     = NULL;
 static float    *g_lit_dv        = NULL;
 static float    *g_lit_du        = NULL;   /* a time-played texture's picture */
+/* The .shd row a face's level takes, by mesh vertex and by scratch vertex. */
+static uint8_t  *g_lit_row       = NULL;
+static uint8_t  *g_scratch_row   = NULL;
 static int       g_scratch_vcap  = 0;
 static uint16_t *g_scratch_idx   = NULL;
 static int       g_scratch_icap  = 0;
@@ -10092,7 +10096,11 @@ static int ensure_scratch(int need_verts, int need_idx) {
         uint32_t *lc = (uint32_t *)tak_malloc(sizeof(uint32_t) * (size_t)new_cap);
         float    *ld = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
         float    *lu = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
-        if (!xy || !cl || !uv || !wy || !hk || !wt || !lc || !ld || !lu) {
+        uint8_t  *lr = (uint8_t *)tak_malloc((size_t)new_cap);
+        uint8_t  *sr = (uint8_t *)tak_malloc((size_t)new_cap);
+        if (!xy || !cl || !uv || !wy || !hk || !wt || !lc || !ld || !lu || !lr || !sr) {
+            tak_free(lr);
+            tak_free(sr);
             if (xy) tak_free(xy);
             if (cl) tak_free(cl);
             if (uv) tak_free(uv);
@@ -10113,9 +10121,11 @@ static int ensure_scratch(int need_verts, int need_idx) {
         if (g_lit_color)     tak_free(g_lit_color);
         if (g_lit_dv)        tak_free(g_lit_dv);
         if (g_lit_du)        tak_free(g_lit_du);
+        tak_free(g_lit_row);
+        tak_free(g_scratch_row);
         g_scratch_xy = xy; g_scratch_color = cl; g_scratch_uv = uv; g_scratch_wy = wy;
         g_scratch_hkey = hk; g_scratch_wet = wt; g_lit_color = lc; g_lit_dv = ld;
-        g_lit_du = lu;
+        g_lit_du = lu; g_lit_row = lr; g_scratch_row = sr;
         g_scratch_vcap = new_cap;
     }
     /* Node xform scratch — sized to the largest mesh seen. */
@@ -10151,7 +10161,10 @@ static void overlap_order_free(void);
 static void run_orders_free(void);
 static void cmp_free(void);
 
+static void depth_free(void);
+
 static void scratch_free(void) {
+    depth_free();
     tall_features_free();
     overlap_order_free();
     run_orders_free();
@@ -10165,6 +10178,9 @@ static void scratch_free(void) {
     if (g_lit_color)     { tak_free(g_lit_color);     g_lit_color     = NULL; }
     if (g_lit_dv)        { tak_free(g_lit_dv);        g_lit_dv        = NULL; }
     if (g_lit_du)        { tak_free(g_lit_du);        g_lit_du        = NULL; }
+    tak_free(g_lit_row);
+    tak_free(g_scratch_row);
+    g_lit_row = g_scratch_row = NULL;
     if (g_scratch_idx)        { tak_free(g_scratch_idx);        g_scratch_idx        = NULL; }
     if (g_scratch_tri)        { tak_free(g_scratch_tri);        g_scratch_tri        = NULL; }
     if (g_scratch_node_xform) { tak_free(g_scratch_node_xform); g_scratch_node_xform = NULL; }
@@ -20062,21 +20078,21 @@ typedef struct FaceLight { float part; int scale, ambient; } FaceLight;
 
 /* All of the light for a building (bmcode 0), UNIT_LIGHT_FACTOR for a
  * mobile unit, whose shading is painted in, as in the original. */
-static FaceLight model_def_light(const UnitDef *d) {
-    FaceLight fl = { (!d || d->bmcode == 0) ? 1.0f : UNIT_LIGHT_FACTOR,
-                     MODEL_LIGHT_SCALE, MODEL_LIGHT_AMBIENT };
+static FaceLight face_light(int mobile, int statue) {
+    FaceLight fl = { mobile ? UNIT_LIGHT_FACTOR : 1.0f,
+                     statue ? STATUE_LIGHT_SCALE : MODEL_LIGHT_SCALE,
+                     statue ? STATUE_LIGHT_AMBIENT : MODEL_LIGHT_AMBIENT };
     return fl;
+}
+
+static FaceLight model_def_light(const UnitDef *d) {
+    return face_light(d && d->bmcode != 0, 0);
 }
 
 /* A stone or ice statue takes the light at its own scale and ambient: the
  * original's statues reach brighter rows than its buildings. */
 static FaceLight feature_light(const FeatureDef *fd) {
-    FaceLight fl = { 1.0f, MODEL_LIGHT_SCALE, MODEL_LIGHT_AMBIENT };
-    if (fd && (fd->is_stone || fd->is_frozen)) {
-        fl.scale = STATUE_LIGHT_SCALE;
-        fl.ambient = STATUE_LIGHT_AMBIENT;
-    }
-    return fl;
+    return face_light(0, fd && (fd->is_stone || fd->is_frozen));
 }
 
 /* A face's level: the scaled cosine rounded plus the ambient, 15 with
@@ -20105,6 +20121,7 @@ static void light_mesh_faces(const UnitMesh *m, const NodeXform *xf,
             g_lit_color[v] = m->colors[v];
             g_lit_dv[v] = 0.0f;
             g_lit_du[v] = 0.0f;
+            g_lit_row[v] = TEX_SHADE_IDENTITY;
         }
         return;
     }
@@ -20124,10 +20141,12 @@ static void light_mesh_faces(const UnitMesh *m, const NodeXform *xf,
         const UnitMeshBatch *b = &m->batches[fc->batch];
         uint32_t rgb;
         float dv = 0.0f;
+        int band = 0;
         if (b->atlas_tex) {
             const uint32_t g = b->shade.grey[level];
             rgb = g | (g << 8) | (g << 16);
-            dv = (float)b->shade.band[level] * b->shade.band_dv;
+            band = b->shade.band[level];
+            dv = TexAtlas_ShadeBandV(&b->shade, level);
         } else if (m->flat_ramp) {
             rgb = m->flat_ramp[level * 256 + fc->flat_idx] & 0x00FFFFFFu;
         } else {
@@ -20139,6 +20158,7 @@ static void light_mesh_faces(const UnitMesh *m, const NodeXform *xf,
             g_lit_color[v] = (m->colors[v] & 0xFF000000u) | rgb;
             g_lit_dv[v] = dv;
             g_lit_du[v] = du;
+            g_lit_row[v] = (uint8_t)(TEX_SHADE_IDENTITY + band);
         }
     }
 }
@@ -20239,6 +20259,7 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
         g_scratch_color[i] = c;
         g_scratch_uv[2 * i + 0] = m->uvs[2 * v + 0] + g_lit_du[v];
         g_scratch_uv[2 * i + 1] = m->uvs[2 * v + 1] + g_lit_dv[v];
+        g_scratch_row[i] = g_lit_row[v];
     }
 }
 
@@ -20363,10 +20384,12 @@ static int tri_overlap_centre(const TriSort *p, const TriSort *q, float *cx, flo
     return 1;
 }
 
-/* Where `p` lies at the middle of its overlap with `q`: -1 behind, 1 in
- * front, 2 no overlap. Level there: 0 if within OV_LEVEL all over the
- * overlap, else 3, crossing. */
+/* Where `p` lies against `q` where they overlap: -1 behind, 1 in front,
+ * at the middle or else at every corner, 2 no overlap. Neither: 0 if
+ * within OV_LEVEL all over the overlap, else 3, crossing. */
 #define OV_LEVEL 4.0f
+/* Past float noise, which reaches about 0.026 on coplanar steep faces. */
+#define OV_APART 0.05f
 static int tri_overlap_side(const TriSort *p, const TriSort *q) {
     float cx, cy, dp, dq, px[9], py[9];
     int pn = 0;
@@ -20374,11 +20397,18 @@ static int tri_overlap_side(const TriSort *p, const TriSort *q) {
     if (!tri_depth_at(p, cx, cy, &dp) || !tri_depth_at(q, cx, cy, &dq)) return 2;
     if (dp < dq - 0.5f) return -1;
     if (dp > dq + 0.5f) return 1;
+    /* One face above the other at every corner of the overlap is in front
+     * however close, as a per pixel key shows it: cards a fraction apart. */
+    float lo = dp - dq, hi = dp - dq;
     for (int i = 0; i < pn; i++) {
-        if (!tri_depth_at(p, px[i], py[i], &dp) || !tri_depth_at(q, px[i], py[i], &dq)) return 2;
-        if (fabsf(dp - dq) > OV_LEVEL) return 3;
+        float a, b;
+        if (!tri_depth_at(p, px[i], py[i], &a) || !tri_depth_at(q, px[i], py[i], &b)) return 2;
+        lo = fminf(lo, a - b);
+        hi = fmaxf(hi, a - b);
     }
-    return 0;
+    if (lo > OV_APART) return 1;
+    if (hi < -OV_APART) return -1;
+    return fmaxf(-lo, hi) > OV_LEVEL ? 3 : 0;
 }
 
 /* ── Overlap order ───────────────────────────────────────────────────
@@ -20387,11 +20417,11 @@ static int tri_overlap_side(const TriSort *p, const TriSort *q) {
  * their tallest key gets that wrong when a tall face stands behind a
  * short one: the Veruna bastion's inner fins painted over its front
  * walls. So for a building or a ship, wherever two of its triangles
- * overlap on screen, the one lower at the middle of the overlap goes
- * first, of two level there the one the original draws first stays on
- * top as its key test keeps it, and the rest is free to keep to one
- * texture. A unit keeps what it found and works out again only the
- * triangles that moved since, a waving flag or a turning turret.
+ * overlap on screen, the one lower all over the overlap, else at its
+ * middle, goes first, of two level there the one the original draws
+ * first stays on top as its key test keeps it, and the rest is free to
+ * keep to one texture. A unit keeps what it found and works out again
+ * only the triangles that moved since, a waving flag or a turning turret.
  * Walkers keep the key order: every step moves most of their faces. */
 /* A triangle's id is its second vertex: a 3DO face is a fan over
  * vertices of its own, so no two triangles share it. */
@@ -20450,16 +20480,17 @@ static TriSort *ov_tmp(int n) {
     return g_ov_tmp;
 }
 
+static void ov_memo_clear(OverlapMemo *o) {
+    if (o->rel) tak_free(o->rel);
+    if (o->seen) tak_free(o->seen);
+    if (o->edges) tak_free(o->edges);
+    if (o->order) tak_free(o->order);
+    memset(o, 0, sizeof(*o));
+    o->unit = -1;
+}
+
 static void overlap_order_free(void) {
-    for (int i = 0; i < OV_SLOTS; i++) {
-        OverlapMemo *o = &g_ov_memo[i];
-        if (o->rel) tak_free(o->rel);
-        if (o->seen) tak_free(o->seen);
-        if (o->edges) tak_free(o->edges);
-        if (o->order) tak_free(o->order);
-        memset(o, 0, sizeof(*o));
-        o->unit = -1;
-    }
+    for (int i = 0; i < OV_SLOTS; i++) ov_memo_clear(&g_ov_memo[i]);
     if (g_ov_box) tak_free(g_ov_box);
     if (g_ov_ints) tak_free(g_ov_ints);
     if (g_ov_pos) tak_free(g_ov_pos);
@@ -20839,6 +20870,8 @@ static int split_vert(int n, int a, int b, float t, uint32_t c) {
     g_scratch_xy[2 * n + 1] = g_scratch_xy[2 * a + 1] + t * (g_scratch_xy[2 * b + 1] - g_scratch_xy[2 * a + 1]);
     g_scratch_uv[2 * n + 0] = g_scratch_uv[2 * a + 0] + t * (g_scratch_uv[2 * b + 0] - g_scratch_uv[2 * a + 0]);
     g_scratch_uv[2 * n + 1] = g_scratch_uv[2 * a + 1] + t * (g_scratch_uv[2 * b + 1] - g_scratch_uv[2 * a + 1]);
+    g_scratch_wy[n] = g_scratch_wy[a] + t * (g_scratch_wy[b] - g_scratch_wy[a]);
+    g_scratch_row[n] = g_scratch_row[a];
     g_scratch_color[n] = c;
     return n;
 }
@@ -20897,7 +20930,10 @@ static void cmp_free(void) {
 /* Draws the `w` indices at g_scratch_idx over the first `nv` scratch
  * vertices, handing SDL only the ones they use, as it looks over every
  * vertex a draw is given. */
+static void depth_close(void);
+
 static void draw_used(TAK_Platform *plat, const GPU_Texture *tex, int nv, int w) {
+    depth_close();
     if (nv > g_cmp_vcap || w > g_cmp_icap) {
         const int vc = nv > g_cmp_vcap ? nv * 2 : g_cmp_vcap, ic = w > g_cmp_icap ? w * 2 : g_cmp_icap;
         cmp_free();
@@ -21112,6 +21148,255 @@ static void emit_copy_orders(TAK_Platform *plat, const UnitMesh *m, int n_inst,
     }
 }
 
+/* ── Depth per model ──────────────────────────────────────────────────
+ * Each model is depth tested in its own slice, later slices nearer: a
+ * unit's own key buffer (legacy:265317), rows between units (legacy:210555). */
+
+/* Model heights one slice holds, in DEPTH_STEPS steps. Ours. */
+#define DEPTH_SPAN  640.0f
+#define DEPTH_STEPS 16384
+
+static float Units_DepthKey(int slot, int slots, float height, float base) {
+    /* Whole steps, so a key is exact in a float whatever the slice; the
+     * first step stays nearer than a cleared buffer. */
+    int k = 1 + (int)floorf((height - base) * ((float)DEPTH_STEPS / DEPTH_SPAN));
+    if (k < 1) k = 1;
+    if (k > DEPTH_STEPS - 1) k = DEPTH_STEPS - 1;
+    if (slots < 1) slots = 1;
+    return (float)(slot * DEPTH_STEPS + k) / (float)(slots * DEPTH_STEPS);
+}
+
+/* Slices of DEPTH_STEPS a buffer of `bits` holds, 0 under 16 bits. */
+static int Units_DepthSlots(int bits) {
+    if (bits < 16) return 0;
+    return 1 << (bits - 14 > 10 ? 10 : bits - 14);
+}
+
+/* Copies the next group of a run takes. A see-through copy goes alone,
+ * so its colour pass lands before the next copy writes depth over it. */
+static int Units_DepthGroupSize(int remaining, int free_slots, int translucent) {
+    int n = translucent ? 1 : remaining;
+    if (n > remaining) n = remaining;
+    if (n > free_slots) n = free_slots;
+    return n;
+}
+
+/* 1 when the GL helper has to be started (again): a cached yes holds only
+ * while the helper is up on this renderer, as the 3D view shuts it down. */
+static int Units_DepthNeedsInit(int state, int gl_ready, int same_renderer) {
+    if (state < 0) return 0;
+    return state == 0 || !gl_ready || !same_renderer;
+}
+
+static int       g_depth_state;     /* 0 untried, 1 on, -1 off for this renderer */
+static uint32_t  g_depth_gen;
+static int       g_depth_open;
+static int       g_depth_slot, g_depth_slots;
+static float    *g_dv;              /* GL3D_CLASSIC_FLOATS a vertex */
+static uint16_t *g_di;
+static uint32_t *g_dstamp;
+static uint16_t *g_dmap;
+static float    *g_dbase;           /* per copy: its lowest point */
+static int      *g_dsplit;          /* per copy: its first cut vertex */
+static int       g_dvcap, g_dicap, g_dccap;
+static uint32_t  g_dclock;
+
+static void depth_free(void) {
+    tak_free(g_dv); tak_free(g_di); tak_free(g_dstamp); tak_free(g_dmap);
+    tak_free(g_dbase); tak_free(g_dsplit);
+    g_dv = NULL; g_di = NULL; g_dstamp = NULL; g_dmap = NULL;
+    g_dbase = NULL; g_dsplit = NULL;
+    g_dvcap = g_dicap = g_dccap = 0;
+    g_dclock = 0;
+}
+
+/* 1 when this renderer draws through GL. TAK_MODEL_DEPTH=0 keeps the
+ * sort, to compare the two. */
+static int depth_ready(TAK_Platform *plat) {
+    if (g_depth_gen != plat->renderer_gen) {
+        g_depth_gen = plat->renderer_gen;
+        g_depth_state = 0;
+    }
+    if (!Units_DepthNeedsInit(g_depth_state, GL3D_Available(),
+                              GL3D_Renderer() == plat->renderer))
+        return g_depth_state > 0;
+    g_depth_state = -1;
+    const char *opt = getenv("TAK_MODEL_DEPTH");
+    if (opt && opt[0] == '0') return 0;
+    SDL_RendererInfo info;
+    if (SDL_GetRendererInfo(plat->renderer, &info) != 0 || !info.name ||
+        strncmp(info.name, "opengl", 6) != 0)
+        return 0;
+    if (GL3D_Init(plat->window, plat->renderer) != 0) return 0;
+    if (GL3D_Renderer() != plat->renderer) return 0;
+    g_depth_state = 1;
+    return 1;
+}
+
+int Units_ModelDepthReady(TAK_Platform *plat) {
+    return plat && plat->renderer && depth_ready(plat);
+}
+
+/* A session never outlives the call that opened it, but for Units_Submit's
+ * runs: an SDL draw or target switch inside one breaks SDL's GL state cache. */
+static void depth_close(void) {
+    if (!g_depth_open) return;
+    GL3D_ClassicEnd();
+    g_depth_open = 0;
+}
+
+/* Opens a session with a free slice, clearing the buffer when none is
+ * left or the frame has not cleared it yet. */
+static int depth_open(TAK_Platform *plat) {
+    if (g_depth_open && g_depth_slot < g_depth_slots) return 0;
+    depth_close();
+    if (!depth_ready(plat)) return -1;
+    const int clear = g_depth_slot == 0 || g_depth_slot >= g_depth_slots;
+    if (GL3D_ClassicBegin(plat->renderer, clear) != 0) {
+        const int bits = GL3D_ClassicDepthBits();
+        if (bits != 0 && bits < 16) g_depth_state = -1;
+        return -1;
+    }
+    g_depth_slots = Units_DepthSlots(GL3D_ClassicDepthBits());
+    if (clear) g_depth_slot = 0;
+    g_depth_open = 1;
+    return 0;
+}
+
+static int depth_grow(int nv, int w, int copies) {
+    if (nv > g_dvcap) {
+        const int cap = nv * 2;
+        float *v = (float *)tak_malloc(sizeof(float) * GL3D_CLASSIC_FLOATS * (size_t)cap);
+        uint32_t *st = (uint32_t *)tak_calloc((size_t)cap, sizeof(uint32_t));
+        uint16_t *mp = (uint16_t *)tak_malloc(sizeof(uint16_t) * (size_t)cap);
+        if (!v || !st || !mp) { tak_free(v); tak_free(st); tak_free(mp); return -1; }
+        tak_free(g_dv); tak_free(g_dstamp); tak_free(g_dmap);
+        g_dv = v; g_dstamp = st; g_dmap = mp;
+        g_dvcap = cap;
+        g_dclock = 0;
+    }
+    if (w > g_dicap) {
+        uint16_t *ix = (uint16_t *)tak_malloc(sizeof(uint16_t) * (size_t)w * 2);
+        if (!ix) return -1;
+        tak_free(g_di);
+        g_di = ix;
+        g_dicap = w * 2;
+    }
+    if (copies + 1 > g_dccap) {
+        float *b = (float *)tak_malloc(sizeof(float) * (size_t)(copies + 1));
+        int *sp = (int *)tak_malloc(sizeof(int) * (size_t)(copies + 1));
+        if (!b || !sp) { tak_free(b); tak_free(sp); return -1; }
+        tak_free(g_dbase); tak_free(g_dsplit);
+        g_dbase = b; g_dsplit = sp;
+        g_dccap = copies + 1;
+    }
+    return 0;
+}
+
+/* Hands GL the `w` indices at g_scratch_idx, each vertex keyed into the
+ * slice of its copy. Copies c0 on sit at vertex offsets c0 * V on; a
+ * cut vertex past `total` belongs to the copy g_dsplit places it in. */
+static void depth_draw(const GPU_Texture *tex, int nv, int w, int total, int V,
+                       int c0, int n, int slot0, GL3D_ClassicPass pass) {
+    if (depth_grow(nv, w, n) != 0) return;
+    if (++g_dclock == 0) {
+        memset(g_dstamp, 0, sizeof(uint32_t) * (size_t)g_dvcap);
+        g_dclock = 1;
+    }
+    int out = 0;
+    for (int i = 0; i < w; i++) {
+        const int v = g_scratch_idx[i];
+        if (g_dstamp[v] != g_dclock) {
+            int ci = 0;
+            if (v < total) ci = v / V - c0;
+            else while (ci + 1 < n && v >= g_dsplit[ci + 1]) ci++;
+            g_dstamp[v] = g_dclock;
+            g_dmap[v] = (uint16_t)out;
+            float *o = &g_dv[GL3D_CLASSIC_FLOATS * out];
+            o[0] = g_scratch_xy[2 * v];
+            o[1] = g_scratch_xy[2 * v + 1];
+            o[2] = Units_DepthKey(slot0 + ci, g_depth_slots, g_scratch_wy[v], g_dbase[ci]);
+            o[3] = g_scratch_uv[2 * v];
+            o[4] = g_scratch_uv[2 * v + 1];
+            const uint32_t c = g_scratch_color[v];
+            for (int q = 0; q < 4; q++) o[5 + q] = (float)((c >> (8 * q)) & 0xFFu) * (1.0f / 255.0f);
+            o[9] = (float)g_scratch_row[v];
+            out++;
+        }
+        g_di[i] = g_dmap[v];
+    }
+    const GL3D_Texture *index = NULL, *ramp = NULL;
+    if (tex) (void)TexAtlas_GpuShade(tex, &index, &ramp);
+    GL3D_ClassicDraw(tex ? GPU_TextureSDL(tex) : NULL, index, ramp, g_dv, out, g_di, w, pass);
+}
+
+/* Draws the copies at vertex offsets 0, V, 2V on, each in its own slice;
+ * a see-through one blends once after its depth. -1: nothing drawn. */
+static int emit_depth(TAK_Platform *plat, const UnitMesh *m, int n_inst,
+                      int total_verts, int translucent) {
+    const int V = m->vert_count;
+    for (int c0 = 0; c0 < n_inst;) {
+        if (depth_open(plat) != 0) return c0 == 0 ? -1 : 0;
+        const int n = Units_DepthGroupSize(n_inst - c0, g_depth_slots - g_depth_slot, translucent);
+        if (depth_grow(1, 1, n) != 0) return c0 == 0 ? -1 : 0;
+        for (int ci = 0; ci < n; ci++) {
+            float base = 1e30f;
+            const int off = (c0 + ci) * V;
+            for (int v = 0; v < V; v++)
+                if (g_scratch_color[off + v] && g_scratch_wy[off + v] < base) base = g_scratch_wy[off + v];
+            g_dbase[ci] = base < 1e29f ? base : 0.0f;
+        }
+        const int slot0 = g_depth_slot;
+        g_depth_slot += n;
+        GL3D_ClassicPass pass = translucent ? GL3D_CLASSIC_DEPTH : GL3D_CLASSIC_OPAQUE;
+        for (;;) {
+            for (int b = 0; b < m->batch_count; b++) {
+                const UnitMeshBatch *batch = &m->batches[b];
+                const uint16_t *src = m->indices + batch->first_index;
+                const uint32_t *seq = m->tri_seq ? m->tri_seq + batch->first_index / 3 : NULL;
+                int w = 0, nv = total_verts;
+                for (int ci = 0; ci < n; ci++) {
+                    const int off = (c0 + ci) * V;
+                    g_dsplit[ci] = nv;
+                    /* A tie keeps the first drawn: nodes last to first within
+                     * a batch, as the original walks (legacy:197658, :197944). */
+                    for (int end = batch->index_count / 3; end > 0;) {
+                        int start = 0;
+                        if (seq) {
+                            start = end - 1;
+                            while (start > 0 && (seq[start - 1] >> 12) == (seq[end - 1] >> 12)) start--;
+                        }
+                        for (int t = start; t < end; t++) {
+                            const int i0 = off + src[3 * t], i1 = off + src[3 * t + 1];
+                            const int i2 = off + src[3 * t + 2];
+                            if (!tri_faces_camera(i0, i1, i2)) continue;
+                            w = emit_tri(i0, i1, i2, w, &nv);
+                        }
+                        end = start;
+                    }
+                }
+                g_dsplit[n] = nv;
+                if (w > 0)
+                    depth_draw(batch->atlas_tex, nv, w,
+                               total_verts, V, c0, n, slot0, pass);
+            }
+            if (pass != GL3D_CLASSIC_DEPTH) break;
+            pass = GL3D_CLASSIC_COLOUR;
+        }
+        c0 += n;
+    }
+    return 0;
+}
+
+/* 1 when any unit of the run draws see through. */
+static int run_translucent(const int *units, int n) {
+    for (int i = 0; i < n; i++) {
+        const Unit *u = &g_units[units[i]];
+        if (u->magic_death || Units_DrawnAlpha(u) != 255) return 1;
+    }
+    return 0;
+}
+
 /* Submit a coalesced run: a contiguous slice of g_draw_order in which
  * every unit shares the same (def_idx, color_idx) and therefore the
  * same baked UnitMesh. Builds one merged vertex buffer for the whole
@@ -21186,18 +21471,24 @@ static void submit_run(TAK_Platform *plat, const struct GameWorld *world,
          * with its draws shared (emit_copy_orders). */
         const Unit *u0 = &g_units[unit_indices[chunk_start]];
         /* A whiteout or a frame is a run of one, so the scratch holds
-         * just its verts. */
+         * just its verts. A run drawn with depth skips the sort. */
         if (Units_NanoframeBodyShown(u0)) {
-            if (u0->magic_death)
+            if (u0->magic_death) {
+                depth_close();
                 submit_whiteout(plat, m, u0, total_verts);
-            else if (unit_overlap_ordered(u0) &&
-                     find_copy_orders(world, m, unit_indices + chunk_start, chunk_n))
-                emit_copy_orders(plat, m, chunk_n, total_verts);
-            else
-                emit_height_ordered(plat, m, chunk_n, total_verts);
+            } else if (emit_depth(plat, m, chunk_n, total_verts,
+                                  run_translucent(unit_indices + chunk_start, chunk_n)) != 0) {
+                if (unit_overlap_ordered(u0) &&
+                    find_copy_orders(world, m, unit_indices + chunk_start, chunk_n))
+                    emit_copy_orders(plat, m, chunk_n, total_verts);
+                else
+                    emit_height_ordered(plat, m, chunk_n, total_verts);
+            }
         }
-        if (u0->under_construction)
+        if (u0->under_construction) {
+            depth_close();
             submit_intangible_mass(plat, m, u0, def, total_verts);
+        }
     }
 }
 
@@ -21796,15 +22087,14 @@ static void render_build_ghost(TAK_Platform *plat, const struct GameWorld *world
         g_scratch_color[v] = cr | (cg << 8) | (cb << 16) | (ca << 24);
         g_scratch_uv[2 * v + 0] = m->uvs[2 * v + 0] + g_lit_du[v];
         g_scratch_uv[2 * v + 1] = m->uvs[2 * v + 1] + g_lit_dv[v];
+        g_scratch_row[v] = g_lit_row[v];
     }
 
-    /* One ordered pass over every triangle, the rule the live submit
-     * uses: back facing tris dropped (legacy:197804), the rest ordered
-     * by height key with the authored order breaking ties
-     * (legacy:265317, legacy:197658), then emitted as contiguous same
-     * batch stretches. Ordering whole batches instead put a tower's
-     * masonry over the crew standing in it. */
-    emit_height_ordered(plat, m, 1, V);
+    /* As a live unit: depth tested on GL, blended once; else by height key,
+     * authored order on ties (legacy:265317, :197658), back faces dropped (:197804). */
+    if (emit_depth(plat, m, 1, V, alpha255 != 255) != 0)
+        emit_height_ordered(plat, m, 1, V);
+    depth_close();
 }
 
 /* Units in this frame's draw order that own far ring particles, which
@@ -21829,6 +22119,11 @@ static void mark_behind_owners(int n) {
 static void render_projectile_effects(const struct GameWorld *world,
                                       TAK_Platform *plat, int owner);
 
+/* The unit draw lays a wall's shadow in its row. */
+static int  unit_shadow_in_row(const Unit *u, const UnitDef *d);
+static void render_unit_shadows(const struct GameWorld *world, TAK_Platform *plat,
+                                const int *order, int n, int in_row);
+
 /* Walk Y-sorted draw order, group consecutive units sharing
  * (def_idx, color_idx) into runs, submit each run as one coalesced
  * batch. Mixed-faction crowds get many tiny runs (no batching gain
@@ -21849,8 +22144,14 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
         if (!u0->magic_death || tall_feature_before(unit_draw_row(u0)))
             silhouette_close(plat);
         flush_tall_features(plat, unit_draw_row(u0));
+        const int in_row = unit_shadow_in_row(u0, Units_GetDef(u0->def_idx));
+        if (in_row) {
+            /* A whiteout group must not stay bound under the shadow mask. */
+            silhouette_close(plat);
+            render_unit_shadows(world, plat, g_draw_order + run_start, 1, 1);
+        }
         int run_end = run_start + 1;
-        while (run_end < n) {
+        while (!in_row && run_end < n) {
             const Unit *uk = &g_units[g_draw_order[run_end]];
             /* A tall feature between the two rows goes down between them. */
             if (tall_feature_before(unit_draw_row(uk))) break;
@@ -21873,6 +22174,7 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
         }
         if (g_fx_behind_owner[g_draw_order[run_start]]) {
             silhouette_close(plat);
+            depth_close();
             render_projectile_effects(world, plat, g_draw_order[run_start]);
         }
         submit_run(plat, world, u0->def_idx, u0->team_color_idx,
@@ -21881,6 +22183,7 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
     }
     silhouette_close(plat);
     flush_tall_features(plat, INT_MAX);
+    depth_close();
 }
 
 /* How many units shared the coalesced run this one was drawn in on the
@@ -22220,11 +22523,15 @@ static void submit_static_mesh_run(TAK_Platform *plat,
                 g_scratch_color[i]  = g_lit_color[v];
                 g_scratch_uv[2*i+0] = m->uvs[2*v+0] + g_lit_du[v];
                 g_scratch_uv[2*i+1] = m->uvs[2*v+1] + g_lit_dv[v];
+                g_scratch_row[i]    = g_lit_row[v];
             }
         }
 
-        emit_height_ordered(plat, m, cn, total_verts);
+        if (emit_depth(plat, m, cn, total_verts, 0) != 0)
+            emit_height_ordered(plat, m, cn, total_verts);
     }
+    /* Whatever SDL draws next must not land inside the session. */
+    depth_close();
 }
 
 /* Gathered placements for one run. Shared by the projectile and corpse
@@ -22369,6 +22676,59 @@ const char *Units_FeaturePaint(const FeatureDef *fd) {
     if (!si) return NULL;
     const char *paint = fd->is_stone ? si->stoneanim : si->frozenanim;
     return paint[0] ? paint : NULL;
+}
+
+/* The brightest level a mesh lit by `fl` reaches: a face square to the light. */
+static int face_light_top(FaceLight fl) {
+    const float n[3] = { 1.0f, 0.0f, 0.0f };
+    return model_face_level(n, n, 0, &fl);
+}
+
+static void note_node_tops(const Obj3DNode *nd, int top) {
+    for (; nd; nd = nd->next_sibling) {
+        for (int p = 0; p < nd->num_primitives; p++)
+            if (nd->primitives[p].texture_name[0])
+                TexAtlas_NoteShadeTop(nd->primitives[p].texture_name, top);
+        note_node_tops(nd->first_child, top);
+    }
+}
+
+static void note_model_tops(const char *object_name, int top) {
+    char obj_lc[TAK_UNITDEF_OBJ_MAX], path[TAK_UNITDEF_OBJ_MAX + 16];
+    lowercase_into(obj_lc, sizeof(obj_lc), object_name);
+    snprintf(path, sizeof(path), "objects3d/%s.3do", obj_lc);
+    Obj3DFile *obj = NULL;
+    if (Obj3D_Load(&obj, path) == 0 && obj) note_node_tops(obj->root, top);
+    Obj3D_Close(obj);
+}
+
+void Units_PlanShadeBands(void) {
+    if (!TexAtlas_ShadePlanWanted()) return;
+    const uint64_t t0 = SDL_GetPerformanceCounter();
+    const int shot_top = face_light_top(model_def_light(NULL));
+    for (int d = 0; d < g_def_count; d++) {
+        const UnitDef *def = &g_defs[d];
+        if (def->objectname[0])
+            note_model_tops(def->objectname, face_light_top(model_def_light(def)));
+        for (int w = 0; w < def->num_weapons + 2; w++) {
+            const int k = w - def->num_weapons;
+            const UnitWeapon *wp = k < 0 ? &def->weapons[w]
+                                 : (def->death_weapon_set >> k) & 1u ? &def->death_weapons[k] : NULL;
+            if (!wp || wp->art_kind != UNIT_WEAPON_ART_MODEL) continue;
+            note_model_tops(wp->art_name, shot_top);
+            if (wp->veteran_art_name[0]) note_model_tops(wp->veteran_art_name, shot_top);
+        }
+    }
+    for (int f = 0; f < Features_GetCount(); f++) {
+        const FeatureDef *fd = Features_GetByIndex(f);
+        if (!fd || !fd->object[0]) continue;
+        const char *paint = Units_FeaturePaint(fd);
+        if (paint) TexAtlas_NoteShadeTop(paint, face_light_top(feature_light(fd)));
+        else note_model_tops(fd->object, face_light_top(feature_light(fd)));
+    }
+    TexAtlas_PlanShades();
+    fprintf(stderr, "Units_PlanShadeBands: %.0f ms%c",
+            (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 / (double)SDL_GetPerformanceFrequency(), 10);
 }
 
 static const UnitMesh *corpse_model_mesh(int feat_idx, int color_idx) {
@@ -23743,6 +24103,8 @@ static void tall_tex_release(void) {
 /* Lays the tall features of every row before `row` over the walkers
  * drawn so far, clipped to each walker's box so nothing else moves. */
 static void flush_tall_features(TAK_Platform *plat, int row) {
+    if (!tall_feature_before(row)) return;
+    depth_close();
     SDL_Renderer *r = plat->renderer;
     SDL_Rect prev;
     const SDL_bool clipped = SDL_RenderIsClipEnabled(r);
@@ -23844,15 +24206,37 @@ static int shadow_ground_height(const struct GameWorld *world, const Unit *u) {
     return h;
 }
 
+/* Which pass lays a unit's ground shadow: none, the ground pass before any
+ * body, or its own row just before its body. */
+enum { UNITS_SHADOW_NONE = 0, UNITS_SHADOW_GROUND = 1, UNITS_SHADOW_IN_ROW = 2 };
+
+/* A wall (isfeature) casts its shadow as the feature it becomes, whatever its
+ * noshadow, just before its own body so it falls across the wall behind, as in
+ * the original. Every other shadow goes down before any body. */
+static int Units_ShadowPass(const UnitDef *d, int under_construction) {
+    if (!d || d->floater || under_construction) return UNITS_SHADOW_NONE;
+    if (d->no_shadow && !d->is_feature) return UNITS_SHADOW_NONE;
+    return d->is_feature ? UNITS_SHADOW_IN_ROW : UNITS_SHADOW_GROUND;
+}
+
 static int unit_casts_shadow(const Unit *u, const UnitDef *d) {
-    if (!d || d->no_shadow || d->floater) return 0;
-    if (u->under_construction) return 0;
-    return 1;
+    return Units_ShadowPass(d, u->under_construction) != UNITS_SHADOW_NONE;
+}
+
+static int unit_shadow_in_row(const Unit *u, const UnitDef *d) {
+    return Units_ShadowPass(d, u->under_construction) == UNITS_SHADOW_IN_ROW;
+}
+
+/* A model feature casts a silhouette unless its file says noshadow, as in
+ * the original. A sprite feature's shadow is its GAF's. */
+static int Units_FeatureCastsShadow(const struct FeatureDef *fd) {
+    return fd && fd->object[0] && !fd->no_shadow;
 }
 
 /* Point the renderer at a cleared shadow mask. Returns 0 and the
  * target to restore, or -1 when the mask cannot be made. */
 static int shadow_mask_begin(TAK_Platform *plat, SDL_Texture **prev) {
+    depth_close();   /* no depth session may span a target switch */
     SDL_Renderer *r = plat->renderer;
     int w = 0, h = 0;
     /* Same rule as the strip cache: with no generation to match, the
@@ -24122,6 +24506,7 @@ static SDL_Rect g_mass_dirty;  /* left white by the last group */
 
 /* Bind the mass target, clearing what the last group left. */
 static int silhouette_open(TAK_Platform *plat) {
+    depth_close();   /* no depth session may span a target switch */
     SDL_Renderer *r = plat->renderer;
     int w = 0, h = 0;
     if (plat->renderer_gen == 0) return -1;
@@ -24329,9 +24714,56 @@ static void transform_shadow_verts(const UnitMesh *m,
     }
 }
 
-/* One silhouette draw per mesh batch for a run of units that share a
- * mesh. Texels keep the body pass's alpha test, so a keyed texel casts
- * no shadow. */
+/* Draw the silhouettes of `chunk_n` copies of `m` already projected into
+ * the scratch buffers, keeping the body pass's alpha test, so a keyed
+ * texel casts no shadow. */
+static void submit_shadow_chunk(TAK_Platform *plat, const UnitMesh *m, int chunk_n,
+                                SDL_Rect *area)
+{
+    const int V = m->vert_count;
+    const int total_verts = chunk_n * V;
+    for (int b = 0; b < m->batch_count; b++) {
+        const UnitMeshBatch *batch = &m->batches[b];
+        if (batch->index_count == 0) continue;
+        const int n_tri = batch->index_count / 3;
+        const uint16_t *src_idx = m->indices + batch->first_index;
+        int w = 0;
+        for (int ci = 0; ci < chunk_n; ci++) {
+            const int v_off = ci * V;
+            for (int t = 0; t < n_tri; t++) {
+                const int i0 = v_off + src_idx[t * 3 + 0];
+                const int i1 = v_off + src_idx[t * 3 + 1];
+                const int i2 = v_off + src_idx[t * 3 + 2];
+                const float sx0 = g_scratch_xy[2*i0+0], sy0 = g_scratch_xy[2*i0+1];
+                const float sx1 = g_scratch_xy[2*i1+0], sy1 = g_scratch_xy[2*i1+1];
+                const float sx2 = g_scratch_xy[2*i2+0], sy2 = g_scratch_xy[2*i2+1];
+                if (g_backface_cull_on) {
+                    /* The body's rule, on the shadow's own
+                     * projection (legacy:198043). */
+                    const float cross = (sy0 - sy1) * (sx2 - sx1)
+                                      - (sy2 - sy1) * (sx0 - sx1);
+                    if (g_backface_cull_invert) { if (cross > 0.0f) continue; }
+                    else                        { if (cross < 0.0f) continue; }
+                }
+                g_scratch_idx[w++] = (uint16_t)i0;
+                g_scratch_idx[w++] = (uint16_t)i1;
+                g_scratch_idx[w++] = (uint16_t)i2;
+                float lo_x = sx0 < sx1 ? sx0 : sx1, hi_x = sx0 > sx1 ? sx0 : sx1;
+                float lo_y = sy0 < sy1 ? sy0 : sy1, hi_y = sy0 > sy1 ? sy0 : sy1;
+                if (sx2 < lo_x) lo_x = sx2;
+                if (sx2 > hi_x) hi_x = sx2;
+                if (sy2 < lo_y) lo_y = sy2;
+                if (sy2 > hi_y) hi_y = sy2;
+                shadow_area_add(area, lo_x, lo_y, hi_x, hi_y);
+            }
+        }
+        if (w == 0) continue;
+        GPU_DrawGeometryRaw(plat, batch->atlas_tex,
+            g_scratch_xy, g_scratch_color, g_scratch_uv,
+            total_verts, g_scratch_idx, w);
+    }
+}
+
 static void submit_shadow_run(TAK_Platform *plat, const struct GameWorld *world,
                               uint16_t def_idx, uint8_t color_idx,
                               const int *unit_indices, int n_units,
@@ -24363,47 +24795,86 @@ static void submit_shadow_run(TAK_Platform *plat, const struct GameWorld *world,
                                    y_scale, ci * V);
         }
 
-        for (int b = 0; b < m->batch_count; b++) {
-            const UnitMeshBatch *batch = &m->batches[b];
-            if (batch->index_count == 0) continue;
-            const int n_tri = batch->index_count / 3;
-            const uint16_t *src_idx = m->indices + batch->first_index;
-            int w = 0;
-            for (int ci = 0; ci < chunk_n; ci++) {
-                const int v_off = ci * V;
-                for (int t = 0; t < n_tri; t++) {
-                    const int i0 = v_off + src_idx[t * 3 + 0];
-                    const int i1 = v_off + src_idx[t * 3 + 1];
-                    const int i2 = v_off + src_idx[t * 3 + 2];
-                    const float sx0 = g_scratch_xy[2*i0+0], sy0 = g_scratch_xy[2*i0+1];
-                    const float sx1 = g_scratch_xy[2*i1+0], sy1 = g_scratch_xy[2*i1+1];
-                    const float sx2 = g_scratch_xy[2*i2+0], sy2 = g_scratch_xy[2*i2+1];
-                    if (g_backface_cull_on) {
-                        /* The body's rule, on the shadow's own
-                         * projection (legacy:198043). */
-                        const float cross = (sy0 - sy1) * (sx2 - sx1)
-                                          - (sy2 - sy1) * (sx0 - sx1);
-                        if (g_backface_cull_invert) { if (cross > 0.0f) continue; }
-                        else                        { if (cross < 0.0f) continue; }
-                    }
-                    g_scratch_idx[w++] = (uint16_t)i0;
-                    g_scratch_idx[w++] = (uint16_t)i1;
-                    g_scratch_idx[w++] = (uint16_t)i2;
-                    float lo_x = sx0 < sx1 ? sx0 : sx1, hi_x = sx0 > sx1 ? sx0 : sx1;
-                    float lo_y = sy0 < sy1 ? sy0 : sy1, hi_y = sy0 > sy1 ? sy0 : sy1;
-                    if (sx2 < lo_x) lo_x = sx2;
-                    if (sx2 > hi_x) hi_x = sx2;
-                    if (sy2 < lo_y) lo_y = sy2;
-                    if (sy2 > hi_y) hi_y = sy2;
-                    shadow_area_add(area, lo_x, lo_y, hi_x, hi_y);
-                }
-            }
-            if (w == 0) continue;
-            GPU_DrawGeometryRaw(plat, batch->atlas_tex,
-                g_scratch_xy, g_scratch_color, g_scratch_uv,
-                total_verts, g_scratch_idx, w);
-        }
+        submit_shadow_chunk(plat, m, chunk_n, area);
     }
+}
+
+/* A model feature's silhouette: its body's pose (submit_static_mesh_run),
+ * then the unit shadow's projection (transform_shadow_verts). */
+static void transform_feature_shadow_verts(const UnitMesh *m, const struct GameWorld *world,
+                                           const StaticMeshInstance *p, int ground)
+{
+    const float ta = g_ta_scale;
+    const float base_x = p->world_x - (float)world->cam_x + 5.0f;
+    const float base_y = p->world_y - (float)world->cam_y - (float)(ground >> 1);
+    const float ch = tak_cosf(p->heading), sh = tak_sinf(p->heading);
+    const float cp = tak_cosf(p->pitch),   sp = tak_sinf(p->pitch);
+    const float cr = tak_cosf(p->roll),    sr = tak_sinf(p->roll);
+    for (int v = 0; v < m->vert_count; v++) {
+        const NodeXform *x = &g_scratch_node_xform[m->vert_node_idx[v]];
+        if (x->hidden) {
+            g_scratch_xy[2 * v + 0] = g_scratch_xy[2 * v + 1] = 0.0f;
+            g_scratch_color[v] = 0;
+            g_scratch_uv[2 * v + 0] = g_scratch_uv[2 * v + 1] = 0.0f;
+            continue;
+        }
+        const float lx = m->positions[3 * v + 0];
+        const float ly = m->positions[3 * v + 1];
+        const float lz = m->positions[3 * v + 2];
+        const float mx = x->rot[0]*lx + x->rot[1]*ly + x->rot[2]*lz + x->trans[0];
+        const float my = x->rot[3]*lx + x->rot[4]*ly + x->rot[5]*lz + x->trans[1];
+        const float mz = x->rot[6]*lx + x->rot[7]*ly + x->rot[8]*lz + x->trans[2];
+        const float ax = cr*mx - sr*my, ay = sr*mx + cr*my;
+        const float by = cp*ay - sp*mz, bz = sp*ay + cp*mz;
+        const float rx = -(ch * ax + sh * bz);
+        const float rz = -(sh * ax - ch * bz);
+        const float lean = by * ta * 0.25f;
+        g_scratch_xy[2 * v + 0] = base_x + rx * ta + lean;
+        g_scratch_xy[2 * v + 1] = base_y + rz * ta - lean;
+        g_scratch_color[v] = 0xFF000000u;   /* opaque black coverage */
+        g_scratch_uv[2 * v + 0] = m->uvs[2 * v + 0];
+        g_scratch_uv[2 * v + 1] = m->uvs[2 * v + 1];
+    }
+}
+
+/* Model features without noshadow, statues and many corpses, cast a
+ * silhouette as a unit does, before the features' bodies. */
+static void render_feature_shadows(const struct GameWorld *world, TAK_Platform *plat)
+{
+    if (!g_shadows_on || !plat || !plat->renderer || !world || !world->features) return;
+    const int32_t margin = 256;
+    SDL_Texture *prev = NULL;
+    int open = 0;
+    SDL_Rect area = { 0, 0, 0, 0 };
+    for (int i = 0; i < world->feature_count; i++) {
+        const struct MapFeature *mf = &world->features[i];
+        const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+        if (!Units_FeatureCastsShadow(fd)) continue;
+        if (mf->world_x < world->cam_x - margin ||
+            mf->world_x > world->cam_x + world->viewport_w + margin) continue;
+        if (mf->world_y < world->cam_y - margin ||
+            mf->world_y > world->cam_y + world->viewport_h + margin) continue;
+        if (Fog_StateAt(world, mf->world_x, mf->world_y) == TAK_FOG_UNEXPLORED) continue;
+        const int c = (mf->color_idx >= 0 && mf->color_idx <= 11) ? mf->color_idx : 0;
+        const UnitMesh *m = corpse_model_mesh(mf->global_idx, c);
+        if (!m || m->vert_count == 0 || ensure_scratch(m->vert_count, m->tri_count * 3) != 0)
+            continue;
+        if (!open) {
+            if (shadow_mask_begin(plat, &prev) != 0) return;
+            open = 1;
+        }
+        StaticMeshInstance p;
+        p.world_x = (float)mf->world_x;
+        p.world_y = (float)mf->world_y;
+        p.height  = 0.0f;
+        p.heading = angle16_to_heading(mf->heading);
+        p.pitch   = angle16_to_heading(mf->pitch);
+        p.roll    = angle16_to_heading(mf->roll);
+        compose_node_xforms_ex(m, NULL, g_scratch_node_xform, !CORPSE_ALL_PIECES);
+        transform_feature_shadow_verts(m, world, &p, (int)corpse_ground_height(world, mf));
+        submit_shadow_chunk(plat, m, 1, &area);
+    }
+    if (open) shadow_mask_end(plat, prev, &area);
 }
 
 /* A shadowart sprite, stepping only while the unit moves (legacy:197225),
@@ -24475,18 +24946,20 @@ static void blit_projectile_shadows(TAK_Platform *plat,
     }
 }
 
-/* Every ground shadow of the frame, the units and the shots in flight,
- * drawn before any unit body. */
-static void render_ground_shadows(const struct GameWorld *world,
-                                  TAK_Platform *plat, int n)
+/* The shadows of the units `order` lists whose shadow goes in the row
+ * pass (`in_row`) or the ground pass, and the shots' with the ground
+ * pass, through one mask. */
+static void render_unit_shadows(const struct GameWorld *world, TAK_Platform *plat,
+                                const int *order, int n, int in_row)
 {
     if (!g_shadows_on || !plat || !plat->renderer) return;
     int any = 0;
     for (int i = 0; i < n && !any; i++) {
-        const Unit *u = &g_units[g_draw_order[i]];
-        if (unit_casts_shadow(u, Units_GetDef(u->def_idx))) any = 1;
+        const Unit *u = &g_units[order[i]];
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (unit_casts_shadow(u, d) && unit_shadow_in_row(u, d) == in_row) any = 1;
     }
-    for (int i = 0; i < g_projectile_count && !any; i++) {
+    for (int i = 0; i < g_projectile_count && !any && !in_row; i++) {
         if (projectile_casts_shadow(world, &g_projectiles[i])) any = 1;
     }
     if (!any) return;
@@ -24497,9 +24970,9 @@ static void render_ground_shadows(const struct GameWorld *world,
 
     int i = 0;
     while (i < n) {
-        const Unit *u0 = &g_units[g_draw_order[i]];
+        const Unit *u0 = &g_units[order[i]];
         const UnitDef *d0 = Units_GetDef(u0->def_idx);
-        if (!unit_casts_shadow(u0, d0)) { i++; continue; }
+        if (!unit_casts_shadow(u0, d0) || unit_shadow_in_row(u0, d0) != in_row) { i++; continue; }
         if (d0->shadow_gaf[0] && d0->shadow_art[0]) {
             blit_unit_shadow_sprite(plat, world, u0, d0, &area);
             i++;
@@ -24507,18 +24980,27 @@ static void render_ground_shadows(const struct GameWorld *world,
         }
         int j = i + 1;
         while (j < n) {
-            const Unit *uk = &g_units[g_draw_order[j]];
+            const Unit *uk = &g_units[order[j]];
+            const UnitDef *dk = Units_GetDef(uk->def_idx);
             if (uk->def_idx != u0->def_idx ||
                 uk->team_color_idx != u0->team_color_idx) break;
-            if (!unit_casts_shadow(uk, Units_GetDef(uk->def_idx))) break;
+            if (!unit_casts_shadow(uk, dk) || unit_shadow_in_row(uk, dk) != in_row) break;
             j++;
         }
         submit_shadow_run(plat, world, u0->def_idx, u0->team_color_idx,
-                          g_draw_order + i, j - i, &area);
+                          order + i, j - i, &area);
         i = j;
     }
-    blit_projectile_shadows(plat, world, &area);
+    if (!in_row) blit_projectile_shadows(plat, world, &area);
     shadow_mask_end(plat, prev, &area);
+}
+
+/* Every ground shadow of the frame but the walls', the units and the
+ * shots in flight, drawn before any unit body. */
+static void render_ground_shadows(const struct GameWorld *world,
+                                  TAK_Platform *plat, int n)
+{
+    render_unit_shadows(world, plat, g_draw_order, n, 0);
 }
 
 /* Map features (lodestones, rocks, trees) parsed from the TNT feature
@@ -24534,12 +25016,15 @@ void Units_RenderFeatures(const struct GameWorld *world, TAK_Platform *plat) {
 void Units_Render(const struct GameWorld *world, TAK_Platform *plat) {
     if (!world || !plat) return;
     g_live_renderer_gen = plat->renderer_gen;
+    /* A new frame clears the depth on its first model. */
+    g_depth_slot = 0;
     /* Selection ring goes UNDER unit meshes — they draw on top of
      * the ring where they overlap, so only the ground-visible part
      * of the ring shows around the unit's feet. */
     render_selection_rings(world, plat);
     /* Corpses lie on the ground under everything that walks over them,
-     * so their models go out before the units. */
+     * so their models go out before the units, their shadows first. */
+    render_feature_shadows(world, plat);
     submit_corpse_models(plat, world);
     /* Shadows go down before any unit body, the order the original
      * draws them in per unit (legacy:197243). */
