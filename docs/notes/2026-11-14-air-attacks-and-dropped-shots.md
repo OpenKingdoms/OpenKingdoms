@@ -118,6 +118,6 @@ while the last shot's animation still ran and two animations fought
 over the same pieces. The exception now waits for the weapon's
 FireWeapon to end, as the original's fire gate always waits for the
 aim (legacy:249328-249338), and does not ask the script again in the
-meantime. A Musketeer fires every 9.05 seconds, the
+meantime. A Musketeer fires every 7.06 seconds, the
 length of its script's shot and reload, where its file says 6.2 and it
 stuttered on every second shot.

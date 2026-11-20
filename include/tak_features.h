@@ -18,6 +18,10 @@
 
 typedef struct FeatureDef {
     char     name[40];          /* section name e.g. "AraHenge01"     */
+    /* The name the info panel shows, and nodisplayinfo's low bit, which
+     * keeps the feature out of it (legacy:127365, 152056-152060). */
+    char     description[40];
+    uint8_t  no_display_info;
     char     world[16];         /* "Aramon" / "Taros" / "Veruna" / "Zhon" / "All Worlds" */
     char     category[24];      /* "mana" / "rocks" / "trees" / etc.  */
     char     filename[40];      /* GAF stem for sprite                */
@@ -117,6 +121,17 @@ struct GameWorld;
  * footprint covers (world_x, world_y), or -1. */
 int  Features_FindReclaimableAt(const struct GameWorld *world,
                                 int32_t world_x, int32_t world_y);
+
+/* Index into world->features of the instance the info panel names at
+ * (world_x, world_y): its footprint covers the point and its def does
+ * not carry nodisplayinfo. Nearest centre wins. -1 for none. */
+int  Features_InfoAt(const struct GameWorld *world,
+                     int32_t world_x, int32_t world_y);
+/* What instance `idx` can still take of a blast and what it took new,
+ * by the rule a hit uses. 0 when it has no health to show: no blast can
+ * break it, or its def gives it none. */
+int  Features_InstanceHealth(const struct GameWorld *world, int idx,
+                             int *out_hp, int *out_max);
 
 /* Centre of instance `idx` in world pixels. Returns 0 on success. */
 int  Features_InstanceCentre(const struct GameWorld *world, int idx,
