@@ -202,8 +202,12 @@
  * queue, ships caught bow to bow get past each other, a unit turns onto its
  * work at its own rate, and a Repair Skiff mends a ship hull to hull. 78: a
  * unit script's sleep lasts the original's frames and ends on the tick it
- * runs out. */
-#define TAK_ENGINE_BUILD_ID           78
+ * runs out. 79: a unit whose script runs its own walk gets no second walk
+ * from the engine. 80: a mission's order lists run patrols, attacks on a
+ * place, standing orders and placed angles as the original's do. 81: a Shift
+ * drag lays a line of buildings, and a summons without end refuses Shift
+ * orders. 82: Ctrl+Shift puts an order in front of the queue. */
+#define TAK_ENGINE_BUILD_ID           82
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

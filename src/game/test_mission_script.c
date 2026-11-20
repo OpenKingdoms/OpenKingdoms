@@ -38,6 +38,8 @@ static Unit g_units[MOCK_UNITS];
 static int g_unit_count;
 static uint32_t g_next_id;
 static int g_move_calls, g_attack_calls, g_patrol_calls, g_kill_calls;
+static int g_leg_calls, g_last_leg_kind, g_ground_calls;
+static int32_t g_last_leg_x, g_last_leg_y;
 static int g_last_move_handle, g_last_attack_handle, g_last_attack_target;
 static int32_t g_last_move_x, g_last_move_y;
 static int g_factory_orders;
@@ -48,6 +50,8 @@ static void mock_reset(void) {
     g_def_count = g_unit_count = 0;
     g_next_id = 1;
     g_move_calls = g_attack_calls = g_patrol_calls = g_kill_calls = 0;
+    g_leg_calls = g_last_leg_kind = g_ground_calls = 0;
+    g_last_leg_x = g_last_leg_y = 0;
     g_last_move_handle = g_last_attack_handle = g_last_attack_target = -1;
     g_factory_orders = 0;
 }
@@ -117,8 +121,27 @@ int Units_OrderPatrol(int handle, int32_t x, int32_t y) {
     return 1;
 }
 
+int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
+    (void)handle;
+    (void)queued;
+    g_leg_calls++;
+    g_last_leg_kind = leg->kind;
+    g_last_leg_x = leg->x;
+    g_last_leg_y = leg->y;
+    return 1;
+}
+
 int Units_OrderUnload(int handle, int32_t x, int32_t y) {
     return Units_OrderMove(handle, x, y);
+}
+
+int Units_OrderAttackGround(int handle, int32_t x, int32_t y) {
+    if (g_defs[g_units[handle].def_idx].num_weapons <= 0) return 0;
+    g_ground_calls++;
+    g_units[handle].cmd_kind = UNIT_CMD_ATTACK_GROUND;
+    g_units[handle].cmd_x = x;
+    g_units[handle].cmd_y = y;
+    return 1;
 }
 
 int Units_OrderAttackHeld(int handle, int target) {
@@ -217,8 +240,10 @@ TEST(a_list_is_worked_through_one_order_at_a_time) {
     int sword = mock_def("ARASWORD", 1.0f);
     ASSERT_EQ_INT(0, MissionScript_Begin(NULL, 1, 0));
     int u = Units_Spawn(sword, 2, 1, 100, 100);
-    ASSERT_EQ_INT(4, MissionOrders_Give(u, "w 2, m 10 20, o 1, m 30 40,"));
+    ASSERT_EQ_INT(3, MissionOrders_Give(u, "w 2, m 10 20, o 1, m 30 40,"));
     ASSERT_EQ_INT(1, MissionOrders_Running(u));
+    /* o 1 is the standing orders, set as the list is read. */
+    ASSERT_EQ_INT(UNIT_AGGRO_DEFENSIVE, (int)g_units[u].aggro_mode);
 
     /* Two seconds of nothing. */
     ticks(119);
@@ -230,18 +255,16 @@ TEST(a_list_is_worked_through_one_order_at_a_time) {
     /* The next order waits for this one. */
     ticks(300);
     ASSERT_EQ_INT(1, g_move_calls);
-    ASSERT_EQ_INT(UNIT_AGGRO_OFFENSIVE, (int)g_units[u].aggro_mode);
     mock_arrive(u);
     ticks(2);
-    /* o 1 is the standing orders, and the unit is whose it was. */
-    ASSERT_EQ_INT(UNIT_AGGRO_DEFENSIVE, (int)g_units[u].aggro_mode);
+    /* The unit is whose it was. */
     ASSERT_EQ_INT(2, (int)g_units[u].player_id);
     ASSERT_EQ_INT(2, g_move_calls);
     ASSERT_EQ_INT(480, g_last_move_x);
     mock_arrive(u);
     ticks(2);
     ASSERT_EQ_INT(0, MissionOrders_Running(u));
-    ASSERT_EQ_INT(4, MissionOrders_DebugDone());
+    ASSERT_EQ_INT(3, MissionOrders_DebugDone());
     MissionScript_End();
 }
 
@@ -277,7 +300,6 @@ TEST(an_attack_on_a_type_hunts_every_one_of_it) {
     int far_one = Units_Spawn(zombie, 2, 1, 900, 0);
     int near_one = Units_Spawn(zombie, 2, 1, 300, 0);
     int own = Units_Spawn(zombie, 1, 0, 10, 0);
-    (void)own;
     ASSERT_EQ_INT(2, MissionOrders_Give(u, "a TARZOM, m 1 1"));
     ticks(1);
     ASSERT_EQ_INT(near_one, g_last_attack_target);
@@ -292,6 +314,18 @@ TEST(an_attack_on_a_type_hunts_every_one_of_it) {
     /* None left, its own side's never counted, and the list goes on. */
     ASSERT_EQ_INT(2, g_attack_calls);
     ASSERT_EQ_INT(1, g_move_calls);
+    /* A place is fired on. A unit with no weapon skips it. */
+    g_defs[sword].num_weapons = 1;
+    g_defs[zombie].num_weapons = 0;
+    ASSERT_EQ_INT(1, MissionOrders_Give(u, "a 10 20"));
+    ASSERT_EQ_INT(2, MissionOrders_Give(own, "a 10 20, m 2 2"));
+    ticks(2);
+    ASSERT_EQ_INT(1, g_ground_calls);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK_GROUND, g_units[u].cmd_kind);
+    ASSERT_EQ_INT(10 * 16, g_units[u].cmd_x);
+    ASSERT_EQ_INT(own, g_last_move_handle);
+    ASSERT_EQ_INT(2 * 16, g_last_move_x);
+    g_defs[sword].num_weapons = 0;
     MissionScript_End();
 }
 
@@ -329,9 +363,16 @@ TEST(a_patrol_of_several_points_goes_round_them) {
     ASSERT_EQ_INT(3, MissionOrders_Give(u, "p 10 0, p 10 10, p 0 10"));
     ticks(1);
     ASSERT_EQ_INT(160, g_units[u].cmd_x);
-    g_units[u].world_x = 160; g_units[u].world_y = 0;
+    ASSERT_EQ_INT(1, g_leg_calls);
+    ASSERT_EQ_INT(UNIT_LEG_PATROL, g_last_leg_kind);
+    ASSERT_EQ_INT(160, g_last_leg_y);
+    /* 128 px short, as a flyer is (D-049), its patrol turns for the next. */
+    g_units[u].world_x = 32;
+    g_units[u].cmd_x = 160; g_units[u].cmd_y = 160;
     ticks(2);
     ASSERT_EQ_INT(160, g_units[u].cmd_y);
+    ASSERT_EQ_INT(2, g_leg_calls);
+    ASSERT_EQ_INT(0, g_last_leg_x);
     g_units[u].world_x = 160; g_units[u].world_y = 160;
     ticks(2);
     ASSERT_EQ_INT(0, g_units[u].cmd_x);

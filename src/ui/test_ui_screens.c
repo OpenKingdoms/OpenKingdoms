@@ -30985,7 +30985,16 @@ TEST(a_campaign_save_loaded_from_the_book_takes_orders) {
     /* An earlier case can leave a command armed, which would take the
      * click as an order. */
     HUD_ClearCommandMode();
-    InGame_WorldClick(units[mine].world_x + 8, units[mine].world_y + 8, 0);
+    /* The unit is drawn up the screen by its ground's lift, and the box
+     * a click is tried against turns with it. Click where it is. */
+    int32_t click_y = units[mine].world_y;
+    for (int lift = 0; lift <= 96; lift += 2) {
+        if (Units_PickAt(units[mine].world_x, units[mine].world_y - lift, 0) == mine) {
+            click_y = units[mine].world_y - lift;
+            break;
+        }
+    }
+    InGame_WorldClick(units[mine].world_x, click_y, 0);
     int selected = 0;
     const int *sel = Units_GetSelection(&selected);
     (void)sel;

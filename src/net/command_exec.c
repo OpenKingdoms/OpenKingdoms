@@ -253,7 +253,24 @@ static int exec_seat_control(const TAK_GameCommand *cmd, GameWorld *w) {
  * the order in hand and keeps the rest. 0 for neither. */
 static int g_exec_mode;
 
+/* The orders that take TAK_CMD_ARG_FRONT: those a unit can queue. */
+static int exec_takes_front(int type) {
+    switch (type) {
+        case TAK_CMD_MOVE: case TAK_CMD_ATTACK: case TAK_CMD_ATTACK_GROUND:
+        case TAK_CMD_PATROL: case TAK_CMD_GUARD: case TAK_CMD_REPAIR:
+        case TAK_CMD_RECLAIM: case TAK_CMD_RECLAIM_FEATURE:
+        case TAK_CMD_RESURRECT_FEATURE: case TAK_CMD_CAPTURE:
+        case TAK_CMD_UNLOAD: case TAK_CMD_SPECIAL_WEAPON: case TAK_CMD_RALLY:
+        case TAK_CMD_BUILD:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 static int exec_mode(const TAK_GameCommand *cmd) {
+    if ((cmd->arg & TAK_CMD_ARG_FRONT) && exec_takes_front(cmd->type))
+        return UNIT_ORDER_FRONT;
     if (cmd->arg & TAK_CMD_ARG_QUEUE) return 1;
     if (cmd->arg & TAK_CMD_ARG_KEEP) return UNIT_ORDER_KEEP;
     return 0;
