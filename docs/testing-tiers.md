@@ -90,7 +90,6 @@ the shards run the same cases.
 
 ### The classic view
 
-- `render_probe_building_and_walker`: a building and a walker, counted in pixels.
 - `render_probe_models`: model scale, faces and draw order.
 - `render_probe_lodestone_covers_pad`: a lodestone covers its pad.
 - `render_probe_unit_shadows`: unit shadows.

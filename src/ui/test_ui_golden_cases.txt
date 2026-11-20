@@ -1,4 +1,3 @@
-render_probe_building_and_walker
 render_probe_models
 render_probe_lodestone_covers_pad
 render_probe_unit_shadows
