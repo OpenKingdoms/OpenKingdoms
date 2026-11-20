@@ -45,8 +45,7 @@ enum {
     MS_STEP_ATTACK_PLACE,   /* a, b squares */
     MS_STEP_BUILD,          /* ref unit type, a count, b, c squares */
     MS_STEP_BOARD,          /* ref ident */
-    MS_STEP_ORDERS,         /* a level */
-    MS_STEP_SELF_DESTRUCT,
+    MS_STEP_SELF_DESTRUCT = 11, /* saves keep the numbers, 10 was an `o` step */
     MS_STEP_UNLOAD,         /* a, b squares */
     MS_STEP_SKIP,           /* selectable, speed, unknown */
     MS_STEP_CLOAK
@@ -260,7 +259,6 @@ static void ms_step_from(const MissionCommand *c, MsStep *s) {
         s->type = MS_STEP_BOARD;
         s->ref = ms_clamp16(ms_ident_index(c->text, 1));
         break;
-    case MISSION_CMD_ORDERS:        s->type = MS_STEP_ORDERS; break;
     case MISSION_CMD_SELF_DESTRUCT: s->type = MS_STEP_SELF_DESTRUCT; break;
     case MISSION_CMD_CLOAK:         s->type = MS_STEP_CLOAK; break;
     default:                        s->type = MS_STEP_SKIP; break;
@@ -281,30 +279,40 @@ int MissionOrders_Give(int handle, const char *text) {
         return 0;
     }
     if (n > 0xffff) n = 0xffff;
-    if (ms.steps_used + n > MS_STEPS) ms_steps_compact();
+    /* `o` is no step. Each one sets the standing orders as the list is
+     * read, so the last holds from the start (legacy:228595). */
+    int level = -1, steps = 0;
+    for (int i = 0; i < n; i++) {
+        if (cmds[i].type != MISSION_CMD_ORDERS) steps++;
+        else if (cmds[i].a >= 0 && cmds[i].a <= 2) level = cmds[i].a;
+    }
+    if (ms.steps_used + steps > MS_STEPS) ms_steps_compact();
     int slot = -1;
     for (int i = 0; i < MS_PROGRAMS && slot < 0; i++) {
         if (ms.program[i].unit < 0) slot = i;
     }
-    if (slot < 0 || ms.steps_used + n > MS_STEPS) {
+    if (steps > 0 && (slot < 0 || ms.steps_used + steps > MS_STEPS)) {
         fprintf(stderr, "Mission: no room for the orders of unit %d\n", handle);
         Mission_FreeCommands(cmds);
         return 0;
     }
-    MsProgram *p = &ms.program[slot];
-    memset(p, 0, sizeof(*p));
-    p->unit = (int16_t)handle;
-    p->stable_id = u->stable_id;
-    p->first = (uint16_t)ms.steps_used;
-    p->count = (uint16_t)n;
-    p->watch = -1;
-    for (int i = 0; i < n; i++) {
-        ms_step_from(&cmds[i], &ms.step[ms.steps_used + i]);
+    if (level >= 0) Units_OrderSetAggro(handle, level);
+    if (steps > 0) {
+        MsProgram *p = &ms.program[slot];
+        memset(p, 0, sizeof(*p));
+        p->unit = (int16_t)handle;
+        p->stable_id = u->stable_id;
+        p->first = (uint16_t)ms.steps_used;
+        p->count = (uint16_t)steps;
+        p->watch = -1;
+        for (int i = 0; i < n; i++) {
+            if (cmds[i].type != MISSION_CMD_ORDERS)
+                ms_step_from(&cmds[i], &ms.step[ms.steps_used++]);
+        }
+        ms.program_of[handle] = (int16_t)(slot + 1);
     }
-    ms.steps_used += n;
-    ms.program_of[handle] = (int16_t)(slot + 1);
     Mission_FreeCommands(cmds);
-    return n;
+    return steps;
 }
 
 int MissionOrders_Running(int handle) {
@@ -400,6 +408,10 @@ static int ms_step_run(MsProgram *p, int handle, const Unit *u) {
             int took;
             if (s->type == MS_STEP_UNLOAD) {
                 took = Units_OrderUnload(handle, s->a * MS_CELL, s->b * MS_CELL);
+            } else if (s->type == MS_STEP_ATTACK_PLACE) {
+                /* Fires on the place until another order. A unit with no
+                 * weapon takes none and skips it (legacy:228354, legacy:186915). */
+                took = Units_OrderAttackGround(handle, s->a * MS_CELL, s->b * MS_CELL);
             } else {
                 took = Units_OrderMove(handle, s->a * MS_CELL, s->b * MS_CELL);
             }
@@ -418,15 +430,27 @@ static int ms_step_run(MsProgram *p, int handle, const Unit *u) {
             ms_program_free(p);
             return 0;
         }
-        /* Several: the round is walked here and never ends. */
+        /* Several: walked here without end. The next point is queued behind
+         * each, and a unit that turns for it 128 px short (D-049) goes on. */
         int32_t px = s->a * MS_CELL, py = s->b * MS_CELL;
+        int next = p->pc >= to ? from : p->pc + 1;
+        const MsStep *n = &ms.step[p->first + next];
+        int32_t nx = n->a * MS_CELL, ny = n->b * MS_CELL;
         if (!p->started) {
             p->started = 1;
             Units_OrderPatrol(handle, px, py);
+            UnitMoveLeg leg;
+            memset(&leg, 0, sizeof leg);
+            leg.kind = UNIT_LEG_PATROL;
+            leg.x = nx;
+            leg.y = ny;
+            Units_OrderLeg(handle, &leg, 1);
             return 0;
         }
-        if (ms_distance(u->world_x - px, u->world_y - py) <= MS_PATROL_REACH) {
-            p->pc = (uint16_t)(p->pc >= to ? from : p->pc + 1);
+        if (ms_distance(u->world_x - px, u->world_y - py) <= MS_PATROL_REACH ||
+            (u->cmd_kind == UNIT_CMD_PATROL && (nx != px || ny != py) &&
+             u->cmd_x == nx && u->cmd_y == ny)) {
+            p->pc = (uint16_t)next;
             p->started = 0;
         }
         return 0;
@@ -475,10 +499,6 @@ static int ms_step_run(MsProgram *p, int handle, const Unit *u) {
         if (carrier >= 0) Units_BoardAtOnce(handle, carrier);
         return 1;
     }
-
-    case MS_STEP_ORDERS:
-        if (s->a >= 0 && s->a <= 2) Units_OrderSetAggro(handle, s->a);
-        return 1;
 
     case MS_STEP_SELF_DESTRUCT:
         Units_DebugKillHandle(handle);

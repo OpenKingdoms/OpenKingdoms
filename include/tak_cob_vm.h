@@ -263,6 +263,15 @@ int  Cob_AliveThreadCount(const CobEngine *e);
  * restarting while a unit is still moving. */
 int  Cob_IsThreadAlive(const CobEngine *e, int slot);
 
+/* Whether slot N is alive and running the named script. A call is a
+ * thread of its own, so a thread's pc never leaves its script. A freed
+ * slot may be reused by another script before its old owner looks. */
+int  Cob_ThreadRunsScript(const CobEngine *e, int slot, const char *name);
+
+/* The inline operand words the VM reads after opcode word RAW, or -1
+ * for an opcode it does not run. Lets a scan walk instruction bounds. */
+int  Cob_OperandWords(uint32_t raw);
+
 /* Read the final value left on a thread's stack when its outermost
  * RETURN ended. Returns 1 when a value is available, 0 otherwise.
  * Dead slots retain the value until the slot is reused. */
