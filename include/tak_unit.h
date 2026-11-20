@@ -983,7 +983,7 @@ typedef struct Unit {
     uint32_t   stable_id;   /* deterministic replay/network identity */
     int32_t    world_x;     /* pixel position, top-left of footprint */
     int32_t    world_y;
-    float      heading;     /* radians, 0 = facing south             */
+    float      heading;     /* radians, 0 = facing north, turning east */
     float      pitch, roll; /* model tilt, radians, 0 = upright      */
     int32_t    velocity;    /* current speed in COB units/sec; 0 = stationary */
     int32_t    health;      /* current HP (Sprint 1 placeholder — Phase G refines) */
@@ -1550,7 +1550,7 @@ void              Units_SetBackfaceCullInvert(int v);
  * sides of the model. */
 void              Units_DebugRotateAll(float delta_rad);
 
-/* Set one unit's heading (radians, 0 = facing south). No-op if `handle`
+/* Set one unit's heading (radians, 0 = facing north). No-op if `handle`
  * is out of range or the slot is not alive. */
 void              Units_SetHeading(int handle, float heading);
 
