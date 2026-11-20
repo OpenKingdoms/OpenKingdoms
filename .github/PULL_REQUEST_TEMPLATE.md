@@ -24,15 +24,19 @@
 
 - [ ] Native build passes
 - [ ] WebAssembly build passes (emcc rejects what MSVC accepts)
-- [ ] `ctest` passes
-- [ ] Added a test that would have failed before this change
+- [ ] `ctest` passes, and `ctest -L golden` if you have the game files
 
-<!-- How did you verify this by hand? Screenshots welcome for visual changes. -->
+How the change was shown to work:
+
+<!-- A repro, a measurement, or an existing test that now catches it. It
+     does not have to stay in the tree. A new test only for the areas
+     CONTRIBUTING.md lists. Screenshots welcome for visual changes. -->
 
 ## Checklist
 
 - [ ] No game data committed (no `.hpi`, assets, extracted files, maps)
 - [ ] No original game code, decompiled or disassembled, in the diff or in
       commit messages
-- [ ] Comments are brief, a line or two stating a constraint or a reference
+- [ ] No new markdown file, notes edited in place (see CONTRIBUTING.md)
+- [ ] Comments are brief, one to three lines stating a constraint or a reference
 - [ ] Matches the surrounding code style

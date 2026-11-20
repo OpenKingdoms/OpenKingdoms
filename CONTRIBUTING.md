@@ -135,14 +135,23 @@ such as the CI run with no game data, declares it with
 
 ### What gets a new test
 
-Do not add an end to end case for every feature or fix. Prove a fix with an
-existing test that now catches it, a cheap unit test beside the code, or a
-repro written into the pull request. The screen suite, which boots real
-battles, gains a case only for simulation determinism and the state hash,
-lockstep and the net protocol, saves and loads, golden frames, a crash that
-is cheap to repeat, and parity with the original where it already went
-wrong once. A check of one function belongs in a unit test with a synthetic
-world, as `test_movement` and `test_line_of_fire` do.
+The tests labelled `golden` are the critical set every change runs, listed
+with what each one guards in [docs/testing-tiers.md](docs/testing-tiers.md):
+simulation determinism and the pinned hashes, lockstep and the net protocol,
+saves and loads, the file format parsers, the classic view's golden frames,
+cheap crash repeats, and parity with the original where it already went
+wrong once. Run them with `ctest -L golden`.
+
+- A change adds a test only when it guards one of those areas, or when a
+  regression a player would see cannot be caught by extending an existing
+  test.
+- Show a fix in its pull request with a repro, a measurement, or an existing
+  test that now catches it. That evidence does not have to stay in the tree.
+- No measurement scaffolding in the tree. A probe kept for reuse sits behind
+  one documented entry point, and the rest are removed.
+- A check of one function belongs in a unit test with a synthetic world, as
+  `test_movement` and `test_line_of_fire` do, never in a case that boots a
+  battle.
 
 ### Which tests to run before you push
 
@@ -176,6 +185,18 @@ every pull request.
 
 The full suite on both data layouts still gates every merge. It runs once, on
 the final rebased head, before the change lands.
+
+---
+
+## Markdown
+
+- No new markdown file per change. The story, the numbers and the
+  measurements go in the pull request and the commit.
+- `docs/notes/` describes the original's behaviour, one note per subsystem,
+  edited in place. Add a note only for a subsystem that has none.
+- A deviation entry in `docs/MANUAL_DEVIATIONS.md` says what departs from the
+  original, why, and where it is cited, in a few lines. Measurements and
+  history stay out of it.
 
 ---
 
@@ -217,11 +238,14 @@ Match the surrounding code. Concretely:
 - `snake_case` for functions and locals, `PascalCase` for types,
   `SCREAMING_CASE` for macros. Subsystem-prefixed public functions
   (`Units_`, `Terrain_`, `Cob_`).
-- Keep comments brief, one or two lines. A comment should say something the
-  code cannot, such as a constraint, a reference to a note, or a non-obvious
-  reason. Don't write a paragraph and don't restate the next line.
+- Keep comments brief, one to three lines. A comment should say something
+  the code cannot, such as a constraint, a reference to a note, or a
+  non-obvious reason. Don't write a paragraph, don't restate the next line,
+  and leave the story to the commit.
 - Declare before use. The WebAssembly build will fail on implicit
   declarations even when your native build doesn't.
+- Touch what the change needs and no more: no speculative options,
+  leftover debug switches, or one-caller helpers without a reason.
 
 No automatic formatter is enforced. Don't reformat code you aren't otherwise
 changing, because it buries the real diff.

@@ -2670,6 +2670,15 @@ if(BUILD_TESTING)
     add_test(NAME test_ui_screens_layout
              COMMAND test_ui_screens
                      --case-list=${CMAKE_CURRENT_SOURCE_DIR}/ui/test_ui_layout_cases.txt)
+    # The golden screen cases, for ctest -L golden. The shards already run
+    # them, so the gate leaves this entry out.
+    add_test(NAME test_ui_screens_golden
+             COMMAND test_ui_screens
+                     --case-list=${CMAKE_CURRENT_SOURCE_DIR}/ui/test_ui_golden_cases.txt)
+    # Every name on the golden list is a case. No game data, so CI runs it.
+    add_test(NAME test_ui_screens_golden_list
+             COMMAND test_ui_screens --verify-shards
+                     --case-list=${CMAKE_CURRENT_SOURCE_DIR}/ui/test_ui_golden_cases.txt)
     add_test(NAME test_hpi         COMMAND test_hpi)
     add_test(NAME test_hpi_open    COMMAND test_hpi_open)
     add_test(NAME test_io          COMMAND test_io)
@@ -2860,6 +2869,23 @@ if(BUILD_TESTING)
         PROPERTIES LABELS "needs-data;layout")
     set_tests_properties(test_ui_screens_layout
         PROPERTIES LABELS "needs-data;layout;layout-only" TIMEOUT 600)
+    # The golden set, what every change runs. docs/testing-tiers.md says
+    # what each one guards.
+    set_property(TEST
+        test_sim_probe test_sim_hash test_trig test_float_guard test_libm_guard
+        test_game_speed
+        test_protocol fuzz_protocol test_commands test_turnclock test_client
+        test_relay_loopback test_command_pipeline test_replay
+        test_map_fingerprint test_ws
+        test_savefile test_savegame test_savegame_no_data test_savestate
+        test_tdf_parser test_hpi test_gaf test_obj3d test_cob
+        test_cob_vm_selftest test_tnt
+        test_view3d test_render_cache
+        test_movement test_line_of_fire test_orders test_pathing
+        test_framework_self test_ui_screens_golden_list
+        APPEND PROPERTY LABELS golden)
+    set_tests_properties(test_ui_screens_golden
+        PROPERTIES LABELS "needs-data;golden;golden-only" TIMEOUT 600)
 endif()
 
 # A test run used to rewrite the player's own options.cfg: a new
