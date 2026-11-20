@@ -41,6 +41,8 @@ int BuildLine_Cells(int32_t ax, int32_t ay, int32_t bx, int32_t by,
     return count;
 }
 
-uint16_t BuildLine_OrderArg(int endless) {
-    return (uint16_t)(TAK_CMD_ARG_QUEUE | (endless ? TAK_CMD_ARG_ENDLESS : 0u));
+uint16_t BuildLine_OrderArg(int front, int endless) {
+    if (endless)
+        return (uint16_t)(TAK_CMD_ARG_ENDLESS | (front ? 0u : TAK_CMD_ARG_QUEUE));
+    return (uint16_t)(front ? TAK_CMD_ARG_FRONT : TAK_CMD_ARG_QUEUE);
 }

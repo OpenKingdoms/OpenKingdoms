@@ -21,8 +21,9 @@ typedef struct BuildLineCell {
 int BuildLine_Cells(int32_t ax, int32_t ay, int32_t bx, int32_t by,
                     int fx, int fz, BuildLineCell *out, int max);
 
-/* The build command's arg for each spot: queued, at the default facing,
- * since the player sets none, and without end for an endless summons. */
-uint16_t BuildLine_OrderArg(int endless);
+/* Each spot's build arg at the default facing: behind the last for Shift,
+ * ahead of all for Ctrl+Shift. A summons without end sends what its click
+ * would, Ctrl dropping Shift (legacy:39177-39180). */
+uint16_t BuildLine_OrderArg(int front, int endless);
 
 #endif
