@@ -2171,7 +2171,6 @@ int               Units_DebugBuildSparkleRadius(int handle);
 int               Units_CanStandAt(int handle, int32_t x, int32_t y);
 /* Veteran rank 0..10 (0 = not a veteran). */
 int               Units_GetVeteranLevel(int handle);
-int               Units_GetSelectedVeteranLevel(void);
 void              Units_CommandAttackGroundSelected(int32_t world_x,
                                                     int32_t world_y);
 int               Units_SelectionHasBuilder(void);
@@ -2197,7 +2196,6 @@ int               Units_SelectionCanHelpBuild(int frame);
  * selection). Display strings are derived from the unit's anim_state
  * and def fields. The strings are static — caller must not free or
  * cache them past the next call. */
-const char       *Units_GetSelectedName(void);
 const char       *Units_GetSelectedStatus(void);
 /* The first selected unit's mission as the original names it, a key in
  * english/translate/unitmissions.tdf such as "UNITMISSIONCODE_PATROL".
@@ -2211,8 +2209,6 @@ const UnitDef    *Units_GetSelectedDef(void);   /* NULL when nothing selected */
  * or it carries none. Counted from the units recorded as carried by it,
  * the way the original walks the carrier's chain (legacy:152083-152086). */
 int               Units_GetSelectedCargoCount(void);
-/* Kills credited to the first selected unit, 0 with no selection. */
-int               Units_GetSelectedKills(void);
 /* Bit p set when player p owns a live unit. */
 uint32_t          Units_PlayersWithUnits(void);
 /* The units whose centre may lie in the box, from the simulation's

@@ -110,7 +110,7 @@ staying aligned. A batch longer than 200 instructions reaches its sleep in
 one tick, and a script that never sleeps still yields.
 
 test_view3d runs the retail keep: no flames at 40, 30 and 29 percent, one
-level at 28, sixteen at 10, a batch every 30 ticks and none after repair.
+level at 28, sixteen at 10, a batch every 28 ticks and none after repair.
 It covers the binding after a save is restored, the wait for
 construction, both smoke types, steam and their art, 40 flames and 10
 puffs a unit with a second unit keeping its own, an enemy keep out of
