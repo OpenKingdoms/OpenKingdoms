@@ -1642,6 +1642,16 @@ Format per entry:
   and never moves anything (legacy:9373-9382). The Sea Fort's pad lies
   108 px in front of its centre, and without the push a ship stopped on
   its way out kept the next from going up.
+- Change, jams: two ships that have closed no ground for 8 s, one
+  pressing on the other, stop holding each other, and a stalled ship
+  sails through a hull by the cells alone, as in the original. A ship
+  leaving its yard goes for a spot it can reach by a straight way or a
+  route. Ships gathered at the yard's rally point are left there unless
+  they are on the pad. A hull the yard cannot move leaves the pad to the
+  original's cell test (legacy:9363-9382).
+- Change, auras: between two ships an aura reaches from hull line to
+  hull line, not centre to centre (legacy:237131-237139), so a Repair
+  Skiff at a ship's bow mends it.
 - Why: the original keeps units apart by the cells of their move
   class alone (legacy:163193-163195, legacy:219329-219340), and a
   ship's class is a square one and a half to three times shorter than
