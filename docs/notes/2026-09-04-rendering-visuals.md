@@ -83,11 +83,13 @@ torso, a torso in front of the cape hanging behind it, and a keep's tower
 solid instead of a see-through shell of back faces. The node order gets none of
 those right on its own, and a keep is a single 120-prim node anyway.
 
-Our renderer has no per-pixel buffer, so it resolves the same comparison per
-triangle: order by the triangle's tallest vertex key, break ties with the
-reverse-node authored order. Quantising the key to whole units, as the byte
-buffer does, keeps coplanar pieces tied so the authored order still decides
-them.
+Our GL renderers give each model its own slice of the depth buffer, so a
+model is depth tested within itself as here and models keep their row order.
+The software, Direct3D and Metal renderers have no per-pixel buffer, so they
+resolve the same comparison per triangle: order by the triangle's tallest
+vertex key, break ties with the reverse-node authored order. Quantising the
+key to whole units, as the byte buffer does, keeps coplanar pieces tied so
+the authored order still decides them.
 
 ## Water (Terrain_DrawTiles :225667-226016)
 

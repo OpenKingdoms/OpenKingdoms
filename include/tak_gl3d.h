@@ -126,4 +126,21 @@ void GL3D_DrawSprites(const float *verts, int vert_count,
                       const uint16_t *indices, int index_count,
                       GL3D_Texture *tex, int alpha_cut, int blend);
 
+/* The classic view's models, drawn into SDL's window (units.c). No SDL
+ * draw may come between Begin and End. SPRITE verts in pixels, z 1 nearest. */
+typedef enum GL3D_ClassicPass {
+    GL3D_CLASSIC_OPAQUE = 0,   /* colour and depth */
+    GL3D_CLASSIC_DEPTH  = 1,   /* depth only, the first of a translucent pair */
+    GL3D_CLASSIC_COLOUR = 2    /* blended where the depth pass won */
+} GL3D_ClassicPass;
+
+int  GL3D_ClassicBegin(SDL_Renderer *renderer, int clear_depth);
+void GL3D_ClassicDraw(SDL_Texture *tex, const float *verts, int vert_count,
+                      const uint16_t *indices, int index_count, GL3D_ClassicPass pass);
+void GL3D_ClassicEnd(void);
+/* The window's depth bits: 0 before the first session, -1 for none. */
+int  GL3D_ClassicDepthBits(void);
+/* The renderer the helper was started on. */
+SDL_Renderer *GL3D_Renderer(void);
+
 #endif /* TAK_GL3D_H */

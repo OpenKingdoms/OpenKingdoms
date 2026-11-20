@@ -131,6 +131,7 @@ static struct {
     SDL_Window *window;
     SDL_Renderer *renderer;
     Program     terrain, model, model_pbr, sprite;
+    Program     classic;   /* the classic view's models, depth per model */
     int         max_nodes;
 #ifdef __EMSCRIPTEN__
     /* The scene draws inside this render target of SDL's. */
@@ -161,6 +162,8 @@ static struct {
     } saved;
     SDL_Texture *bound_sdl_tex;   /* the atlas bound through SDL this frame */
     int frame_open;
+    int classic_open;      /* a GL3D_ClassicBegin session is running */
+    int depth_bits;        /* the window's, read on the first session */
     int no_depth_write;    /* GL3D_SetDepthWrite(0) is in force */
     int no_color_write;    /* GL3D_SetColorWrite(0) is in force */
 } g;
@@ -176,6 +179,7 @@ int GL3D_LayoutFloats(GL3D_Layout layout) {
 }
 
 int GL3D_Available(void) { return g.ready; }
+SDL_Renderer *GL3D_Renderer(void) { return g.ready ? g.renderer : NULL; }
 int GL3D_MaxNodesPerDraw(void) { return g.max_nodes; }
 
 /* ── Shaders ──────────────────────────────────────────────────────── */
@@ -541,6 +545,7 @@ void GL3D_Shutdown(void) {
     if (g.model.id)   GLF(DeleteProgram)(g.model.id);
     if (g.model_pbr.id) GLF(DeleteProgram)(g.model_pbr.id);
     if (g.sprite.id)  GLF(DeleteProgram)(g.sprite.id);
+    if (g.classic.id) GLF(DeleteProgram)(g.classic.id);
     if (g.stream_vbo) GLF(DeleteBuffers)(1, &g.stream_vbo);
     if (g.stream_ibo) GLF(DeleteBuffers)(1, &g.stream_ibo);
 #ifdef __EMSCRIPTEN__
@@ -1138,3 +1143,122 @@ void GL3D_DrawSprites(const float *verts, int vert_count,
     GLF(DepthMask)(GL_TRUE);
     GLF(Disable)(GL_BLEND);
 }
+
+/* ── The classic view's models ───────────────────────────────────────
+ * Screen space triangles in SDL's window between its batches, depth tested. */
+static const char *k_classic_vs =
+    GLSL_VERSION GLSL_PRECISION
+    "attribute vec3 a_pos; attribute vec2 a_uv; attribute vec4 a_col;\n"
+    "uniform mat4 u_vp; uniform vec2 u_texscale;\n"
+    "varying vec2 v_uv; varying vec4 v_col;\n"
+    "void main() {\n"
+    "  gl_Position = u_vp * vec4(a_pos, 1.0);\n"
+    "  v_uv = a_uv * u_texscale; v_col = a_col;\n"
+    "}\n";
+
+/* A clear texel, or a face SDL would blend to nothing, is discarded
+ * before it can write depth. */
+static const char *k_classic_fs =
+    GLSL_VERSION GLSL_PRECISION
+    "uniform sampler2D u_tex; uniform float u_textured;\n"
+    "varying vec2 v_uv; varying vec4 v_col;\n"
+    "void main() {\n"
+    "  vec4 t = u_textured > 0.5 ? texture2D(u_tex, v_uv) : vec4(1.0);\n"
+    "  if (t.a < 0.5 || v_col.a <= 0.0) discard;\n"
+    "  gl_FragColor = t * v_col;\n"
+    "}\n";
+
+int GL3D_ClassicDepthBits(void) { return g.depth_bits; }
+
+int GL3D_ClassicBegin(SDL_Renderer *renderer, int clear_depth) {
+    if (!g.ready || g.frame_open || g.classic_open || renderer != g.renderer) return -1;
+    /* Window pixels only: a render target or a scale would need its own mapping. */
+    float scx = 1.0f, scy = 1.0f;
+    SDL_RenderGetScale(renderer, &scx, &scy);
+    if (SDL_GetRenderTarget(renderer) || scx != 1.0f || scy != 1.0f) return -1;
+    if (!g.classic.id && build_program(&g.classic, k_classic_vs, k_classic_fs) != 0) return -1;
+    int ow = 0, oh = 0;
+    SDL_Rect vp;
+    if (SDL_GetRendererOutputSize(renderer, &ow, &oh) != 0 || ow < 1 || oh < 1) return -1;
+    SDL_RenderGetViewport(renderer, &vp);
+    if (vp.w < 1 || vp.h < 1) return -1;
+    SDL_RenderFlush(renderer);
+    save_state();
+    if (!g.depth_bits) {
+        GLint bits = 0;
+        GLF(GetIntegerv)(GL_DEPTH_BITS, &bits);
+        (void)GLF(GetError)();
+        g.depth_bits = bits > 0 ? bits : -1;
+        fprintf(stderr, "GL3D: classic view depth %d bits\n", (int)bits);
+    }
+    if (g.depth_bits < 16) { restore_state(); return -1; }
+    /* SDL sets its viewport and clip lazily, at its next draw, so both
+     * are put in place here from what it holds. */
+    GLF(Viewport)(vp.x, oh - vp.y - vp.h, vp.w, vp.h);
+    GLF(Disable)(GL_SCISSOR_TEST);
+    GLF(DepthMask)(GL_TRUE);
+    if (clear_depth) GLF(Clear)(GL_DEPTH_BUFFER_BIT);
+    if (SDL_RenderIsClipEnabled(renderer)) {
+        SDL_Rect c;
+        SDL_RenderGetClipRect(renderer, &c);
+        GLF(Scissor)(vp.x + c.x, oh - (vp.y + c.y + c.h), c.w, c.h);
+        GLF(Enable)(GL_SCISSOR_TEST);
+    }
+    /* Viewport pixels to clip space, depth 1 nearest. */
+    float m[16] = { 0 };
+    m[0] = 2.0f / (float)vp.w;  m[12] = -1.0f;
+    m[5] = -2.0f / (float)vp.h; m[13] = 1.0f;
+    m[10] = -2.0f;              m[14] = 1.0f;
+    m[15] = 1.0f;
+    GLF(Enable)(GL_DEPTH_TEST);
+    GLF(Disable)(GL_CULL_FACE);
+    const Program *p = &g.classic;
+    GLF(UseProgram)(p->id);
+    GLF(UniformMatrix4fv)(p->u_vp, 1, GL_FALSE, m);
+    GLF(Uniform1i)(p->u_tex, 0);
+    GLF(ActiveTexture)(GL_TEXTURE0);
+    GLF(BindBuffer)(GL_ARRAY_BUFFER, g.stream_vbo);
+    GLF(BindBuffer)(GL_ELEMENT_ARRAY_BUFFER, g.stream_ibo);
+    g.classic_open = 1;
+    return 0;
+}
+
+void GL3D_ClassicDraw(SDL_Texture *tex, const float *verts, int vert_count,
+                      const uint16_t *indices, int index_count, GL3D_ClassicPass pass) {
+    if (!g.classic_open || vert_count <= 0 || index_count <= 0) return;
+    const Program *p = &g.classic;
+    float sx = 1.0f, sy = 1.0f;
+    if (tex) SDL_GL_BindTexture(tex, &sx, &sy);
+    GLF(Uniform1f)(p->u_textured, tex ? 1.0f : 0.0f);
+    GLF(Uniform2f)(p->u_texscale, sx, sy);
+    /* A translucent model writes its depth first, then blends only the
+     * faces that won it, once. */
+    if (pass == GL3D_CLASSIC_COLOUR) {
+        GLF(DepthFunc)(GL_EQUAL);
+        GLF(DepthMask)(GL_FALSE);
+        GLF(ColorMask)(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        GLF(Enable)(GL_BLEND);
+        GLF(BlendFuncSeparate)(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        GLF(BlendEquation)(GL_FUNC_ADD);
+    } else {
+        GLF(DepthFunc)(GL_LESS);
+        GLF(DepthMask)(GL_TRUE);
+        const GLboolean c = pass == GL3D_CLASSIC_OPAQUE ? GL_TRUE : GL_FALSE;
+        GLF(ColorMask)(c, c, c, c);
+        GLF(Disable)(GL_BLEND);
+    }
+    GLF(BufferData)(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(float) * 9 * (size_t)vert_count),
+                    verts, GL_STREAM_DRAW);
+    bind_layout(GL3D_LAYOUT_SPRITE);
+    GLF(BufferData)(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(sizeof(uint16_t) * (size_t)index_count),
+                    indices, GL_STREAM_DRAW);
+    GLF(DrawElements)(GL_TRIANGLES, index_count, GL_UNSIGNED_SHORT, NULL);
+    if (tex) SDL_GL_UnbindTexture(tex);
+}
+
+void GL3D_ClassicEnd(void) {
+    if (!g.classic_open) return;
+    restore_state();
+    g.classic_open = 0;
+}
+

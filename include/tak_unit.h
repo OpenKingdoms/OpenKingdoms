@@ -102,12 +102,9 @@ typedef struct UnitMesh {
     uint32_t       *colors;      /* 1 * vert_count, RGBA8, unlit */
     uint16_t       *indices;     /* 3 * tri_count, into positions */
     uint16_t       *vert_node_idx; /* vert_count entries; index into nodes[] */
-    /* Authored draw order per triangle (global tri index → sequence in
-     * the 3DO tree walk). The legacy renderer draws prims in model
-     * order with backface culling only — NO depth sort
-     * (legacy:197793-197807) — and artists authored prim order
-     * for correct layering (capes after torsos). Single-unit draws
-     * replay this order. */
+    /* Authored draw order per triangle in the 3DO walk (legacy:197793-197807).
+     * The original keys each pixel by height within a unit (legacy:265317),
+     * so this order decides only ties. */
     uint32_t       *tri_seq;     /* tri_count entries */
     /* An artist's model brings these. A baked 3DO leaves them NULL and
      * the 3D view makes a flat normal per triangle instead. */
