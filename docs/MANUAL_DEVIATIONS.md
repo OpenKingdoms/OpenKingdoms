@@ -18,8 +18,10 @@ Format per entry:
   lockstep multiplayer at higher tick rate. Real-time gameplay is
   unaffected because TAK speeds are stored as units/second (divided
   by tick rate per tick). Doubling tick rate halves per-tick delta
-  but applies it twice as often. SLEEP times in milliseconds
-  translate identically.
+  but applies it twice as often. A SLEEP of n milliseconds lasts
+  30n/1000 of the original's frames, rounded down, at two ticks a
+  frame. A sleep shorter than one frame still lasts one. The thread
+  runs again on the last of those ticks.
 - Citation: Manual is silent on tick rate (player-facing rules
   describe wall-clock seconds via Game Speed slider, §I).
 

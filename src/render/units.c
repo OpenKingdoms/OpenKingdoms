@@ -10183,6 +10183,7 @@ void Units_ClearInstances(void) {
     g_next_stable_unit_id = 1;
     g_transport_sounds[0] = g_transport_sounds[1] = 0;
     g_sim_tick = 0;
+    Cob_SetTick(1u);
     g_sound_tick = 0;
     g_alarm_next_tick = 0;
     g_alarm_mon_next_tick = 0;
@@ -10294,7 +10295,7 @@ static void unit_forget_slot(int slot) {
 
 uint32_t Units_NextStableId(void) { return g_next_stable_unit_id; }
 uint32_t Units_SimTick(void) { return g_sim_tick; }
-void Units_SetSimTick(uint32_t tick) { g_sim_tick = tick; }
+void Units_SetSimTick(uint32_t tick) { g_sim_tick = tick; Cob_SetTick(tick + 1u); }
 
 /* Where a unit's sight is stamped from. The original re-stamps as
  * soon as the unit enters a new fog cell (legacy:167450-167454), so
@@ -10604,7 +10605,7 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
                 /* Run Create immediately so initial pose (HIDE/TURN-PIECE
                  * etc.) is set before the first frame renders. */
                 Cob_StartThreadByName(u->cob, "Create", NULL, 0);
-                Cob_RunAllThreads(u->cob);
+                Cob_RunReadyThreads(u->cob);
                 /* The script hears its longest reload in ms, how long a
                  * pose holds after an aim (legacy:245659-245687). */
                 int reload_frames = 0;
@@ -18006,6 +18007,7 @@ static void tick_auras(void) {
 
 void Units_TickEngines(void) {
     g_sim_tick++;
+    Cob_SetTick(g_sim_tick);
     g_sound_tick++;
     /* Sprint 1: per-tick simulation step.
      *   1. Combat: auto-target + damage + movement.
@@ -18116,6 +18118,9 @@ void Units_TickEngines(void) {
     /* The ships again as the tick leaves them: the next tick's orders run
      * before its own gather, and a world loaded from here reads these. */
     ships_rebuild();
+    /* What runs before the next pass, a mission's events among it, is
+     * in the next tick. */
+    Cob_SetTick(g_sim_tick + 1u);
     double e4 = eng_now_ms();
     g_eng_prof_ms[2] += e4 - e3;
     g_eng_prof_ms[3] += e3 - e2;
