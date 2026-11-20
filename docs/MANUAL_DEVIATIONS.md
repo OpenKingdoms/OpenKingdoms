@@ -1115,17 +1115,12 @@ pull request, not here.
 - Citation: the command table, legacy:38938-38946. Manual §I Game
   Options is silent on console commands.
 
-## D-009: A save does not carry the command queue
+## D-009: A save carries the command queue
 
-- Change: A saved game carries neither the commands waiting in
-  `TAK_CmdQueue` for a later tick nor the queue's tick counter, and a
-  load starts the queue empty. With a lockstep delay, a save between a
-  click and its command would lose the command. Carrying them in a
-  `CMDQ` section or refusing to save with commands pending are the open
-  answers, either tested through `TAK_CmdQueue_SetDelay`.
-- Why: with no delay `TAK_CmdQueue_Pending` is always zero at a save, so
-  neither answer can be tested, and an untested section is worse than a
-  gap written down.
+- Change: none now. A saved game carries the orders still waiting for
+  their tick, and the queue's tick counter, in its `CMDQ` section
+  (src/game/savegame.c), so a load loses no order given before the save.
+  The entry keeps its number because older pull requests cite it.
 - Citation: none. The original is single player and hot seat on this
   path, and the manual says nothing about what a save holds.
 
