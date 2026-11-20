@@ -104,3 +104,5 @@ defs:
 A walker and horsemen crowd lands on the same pixels as before (the
 test pins the layout), and the needs data test sends a fleet with its
 real scripts onto one point of open sea on Athri Cay.
+
+The Sea Fort launches on tight water (#458) are measured in PR #495.

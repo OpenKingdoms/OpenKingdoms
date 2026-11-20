@@ -154,6 +154,7 @@ set(TAK_UI_SOURCES
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
+    ui/hud_cursor.c
     ui/hud_text.c
     ui/replay_session.c
     ui/web_stats.c
@@ -460,6 +461,7 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
+    ui/hud_cursor.c
     ui/hud_text.c
     core/hpi/hpi.c
     core/hpi/hpi_vfs.c
@@ -752,6 +754,7 @@ add_executable(test_unit_stall
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
+    ui/hud_cursor.c
     ui/hud_text.c
     core/hpi/hpi.c
     core/hpi/hpi_vfs.c

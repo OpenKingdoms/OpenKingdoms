@@ -85,6 +85,9 @@ int  InGame_CommandCursorAt(int mode, int32_t world_x, int32_t world_y);
  * as a view or an embedding host picks it. */
 int  InGame_HoverCursorOn(int hit, int32_t world_x, int32_t world_y);
 int  InGame_CommandCursorOn(int mode, int hit, int32_t world_x, int32_t world_y);
+/* The cursor over a minimap or Tab map point: what a press there gives
+ * with mode armed (0 for none) on hit, the unit that press takes. */
+int  InGame_MapCursorOn(int mode, int hit, int32_t map_x, int32_t map_y);
 
 /* One left-button drag box on the game world, corners in world
  * coordinates. The tick calls this on release and tests call it
