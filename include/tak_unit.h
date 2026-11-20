@@ -1484,6 +1484,13 @@ void              Units_RenderBuildGhostFacing(struct TAK_Platform *plat,
                                                 int32_t world_x, int32_t world_y,
                                                 uint8_t alpha255, int valid,
                                                 int facing);
+/* The same at (world_x, world_y) as given, unsnapped: the armed cursor's. */
+void              Units_RenderBuildGhostFree(struct TAK_Platform *plat,
+                                              const struct GameWorld *world,
+                                              int def_idx, int color_idx,
+                                              int32_t world_x, int32_t world_y,
+                                              uint8_t alpha255, int valid,
+                                              int facing);
 
 /* ── Read only accessors for a second view ───────────────────────────
  *
@@ -1857,8 +1864,9 @@ int               Units_OrderMoveLeg(int handle, const UnitMoveLeg *leg, int que
  * the unit's orders the way the Units_Order* call for it does. Queued it
  * goes behind the order in hand and the legs before it, as Shift does,
  * and runs when those are done (manual section IV). A unit that could
- * not take it, or a full queue, refuses it. A factory takes a move or a
- * patrol as a standing order for its products. */
+ * not take it, a full queue, or a builder holding a summons without end
+ * refuses it. A factory takes a move or a patrol as a standing order for
+ * its products. */
 int               Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued);
 /* Units_OrderLeg's queued for the manual's Ctrl-click: the order replaces
  * the one in hand and the queued ones stay behind it. */
@@ -2341,6 +2349,10 @@ void              Units_SnapBuildSite(int def_idx,
                                        int32_t *world_x, int32_t *world_y);
 void              Units_SnapBuildSiteFacing(int def_idx, int facing,
                                              int32_t *world_x, int32_t *world_y);
+/* The cells a build of this def turned `facing` covers, the snap's own:
+ * a walker's move class footprint, else its own, 2x2 when it names none. */
+void              Units_BuildSiteCells(int def_idx, int facing,
+                                       int *out_fx, int *out_fz);
 
 /* Yardmap cell-code bits, as the FBI parse assigns them
  * (legacy:163224-163256) and placement tests them (legacy:218804). */

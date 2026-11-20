@@ -204,8 +204,10 @@
  * unit script's sleep lasts the original's frames and ends on the tick it
  * runs out. 79: a unit whose script runs its own walk gets no second walk
  * from the engine. 80: a mission's order lists run patrols, attacks on a
- * place, standing orders and placed angles as the original's do. */
-#define TAK_ENGINE_BUILD_ID           80
+ * place, standing orders and placed angles as the original's do. 81: a Shift
+ * drag lays a line of buildings, and a summons without end refuses Shift
+ * orders. */
+#define TAK_ENGINE_BUILD_ID           81
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

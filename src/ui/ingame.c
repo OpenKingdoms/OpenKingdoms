@@ -52,6 +52,7 @@
 #include "tak_briefing.h"
 #include "tak_music.h"
 #include "tak_order_overlay.h"
+#include "tak_build_line.h"
 #include "tak_story.h"
 #include <SDL.h>
 #include <stdio.h>
@@ -1026,12 +1027,16 @@ int InGame_Init(TAK_Platform *platform) {
     return 0;
 }
 
+static int ig_build_line_shown(void);
+
 /* Marquee rectangle. Legacy draws a plain white outline box (four
  * quads off the solid-white texture, caller alpha — the legacy reference
  * :125401-125540); one SDL outline rect matches that look. */
 static void InGame_DrawMarquee(TAK_Platform *platform,
                                const GameWorld *world) {
     if (!ig.drag_active || !platform || !platform->renderer || !world) return;
+    /* A line of buildings shows its ghosts in place of the box. */
+    if (ig_build_line_shown()) return;
     int mx = 0, my = 0;
     SDL_GetMouseState(&mx, &my);
     int ax = (int)(ig.drag_world_x - world->cam_x);
@@ -1115,6 +1120,94 @@ static void InGame_DrawView3DNotice(TAK_Platform *platform) {
     HUD_DrawMessageLine(platform, g_view3d_notice_text);
 }
 
+/* ── A line of buildings: a Shift drag with one armed lays copies end
+ * to end. */
+
+/* The armed building a drag lays in a line, or -1. */
+static int ig_build_line_def(int shift_held) {
+    return shift_held ? HUD_GetBuildPlacementDefIdx() : -1;
+}
+
+/* The build centres a drag from (x0, y0) to (x1, y1) lays at the default
+ * facing, on the ground under each end and snapped as a click's site is. */
+static int ig_build_line_spots(int bdef, int32_t x0, int32_t y0,
+                               int32_t x1, int32_t y1, BuildLineCell *out) {
+    int fx = 0, fz = 0;
+    Units_BuildSiteCells(bdef, 0, &fx, &fz);
+    if (fx <= 0 || fz <= 0) return 0;
+    Units_GroundUnderPoint(x0, y0, &x0, &y0);
+    Units_GroundUnderPoint(x1, y1, &x1, &y1);
+    Units_SnapBuildSiteFacing(bdef, 0, &x0, &y0);
+    Units_SnapBuildSiteFacing(bdef, 0, &x1, &y1);
+    /* A summons without end lays the press end alone, as a Shift click
+     * does, since nothing queues behind it (legacy:39208-39219). */
+    int max = HUD_BuildPlacementRepeats() ? 1 : BUILD_LINE_MAX;
+    /* The snap puts a centre at cell * 16 + footprint * 8. */
+    int n = BuildLine_Cells((x0 - fx * 8) / 16, (y0 - fz * 8) / 16,
+                            (x1 - fx * 8) / 16, (y1 - fz * 8) / 16,
+                            fx, fz, out, max);
+    for (int i = 0; i < n; i++) {
+        out[i].x = out[i].x * 16 + fx * 8;
+        out[i].y = out[i].y * 16 + fz * 8;
+    }
+    return n;
+}
+
+/* Each spot the cursor's test passes is queued in order from the press
+ * and a blocked one is passed over. 0 when the drag lays no line. */
+static int ig_build_line_drag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                              int mods) {
+    int bdef = ig_build_line_def((mods & IG_CLICK_SHIFT) != 0);
+    if (bdef < 0) return 0;
+    int repeat = HUD_BuildPlacementRepeats();
+    BuildLineCell spots[BUILD_LINE_MAX];
+    int n = ig_build_line_spots(bdef, x0, y0, x1, y1, spots);
+    int placed = 0;
+    for (int i = 0; i < n; i++) {
+        if (!Units_IsBuildSiteClearSeen(bdef, spots[i].x, spots[i].y, 0, Fog_Viewer()))
+            continue;
+        if (TAK_Cmd_EmitSelection(TAK_CMD_BUILD, spots[i].x, spots[i].y, -1,
+                                  (uint16_t)bdef, BuildLine_OrderArg(repeat)) != 0)
+            break;
+        placed++;
+    }
+    GameSound_PlayUI(placed > 0 ? "oktobuild" : "notoktobuild");
+    fprintf(stderr, "Build line: def=%d, %d of %d spots ordered\n", bdef, placed, n);
+    /* As after a Shift click: armed while Shift is down, and a summons
+     * without end is placed once (legacy:242531-242540). */
+    if (repeat) HUD_ClearCommandMode();
+    else ig.shift_hold = 1;
+    return 1;
+}
+
+/* A drag in hand that lays a line of buildings on its release. */
+static int ig_build_line_shown(void) {
+    const Uint8 *ks = SDL_GetKeyboardState(NULL);
+    int shift = ks[SDL_SCANCODE_LSHIFT] || ks[SDL_SCANCODE_RSHIFT];
+    return ig.drag_active && ig_build_line_def(shift) >= 0;
+}
+
+/* The line's ghosts in the classic view, from the press to the pointer at
+ * (x1, y1), snapped where they will be placed and judged as the cursor's. */
+static void ig_draw_build_line(TAK_Platform *platform, const GameWorld *world,
+                               int32_t x1, int32_t y1) {
+    if (ig.view3d || !ig_build_line_shown()) return;
+    int bdef = HUD_GetBuildPlacementDefIdx();
+    BuildLineCell spots[BUILD_LINE_MAX];
+    int n = ig_build_line_spots(bdef, ig.drag_world_x, ig.drag_world_y, x1, y1, spots);
+    /* The builder's colours, as the cursor's ghost takes them. */
+    int color_idx = 0, n_sel = 0;
+    const int *sel = Units_GetSelection(&n_sel);
+    const Unit *active = Units_GetActive(NULL);
+    if (sel && n_sel > 0 && active) color_idx = active[sel[0]].team_color_idx;
+    for (int i = 0; i < n; i++) {
+        int valid = Units_IsBuildSiteClearSeen(bdef, spots[i].x, spots[i].y, 0,
+                                               Fog_Viewer());
+        Units_RenderBuildGhostFacing(platform, world, bdef, color_idx,
+                                     spots[i].x, spots[i].y, 140, valid, 0);
+    }
+}
+
 /* A released drag box: with Load armed and one transport selected, a
  * pickup of every unit in it (legacy:238654-238692), else a box select. */
 void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
@@ -1122,6 +1215,8 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     int shift_held = (mods & IG_CLICK_SHIFT) != 0;
     GameWorld *world = World_Get();
     if (!world || !world->loaded) return;
+    /* With a building armed a Shift drag lays a line of it. */
+    if (ig_build_line_drag(x0, y0, x1, y1, mods)) return;
     if (HUD_GetCommandMode() == HUD_CMD_LOAD &&
         TAK_Cmd_EmitLoadInRect(x0, y0, x1, y1, shift_held) >= 0) {
         if (shift_held) ig.shift_hold = 1;
@@ -2410,6 +2505,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             if (cid != mode)
                 drew_cursor = HUD_DrawCursorById(platform, cid, mx, my);
             if (!drew_cursor) {
+                ig_draw_build_line(platform, world, hover_x, hover_y);
                 HUD_DrawCommandCursor(platform, mx, my, hover_x, hover_y);
                 drew_cursor = 1;
             }
