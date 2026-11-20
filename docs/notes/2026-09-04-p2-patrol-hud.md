@@ -171,10 +171,11 @@ every `cursor_entry` in g_button_bindings. (The rendering dig's name list
   stays visible.
 - Bottom bar: the HUD unit-info refresh at :152219 *(tool-assigned
   `NetPacket_Method06`, misleading: this is HUD code, not networking)*, called with a
-  null unit (:152277-152296), hides UnitText, HealthBar+HealthBack, ManaBar+ManaBack,
-  Experience. KillCount is hidden at :152496-152506. Its aggregate-selection sibling at
-  :152512+ does the same bar-hiding for the multi-select state. The InfoPanel strip art
-  stays.
+  null unit (:152277-152296), hides UnitText, HealthBar, ManaBar and Experience. It
+  asks for HealthBack and ManaBack too, but no side's .gui has those names (the
+  backings are `Static0`), so the empty backings stay up, as play shows. KillCount is
+  hidden at :152496-152506. Its aggregate-selection sibling at :152512+ does the same
+  for the multi-select state. The InfoPanel strip art stays.
 
 ### Ours today (hud.c HUD_Draw)
 

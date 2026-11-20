@@ -139,7 +139,9 @@ typedef struct CobEngine {
     int32_t            *static_vars;     /* owned, num_static_vars long */
     int                 piece_count;     /* node_count from the bound mesh */
     uint16_t            active_thread_count;
-    uint16_t            _pad;
+    uint8_t             in_pass;         /* inside Cob_RunAllThreads */
+    uint8_t             _pad;
+    uint32_t            pass_tick;       /* Cob_SetTick's tick at the last pass */
     /* Host callbacks; NULL = use stub (returns 0 / 1). */
     void               *host_user;
     Cob_GetUnitValueFn  host_get_unit_value;
@@ -239,6 +241,11 @@ void Cob_RunAllThreads(CobEngine *e);
  * not counted down (legacy:306234 with a delta of 0). */
 void Cob_RunReadyThreads(CobEngine *e);
 
+/* The sim tick whose pass comes next or is running. A sleep begun
+ * outside Cob_RunAllThreads before that tick's pass gets one tick more,
+ * which the pass then takes. */
+void Cob_SetTick(uint32_t tick);
+
 /* Animate piece state: per piece per axis, advance current toward
  * target by the per-tick delta (already pre-divided when the
  * ROTATE/MOVE opcode stored the speed). When a target is reached,
@@ -255,6 +262,15 @@ int  Cob_AliveThreadCount(const CobEngine *e);
  * units.c to detect when walk-cycle scripts have terminated and need
  * restarting while a unit is still moving. */
 int  Cob_IsThreadAlive(const CobEngine *e, int slot);
+
+/* Whether slot N is alive and running the named script. A call is a
+ * thread of its own, so a thread's pc never leaves its script. A freed
+ * slot may be reused by another script before its old owner looks. */
+int  Cob_ThreadRunsScript(const CobEngine *e, int slot, const char *name);
+
+/* The inline operand words the VM reads after opcode word RAW, or -1
+ * for an opcode it does not run. Lets a scan walk instruction bounds. */
+int  Cob_OperandWords(uint32_t raw);
 
 /* Read the final value left on a thread's stack when its outermost
  * RETURN ended. Returns 1 when a value is available, 0 otherwise.

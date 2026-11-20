@@ -169,7 +169,10 @@ observable depends on their values.
 Unchanged on purpose: the `walk` thread is still kept alive by the engine
 rather than by a script-side watcher, because our host does not yet serve
 every unit value the watcher threads poll. That is a known deviation, not a
-loop the engine is inventing.
+loop the engine is inventing. It holds only for a script that never calls or
+starts `walk` itself. A script that does runs its own walk, and the engine
+starts none beside it. It now applies to no shipped unit: every script with a
+walk calls or starts it itself.
 
 ## Guard tests
 

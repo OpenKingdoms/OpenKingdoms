@@ -20,6 +20,9 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world);
  * Terrain_Render / Units_Render and before Minimap_Draw (so the
  * minimap sits at the top of the right sidebar). */
 void HUD_Draw(TAK_Platform *plat, const GameWorld *world);
+/* The unit and the world->features index under the pointer, -1 for
+ * none, which the next HUD_Draw describes before the selection. */
+void HUD_SetPointerInfo(int unit, int feature);
 
 /* Convert a window-pixel position into "is this in the HUD?" so
  * mouse handlers can dispatch correctly between game-world clicks
@@ -120,6 +123,10 @@ int  HUD_IsTargetingMode(int mode);
 /* Fire an immediate (non-targeting) command as if its button had been
  * clicked. Returns 1 when the mode is one the HUD dispatches. */
 int  HUD_TriggerCommand(int mode);
+
+/* An order's key presses its action button as a click would. 0 and
+ * nothing done when the selection has no such button. */
+int  HUD_PressOrder(int mode);
 
 /* Returns 1 if (win_x, win_y) hit an action button and the mode
  * was changed/issued; the caller (ingame.c click handler) should

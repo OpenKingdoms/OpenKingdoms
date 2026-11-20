@@ -11430,6 +11430,8 @@ TEST(hud_idle_frames_selection_and_queue_badges) {
 
     /* ── Idle ───────────────────────────────────────────────────── */
     Units_SelectSingle(-1);
+    /* The pointer rests on the bottom strip, over no unit or feature. */
+    InGame_DebugMouse(1, 300, 470, 0);
     timer.accumulator = 0.0;                 /* draw only, no sim step */
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
 
@@ -11439,10 +11441,11 @@ TEST(hud_idle_frames_selection_and_queue_badges) {
     ASSERT_EQ_INT(0, HUD_WidgetHidden("BottomEnd"));
     ASSERT_EQ_INT(0, HUD_WidgetHidden("CrystalBall"));
 
-    /* Per-unit widgets go down, every copy of each name. */
+    /* Per-unit widgets go down, every copy of each name. The bars stay
+     * up, empty, as their backings do in the original. */
     ASSERT_EQ_INT(1, HUD_WidgetHidden("UnitText"));
-    ASSERT_EQ_INT(1, HUD_WidgetHidden("HealthBar"));
-    ASSERT_EQ_INT(1, HUD_WidgetHidden("ManaBar"));
+    ASSERT_EQ_INT(0, HUD_WidgetHidden("HealthBar"));
+    ASSERT_EQ_INT(0, HUD_WidgetHidden("ManaBar"));
     ASSERT_EQ_INT(1, HUD_WidgetHidden("Experience"));
     ASSERT_EQ_INT(1, HUD_WidgetHidden("KillCount"));
 
@@ -11583,6 +11586,7 @@ TEST(hud_idle_frames_selection_and_queue_badges) {
         ASSERT(changed > 0);
     }
 
+    InGame_DebugMouse(0, 0, 0, 0);
     InGame_Shutdown();
     Loading_Shutdown();
     World_End(&platform);
@@ -15089,11 +15093,11 @@ TEST(a_harpy_takes_a_swordsman_standing_or_walking_across) {
      * of two or three shots, as the Harpy aims again while it reloads
      * and the next is in the air before the first lands. A walking one
      * is taken by the first shot, fired from the hover attack's 200 px
-     * once the Harpy faces it. */
+     * once the Harpy faces it, but for one seed where the third takes it. */
     ASSERT_EQ_INT(4, still);
     ASSERT_EQ_INT(9, still_shots);
     ASSERT_EQ_INT(4, walking);
-    ASSERT_EQ_INT(4, walking_shots);
+    ASSERT_EQ_INT(6, walking_shots);
 }
 
 /* Use Crusades Units loads the Crusades balance set, unitscb/ in place
@@ -21254,10 +21258,11 @@ TEST(enemy_unit_shows_in_the_sidebar) {
     timer.accumulator = timer.sim_dt;
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
     ASSERT_EQ_INT(0, HUD_BuildSlotCount());
-    /* A foreign unit's panel is its name and health only: no mana
-     * gauge, no build menu (reported from play, like the original). */
+    /* A foreign unit's panel is its name and health only: its mana
+     * gauge stays empty and it has no build menu (reported from play,
+     * like the original). */
     ASSERT_EQ_INT(1, HUD_WidgetVisible("HealthBar"));
-    ASSERT_EQ_INT(0, HUD_WidgetVisible("ManaBar"));
+    ASSERT_EQ_INT(1, HUD_WidgetVisible("ManaBar"));
     ASSERT_EQ_INT(0, HUD_WidgetVisible("BuildMenu"));
 
     Units_SelectSingle(-1);
@@ -24888,10 +24893,7 @@ TEST(veteran_swap_keeps_the_crew_drawn) {
     }
     ASSERT(placed);
     ASSERT(Units_Spawn(tower_def, 1, 0, sx2, ty) >= 0);
-    for (int i = 0; i < 4; i++) {
-        timer.accumulator = timer.sim_dt;
-        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
-    }
+    /* No sim tick between the two pictures, so the crew holds its pose. */
     timer.accumulator = 0.0;
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
     ASSERT_EQ_INT(2, Units_DebugDrawRunSize(tower));
@@ -28199,6 +28201,7 @@ TEST(sound_ambient_feature_plays_on_timer) {
     world->features[0].global_idx = jungle;
     world->features[0].tile_x = (uint16_t)((cx + 64) / 16);
     world->features[0].tile_z = (uint16_t)(cy / 16);
+    Features_MarkChanged(world);
 
     ASSERT_EQ_INT(0, InGame_Init(&platform));
     Timer timer;

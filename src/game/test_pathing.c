@@ -6,6 +6,7 @@
 #include "tak_occupancy.h"
 #include "tak_memory.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -549,31 +550,88 @@ static void strip_class(MoveClassDef *mc, int fp) {
     mc->max_water_depth = 0;
 }
 
-/* Stepping one cell at a time from a to b, does every cell hold
- * ground this class can put a foot on? A route point the unit cannot
- * walk to is the whole defect these tests exist for, and the route is
- * compressed, so the answer is a line and not an adjacency. */
+/* One tile is ground this class may stand on, by the stubs, which
+ * answer per tile as the step's ground does. */
+static int strip_tile_ok(const GameWorld *w, const MoveClassDef *mc,
+                         int tx, int ty) {
+    if (tx < 0 || ty < 0 || tx >= w->map_pixels_w / 16 ||
+        ty >= w->map_pixels_h / 16) return 0;
+    int32_t sx = tx * 16 + 8, sy = ty * 16 + 8;
+    if (!Terrain_IsWalkable(w, sx, sy, mc->max_slope)) return 0;
+    int depth = w->water_height - Terrain_SampleHeight(w, sx, sy);
+    if (depth < 0) depth = 0;
+    return depth <= (int)mc->max_water_depth;
+}
+
+/* Tiles of the body centred at (x, y), anchored as the step anchors it
+ * on the rounded position, that are not ground. */
+static int strip_body_bad(const GameWorld *w, const MoveClassDef *mc,
+                          int32_t x, int32_t y) {
+    int fx = mc->footprint_x > 0 ? mc->footprint_x : 1;
+    int fz = mc->footprint_z > 0 ? mc->footprint_z : 1;
+    int tx0 = Occ_TileOf(x - fx * 8 + 8), ty0 = Occ_TileOf(y - fz * 8 + 8);
+    int bad = 0;
+    for (int dy = 0; dy < fz; dy++)
+        for (int dx = 0; dx < fx; dx++)
+            bad += !strip_tile_ok(w, mc, tx0 + dx, ty0 + dy);
+    return bad;
+}
+
+/* Would the step take every pixel from a to b, by its water and body
+ * rules? *bad carries the body's count along a route. */
+static int strip_line_walkable_from(const GameWorld *w, const MoveClassDef *mc,
+                                    int32_t ax, int32_t ay,
+                                    int32_t bx, int32_t by, int *bad) {
+    int64_t dx = (int64_t)bx - ax, dy = (int64_t)by - ay;
+    int64_t adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
+    int64_t steps = adx > ady ? adx : ady;
+    int fx = mc->footprint_x > 0 ? mc->footprint_x : 1;
+    int fz = mc->footprint_z > 0 ? mc->footprint_z : 1;
+    int32_t lx = ax, ly = ay;
+    for (int64_t s = 0; s <= steps; s++) {
+        int32_t px = steps ? ax + (int32_t)(dx * s / steps) : ax;
+        int32_t py = steps ? ay + (int32_t)(dy * s / steps) : ay;
+        int depth = w->water_height - Terrain_SampleHeight(w, px, py);
+        if (depth < 0) depth = 0;
+        if (depth > (int)mc->max_water_depth) return 0;
+        int b = strip_body_bad(w, mc, px, py);
+        if (b > *bad) return 0;
+        if (Occ_TileOf(px - fx * 8 + 8) != Occ_TileOf(lx - fx * 8 + 8) &&
+            Occ_TileOf(py - fz * 8 + 8) != Occ_TileOf(ly - fz * 8 + 8) &&
+            (strip_body_bad(w, mc, px, ly) > *bad ||
+             strip_body_bad(w, mc, lx, py) > *bad))
+            return 0;
+        *bad = b;
+        lx = px;
+        ly = py;
+    }
+    return 1;
+}
+
 static int strip_line_walkable(const GameWorld *w, const MoveClassDef *mc,
                                int32_t ax, int32_t ay,
                                int32_t bx, int32_t by) {
-    int cx = (int)(ax / 32), cy = (int)(ay / 32);
-    int gx = (int)(bx / 32), gy = (int)(by / 32);
-    for (int guard = 0; guard < 512; guard++) {
-        int ok = 0;
-        for (int t = 0; t < 4 && !ok; t++) {
-            int32_t px = (cx * 2 + (t & 1)) * 16 + 8;
-            int32_t py = (cy * 2 + (t >> 1)) * 16 + 8;
-            if (!Terrain_IsWalkable(w, px, py, mc->max_slope)) continue;
-            int depth = w->water_height - Terrain_SampleHeight(w, px, py);
-            if (depth < 0) depth = 0;
-            if (depth <= (int)mc->max_water_depth) ok = 1;
+    int bad = strip_body_bad(w, mc, ax, ay);
+    return strip_line_walkable_from(w, mc, ax, ay, bx, by, &bad);
+}
+
+/* The whole route from where the unit stands, leg by leg. */
+static int strip_route_walkable(const GameWorld *w, const MoveClassDef *mc,
+                                int32_t sx, int32_t sy, const TAK_Path *p,
+                                int quiet) {
+    int32_t ax = sx, ay = sy;
+    int bad = strip_body_bad(w, mc, sx, sy);
+    for (int i = 0; i < p->count; i++) {
+        if (!strip_line_walkable_from(w, mc, ax, ay, p->x[i], p->y[i], &bad)) {
+            if (!quiet)
+                fprintf(stderr, "  leg %d, %d,%d to %d,%d, crosses ground the "
+                        "step refuses\n", i, ax, ay, p->x[i], p->y[i]);
+            return 0;
         }
-        if (!ok) return 0;
-        if (cx == gx && cy == gy) return 1;
-        if (cx < gx) cx++; else if (cx > gx) cx--;
-        if (cy < gy) cy++; else if (cy > gy) cy--;
+        ax = p->x[i];
+        ay = p->y[i];
     }
-    return 0;
+    return 1;
 }
 
 /* Is this path cell open to the class, by both structures at once? */
@@ -1101,8 +1159,17 @@ static void test_a_pinched_route_never_crosses_what_it_must_not(void) {
     }
     EXPECT(in_water == 0);
     /* It really did have to go the long way: a straight line would be
-     * thirteen cells and the way round is far more. */
-    EXPECT(path.count > 20);
+     * thirteen cells and the way round is more than twice that. The
+     * walk along the spit is laid at its turns, so count length, not
+     * points. */
+    int64_t walked = 0;
+    for (int i = 0, ax = sx, ay = sy; i < path.count; i++) {
+        int64_t lx = path.x[i] - ax, ly = path.y[i] - ay;
+        walked += (int64_t)sqrt((double)(lx * lx + ly * ly));
+        ax = path.x[i];
+        ay = path.y[i];
+    }
+    EXPECT(walked > 2 * 13 * 32);
     occ_world_free(&sea);
 
     /* 2. A wall of somebody else's buildings across the only way out
@@ -1642,6 +1709,242 @@ static void test_a_patched_cache_is_a_fresh_one(void) {
     occ_world_free(&w);
 }
 
+/* ── Ground shut tile by tile ────────────────────────────────────── */
+
+/* Single tiles no unit may stand on, through the stand-in features: a
+ * heightmap cannot shut one tile without touching its neighbours. */
+static int strip_marks(const GameWorld *w) {
+    g_feat_block_w = w->map_pixels_w / 16;
+    g_feat_block_h = w->map_pixels_h / 16;
+    g_feat_block = (uint8_t *)calloc((size_t)g_feat_block_w * g_feat_block_h, 1);
+    return g_feat_block != NULL;
+}
+
+static void strip_shut(int tx, int ty) {
+    if (tx < 0 || ty < 0 || tx >= g_feat_block_w || ty >= g_feat_block_h) return;
+    g_feat_block[ty * g_feat_block_w + tx] = 1;
+}
+
+static void strip_marks_free(void) {
+    free(g_feat_block);
+    g_feat_block = NULL;
+}
+
+static void strip_query(TAK_PathQuery *q, const MoveClassDef *mc, int compress) {
+    memset(q, 0, sizeof(*q));
+    q->move_class = mc;
+    q->fallback_max_slope = 12;
+    q->player_id = 1;
+    q->compress = compress;
+}
+
+/* A one tile ridge two tiles thick, stepping east a tile a row from
+ * north west to south east, over rows r0 to r1. */
+static void strip_ridge(int r0, int r1) {
+    for (int r = r0; r <= r1; r++) {
+        strip_shut(r + 5, r);
+        strip_shut(r + 6, r);
+    }
+}
+
+/* A 2 by 2 unit in the inside corner of a one tile ridge, from the
+ * long march on Valysia City. The step lets its centre into the corner
+ * with half its body over the ridge, so no placement of its cell fits.
+ * The search stepped from that cell to the legal one beside it with no
+ * test of the way between, and handed back a line through the ridge. */
+static void test_a_unit_in_the_corner_of_a_ridge_walks_out(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
+    strip_land(&world, 0, 0, 48, 32);
+    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
+    strip_ridge(8, 24);
+    MoveClassDef mc;
+    strip_class(&mc, 2);
+    TAK_PathQuery q;
+    strip_query(&q, &mc, 1);
+    /* Tile 23,16, the north east tile of its cell, shut to the west,
+     * the south and the south west. Its body stands one tile on the
+     * ridge, which no placement of its cell keeps it off. */
+    int32_t sx = 23 * 16 + 8, sy = 16 * 16 + 8;
+    EXPECT(strip_body_bad(&world, &mc, sx, sy) > 0);
+    int32_t gx = sx - 96, gy = sy;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&world, sx, sy, gx, gy, &q, &path);
+    EXPECT(n > 0);
+    if (n > 0) {
+        EXPECT(path.start_x == sx && path.start_y == sy);
+        EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
+        /* It gets there, round an end of the ridge. */
+        int32_t ex = path.x[n - 1] - gx, ey = path.y[n - 1] - gy;
+        EXPECT(ex * ex + ey * ey <= 32 * 32);
+    }
+    strip_query(&q, &mc, 0);
+    n = TAK_PathPlanQuery(&world, sx, sy, gx, gy, &q, &path);
+    EXPECT(n > 0);
+    if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
+    strip_marks_free();
+    occ_world_free(&world);
+
+    /* The same ridge from edge to edge of the map: no way round, and
+     * the honest answer is none. */
+    TAK_PathCacheReset();
+    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
+    strip_land(&world, 0, 0, 48, 32);
+    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
+    strip_ridge(0, 31);
+    strip_query(&q, &mc, 1);
+    EXPECT(TAK_PathPlanQuery(&world, sx, sy, gx, gy, &q, &path) == 0);
+    strip_marks_free();
+    occ_world_free(&world);
+}
+
+/* A walk out that turns. The unit stands at the head of a one tile
+ * corridor four tiles down, which turns into a two tile one six along,
+ * in a block of shut ground. Its body never takes on more rock than it
+ * stands on, so the step lets it walk the whole way. */
+static void test_a_walk_out_keeps_its_turn(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
+    strip_land(&world, 0, 0, 48, 32);
+    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
+    for (int ty = 5; ty <= 15; ty++)
+        for (int tx = 15; tx <= 25; tx++)
+            strip_shut(tx, ty);
+    for (int ty = 8; ty <= 12; ty++) g_feat_block[ty * g_feat_block_w + 20] = 0;
+    for (int tx = 20; tx <= 25; tx++) {
+        g_feat_block[11 * g_feat_block_w + tx] = 0;
+        g_feat_block[12 * g_feat_block_w + tx] = 0;
+    }
+    MoveClassDef mc;
+    strip_class(&mc, 2);
+    TAK_PathQuery q;
+    strip_query(&q, &mc, 1);
+    int32_t sx = 20 * 16 + 8, sy = 8 * 16 + 8;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&world, sx, sy, 36 * 16, 12 * 16 + 8, &q, &path);
+    EXPECT(n > 0);
+    if (n > 0) {
+        EXPECT(path.start_x == sx && path.start_y == sy);
+        EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
+    }
+    strip_marks_free();
+    occ_world_free(&world);
+}
+
+/* The walk out is priced like the crossings were: tiles in cells a
+ * route may stand in cost what open ground does. A 2 by 2 unit in a
+ * one tile door through a one tile wall, half its body on the wall,
+ * with its goal a few cells east, goes east through the door and not
+ * west and round the wall's far end. */
+static void test_a_unit_in_a_door_leaves_the_short_way(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
+    strip_land(&world, 0, 0, 48, 32);
+    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
+    for (int ty = 0; ty <= 27; ty++) {
+        if (ty == 10) continue;
+        strip_shut(20, ty);
+    }
+    MoveClassDef mc;
+    strip_class(&mc, 2);
+    TAK_PathQuery q;
+    strip_query(&q, &mc, 1);
+    int32_t sx = 20 * 16 + 8, sy = 10 * 16 + 8;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&world, sx, sy, 28 * 16, 10 * 16 + 8, &q, &path);
+    EXPECT(n > 0);
+    int32_t lowest = 0;
+    for (int i = 0; i < path.count; i++)
+        if (path.y[i] > lowest) lowest = path.y[i];
+    if (lowest >= 16 * 16)
+        fprintf(stderr, "  the door's route went %d px south, round the wall\n",
+                lowest - sy);
+    EXPECT(lowest < 16 * 16);
+    if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
+    strip_marks_free();
+    occ_world_free(&world);
+}
+
+/* A walk out never crosses water: the mover never relaxes it. The unit
+ * stands a tile into the sea beside a spit, with the far shore straight
+ * across the bay and the only dry way round by the field. */
+static void test_a_walk_out_never_crosses_water(void) {
+    TAK_PathCacheReset();
+    GameWorld sea;
+    if (!strip_world(&sea, 30, 20)) { EXPECT(0); return; }
+    strip_land(&sea, 4, 21, 40, 21);
+    strip_land(&sea, 40, 4, 56, 36);
+    strip_land(&sea, 4, 8, 40, 9);
+    MoveClassDef mc;
+    strip_class(&mc, 2);
+    TAK_PathQuery q;
+    strip_query(&q, &mc, 1);
+    int32_t sx = 10 * 16 + 8, sy = 20 * 16 + 8;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&sea, sx, sy, 10 * 16 + 8, 8 * 16 + 8, &q, &path);
+    if (n > 0) {
+        /* From its first point on, every leg is dry. */
+        int32_t dx = path.x[0] - sx, dy = path.y[0] - sy;
+        EXPECT(dx * dx + dy * dy <= 32 * 32);
+        TAK_Path rest = path;
+        rest.count = path.count - 1;
+        memmove(rest.x, path.x + 1, (size_t)rest.count * sizeof(path.x[0]));
+        memmove(rest.y, path.y + 1, (size_t)rest.count * sizeof(path.y[0]));
+        EXPECT(strip_route_walkable(&sea, &mc, path.x[0], path.y[0], &rest, 0));
+    }
+    occ_world_free(&sea);
+}
+
+/* A route whose first slide changes lane inside the start cell. The
+ * unit stands on the north lane, the north lane is shut a tile west,
+ * and the way west is the south lane. Compression dropped the first
+ * laid point however the route turned there, and the line from the
+ * unit to the far end then crossed the shut tile. */
+static void test_a_turn_at_the_first_point_is_kept(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
+    strip_land(&world, 0, 0, 48, 32);
+    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
+    strip_shut(19, 16);
+    MoveClassDef mc;
+    strip_class(&mc, 1);
+    TAK_PathQuery q;
+    strip_query(&q, &mc, 1);
+    int32_t sx = 21 * 16 + 8, sy = 16 * 16 + 8;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&world, sx, sy, 2 * 16 + 8, 17 * 16 + 8, &q, &path);
+    EXPECT(n > 0);
+    if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
+    strip_marks_free();
+    occ_world_free(&world);
+}
+
+/* A turn judged from where the unit stands. The line from its cell's
+ * nearest placement passes a shut tile's corner. Its own crosses it. */
+static void test_a_first_point_is_judged_from_the_unit(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
+    strip_land(&world, 0, 0, 48, 32);
+    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
+    strip_shut(21, 18);
+    MoveClassDef mc;
+    strip_class(&mc, 1);
+    TAK_PathQuery q;
+    strip_query(&q, &mc, 1);
+    int32_t sx = 337, sy = 287;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&world, sx, sy, 360, 296, &q, &path);
+    EXPECT(n > 0);
+    if (n > 0) EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
+    strip_marks_free();
+    occ_world_free(&world);
+}
+
 /* How far a route strays from the straight line over a gentle hill, or
  * past a steep band with a gap beside it. A step costs by kind of ground,
  * not by climb, and bad ground costs more (legacy:22210-22222). */
@@ -1697,6 +2000,71 @@ static void test_a_route_goes_over_a_hill_and_round_bad_ground(void) {
     EXPECT(band >= 48 && band <= 160);
 }
 
+/* A pocket: a room a 2 by 2 body fits, joined to the field only by a
+ * one tile corridor. The unit stands at its west edge, half on rock. */
+static void test_a_body_too_wide_for_a_pockets_way_out_has_no_route(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 24, 16)) { EXPECT(0); return; }
+    strip_land(&world, 0, 0, 48, 32);
+    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
+    for (int ty = 6; ty <= 20; ty++)
+        for (int tx = 10; tx <= 26; tx++)
+            if (!(tx >= 18 && tx <= 21 && ty >= 10 && ty <= 13) &&
+                !(tx >= 22 && ty == 12))
+                strip_shut(tx, ty);
+    MoveClassDef mc;
+    strip_class(&mc, 2);
+    TAK_PathQuery q;
+    strip_query(&q, &mc, 1);
+    int32_t sx = 18 * 16 + 2, sy = 12 * 16;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&world, sx, sy, 36 * 16, 12 * 16 + 8, &q, &path);
+    /* The step never takes the body onto more rock than it stands on,
+     * so it reaches the room's floor and not the corridor. */
+    EXPECT(n == 0);
+    /* On its feet in the middle of the room, all of it on its ground,
+     * it is where a body may be and the honest answer stays none. */
+    n = TAK_PathPlanQuery(&world, 20 * 16, 12 * 16, 36 * 16, 12 * 16 + 8, &q, &path);
+    EXPECT(n == 0);
+    strip_marks_free();
+    occ_world_free(&world);
+}
+
+/* A pocket beside a sealed goal, on a map too big to search whole. The
+ * unit stands half on the west wall, which runs on beside a one tile
+ * corridor north, so its body leaves with no more rock under it. The
+ * search out of the pocket runs out of budget, and the route goes as
+ * near as that search got, not as near as the pocket got. */
+static void test_a_pocket_beside_a_sealed_goal_still_walks_out(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 100, 100)) { EXPECT(0); return; }
+    strip_land(&world, 0, 0, 200, 200);
+    if (!strip_marks(&world)) { EXPECT(0); occ_world_free(&world); return; }
+    for (int ty = 10; ty <= 60; ty++)
+        for (int tx = 10; tx <= 60; tx++)
+            if (!(tx >= 40 && tx <= 43 && ty >= 30 && ty <= 33) &&
+                !(tx == 40 && ty < 30) &&
+                !(tx >= 32 && tx <= 35 && ty >= 30 && ty <= 33))
+                strip_shut(tx, ty);
+    MoveClassDef mc;
+    strip_class(&mc, 2);
+    TAK_PathQuery q;
+    strip_query(&q, &mc, 1);
+    int32_t sx = 40 * 16 + 2, sy = 32 * 16;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&world, sx, sy, 34 * 16, 32 * 16, &q, &path);
+    EXPECT(n > 0);
+    if (n > 0) {
+        EXPECT(path.x[n - 1] >= 61 * 16 || path.x[n - 1] < 10 * 16 ||
+               path.y[n - 1] >= 61 * 16 || path.y[n - 1] < 10 * 16);
+        EXPECT(strip_route_walkable(&world, &mc, sx, sy, &path, 0));
+    }
+    strip_marks_free();
+    occ_world_free(&world);
+}
+
 int main(void) {
     test_a_route_goes_over_a_hill_and_round_bad_ground();
     test_routes_through_height_gap();
@@ -1714,6 +2082,14 @@ int main(void) {
     test_a_pinched_wide_unit_still_does_not_fit_a_narrow_gap();
     test_a_pinch_price_lets_a_route_cross_anywhere();
     test_a_pinched_route_never_crosses_what_it_must_not();
+    test_a_unit_in_the_corner_of_a_ridge_walks_out();
+    test_a_walk_out_keeps_its_turn();
+    test_a_unit_in_a_door_leaves_the_short_way();
+    test_a_walk_out_never_crosses_water();
+    test_a_body_too_wide_for_a_pockets_way_out_has_no_route();
+    test_a_pocket_beside_a_sealed_goal_still_walks_out();
+    test_a_turn_at_the_first_point_is_kept();
+    test_a_first_point_is_judged_from_the_unit();
     test_a_long_route_is_not_a_flood();
     test_a_field_swept_as_far_as_its_members_routes_them_the_same();
     test_connected_ground_separates_an_island();

@@ -37,6 +37,8 @@
 #include "tak_sides.h"
 #include "tak_translate.h"
 #include "tak_hud_layout.h"
+#include "tak_hud_info.h"
+#include "tak_features.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -99,6 +101,34 @@ static int hud_selection_is_own(void) {
     return 1;
 }
 
+/* Whether the selection shows a button for an order. The sidebar and
+ * the order keys both ask, so a key gives only what a button would. */
+static int hud_mode_shown(int mode) {
+    const UnitDef *d = Units_GetSelectedDef();
+    int own = hud_selection_is_own();
+    uint32_t caps = (d && own) ? d->cap_flags : 0;
+    int n_weapons = (d && own) ? d->num_weapons : 0;
+    switch (mode) {
+        case HUD_CMD_MOVE:    return (caps & UNIT_CAP_MOVE) != 0;
+        case HUD_CMD_ATTACK:  return own && Units_DefTakesAttack(d);
+        case HUD_CMD_GUARD:   return (caps & UNIT_CAP_GUARD) != 0;
+        case HUD_CMD_PATROL:  return (caps & UNIT_CAP_PATROL) != 0;
+        case HUD_CMD_STOP:    return (caps & UNIT_CAP_STOP) != 0;
+        case HUD_CMD_HEAL:    return (caps & UNIT_CAP_REPAIR) != 0;
+        case HUD_CMD_LOAD:    return (caps & (UNIT_CAP_LOAD | UNIT_CAP_TRANSPORT)) != 0;
+        case HUD_CMD_UNLOAD:  return (caps & UNIT_CAP_TRANSPORT) != 0;
+        case HUD_CMD_CLEAR:   return (caps & UNIT_CAP_RECLAIM) != 0;
+        case HUD_CMD_ACTIVATE:
+        case HUD_CMD_DEACTIVATE:
+            /* The onoffable pair (legacy:150430-150436, 150930-150950). */
+            return own && Units_SelectedOnOffState() >= 0;
+        case HUD_CMD_W_PRIMARY:   return (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 1;
+        case HUD_CMD_W_SECONDARY: return (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 2;
+        case HUD_CMD_W_SET_SPEC:  return (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 3;
+        default: return 0;
+    }
+}
+
 /* Play-area and minimap slot in dialog (640x480 canvas) space, read
  * from the dialog at init. Legacy bounds the play area the same way:
  * left of UnitMenu.x and above BottomBar.y (legacy:150187-150214). */
@@ -108,13 +138,13 @@ static int      g_strip_top    = 431;
 static SDL_Rect g_minimap_dlg  = { 512,   0, 128, 128 };
 
 /* araingame.gui carries TWO unit-info panels sharing widget names:
- * UnitInfo1 describes the selected unit and UnitInfo2 its target
+ * UnitInfo1 describes what HUD_PickInfo picks and UnitInfo2 the target
  * (legacy:152113-152143 refreshes each through the same routine). We
  * resolve the child indices once so each panel can be driven alone. */
-/* own_only: shown for the local player's units only. A foreign unit's
- * panel keeps its name and health (reported from play, like the
- * original). */
-typedef struct { int index; int is_xp; int own_only; int is_kills; } HUDPanelWidget;
+/* is_bar: a gauge or its backing, kept up. The original hides backings by
+ * the names HealthBack and ManaBack (legacy:152277-152296), which no side's
+ * .gui uses (they are Static0), and an empty gauge draws nothing. */
+typedef struct { int index; int is_xp; int is_bar; int is_kills; } HUDPanelWidget;
 #define HUD_MAX_PANEL_WIDGETS 16
 static HUDPanelWidget g_panel1[HUD_MAX_PANEL_WIDGETS];
 static int            g_panel1_n = 0;
@@ -122,6 +152,8 @@ static HUDPanelWidget g_panel2[HUD_MAX_PANEL_WIDGETS];
 static int            g_panel2_n = 0;
 static int g_target_health_bar = -1, g_target_mana_bar = -1, g_target_text = -1;
 static int g_target_kills = -1;
+/* The unit and feature under the pointer, set each frame by ingame.c. */
+static int g_ptr_unit = -1, g_ptr_feature = -1;
 
 /* Decoded RGBA art, wrapped in a surface only while it is blitted: SDL 3,
  * under the SDL 2 that Arch ships, invalidates every surface at SDL_Quit. */
@@ -134,6 +166,9 @@ typedef struct HudPixels {
  * empty UnitPic frame does not draw over it. */
 static HudPixels g_portrait_px[64];
 static int       g_portraits_def[64];
+/* Defs with no portrait, so a hovered one is not looked up every frame. */
+static int       g_portrait_missing[32];
+static int       g_portrait_missing_n;
 
 /* Per-weapon icon cache, keyed by JPEG basename (e.g. "LightningSB").
  * Loaded lazily from `data/anims/weaponpic/<basename>.jpg`. Mirrors
@@ -263,6 +298,11 @@ static void hud_blit_pixels(const HudPixels *p, SDL_Surface *dst, SDL_Rect *dst_
     SDL_FreeSurface(s);
 }
 
+static const HudPixels *portrait_missing(int def_idx) {
+    g_portrait_missing[g_portrait_missing_n++ % 32] = def_idx;
+    return NULL;
+}
+
 /* Decode + cache the buildpic JPG for a unit def. A full cache gives up
  * its oldest portrait. */
 static const HudPixels *portrait_pixels_for_def(int def_idx) {
@@ -271,8 +311,10 @@ static const HudPixels *portrait_pixels_for_def(int def_idx) {
     for (int i = 0; i < 64; i++) {
         if (g_portraits_def[i] == def_idx) return &g_portrait_px[i];
     }
+    for (int i = 0; i < g_portrait_missing_n && i < 32; i++)
+        if (g_portrait_missing[i] == def_idx) return NULL;
     const UnitDef *d = Units_GetDef(def_idx);
-    if (!d || !d->unitname[0]) return NULL;
+    if (!d || !d->unitname[0]) return portrait_missing(def_idx);
 
     char path[128], lower[40];
     int n = 0;
@@ -286,13 +328,14 @@ static const HudPixels *portrait_pixels_for_def(int def_idx) {
 
     void *jpg_bytes = NULL;
     uint32_t jpg_size = 0;
-    if (VFS_ReadFile(path, &jpg_bytes, &jpg_size) != 0 || !jpg_bytes) return NULL;
+    if (VFS_ReadFile(path, &jpg_bytes, &jpg_size) != 0 || !jpg_bytes)
+        return portrait_missing(def_idx);
     uint32_t *rgba = NULL;
     int w = 0, h = 0;
     int ok = (JPG_DecodeRGBA((const uint8_t *)jpg_bytes, jpg_size,
                               &rgba, &w, &h) == 0) && rgba;
     VFS_FreeBuffer(jpg_bytes);
-    if (!ok) return NULL;
+    if (!ok) return portrait_missing(def_idx);
 
     int slot = -1;
     for (int i = 0; i < 64 && slot < 0; i++) {
@@ -403,18 +446,18 @@ static int widget_index_in(const char *name, SDL_Rect bounds) {
 }
 
 /* Collect every copy of the per-unit info widgets that lives inside
- * `bounds` into `out`. Legacy's null-unit refresh hides exactly this
- * set: the name label, both bars with their backings, the rank pip and
- * the kill tally (legacy:152277-152296, legacy:152496-152506). */
+ * `bounds` into `out`: the name label, both bars with their backings,
+ * the rank pip and the kill tally (legacy:152277-152296,
+ * legacy:152496-152506). */
 static int collect_panel_widgets(SDL_Rect bounds,
                                  HUDPanelWidget *out, int cap) {
-    static const struct { const char *name; int is_xp; int own_only; int is_kills; } kNames[] = {
-        { "UnitText",   0, 0 },
-        { "HealthBar",  0, 0 },
-        { "ManaBar",    0, 1 },
-        { "Static0",    0, 0 },   /* araingame.gui's HealthBack/ManaBack */
-        { "KillCount",  0, 1, 1 },
-        { "Experience", 1, 0 },
+    static const struct { const char *name; int is_xp; int is_bar; int is_kills; } kNames[] = {
+        { "UnitText",   0, 0, 0 },
+        { "HealthBar",  0, 1, 0 },
+        { "ManaBar",    0, 1, 0 },
+        { "Static0",    0, 1, 0 },   /* araingame.gui's HealthBack/ManaBack */
+        { "KillCount",  0, 0, 1 },
+        { "Experience", 1, 0, 0 },
     };
     int n = 0;
     if (!g_rt) return 0;
@@ -426,7 +469,7 @@ static int collect_panel_widgets(SDL_Rect bounds,
             if (tak_stricmp(w->name, kNames[k].name) != 0) continue;
             out[n].index = i;
             out[n].is_xp = kNames[k].is_xp;
-            out[n].own_only = kNames[k].own_only;
+            out[n].is_bar = kNames[k].is_bar;
             out[n].is_kills = kNames[k].is_kills;
             n++;
             break;
@@ -690,6 +733,7 @@ const char *HUD_DialogPath(void) {
 void HUD_Init(TAK_Platform *plat, GameWorld *world) {
     if (!plat || !world) return;
     hud_load_messages();
+    HUD_SetPointerInfo(-1, -1);
     /* A battle's build lists are its own: another mission bars other types. */
     g_build_list_for_def = -1;
     g_build_list_n = 0;
@@ -797,6 +841,7 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world) {
             g_portrait_px[i] = (HudPixels){ NULL, 0, 0 };
             g_portraits_def[i] = -1;
         }
+        g_portrait_missing_n = 0;
         g_assets_loaded = 1;
 
 
@@ -953,6 +998,56 @@ static const Unit *hud_selection_target(const int *sel, int count, int *handle) 
     return t;
 }
 
+void HUD_SetPointerInfo(int unit, int feature) {
+    g_ptr_unit = unit;
+    g_ptr_feature = feature;
+}
+
+/* The FBI `name` is a character's own, such as a monarch's, then the
+ * description, then the unit name. */
+static const char *hud_unit_name(const UnitDef *d) {
+    if (!d) return "";
+    return d->display_name[0] ? d->display_name :
+           d->description[0]  ? d->description  : d->unitname;
+}
+
+/* What the selected-unit panel shows: a name or none, the bar fills (0
+ * draws an empty bar), the rank shield frame or -1, the kill tally and
+ * the def whose portrait it may carry, -1 for none. */
+typedef struct HUDInfoShown {
+    const char *name;
+    float       hp, mana;
+    int         rank, kills, def_idx;
+} HUDInfoShown;
+
+static HUDInfoShown hud_info_shown(const GameWorld *world, HUDInfoPick pick) {
+    HUDInfoShown o = { NULL, 0.0f, 0.0f, -1, 0, -1 };
+    if (pick.kind == HUD_INFO_UNIT) {
+        int n = 0;
+        const Unit *units = Units_GetActive(&n);
+        if (pick.index >= n || units[pick.index].alive != UNIT_ALIVE_ACTIVE) return o;
+        const Unit *u = &units[pick.index];
+        o.name = hud_unit_name(Units_GetDef(u->def_idx));
+        o.def_idx = u->def_idx;
+        if (u->max_health > 0) o.hp = (float)u->health / (float)u->max_health;
+        /* Another side's unit shows no mana or kills (reported from play). */
+        if (u->player_id == Units_LocalPlayer()) {
+            float cur = 0.0f, max = 0.0f;
+            if (Units_GetMana(pick.index, &cur, &max) && max > 0.0f) o.mana = cur / max;
+            o.kills = u->kills;
+        }
+        o.rank = HUD_RankShieldFrame(Units_GetVeteranLevel(pick.index));
+    } else if (pick.kind == HUD_INFO_FEATURE) {
+        if (!world || pick.index >= world->feature_count) return o;
+        const FeatureDef *fd = Features_GetByIndex(world->features[pick.index].global_idx);
+        if (!fd) return o;
+        o.name = fd->description[0] ? fd->description : fd->name;
+        int hp = 0, max = 0;
+        if (Features_InstanceHealth(world, pick.index, &hp, &max)) o.hp = (float)hp / (float)max;
+    }
+    return o;
+}
+
 /* The build button under the pointer, by the rects the last frame laid
  * out, or -1. */
 static int hud_build_def_under_pointer(const TAK_Platform *plat) {
@@ -975,6 +1070,13 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
     int have_sel = (sel && sel_count > 0);
     int tgt_handle = -1;
     const Unit *tgt = hud_selection_target(sel, sel_count, &tgt_handle);
+    /* The selected-unit panel describes the pick, the rest the selection. */
+    HUDInfoShown info = hud_info_shown(world, HUD_PickInfo(g_ptr_unit, g_ptr_feature,
+                                                          sel, sel_count));
+    /* No portrait of its own leaves the panel without one, never an
+     * empty frame (reported from play). */
+    const HudPixels *portrait = info.def_idx >= 0 ? portrait_pixels_for_def(info.def_idx)
+                                                  : NULL;
 
     /* Forward mouse state to the runtime so hover frames update and
      * widget hit-testing works. The actual click dispatch happens in
@@ -1000,11 +1102,12 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
     if (g_rt) {
         static const char *kAlwaysVisible[] = {
             "UnitMenu", "BottomBar", "BottomEnd", "UnitInfoGroup",
-            "UnitInfo1", "UnitInfo2", "UnitImage", "CrystalBall",
+            "UnitInfo1", "UnitInfo2", "CrystalBall",
             "HelpText", "PositiveM", "NegativeM", NULL
         };
         for (int i = 0; kAlwaysVisible[i]; i++)
             GUIRuntime_SetWidgetVisible(g_rt, kAlwaysVisible[i], 1);
+        GUIRuntime_SetWidgetVisible(g_rt, "UnitImage", portrait != NULL);
     }
 
     /* Per-unit button visibility — hide widgets the selected unit
@@ -1016,21 +1119,19 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         /* A unit inspected from another side offers no orders. */
         int own = hud_selection_is_own();
         uint32_t caps = (seldef_cap && own) ? seldef_cap->cap_flags : 0;
-        int n_weapons = (seldef_cap && own) ? seldef_cap->num_weapons : 0;
         /* Active/Inactive are the onoffable pair, up when any selected
          * unit has the switch (legacy:150430-150436, 150930-150950). */
         int onoff = own && Units_SelectedOnOffState() >= 0;
         struct { const char *name; int show; } vis[] = {
-            { "MOVE",            (caps & UNIT_CAP_MOVE)      != 0 },
-            { "ATTACK",          own && Units_DefTakesAttack(seldef_cap) },
-            { "GUARD",           (caps & UNIT_CAP_GUARD)     != 0 },
-            { "PATROL",          (caps & UNIT_CAP_PATROL)    != 0 },
-            { "STOP",            (caps & UNIT_CAP_STOP)      != 0 },
-            { "HEAL",            (caps & UNIT_CAP_REPAIR)    != 0 },
-            { "LOAD",            ((caps & UNIT_CAP_LOAD) ||
-                                  (caps & UNIT_CAP_TRANSPORT)) != 0 },
-            { "UNLOAD",          (caps & UNIT_CAP_TRANSPORT) != 0 },
-            { "CLEAR",           (caps & UNIT_CAP_RECLAIM)   != 0 },
+            { "MOVE",            hud_mode_shown(HUD_CMD_MOVE) },
+            { "ATTACK",          hud_mode_shown(HUD_CMD_ATTACK) },
+            { "GUARD",           hud_mode_shown(HUD_CMD_GUARD) },
+            { "PATROL",          hud_mode_shown(HUD_CMD_PATROL) },
+            { "STOP",            hud_mode_shown(HUD_CMD_STOP) },
+            { "HEAL",            hud_mode_shown(HUD_CMD_HEAL) },
+            { "LOAD",            hud_mode_shown(HUD_CMD_LOAD) },
+            { "UNLOAD",          hud_mode_shown(HUD_CMD_UNLOAD) },
+            { "CLEAR",           hud_mode_shown(HUD_CMD_CLEAR) },
             { "Cloaked",         (caps & UNIT_CAP_CLOAK)     != 0 },
             { "Uncloaked",       (caps & UNIT_CAP_CLOAK)     != 0 },
             { "Active",          onoff },
@@ -1038,32 +1139,28 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             { "Offensive",       own && Units_DefHasStances(seldef_cap) },
             { "Defensive",       own && Units_DefHasStances(seldef_cap) },
             { "Passive",         own && Units_DefHasStances(seldef_cap) },
-            { "PrimaryWeapon",   (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 1 },
-            { "SecondaryWeapon", (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 2 },
-            { "SpecialWeapon",   (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 3 },
+            { "PrimaryWeapon",   hud_mode_shown(HUD_CMD_W_PRIMARY) },
+            { "SecondaryWeapon", hud_mode_shown(HUD_CMD_W_SECONDARY) },
+            { "SpecialWeapon",   hud_mode_shown(HUD_CMD_W_SET_SPEC) },
             { "BuildMenu",       (caps & UNIT_CAP_BUILDER)   != 0 },
         };
         for (size_t i = 0; i < sizeof(vis)/sizeof(vis[0]); i++) {
             GUIRuntime_SetWidgetVisible(g_rt, vis[i].name, vis[i].show);
         }
 
-        /* Unit-info panels. With no unit the legacy refresh hides the
-         * name label, both gauges with their backings, the rank pip and
-         * the kill tally, leaving the strip art up
-         * (legacy:152277-152296, legacy:152496-152506). The second panel
-         * describes the selection's TARGET (legacy:152140-152143). */
-        int sel_rank = have_sel ? HUD_RankShieldFrame(Units_GetSelectedVeteranLevel()) : -1;
-        int show_xp = sel_rank >= 0;
-        int sel_own = hud_selection_is_own();
-        /* The kill tally shows at one kill and up (legacy:152496-152506). */
-        int sel_kills = have_sel ? Units_GetSelectedKills() : 0;
+        /* Unit-info panels. With nothing to describe the name, the rank
+         * pip and the kill tally go (legacy:152277-152296, 152496-152506).
+         * The second describes the selection's TARGET (legacy:152140-152143). */
+        int show_xp = info.rank >= 0;
         int tgt_rank = (tgt && tgt_handle >= 0)
                      ? HUD_RankShieldFrame(Units_GetVeteranLevel(tgt_handle)) : -1;
         if (g_panel1_n > 0) {
             for (int i = 0; i < g_panel1_n; i++) {
-                int show = g_panel1[i].is_xp ? show_xp : have_sel;
-                if (g_panel1[i].own_only && !sel_own) show = 0;
-                if (g_panel1[i].is_kills && sel_kills <= 0) show = 0;
+                int show = info.name != NULL;
+                if (g_panel1[i].is_bar)   show = 1;
+                if (g_panel1[i].is_xp)    show = show_xp;
+                /* The kill tally shows at one kill and up (legacy:152496-152506). */
+                if (g_panel1[i].is_kills) show = info.kills > 0;
                 GUIRuntime_SetWidgetVisibleAt(g_rt, g_panel1[i].index, show);
             }
             /* The same routine refreshes both panels
@@ -1074,22 +1171,21 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             int tgt_kills = tgt ? tgt->kills : 0;
             for (int i = 0; i < g_panel2_n; i++) {
                 int show = tgt != NULL;
+                if (g_panel2[i].is_bar)           show = 1;
                 if (show && g_panel2[i].is_xp)    show = tgt_rank >= 0;
-                if (show && g_panel2[i].is_kills)  show = tgt_kills > 0;
-                if (show && g_panel2[i].own_only && !tgt_own) show = 0;
+                if (show && g_panel2[i].is_kills) show = tgt_own && tgt_kills > 0;
                 GUIRuntime_SetWidgetVisibleAt(g_rt, g_panel2[i].index, show);
             }
         } else {
             /* No panel groups in this dialog, drive the set by name. */
-            GUIRuntime_SetWidgetVisible(g_rt, "UnitText", have_sel);
-            GUIRuntime_SetWidgetVisible(g_rt, "HealthBar", have_sel);
-            GUIRuntime_SetWidgetVisible(g_rt, "ManaBar", have_sel && sel_own);
-            GUIRuntime_SetWidgetVisible(g_rt, "KillCount",
-                                        have_sel && sel_own && sel_kills > 0);
+            GUIRuntime_SetWidgetVisible(g_rt, "UnitText", info.name != NULL);
+            GUIRuntime_SetWidgetVisible(g_rt, "HealthBar", 1);
+            GUIRuntime_SetWidgetVisible(g_rt, "ManaBar", 1);
+            GUIRuntime_SetWidgetVisible(g_rt, "KillCount", info.kills > 0);
             GUIRuntime_SetWidgetVisible(g_rt, "Experience", show_xp);
         }
         if (show_xp)
-            GUIRuntime_SetFrameOverride(g_rt, "Experience", sel_rank);
+            GUIRuntime_SetFrameOverride(g_rt, "Experience", info.rank);
         /* The target's shield after, since the override above names both. */
         for (int i = 0; tgt_rank >= 0 && i < g_panel2_n; i++)
             if (g_panel2[i].is_xp)
@@ -1149,24 +1245,16 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
          * the unit, the engine refreshes label text every
          * frame from selection state (legacy:152219+). With no unit the
          * labels go empty so the authored placeholder never shows. */
-        const char *unit_name   = have_sel ? Units_GetSelectedName()   : NULL;
         const char *unit_status = NULL;
         if (have_sel) {
             const char *key = Units_GetSelectedMission();
             unit_status = key ? Translate_Find(&g_missions, key) : NULL;
             if (!unit_status) unit_status = Units_GetSelectedStatus();
         }
-        GUIRuntime_SetWidgetText(g_rt, "UnitText",
-                                  unit_name   ? unit_name   : "");
-        if (g_target_text >= 0) {
-            const char *name = "";
-            if (tgt) {
-                const UnitDef *d = Units_GetDef(tgt->def_idx);
-                name = d ? (d->display_name[0] ? d->display_name :
-                           d->description[0] ? d->description : d->unitname) : "";
-            }
-            GUIRuntime_SetWidgetTextAt(g_rt, g_target_text, name);
-        }
+        GUIRuntime_SetWidgetText(g_rt, "UnitText", info.name ? info.name : "");
+        if (g_target_text >= 0)
+            GUIRuntime_SetWidgetTextAt(g_rt, g_target_text,
+                                       tgt ? hud_unit_name(Units_GetDef(tgt->def_idx)) : "");
         /* A building that can turn says how while it is armed. */
         if (HUD_BuildHint()) unit_status = HUD_BuildHint();
         GUIRuntime_SetWidgetText(g_rt, "ActionText",
@@ -1175,9 +1263,7 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             /* The unit's own kills, for your units only and hidden at
              * zero (legacy:152496-152506). */
             char kbuf[8] = "";
-            int nk = (have_sel && hud_selection_is_own())
-                   ? Units_GetSelectedKills() : 0;
-            if (nk > 0) snprintf(kbuf, sizeof(kbuf), "%d", nk);
+            if (info.kills > 0) snprintf(kbuf, sizeof(kbuf), "%d", info.kills);
             GUIRuntime_SetWidgetText(g_rt, "KillCount", kbuf);
         }
         if (g_target_kills >= 0) {
@@ -1231,17 +1317,7 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
      * (legacy:152266, the ManaBar and HealthBar are AnimProgressBars).
      * Health from the unit, mana from the unit's own reserve. */
     {
-        int n_sel = 0;
-        const int *sel = Units_GetSelection(&n_sel);
-        float hp_frac = 1.0f, mana_frac = 0.0f;
-        if (n_sel > 0) {
-            int hp = 0, hp_max = 1;
-            Units_GetSelectedHealth(&hp, &hp_max);
-            hp_frac = (hp_max > 0) ? (float)hp / (float)hp_max : 0.0f;
-            float cur = 0.0f, max = 0.0f;
-            if (Units_GetMana(sel[0], &cur, &max) && max > 0.0f)
-                mana_frac = cur / max;
-        }
+        float hp_frac = info.hp, mana_frac = info.mana;
         g_gauge_health = hp_frac;
         g_gauge_mana   = mana_frac;
         /* The crystal ball is the player's pool: its frame is the pool
@@ -1270,7 +1346,8 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         if (tgt) {
             if (tgt->max_health > 0)
                 hp = (float)tgt->health / (float)tgt->max_health;
-            if (Units_GetMana(tgt_handle, &cur, &max) && max > 0.0f)
+            if (tgt->player_id == Units_LocalPlayer() &&
+                Units_GetMana(tgt_handle, &cur, &max) && max > 0.0f)
                 mana = cur / max;
         }
         if (g_rt) {
@@ -1362,14 +1439,9 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         }
     }
 
-    /* Selected unit overlays (portrait JPG, bars). The name and status
-     * strings ride the authored label widgets above, so nothing is
-     * drawn twice. */
-    if (have_sel) {
-        int handle = sel[0];
-        extern int g_units_get_def_idx(int handle);
-        int def_idx = g_units_get_def_idx(handle);
-
+    /* The described unit's portrait JPG. The name and status strings
+     * ride the authored label widgets above, so nothing is drawn twice. */
+    if (portrait) {
         /* Portrait into the UnitImage widget rect. We blit into the
          * UI canvas (UI_Offscreen) rather than direct-to-renderer so
          * the portrait sits in the SAME compositing layer as the
@@ -1379,10 +1451,9 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
          * the platform-present scales the entire canvas to the window. */
         if (g_rect_have_unit_image) {
             SDL_Surface *off = UI_Offscreen();
-            const HudPixels *port = portrait_pixels_for_def(def_idx);
-            if (off && port) {
+            if (off) {
                 SDL_Rect dst = g_rect_unit_image;
-                hud_blit_pixels(port, off, &dst);
+                hud_blit_pixels(portrait, off, &dst);
             }
         }
 
@@ -1778,6 +1849,45 @@ int HUD_ActionSlotCenter(int mode, int *out_x, int *out_y) {
     return 0;
 }
 
+/* One press of an action button, from a click or from its key. A
+ * disabled button takes no input (legacy:329637-329640). */
+static void hud_press_button(int mode, const char *widget_name) {
+    if ((mode == HUD_CMD_W_PRIMARY || mode == HUD_CMD_W_SECONDARY ||
+         mode == HUD_CMD_W_SET_SPEC) &&
+        hud_weapon_button_state(mode - HUD_CMD_W_PRIMARY) == 0)
+        return;
+
+    hud_play_widget_sound(widget_name);
+
+    /* Targeting modes set g_cmd_mode and wait for a world click.
+     * Pressing the same button again toggles off. */
+    if (HUD_IsTargetingMode(mode)) {
+        g_cmd_mode = (g_cmd_mode == mode) ? HUD_CMD_NONE : mode;
+        return;
+    }
+
+    /* A standing fire order also confirms itself (legacy:151700). */
+    if (mode == HUD_CMD_AGGRO_OFF || mode == HUD_CMD_AGGRO_DEF ||
+        mode == HUD_CMD_AGGRO_PAS) {
+        GameSound_PlayUI("setfireorders");
+    }
+
+    /* Immediate-action modes dispatch through the unit selection
+     * commands directly. Mirrors legacy NetPacket_Method03 which
+     * fires the order without a pending-cursor state. */
+    HUD_TriggerCommand(mode);
+}
+
+int HUD_PressOrder(int mode) {
+    if (!hud_mode_shown(mode)) return 0;
+    for (size_t i = 0; i < HUD_NUM_BUTTON_BINDINGS; i++) {
+        if (g_button_bindings[i].mode != mode) continue;
+        hud_press_button(mode, g_button_bindings[i].widget_name);
+        return 1;
+    }
+    return 0;
+}
+
 int HUD_HandleSidebarClick(int win_x, int win_y, TAK_Platform *plat) {
     return HUD_HandleSidebarClickHeld(win_x, win_y, plat,
                                       HUD_HeldKeys(SDL_GetKeyboardState(NULL)));
@@ -1816,32 +1926,7 @@ int HUD_HandleSidebarClickHeld(int win_x, int win_y, TAK_Platform *plat,
         const HUDActionSlot *s = &g_action_slots[i];
         if (win_x < s->rect.x || win_x >= s->rect.x + s->rect.w) continue;
         if (win_y < s->rect.y || win_y >= s->rect.y + s->rect.h) continue;
-
-        /* A disabled button takes no input (legacy:329637-329640). */
-        if ((s->mode == HUD_CMD_W_PRIMARY || s->mode == HUD_CMD_W_SECONDARY ||
-             s->mode == HUD_CMD_W_SET_SPEC) &&
-            hud_weapon_button_state(s->mode - HUD_CMD_W_PRIMARY) == 0)
-            return 1;
-
-        hud_play_widget_sound(s->widget_name);
-
-        /* Targeting modes set g_cmd_mode and wait for a world-click;
-         * clicking the same button again toggles off. */
-        if (HUD_IsTargetingMode(s->mode)) {
-            g_cmd_mode = (g_cmd_mode == s->mode) ? HUD_CMD_NONE : s->mode;
-            return 1;
-        }
-
-        /* A standing fire order also confirms itself (legacy:151700). */
-        if (s->mode == HUD_CMD_AGGRO_OFF || s->mode == HUD_CMD_AGGRO_DEF ||
-            s->mode == HUD_CMD_AGGRO_PAS) {
-            GameSound_PlayUI("setfireorders");
-        }
-
-        /* Immediate-action modes dispatch through the unit selection
-         * commands directly. Mirrors legacy NetPacket_Method03 which
-         * fires the order without a pending-cursor state. */
-        HUD_TriggerCommand(s->mode);
+        hud_press_button(s->mode, s->widget_name);
         return 1;
     }
     return 0;
