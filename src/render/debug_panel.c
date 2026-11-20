@@ -44,7 +44,6 @@
 #include "tak_ui.h"
 #include "tak_font.h"
 #include "tak_unit.h"
-#include "tak_tex_atlas.h"
 #include "tak_world.h"
 #include "tak_memory.h"
 #include <SDL.h>
@@ -85,8 +84,8 @@ static DebugPanelState dp;
  * adding rows. */
 static int dp_row_count(void) {
     /* TA_SCALE, TAN_TILT, Heading, FPS, BFCull-On, BFCull-Invert,
-     * LightLevel, ReloadTextures, Spawn ARA/ZON/VER/TAR, Clear. 13 total. */
-    return 13;
+     * Spawn ARA/ZON/VER/TAR, Clear. 11 total. */
+    return 11;
 }
 
 static int dp_panel_h(void) {
@@ -262,50 +261,17 @@ int DebugPanel_HandleInput(TAK_Platform *plat,
         if (point_in_rect(local_x, local_y, r.action.x, r.action.y, r.action.w, r.action.h)) {
             Units_SetBackfaceCullInvert(!Units_GetBackfaceCullInvert()); consumed = 1;
         }
-        /* Row 6: Light level (0..31). +/- button row. Note the change
-         * doesn't take effect until the next skirmish load — the
-         * shade table is applied at atlas-build time. Print the new
-         * value so the user can re-launch with stderr awareness. */
-        r = dp_row_layout(6);
-        if (point_in_rect(local_x, local_y, r.minus.x, r.minus.y, r.minus.w, r.minus.h)) {
-            int lvl = TexAtlas_GetLightLevel();
-            TexAtlas_SetLightLevel(lvl - 1);
-            fprintf(stderr, "Light level set to %d (re-load skirmish to apply)\n",
-                    TexAtlas_GetLightLevel());
-            consumed = 1;
-        } else if (point_in_rect(local_x, local_y, r.plus.x, r.plus.y, r.plus.w, r.plus.h)) {
-            int lvl = TexAtlas_GetLightLevel();
-            TexAtlas_SetLightLevel(lvl + 1);
-            fprintf(stderr, "Light level set to %d (re-load skirmish to apply)\n",
-                    TexAtlas_GetLightLevel());
-            consumed = 1;
-        }
-
-        /* Row 7: Reload textures (drops + rebuilds all atlases at the
-         * current light level, then re-bakes monarch meshes). Active
-         * units may be stale until cleared & respawned. */
-        r = dp_row_layout(7);
-        if (point_in_rect(local_x, local_y, r.action.x, r.action.y, r.action.w, r.action.h)) {
-            Units_ClearInstances();
-            Units_DropAllMeshCaches();
-            TexAtlas_Reload(plat);
-            Units_BakeMonarchMeshes();
-            fprintf(stderr, "TexAtlas reloaded at light=%d\n",
-                    TexAtlas_GetLightLevel());
-            consumed = 1;
-        }
-
-        /* Rows 8-11: Spawn buttons (ARA, ZON, VER, TAR). */
+        /* Rows 6-9: Spawn buttons (ARA, ZON, VER, TAR). */
         const char *sides[4] = { "ARA", "ZON", "VER", "TAR" };
         for (int s = 0; s < 4; s++) {
-            r = dp_row_layout(8 + s);
+            r = dp_row_layout(6 + s);
             if (point_in_rect(local_x, local_y, r.action.x, r.action.y, r.action.w, r.action.h)) {
                 spawn_at_camera_center(sides[s]); consumed = 1;
             }
         }
 
-        /* Row 12: Clear units. */
-        r = dp_row_layout(12);
+        /* Row 10: Clear units. */
+        r = dp_row_layout(10);
         if (point_in_rect(local_x, local_y, r.action.x, r.action.y, r.action.w, r.action.h)) {
             Units_ClearInstances(); consumed = 1;
         }
@@ -421,34 +387,19 @@ void DebugPanel_Draw(void) {
         draw_button(off, dp.x + r.action.x, dp.y + r.action.y,
                     r.action.w, r.action.h, btn_a, btn_b, buf);
     }
-    /* Row 6: Light level slider (-/+) */
-    {
-        RowLayout r = dp_row_layout(6);
-        snprintf(buf, sizeof(buf), "Light: %d", TexAtlas_GetLightLevel());
-        Font_DrawString(dp.font, off, dp.x + DP_PAD, dp.y + r.minus.y, buf);
-        draw_button(off, dp.x + r.minus.x, dp.y + r.minus.y, r.minus.w, r.minus.h, btn_m, btn_b, "-");
-        draw_button(off, dp.x + r.plus.x,  dp.y + r.plus.y,  r.plus.w,  r.plus.h,  btn_p, btn_b, "+");
-    }
-    /* Row 7: Reload textures */
-    {
-        RowLayout r = dp_row_layout(7);
-        draw_button(off, dp.x + r.action.x, dp.y + r.action.y,
-                    r.action.w, r.action.h,
-                    mk_rgba(off, 80, 110, 80, 255), btn_b, "Reload textures (apply Light)");
-    }
-    /* Rows 8-11: Spawn ARA/ZON/VER/TAR */
+    /* Rows 6-9: Spawn ARA/ZON/VER/TAR */
     {
         const char *labels[4] = { "Spawn ARA Monarch", "Spawn ZON Monarch",
                                    "Spawn VER Monarch", "Spawn TAR Monarch" };
         for (int s = 0; s < 4; s++) {
-            RowLayout r = dp_row_layout(8 + s);
+            RowLayout r = dp_row_layout(6 + s);
             draw_button(off, dp.x + r.action.x, dp.y + r.action.y,
                         r.action.w, r.action.h, btn_a, btn_b, labels[s]);
         }
     }
-    /* Row 12: Clear */
+    /* Row 10: Clear */
     {
-        RowLayout r = dp_row_layout(12);
+        RowLayout r = dp_row_layout(10);
         draw_button(off, dp.x + r.action.x, dp.y + r.action.y,
                     r.action.w, r.action.h,
                     mk_rgba(off, 90, 60, 60, 255), btn_b, "Clear units");

@@ -249,6 +249,18 @@ static void greyscale(uint32_t *table, uint8_t transparent) {
     Palette_BuildRGBATable(&pal, rgba_format(), table, transparent);
 }
 
+/* A model texture palette keyed as tex_atlas.c keys it, carrying its
+   magenta key as clear entries for atlas_texture_frame. */
+static void texture_table(const Palette *pal, uint32_t *table) {
+    uint8_t magenta[256];
+    for (int i = 0; i < 256; i++)
+        table[i] = SDL_MapRGBA(rgba_format(), pal->entries[i].r, pal->entries[i].g,
+                               pal->entries[i].b, 255);
+    Palette_KeyTextures(table, table, magenta);
+    for (int i = 0; i < 256; i++)
+        if (magenta[i]) table[i] = 0;
+}
+
 /* Rule 0 picks as UI_LoadGAFWithPalette, rule 1 as tex_atlas.c, with
    gameart for the map's palette. 1 when a grey ramp stood in. */
 KEEP int atlas_gaf_palette(const char *gaf_path, int rule, uint32_t *table, char *name) {
@@ -258,12 +270,19 @@ KEEP int atlas_gaf_palette(const char *gaf_path, int rule, uint32_t *table, char
         const char *alt = Palette_LookupForGAFAlt(gaf_path);
         const char *primary = Palette_LookupForGAF(gaf_path);
         const char *tries[3] = { alt, (primary && strcmp(primary, "gameart.pcx") != 0) ? primary : NULL, "gameart.pcx" };
+        Palette pal;
         for (int i = 0; i < 3; i++) {
             if (!tries[i]) continue;
             snprintf(path, sizeof(path), "data/palettes/%s", tries[i]);
-            if (load_table(path, 0, table) == 0) { snprintf(name, 128, "%s", path); return 0; }
+            if (Palette_LoadPCX(&pal, path) == 0) {
+                texture_table(&pal, table);
+                snprintf(name, 128, "%s", path);
+                return 0;
+            }
         }
-        greyscale(table, 0);
+        for (int i = 0; i < 256; i++)
+            pal.entries[i].r = pal.entries[i].g = pal.entries[i].b = (uint8_t)i;
+        texture_table(&pal, table);
         return 1;
     }
     size_t n = strlen(gaf_path);
@@ -281,8 +300,8 @@ KEEP int atlas_gaf_palette(const char *gaf_path, int rule, uint32_t *table, char
     return 1;
 }
 
-/* Through the palette's .shd at one light level, as tex_atlas.c shades
-   unit textures. -1 when it has none. */
+/* Through the palette's .shd at one light level, the row a model face
+   at that level draws in battle (tex_atlas.c). -1 when it has none. */
 KEEP int atlas_shade(const char *pcx_path, int level, uint32_t *table) {
     char path[256];
     size_t n = strlen(pcx_path);
@@ -296,7 +315,9 @@ KEEP int atlas_shade(const char *pcx_path, int level, uint32_t *table) {
     uint32_t base[256];
     memcpy(base, table, sizeof(base));
     const uint8_t *row = (const uint8_t *)data + level * 256;
-    for (int i = 0; i < 256; i++) table[i] = base[row[i]];
+    /* Each index keeps its own alpha: the key is decided before the row. */
+    for (int i = 0; i < 256; i++)
+        table[i] = (base[row[i]] & 0x00FFFFFFu) | (base[i] & 0xFF000000u);
     tak_free(data);
     return 0;
 }
@@ -381,6 +402,31 @@ KEEP uint32_t *atlas_gaf_frame(const uint8_t *data, uint32_t size, int entry, in
     else
         px = table ? GAF_DecodeFrameRGBA(&g, h, table) : NULL;
     if (px) { g_last_w = h->width; g_last_h = h->height; g_last_x = h->offset_x; g_last_y = h->offset_y; }
+    return px;
+}
+
+/* A model texture frame through a rule 1 table: magenta is the only key,
+   as in tex_atlas.c, and the frame's own key draws. */
+KEEP uint32_t *atlas_texture_frame(const uint8_t *data, uint32_t size, int entry, int frame,
+                                   const uint32_t *table) {
+    g_last_w = g_last_h = 0;
+    uint32_t eoff = entry_offset(data, size, entry);
+    if (!eoff || !table) return NULL;
+    GAFFile g = { (uint8_t *)data, size, rd32(data + 4) };
+    const FrameHeader *h = frame_at(&g, eoff, frame);
+    if (!h || h->compressed == TAF_FORMAT_4444 || h->compressed == TAF_FORMAT_1555) return NULL;
+    uint8_t *idx = GAF_DecodeFrame(&g, h);
+    if (!idx) return NULL;
+    const size_t n = (size_t)h->width * h->height;
+    uint32_t *px = (uint32_t *)tak_malloc(n * sizeof(uint32_t));
+    if (px) {
+        uint8_t magenta[256];
+        for (int i = 0; i < 256; i++) magenta[i] = (table[i] >> 24) == 0;
+        for (size_t k = 0; k < n; k++)
+            px[k] = Palette_KeyTexel(idx[k], magenta) == PALETTE_TEXEL_CLEAR ? 0u : table[idx[k]];
+        g_last_w = h->width; g_last_h = h->height; g_last_x = h->offset_x; g_last_y = h->offset_y;
+    }
+    tak_free(idx);
     return px;
 }
 

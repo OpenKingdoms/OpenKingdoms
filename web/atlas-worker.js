@@ -228,7 +228,12 @@ function gafFrame(key, path, ei, frame, spec) {
   var h = load(key, path);
   if (!h) return null;
   var pal = palette(spec.file ? spec : { rule: spec.rule | 0, gaf: path, shade: spec.shade }, key);
-  var px = withTable(pal.table, function (t) { return M._atlas_gaf_frame(h.ptr, h.n, ei, frame, t); });
+  var texture = !spec.file && (spec.rule | 0) === 1;
+  var px = withTable(pal.table, function (t) {
+    // A true-colour frame has no palette key, so it decodes as any other.
+    return (texture && M._atlas_texture_frame(h.ptr, h.n, ei, frame, t)) ||
+           M._atlas_gaf_frame(h.ptr, h.n, ei, frame, t);
+  });
   if (!px) return null;
   var w = M._atlas_last_w(), hh = M._atlas_last_h();
   var rgba = heap().slice(px, px + w * hh * 4);

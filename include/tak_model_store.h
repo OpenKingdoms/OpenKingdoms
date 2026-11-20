@@ -7,9 +7,9 @@
  * models3d, preferred when one is there, and the shipped 3DO through
  * the unit renderer's bake. Both produce the same UnitMesh.
  *
- * Only the 3D view asks. The classic view bakes the 3DO by its own
- * path and never comes here, so nothing in this file can change a
- * classic frame.
+ * Only the 3D view asks for a model. The classic view bakes the 3DO by
+ * its own path and reads only ModelStore_FlatNodes here, for the build
+ * sparkle ring's box.
  */
 #ifndef TAK_MODEL_STORE_H
 #define TAK_MODEL_STORE_H

@@ -46,6 +46,14 @@ int GAF_FindSequence(GAFFile *gaf, const char *name);
 
 int GAF_GetFrameInfo(GAFFile *gaf, uint32_t entry_offset, int frame_index, FrameHeader **out);
 
+/* The original's frames a picture holds: the second word of its frame
+ * table entry (legacy:255142-255152). 0 when the table is cut short. */
+int GAF_FrameHold(const GAFFile *gaf, uint32_t entry_offset, int frame_index);
+
+/* The picture a looping sequence shows `frame` original frames in, each
+ * holding its own count and at least one (legacy:255756-255795). */
+int GAF_LoopPicture(const uint16_t *hold, int count, uint32_t frame);
+
 uint8_t *GAF_DecodeFrame(GAFFile *gaf, const FrameHeader *frame);
 
 uint32_t *GAF_DecodeFrameRGBA(GAFFile *gaf, const FrameHeader *frame, const uint32_t *rgba_table);

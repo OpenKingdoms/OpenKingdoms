@@ -73,10 +73,33 @@ void GPU_SetTextureFilter(GPU_Texture *tex, int linear) {
         linear ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
 }
 
-void GPU_SetTextureBlend(GPU_Texture *tex, int blend) {
+static SDL_BlendMode sdl_blend(GPU_Blend blend) {
+    switch (blend) {
+    case GPU_BLEND_ALPHA: return SDL_BLENDMODE_BLEND;
+    case GPU_BLEND_ADD:   return SDL_BLENDMODE_ADD;
+    default:              return SDL_BLENDMODE_NONE;
+    }
+}
+
+void GPU_SetTextureBlend(GPU_Texture *tex, GPU_Blend blend) {
     if (!tex || !tex->tex) return;
-    SDL_SetTextureBlendMode(tex->tex,
-        blend ? SDL_BLENDMODE_BLEND : SDL_BLENDMODE_NONE);
+    SDL_SetTextureBlendMode(tex->tex, sdl_blend(blend));
+}
+
+void GPU_SetTextureMod(GPU_Texture *tex, uint8_t r, uint8_t g, uint8_t b,
+                       uint8_t a) {
+    if (!tex || !tex->tex) return;
+    SDL_SetTextureColorMod(tex->tex, r, g, b);
+    SDL_SetTextureAlphaMod(tex->tex, a);
+}
+
+GPU_Blend GPU_SetDrawBlend(TAK_Platform *plat, GPU_Blend blend) {
+    if (!plat || !plat->renderer) return GPU_BLEND_NONE;
+    SDL_BlendMode was = SDL_BLENDMODE_NONE;
+    SDL_GetRenderDrawBlendMode(plat->renderer, &was);
+    SDL_SetRenderDrawBlendMode(plat->renderer, sdl_blend(blend));
+    return was == SDL_BLENDMODE_ADD   ? GPU_BLEND_ADD
+         : was == SDL_BLENDMODE_BLEND ? GPU_BLEND_ALPHA : GPU_BLEND_NONE;
 }
 
 int GPU_DrawGeometryRaw(TAK_Platform *plat, const GPU_Texture *tex,
