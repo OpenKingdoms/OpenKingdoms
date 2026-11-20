@@ -67,9 +67,8 @@ ticks. `build8` fills all eight starts and `build1` leaves six closed,
 so the two runs compare directly. Seat one is a human who never acts in
 both, because a skirmish with no human standing is over on the first
 tick, and that rule belongs to the end screen and not to the probe. The
-suite case `eight_ai_seats_each_build_an_army` plays build8 for 6 sim
-minutes, and `TAK_PROBE_TICKS` lengthens it for a measurement without
-changing what the suite costs.
+soak `eight_ai_seats_each_build_an_army`, run with `TAK_SOAK=1`, plays
+build8 for 6 sim minutes, and `TAK_PROBE_TICKS` lengthens it.
 
 ### Eight seats on a bigger map
 
