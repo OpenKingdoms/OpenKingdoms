@@ -4040,20 +4040,6 @@ static void unit_alarm_on_damage(const Unit *victim, int shooter_handle) {
     unit_alarm_on_damage_impl(victim, shooter_handle);
 }
 
-const char *Units_GetSelectedName(void) {
-    if (g_selection_count == 0) return NULL;
-    int h = g_selection[0];
-    if (h < 0 || h >= g_unit_count || g_units[h].alive < 1) return NULL;
-    const UnitDef *d = Units_GetDef(g_units[h].def_idx);
-    if (!d) return NULL;
-    /* FBI's `name` field is the character's display name ("Elsin",
-     * "Lokken", "Kirenna", "Thirsha" for monarchs). Fall through
-     * to description (faction tag) then unitname as a last resort. */
-    if (d->display_name[0]) return d->display_name;
-    if (d->description[0])  return d->description;
-    return d->unitname;
-}
-
 /* A unit's mission: the key the original shows it by, from
  * english/translate/unitmissions.tdf, and that file's English text for
  * when the table is missing. The order is the original's reading of a
@@ -4147,13 +4133,6 @@ uint32_t Units_PlayersWithUnits(void) {
     return mask;
 }
 
-int Units_GetSelectedKills(void) {
-    if (g_selection_count == 0) return 0;
-    int h = g_selection[0];
-    if (h < 0 || h >= g_unit_count || g_units[h].alive < 1) return 0;
-    return g_units[h].kills;
-}
-
 int Units_GetSelectedCargoCount(void) {
     if (g_selection_count == 0) return 0;
     int h = g_selection[0];
@@ -4195,11 +4174,6 @@ void Units_DebugSetVeteranLevel(int handle, int level) {
     if (!d || d->kill_xp_value <= 0) return;
     if (level < 0) level = 0;
     u->experience_pts = level * d->kill_xp_value;
-}
-
-int Units_GetSelectedVeteranLevel(void) {
-    if (g_selection_count <= 0) return 0;
-    return Units_GetVeteranLevel(g_selection[0]);
 }
 
 static int unit_terrain_walkable(const GameWorld *w, const UnitDef *def,

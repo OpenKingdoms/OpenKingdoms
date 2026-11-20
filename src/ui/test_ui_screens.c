@@ -11430,6 +11430,8 @@ TEST(hud_idle_frames_selection_and_queue_badges) {
 
     /* ── Idle ───────────────────────────────────────────────────── */
     Units_SelectSingle(-1);
+    /* The pointer rests on the bottom strip, over no unit or feature. */
+    InGame_DebugMouse(1, 300, 470, 0);
     timer.accumulator = 0.0;                 /* draw only, no sim step */
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
 
@@ -11439,10 +11441,11 @@ TEST(hud_idle_frames_selection_and_queue_badges) {
     ASSERT_EQ_INT(0, HUD_WidgetHidden("BottomEnd"));
     ASSERT_EQ_INT(0, HUD_WidgetHidden("CrystalBall"));
 
-    /* Per-unit widgets go down, every copy of each name. */
+    /* Per-unit widgets go down, every copy of each name. The bars stay
+     * up, empty, as their backings do in the original. */
     ASSERT_EQ_INT(1, HUD_WidgetHidden("UnitText"));
-    ASSERT_EQ_INT(1, HUD_WidgetHidden("HealthBar"));
-    ASSERT_EQ_INT(1, HUD_WidgetHidden("ManaBar"));
+    ASSERT_EQ_INT(0, HUD_WidgetHidden("HealthBar"));
+    ASSERT_EQ_INT(0, HUD_WidgetHidden("ManaBar"));
     ASSERT_EQ_INT(1, HUD_WidgetHidden("Experience"));
     ASSERT_EQ_INT(1, HUD_WidgetHidden("KillCount"));
 
@@ -11583,6 +11586,7 @@ TEST(hud_idle_frames_selection_and_queue_badges) {
         ASSERT(changed > 0);
     }
 
+    InGame_DebugMouse(0, 0, 0, 0);
     InGame_Shutdown();
     Loading_Shutdown();
     World_End(&platform);
@@ -21254,10 +21258,11 @@ TEST(enemy_unit_shows_in_the_sidebar) {
     timer.accumulator = timer.sim_dt;
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
     ASSERT_EQ_INT(0, HUD_BuildSlotCount());
-    /* A foreign unit's panel is its name and health only: no mana
-     * gauge, no build menu (reported from play, like the original). */
+    /* A foreign unit's panel is its name and health only: its mana
+     * gauge stays empty and it has no build menu (reported from play,
+     * like the original). */
     ASSERT_EQ_INT(1, HUD_WidgetVisible("HealthBar"));
-    ASSERT_EQ_INT(0, HUD_WidgetVisible("ManaBar"));
+    ASSERT_EQ_INT(1, HUD_WidgetVisible("ManaBar"));
     ASSERT_EQ_INT(0, HUD_WidgetVisible("BuildMenu"));
 
     Units_SelectSingle(-1);
