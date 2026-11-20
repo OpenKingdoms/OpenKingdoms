@@ -4,119 +4,103 @@ Running log of intentional departures from the gameplay rules in
 `Total_Annihilation_Kingdoms_Manual.pdf`. The default is faithful. A
 deviation needs a recorded reason.
 
-Format per entry:
-- Change
+Format per entry, in a few lines. Measurements and history go in the
+pull request, not here.
+- Change: what departs from the original, and the switch that turns it
+  off when there is one
 - Why
-- Manual citation (page, section)
+- Citation: legacy anchors, the manual (page, section), behaviour
+  notes, source files and tests
 
 ---
 
 ## D-001: 60 Hz simulation tick (vs TAK's 30 Hz)
 
-- Change: Game simulation runs at 60 Hz fixed instead of 30 Hz.
-- Why: Smoother animation on modern displays. Future-proof for
-  lockstep multiplayer at higher tick rate. Real-time gameplay is
-  unaffected because TAK speeds are stored as units/second (divided
-  by tick rate per tick). Doubling tick rate halves per-tick delta
-  but applies it twice as often. A SLEEP of n milliseconds lasts
-  30n/1000 of the original's frames, rounded down, at two ticks a
-  frame. A sleep shorter than one frame still lasts one. The thread
-  runs again on the last of those ticks.
-- Citation: Manual is silent on tick rate (player-facing rules
-  describe wall-clock seconds via Game Speed slider, §I).
+- Change: The simulation runs at a fixed 60 Hz instead of 30 Hz, so each
+  tick applies half the original's per frame step. A SLEEP of n
+  milliseconds lasts 30n/1000 of the original's frames, rounded down and
+  at least one, at two ticks a frame, and the thread runs again on the
+  last of those ticks.
+- Why: Smoother animation on modern displays, with room for lockstep at
+  a higher rate. Speeds are units a second, so real time play is
+  unchanged.
+- Citation: The manual is silent on tick rate. Its rules describe wall
+  clock seconds through the Game Speed slider (§I).
 
 ## D-002: Unit limit of 2000 per player
 
-- Change: The per-player unit cap ranges 200 to 2000 with a default
-  of 2000 (TAK_UNITS_PER_SIDE_MIN/MAX/DEFAULT in
+- Change: The per-player unit cap ranges 200 to 2000 with a default of
+  2000 (TAK_UNITS_PER_SIDE_MIN/MAX/DEFAULT in
   `include/tak_battle_config.h`).
-- Why: The original's cap of 500 came from 1999 memory and CPU
-  limits. Large late-game armies are part of the appeal.
+- Why: The original's cap of 500 came from 1999 memory and CPU limits.
+  Large late-game armies are part of the appeal.
 - Citation: The original's setup screen slider ran 20 to 500 (the
   "maxunits" summary field).
 
 ## C-001: Frustum culling
 
-- Change: Off-screen units skip vertex transform and submit.
-- Why: Performance. Modern viewports are larger. Without culling
-  a 16k×16k map with hundreds of deployed units submits work for
-  every unit even when 90%+ are off-camera.
-- Citation: Manual implies all-on-screen rendering ("you have to
-  explore it with your units to reveal the battlefield" §IV.2 Battle
-  Map). No gameplay impact. Fog of war and visibility are
-  player-facing, and culling is internal.
+- Change: Units off screen skip vertex transform and submit.
+- Why: Performance on larger modern viewports, where a big map would
+  otherwise submit work for every unit however few are on camera. Fog of
+  war and visibility are player facing and unchanged.
+- Citation: Manual §IV.2 Battle Map ("you have to explore it with your
+  units to reveal the battlefield") implies all on screen rendering.
 
 ## C-002: Modern resolution support
 
-- Change: Render at native window resolution, no upper limit. The
-  manual specifies 640×480 minimum and warns higher resolutions are
-  costly. The default Original scale matches the original at any size
-  from 640x480 up: one game pixel to one screen pixel, the sidebar
-  panel in the bottom right corner, the minimap at the top of the
-  sidebar column, and the bottom strip from the left edge to the
-  sidebar with its unit panels centred. The Resolution slider on the
-  Visual page lists the display's sizes where the original listed its
-  video modes, plus Fit, which stretches the 640x480 battle screen over
-  the window. In fullscreen a size below the desktop's is a real mode
-  change, as the original made. In a browser the page is the screen,
-  so the slider's sizes are the page at one to four screen pixels per
-  game pixel, and the default is the page's devicePixelRatio rounded
-  to a whole number, so the HUD keeps its size on a scaled display. A
-  new install starts on Original. An options file from before the
-  setting keeps Fit, so nobody's view changes under them. On Windows
-  the window is sized in real pixels under Original, which takes
-  effect from the next start after a switch from Fit, and the Visual
-  page says so.
-- Why: 1999 hardware concerns are moot. Unit visibility is the
-  same regardless of resolution.
-- Citation: Manual §I.6 ("Make sure the Resolution slider is set
-  to 640x480 in the Visual settings of Game Options. Higher
-  resolutions require considerably more system resources.").
+- Change: The game renders at the window's native resolution with no
+  upper limit. The default Original scale draws one game pixel to one
+  screen pixel at any size from 640x480 up, with the sidebar, minimap
+  and bottom strip placed as the original places them. The Resolution
+  slider on the Visual page lists the display's sizes plus Fit, which
+  stretches the 640x480 battle screen over the window, and in fullscreen
+  a size below the desktop's is a real mode change, as in the original.
+  In a browser the sizes are one to four screen pixels per game pixel,
+  by default the page's devicePixelRatio rounded. A new install starts
+  on Original, an options file from before the setting keeps Fit, and on
+  Windows a switch from Fit to Original takes effect from the next
+  start.
+- Why: The 1999 hardware concerns are moot and unit visibility is the
+  same at any resolution.
+- Citation: Manual §I.6 ("Make sure the Resolution slider is set to
+  640x480 in the Visual settings of Game Options. Higher resolutions
+  require considerably more system resources.").
 
 ## R-001: Hardware-accelerated rendering
 
-- Change: The scene is drawn through the GPU (SDL2, textured
-  triangles) instead of the original's software 8-bit palettised
-  rasteriser, at any window size.
-- Why: Modern displays and drivers. No 8-bit modes exist any more.
-  The projection, draw order, lighting tables and palette effects
-  reproduce the original's output.
+- Change: The scene is drawn through the GPU (SDL2, textured triangles)
+  instead of the original's software 8-bit palettised rasteriser, at any
+  window size.
+- Why: Modern displays and drivers have no 8-bit modes any more. The
+  projection, draw order, lighting tables and palette effects reproduce
+  the original's output.
 - Citation: Manual §I.6 on resolution and video settings.
 
 ## N-001 (planned): Deterministic lockstep multiplayer
 
-- Change: Networking is deterministic lockstep over a relay server
-  that owns the turn clock, carried on one WebSocket to every client,
-  browser and native alike, instead of the original's peer
-  authoritative DirectPlay sessions. Only player commands cross the
-  wire. The relay holds no simulation and no game state.
-- Why: DirectPlay is gone, does not traverse NAT, and cannot run in a
-  browser. Lockstep also gives replays and a server that holds no game
-  data. A star relay reaches every home network with no port
-  forwarding, where the original needed a link between every pair of
-  players, which is 28 links at eight.
-- Also a non goal: playing against people running the original game on
-  GameRanger. The original's compatibility id is a checksum of the
-  running executable file, so a different program cannot present a
-  matching one, and a mixed game could not be lockstep in any case
-  because original peers never send orders and never wait for a turn.
+- Change: Networking is deterministic lockstep over a relay server that
+  owns the turn clock, one WebSocket to every client, browser and native
+  alike, instead of the original's peer authoritative DirectPlay
+  sessions. Only player commands cross the wire, and the relay holds no
+  simulation and no game state. Playing against the original on
+  GameRanger is not a goal.
+- Why: DirectPlay is gone, does not traverse NAT and cannot run in a
+  browser, and a star relay reaches every home network with no port
+  forwarding. A mixed game could not be lockstep, since the original's
+  peers never send orders or wait for a turn.
 - Citation: Manual section on multiplayer setup (DirectPlay/TCP-IP
-  options).
-- Status: In progress. Design in `docs/MULTIPLAYER.md`.
+  options). Design in `docs/MULTIPLAYER.md`.
 
 ## N-002 (planned): The host role moves when the host leaves
 
-- Change: If the host leaves the battle room, the room stays and the
-  occupied human seat with the lowest seat number becomes host. The
-  same rule applies in game. The room closes only when no human seat
-  is left. The server decides and broadcasts it, so no two clients can
-  disagree about who is host.
-- Why: The original ended the lobby outright, rejecting everyone else
-  with a message saying the creator had left, which loses a room full
-  of people to one person's dropped connection. In game it handed the
-  flag to the human with the highest network id, which two machines
-  could resolve differently when a computer player held the highest
-  id.
+- Change: If the host leaves the battle room or the game, the occupied
+  human seat with the lowest seat number becomes host, and the room
+  closes only when no human seat is left. The server decides and
+  broadcasts it, so no two clients disagree about who is host.
+- Why: The original ended the lobby when its creator left, losing a room
+  full of people to one dropped connection, and in game handed the flag
+  to the human with the highest network id, which two machines could
+  resolve differently when a computer player held it.
 - Citation: Manual section on the multiplayer battle room, which
   describes the host's controls but not what happens when the host
   leaves.
@@ -124,29 +108,25 @@ Format per entry:
 ## N-003 (planned): Computer players outlive whoever added them
 
 - Change: A computer player added to an empty seat stays in the game
-  when the person who added it leaves. The host sets its side, colour
-  and team, where the original left them to the machine that added it.
-- Why: In the original a computer player was a network player owned by
-  one machine, so it left with its owner. Under lockstep every client
-  simulates every seat from the same seed, so ownership of a computer
-  seat is not a thing that exists. Removing an army mid battle because
-  an unrelated player's connection dropped changes the game for
-  everyone still in it.
+  when the player who added it leaves, and the host sets its side,
+  colour and team, where the original left them to the machine that
+  added it.
+- Why: In the original a computer player belonged to one machine and
+  left with it. Under lockstep every client simulates every seat from
+  the same seed, so no machine owns a computer seat, and an unrelated
+  dropped connection should not remove an army.
 - Citation: Manual section on adding computer players in a multiplayer
   game.
 
 ## N-004 (planned): Pause and game speed are server pacing
 
-- Change: Pause and the speed level are not simulation state. The
-  server produces turns faster, slower or not at all, and no client
-  applies either to its own simulation. They never enter the state
-  hash.
+- Change: Pause and the speed level are not simulation state. The server
+  produces turns faster, slower or not at all, no client applies either
+  to its own simulation, and neither enters the state hash.
 - Why: The original already computed its tick count as elapsed time
-  multiplied by the speed level (legacy:242330-242421), so this is the
-  same idea moved to the one place that owns time. Keeping speed and
-  pause out of the simulation means two clients that disagree about the
-  speed setting cannot diverge, only run at different rates, and a
-  paused game is a server that stopped closing turns.
+  times the speed level (legacy:242330-242421), and this moves that to
+  the one place that owns time, so clients that disagree about speed run
+  at different rates without diverging.
 - Citation: Manual section I on the Game Speed slider.
 
 ## N-005 (planned): Alliance and sharing changes reach everyone
@@ -154,11 +134,9 @@ Format per entry:
 - Change: An alliance offer, an alliance break and the three sharing
   toggles are commands in the turn stream, applied on the same tick by
   every client, so every player learns of them.
-- Why: The original told only the affected player. Lockstep cannot
-  allow that, because a rule that changes the simulation has to be
-  applied identically everywhere. It also removes a real ambiguity in
-  the original, where two players could believe different things about
-  who was allied with whom.
+- Why: The original told only the affected player, but lockstep must
+  apply a rule that changes the simulation identically everywhere, and
+  it ends the original's ambiguity about who was allied with whom.
 - Citation: Manual section on the Diplomacy screen.
 
 ## N-006 (planned): Game passwords are checked by the server
@@ -167,299 +145,198 @@ Format per entry:
   constant time, and a wrong password is refused before any room state
   is sent.
 - Why: The original compared a 16 bit hash inside the joining player's
-  own client (legacy:193511-193597), and created the underlying session
-  with no password at all, so the check was advisory. A modified client
-  walked straight in. Server side is the only place the check means
-  anything.
+  own client (legacy:193511-193597) and gave the session itself no
+  password, so a modified client walked straight in.
 - Citation: Manual section on hosting a game, which describes the
   password field on the host screen.
 
 ## N-007 (planned): Ready clears when the map or an option changes
 
-- Change: When the host changes the map, a rule option or the unit
-  cap, every player's Ready is cleared and has to be given again.
-- Why: The original already cleared your own Ready whenever you edited
-  your own row (legacy:135767-135790), so the idea that a change
-  invalidates readiness is the original's. It did not extend it to the
-  host's changes, which let a host swap the map under eight ready
-  players and start a game nobody agreed to.
+- Change: When the host changes the map, a rule option or the unit cap,
+  every player's Ready is cleared and has to be given again.
+- Why: The original cleared your own Ready when you edited your own row
+  (legacy:135767-135790) but not on the host's changes, which let a host
+  swap the map under eight ready players.
 - Citation: Manual section on the multiplayer battle room and the Go
   indicator.
 
 ## N-008 (planned): Spectators sit outside the eight seats
 
-- Change: A watcher does not occupy one of the eight seats. A room
-  holds up to eight players and up to eight watchers. A defeated
-  player may stay and watch without holding a seat.
-- Why: In the original every participant, human, computer or watcher,
-  was a network player and shared the cap of eight (legacy:192826,
-  legacy:268685), so a couple of onlookers cost two players their
-  places. Our seats are simulation slots and a watcher has none, so the
-  limit has nothing to enforce. The host may still refuse watchers, as
-  in the original.
+- Change: A watcher does not occupy one of the eight seats. A room holds
+  up to eight players and up to eight watchers, a defeated player may
+  stay and watch without a seat, and the host may still refuse watchers,
+  as in the original.
+- Why: In the original every participant, watchers included, was a
+  network player under the cap of eight (legacy:192826, legacy:268685),
+  so onlookers cost players their places. Our seats are simulation slots
+  and a watcher has none.
 - Citation: Manual section on multiplayer setup, which counts up to
   eight players in a game.
 
 ## N-009: The Boneyards button reaches the server this build came from
 
-- Change: The Select Game screen keeps the original's two ways in, a
-  button and an address to type, but the button connects to wherever
-  this build came from rather than to Boneyards. In a browser that is
-  the page's own origin. A desktop build has nothing to guess from, so
-  the button says so and the player types an address.
-- Why: Boneyards was Cavedog's own lobby service and it is gone. The
-  closest honest reading of that button is the server the player
-  already reached, which in a browser is the page they are looking at.
-  It also means no address is written down in this repository, which is
-  deliberate: a host name in the source is a deployment detail that
-  outlives the deployment.
-- Also changed, and on purpose: a game this build cannot join is listed
-  and marked rather than dropped from the list. The original hid a
-  mismatched session without a word, which left a player with no way to
-  know why a friend's game was invisible. The row stays and the reason
-  is shown when it is clicked.
+- Change: The Select Game screen keeps the original's button and typed
+  address, but the button connects to wherever this build came from, the
+  page's own origin in a browser, rather than to Boneyards. A desktop
+  build has nothing to guess from, so the button says so and the player
+  types an address. A game this build cannot join is listed and marked,
+  with the reason shown when it is clicked, where the original hid a
+  mismatched session.
+- Why: Boneyards was Cavedog's own lobby service and it is gone, and the
+  closest honest reading of the button is the server the player already
+  reached. No host name is written in the source, where it would outlive
+  the deployment.
 - Citation: Manual section on multiplayer setup, which describes
   connecting through Boneyards or by address.
 
 ## N-010: Co-op against the computer, with drop in seats
 
-- Change: A room hosted by this build lets players drop in. The host
+- Change: A room hosted by this build lets players drop in, and the host
   may fill the empty seats with computer players and start alone. A
-  player who joins the match later takes over a computer seat in the
-  running game. Their client builds the world as it was at turn 0,
-  replays the turn log, and once it has caught up the relay puts a seat
-  takeover into the next turn, so every machine hands the seat to them
-  on the same tick and the computer stops ordering that army from then
-  on. A player who leaves a seat the computer began in, or who leaves
-  while a human of their team plays on, hands the army to the computer,
-  and that seat is open to the next player who drops in. Anyone else who
-  leaves loses the army as in the original, so a versus game that a
-  player walks out of ends, and the one who stayed is recorded as the
-  winner.
-- Why: The original would not start a network game with one human in
-  it, and a seat was fixed once the game began. A friend who arrived
-  late had to wait for the next game. In lockstep a seat is a
+  player who joins the running match replays the turn log from turn 0
+  and then takes over a computer seat at a turn the relay sets, on the
+  same tick on every machine. A player who leaves a seat the computer
+  began in, or leaves while a human teammate plays on, hands the army to
+  the computer and opens the seat to the next player. Anyone else who
+  leaves loses the army as in the original, so a versus game a player
+  walks out of ends with the one who stayed recorded as the winner. A
+  room of an older host, or one whose host did not ask for drop in,
+  keeps its seats shut once the match is under way.
+- Why: The original would not start a network game with one human in it
+  and fixed every seat once the game began. In lockstep a seat is a
   simulation slot, and who drives it can change at a turn boundary on
-  every machine at once, so there is no reason to turn them away.
-- Also changed, and on purpose: a room of an older host, or one whose
-  host did not ask for drop in, keeps its seats shut once the match is
-  under way, exactly as before.
-- Citation: Manual section on multiplayer setup, which asks for a
-  second human before a game can start. Issue #292. The army that goes
-  on a leave is the original's drop, which tells everyone the player
-  left or was defeated and frees the slot
-  (docs/notes/2026-09-04-multiplayer-hapinet.md, legacy:194242).
+  every machine at once.
+- Citation: Manual section on multiplayer setup, which asks for a second
+  human before a game can start. Issue #292. The army lost on a leave is
+  the original's drop (docs/notes/2026-09-04-multiplayer-hapinet.md,
+  legacy:194242).
 
 ## D-003: Raising the dead always works at full supply
 
 - Change: A resurrection or animation takes one frame's work per frame
-  regardless of the player's mana. The original scales each frame's
-  work by the player's economy supply fraction, the same figure that
-  slows a starved build (legacy:13087, legacy:39469).
-- Why: The economy has no such per-player figure yet. Raising charges
-  nothing in the original, so the only effect is that a starved player
-  raises at full speed. Revisit when the supply fraction lands.
-- Citation: Manual is silent. Behaviour note
-  `docs/notes/2026-09-10-corpses-and-raising.md`.
+  whatever the player's mana, where the original scales each frame's
+  work by the player's economy supply fraction, the figure that slows a
+  starved build (legacy:13087, legacy:39469).
+- Why: The economy has no such per player figure yet, and raising
+  charges nothing in the original, so the only effect is that a starved
+  player raises at full speed. Revisit when the supply fraction lands.
+- Citation: The manual is silent. Behaviour note
+  `docs/notes/features.md`.
 
 ## D-004: No underwater corpse sink
 
 - Change: A corpse that lands below sea level is placed like any other
-  and rots on the normal schedule. The original sinks it straight away
-  (legacy:227440-227450).
-- Why: There is no water rendering or water gameplay yet. Bodies in
-  water are rare on land maps and the branch can land with water.
-- Citation: Manual is silent. Behaviour note
-  `docs/notes/2026-09-10-corpses-and-raising.md`.
+  and rots on the normal schedule, where the original sinks it straight
+  away (legacy:227440-227450).
+- Why: There is no water rendering or water gameplay yet, and bodies in
+  water are rare on land maps. The sink can land with water.
+- Citation: The manual is silent. Behaviour note
+  `docs/notes/features.md`.
 
 ## M-001: Route following near obstacles
 
 - Change: With something held in a neighbouring cell, a route point
-  counts as passed once the unit is within 16 px of it. The original
-  passes it only when the unit stands on it, within a few pixels
-  (legacy:191282-191284).
-- Why: The original plans on 16 px cells and its route points are the
-  exact unit origin for a cell. Our planner works on 32 px cells, so
-  requiring the unit to land on the point would have it turn back for
-  points it has effectively passed. Away from obstacles the original's
-  own 32 px radius and cross track rules apply unchanged
+  counts as passed once the unit is within 16 px of it, where the
+  original passes it only when the unit stands on it, within a few
+  pixels (legacy:191282-191284). Away from obstacles the original's
+  32 px radius and cross track rules apply unchanged
   (legacy:184729-184791).
-- Citation: `docs/notes/2026-09-10-unit-steering.md`. The manual is
-  silent on route following.
+- Why: The original's route points are exact unit origins on 16 px
+  cells. Ours plans on 32 px cells, so landing on the point would turn a
+  unit back for points it has effectively passed.
+- Citation: `docs/notes/pathing.md`. The manual is silent on route
+  following.
 
 ## M-002: Replan timing when a unit is in the way
 
 - Change: A unit pinned against a parked unit (M-003) plans a new route
-  once it has made no headway for 10 frames. The original searches
-  again on every hard blocked frame (legacy:191290, legacy:191387).
-  Behind a unit still on the move it waits two seconds plus a small
-  fixed per unit offset first. A route that makes no progress toward
-  its target for 2.5 seconds is dropped and planned again. Without a
-  hard block the original replans after a randomised delay scaled by
-  the unit's speed class (legacy:191300-191360) or at random after 120
-  frames (legacy:191375-191385).
-- Why: The plan ignores units on the move, so searching again behind
-  one returns the same route and the wait saves the work. One search
-  after 10 frames without headway finds the same way around a parked
-  unit that a search every frame would. A fixed delay keeps the
-  lockstep simulation free of an extra random draw per blocked unit,
-  and the owner asked that no unit ever sit stuck for good against a
-  wall or a crowd. The stall watchdog is the guarantee for routes the
-  original would have followed into a pocket.
-- Citation: `docs/notes/2026-09-10-unit-steering.md`.
+  after 10 frames without headway, and behind a unit still on the move
+  it first waits two seconds plus a small fixed per unit offset. A route
+  that makes no progress toward its target for 2.5 seconds is dropped
+  and planned again. The original searches again on every hard blocked
+  frame (legacy:191290, legacy:191387), and without a hard block replans
+  after a randomised delay scaled by the unit's speed class
+  (legacy:191300-191360) or at random after 120 frames
+  (legacy:191375-191385).
+- Why: The plan ignores units on the move, so searching again behind one
+  returns the same route, and a fixed delay keeps the lockstep
+  simulation free of an extra random draw per blocked unit. No unit
+  should sit stuck for good against a wall or a crowd, and the stall
+  watchdog covers routes the original would have followed into a pocket.
+- Citation: `docs/notes/pathing.md`.
 
 ## M-003: Units that hold their cells become planning obstacles
 
-- Change: A ground unit that has held its cells for 10 frames, or for
-  as long as a cell takes at three quarters of its top speed if that is
+- Change: A ground unit that has held its cells for 10 frames, or for as
+  long as a cell takes at three quarters of its top speed if that is
   longer (at most a second), is tagged in the occupancy layer, idle or
-  held up in a jam alike, and other units plan around it. The original
-  folds any unit into its search grid at 10 frames with a slowed rim,
-  closes it outright at 150 frames (legacy:188900-188960,
-  legacy:187765-187880), and checks units far from the searcher live,
-  letting through one that keeps three quarters of the searcher's top
-  speed (legacy:21986-22032, legacy:184497-184510). One rule stands in
-  for all of that here.
-- Why: The plan is a yes or no answer per cell. Judging the pace by the
-  time spent on a cell keeps a unit that walks across it out of the
-  plan, and a jam has to be visible to the next search, or a column
-  behind a stuck unit plans the same route into it again and again.
-- Citation: `docs/notes/2026-09-10-unit-steering.md`,
-  `docs/notes/2026-09-10-clearance-grid.md`.
+  jammed alike, and other units plan around it. The original folds any
+  unit into its search grid at 10 frames with a slowed rim, closes it at
+  150 frames (legacy:188900-188960, legacy:187765-187880), and checks
+  far units live, letting through one that keeps three quarters of the
+  searcher's top speed (legacy:21986-22032, legacy:184497-184510).
+- Why: Our plan is a yes or no answer per cell, so one rule stands in
+  for all of that, and a jam has to be visible to the next search or a
+  column behind a stuck unit plans into it again and again.
+- Citation: `docs/notes/pathing.md`.
 
 ## M-004: Clearance grid instead of per cell placement checks
 
-- Change: The planner keeps a clearance map, per move class, giving the
-  largest square footprint that fits at every tile, and a unit plans
-  only through cells whose clearance covers its own footprint. The
-  original runs its footprint placement check per cell during the
-  search (legacy:187701-187930 over legacy:219074-219179).
+- Change: The planner keeps a clearance map per move class, the largest
+  square footprint that fits at every 16 px tile, and plans a unit only
+  through cells whose clearance covers its footprint, where the original
+  runs its footprint placement check per cell during the search
+  (legacy:187701-187930 over legacy:219074-219179). A 32 px cell holds
+  four tile aligned placements of a footprint, each swept as the
+  original sweeps one (legacy:219089-219131), and is open when any is
+  legal. A step between cells must slide the footprint one tile from a
+  legal placement to a legal placement, so a route is a chain of
+  placements and is laid along them. A unit whose body fits no placement
+  of its cell, or can reach none in a line, is walked out to one first,
+  as is a unit whose first leg the step would refuse or whose search
+  runs out within 64 cells in a pocket, and a tile of a walk out in a
+  cell with no legal placement costs half of PATH_PINCH_COST. A body
+  crossing a tile corner must also pass the bodies either side of it,
+  which is our own rule.
 - Why: The same answer for a shipped unit, computed once per map change
-  instead of per search node, and the base the hierarchical search,
-  flow fields and local avoidance in the design note would sit on.
-- Accuracy: Both structures are built from one map of ground the class
-  can cross, one answer per 16 pixel tile. A path cell is 32 pixels and
-  holds two tiles per axis, so a tile aligned footprint has two anchors
-  per axis whose centre falls inside one cell: four placements, and the
-  planner takes the cell when any of them is legal. The bitmap holds a
-  bit per placement, swept over the tile map the way the original
-  sweeps a placement (legacy:219089-219131), and the clearance map
-  takes the largest free square of the same tile map, asked at each
-  placement in turn. A test asserts the two answer alike for every cell
-  of a shipped map with nothing built on it, and the Castle scan
-  reports zero disagreements for every shipped move class. This entry
-  used to say the clearance map was the stricter of the two, which was
-  true and was a defect: the bitmap sampled footprint corners that
-  reached a tile past the footprint, so a two tile class was asked for
-  three tiles of ground and a monarch was refused a route from ground
-  his own clearance called wide enough.
-  The long route estimate of M-008 measures over the same bitmap. A
-  cell with any placement open is still every cell a live search may
-  enter and more, so the estimate stays under the live distance.
-- Links: a cell with any placement open is not by that alone a cell a
-  route may enter from any neighbour. Two neighbours can each hold a
-  placement with no placement that fits in between, and a unit routed
-  through them walks to the gap and stops with a route still in hand,
-  which is what the first version of this change did on Two Castles. A
-  step between two cells is a slide of the footprint by one tile from
-  a legal placement in the one to a legal placement in the other, along
-  either of the two lanes for a step along an axis, and for a diagonal
-  with the two placements it passes beside legal as well. A cell's
-  placements count only while they hang together, so a route of cells
-  is always a chain of placements each one tile from the last. The
-  masks are remembered for the length of one plan, which is also why
-  the planner got faster rather than slower: the bench's forty plans
-  fell from 127 ms to 90 ms warm and from 266 ms to 221 ms cold.
-- Waypoints: the route is laid along the placements the links slid
-  between, so a point the mover walks to is a point the footprint fits,
-  the tiles it stamps there are the tiles the planner tested, and the
-  line between two points that are kept runs over placements that were
-  each found legal. A compressed route keeps a point where that chain
-  turns and the last. The first point is kept when the line past it,
-  from where the route begins, would take the body off ground it may
-  stand on or cut a corner the step will not. It is kept too when the
-  step would not walk the unit along that line from where it really
-  stands: its body onto more bad ground than it stands on, at a corner
-  or not, or its centre into water it may not enter. Structures under
-  the unit's real body are still judged from the placement's body line,
-  so a unit off its placement can still meet the corner of a building
-  and slide. The same holds for every first leg judged from the unit, a
-  walk out's and a field route's included: that test is of ground and
-  water, not of what is built. The step tests buildings on the tiles it
-  stamps, anchored on its position less half the body, up to a tile from
-  the rounded anchor its ground test uses. Uncompressed routes, which
-  only tests ask for, keep a point a cell and are not judged leg by leg.
-  A route whose first leg the step would refuse from where the unit
-  stands is planned again as a trapped start. A unit whose body fits no
-  placement of its own cell, or whose body, wholly on its ground, can
-  reach none of them in a line without meeting bad ground, a building or
-  a corner, is walked out first, body by body by the step's own rule, to
-  the bodies that are a legal placement, and the route begins with that
-  walk at its turns. Its first steps are judged by the step's own test
-  from where the unit stands. After them its centre meets no water it
-  may not enter at any pixel, the body never takes on more bad ground
-  than it stands on, beside a diagonal too, in the order the step meets
-  the tiles, and what is built is crossed only while the body already
-  stands on some, as the mover allows. A walk out whose first leg the
-  step would still refuse is no route. These checks hold for the route
-  as the planner lays it. The mover passes a first point within 32 px,
-  or 16 px beside an obstacle (M-001), without walking to it, and where
-  the line from the unit to the next point is one the step refuses, the
-  unit is refused, slides, or drops its route and plans again. A tile of
-  a walk out in a cell with no legal placement costs a cell's worth of
-  detour, half of
-  PATH_PINCH_COST, as the crossings of 32 pixel cells it replaced did,
-  and the cell it starts the search from adds its half of bad ground, as
-  any step into that cell does. Those crossings took a cell with one
-  walkable tile as ground to cross, beside the last one or not, and
-  routed a 2 by 2 unit in the corner of a one tile ridge straight
-  through it. A unit in a pocket of a few cells that ground or buildings
-  shut in is walked out the same way when its search runs out within 64
-  cells, to placements outside the pocket. Where the body cannot get
-  out, neither can the walk, and there is no route. The step tests the
-  whole body, as the original's does. A body crossing a
-  tile corner must pass the bodies either side of it too, which is the
-  engine's own rule: the original's for corners is not established. The
-  original anchors its own sweep on the unit's position rounded to the
-  tile grid (legacy:184166-184186), so it has no 32 pixel cell to be in
-  step with. This entry used to record a parity artefact here: a
-  footprint was judged at one placement per cell, so a band of walkable
-  ground one cell wide was ground at one parity against the cell grid
-  and no ground at all at the other, however wide it was. Enumerating
-  the placements removed it.
-- Citation: `docs/notes/2026-09-10-clearance-grid.md`,
-  `docs/notes/2026-11-15-a-route-out-of-a-trapped-start.md`.
-
----
+  instead of per search node, and the base for the hierarchical search,
+  flow fields and local avoidance in the design note. A cell open by one
+  placement is not open from every neighbour, so steps are judged
+  placement to placement and every point the mover walks to is one the
+  footprint fits. The original anchors its sweep on the unit's position
+  rounded to the tile grid (legacy:184166-184186), so it has no 32 px
+  cell to keep in step with, and its rule for corners is not
+  established.
+- Citation: `docs/notes/pathing.md`. A test asserts the passability
+  bitmap and the clearance map answer alike for every cell of a shipped
+  map with nothing built on it.
 
 ## M-005: Melee reach counts to the body
 
 - Change: A melee weapon also reaches a walker whose tiles touch the
-  attacker's, whatever the centre distance. Otherwise reach stays the
-  original's centre distance to a mobile target (legacy:235291). A
-  route toward a unit ends on that unit's own cell even when it is
-  parked there.
-- Why: Walkers hold their cells here (M-003), and the tiles snap to a
-  16 px grid, so two units in contact stand 17 to 47 px apart centre
-  to centre. With centre distance a 30 px sword could stand against
-  an enemy and never strike, and a route shifted off the parked
-  target's cell stopped the attacker one cell short.
+  attacker's, whatever the centre distance, and otherwise keeps the
+  original's centre distance to a mobile target (legacy:235291). A route
+  toward a unit ends on that unit's own cell even when it is parked
+  there.
+- Why: Walkers hold their cells here (M-003) on a 16 px grid, so two
+  units in contact stand 17 to 47 px apart centre to centre, and by
+  centre distance a 30 px sword could stand against an enemy and never
+  strike.
 - Citation: `src/ui/test_ui_screens.c`,
   `swordsman_strikes_an_enemy_standing_beside_it`.
 
 ## A-001: AI base defence recall
 
 - Change: When an enemy hits anything within 1280 px of an AI player's
-  start, every combat unit of that AI within 1536 px of the start is
-  ordered at the attacker (an attack order when the AI can see it, a
-  march to where the shots came from when it cannot) until ten seconds
-  pass without a hit. An idle unit at home does the same for an allied
-  base, a human teammate's included. Waves further out keep going.
+  start, every combat unit of that AI within 1536 px of the start goes
+  at the attacker, attacking it when the AI can see it and marching to
+  where the shots came from when it cannot, until ten seconds pass
+  without a hit. An idle unit at home does the same for an allied base,
+  a human teammate's included, and waves further out keep going.
 - Why: The original has no recall. Its home units engage what enters
-  their engagement radius, so a raid on a lodestone at the edge of the
-  base can go unanswered while the army is away. Players reported AIs
-  that never reacted. The original's rule that a hit on the monarch holds
-  its own construction for 1 to 31 seconds (legacy:15092) is kept
+  their engagement radius, so a raid at the edge of the base can go
+  unanswered while the army is away. Its rule that a hit on the monarch
+  holds its own construction for 1 to 31 seconds (legacy:15092) is kept
   alongside.
 - Citation: The manual describes no AI defence rule. Behaviour note
   `docs/notes/2026-09-04-legacy-ai.md`, "Hits on an AI".
@@ -467,722 +344,397 @@ Format per entry:
 ## A-002: AI influence maps tilt the target and call the defence
 
 - Change: Each AI keeps a coarse grid, one cell per 256 px, of its own
-  and allied combat value and assets, of the enemy combat value and
-  assets it can see, and of sacred sites and lodestones. The original's
-  target scorer (legacy:15365) is multiplied by a quarter to four times
-  by how weak and valuable the enemy is in the candidate's cell. A cell
-  where seen enemy strength outweighs the AI's presence and something
-  of the AI's stands is treated like a hit on the base: the home units
-  are sent at the first seen enemy in it before a shot lands. A mover
-  with no weapons that builds nothing, a scout or a transport, is not
-  something of the AI's in this sense, so one passing over enemies calls
-  nobody out.
-- Why: The original scores by distance and chance alone and only reacts
-  once a unit is hit. Reading strength and value over the map lets the
-  AI go for exposed lodestones instead of a fortified front and meet a
-  massing army at its own expansion. Per-unit values keep the original's
-  formula (legacy:19803). The grid is the same summed threat the
-  original computes on demand within a radius (legacy:20857), binned.
+  and allied combat value and assets, the enemy's it can see, and sacred
+  sites and lodestones. The original's target score (legacy:15365) is
+  multiplied by a quarter to four times by how weak and valuable the
+  enemy is in the candidate's cell. A cell where seen enemy strength
+  outweighs the AI's presence and something of the AI's stands, other
+  than an unarmed mover that builds nothing, sends the home units at the
+  first seen enemy in it, as a hit on the base would.
+- Why: The original scores by distance and chance alone and reacts only
+  once a unit is hit. Per unit values keep its formula (legacy:19803),
+  and the grid is its summed threat within a radius (legacy:20857),
+  binned.
 - Citation: The manual describes no AI rule for either. Behaviour note
   `docs/notes/2026-09-04-legacy-ai.md`, "Target choice".
 
 ## A-003: AI builds and attacks by goal planning
 
-- Change: Each AI tick reads an abstract state (mana and its cap,
-  income against spend, lodestones, factories, idle builders, army at
-  home and away, threat and exposure off the influence maps, free
-  sacred sites, a known wave target) and scores five goals: hold a
-  lodestone count, defend home, keep an army sized to the threat,
-  secure a nearby site, kill the weakest enemy. Actions (build a
-  lodestone, a factory, a tower, train a unit, hold, send a wave) carry
-  preconditions and effects, and a depth-three search finds the
-  cheapest sequence for the top goal. Its first step is what the idle
-  builder, factory or army does this tick. A walking builder fighting on
-  its own account counts as idle and the build replaces its chase, while
-  an attack the AI itself ordered stands. Costs are mana cost scaled by
-  the profile weight and the profile limits cap the counts, so the sides
-  keep their character. Which unit a factory trains is still the
-  original's weighted draw.
-- Why: The original walks a fixed order (a mana building only under
-  pressure, otherwise whatever the weighted draw returns) and never
-  looks at the map. A threatened AI now raises a tower or holds its
-  army before it expands. The original's cues and gates are kept: a
-  mana building at under 30 percent mana or a stall, one at a time
-  (legacy:19859), no structure pick while the pool covers less than 70
-  percent of what the frames already standing ask for (legacy:17201,
-  :235975), and no training under 7/30 of that same measure
-  (legacy:17991). A lodestone is planned only for a pad that can take
-  it now.
+- Change: Each AI tick reads an abstract state (mana and its cap, income
+  against spend, lodestones, factories, idle builders, army at home and
+  away, threat and exposure off the influence maps, free sacred sites, a
+  known wave target) and scores five goals: hold a lodestone count,
+  defend home, keep an army sized to the threat, secure a nearby site,
+  kill the weakest enemy. The goal planner of A-007 finds the cheapest
+  sequence of actions for the top goal, costs being mana scaled by the
+  profile weight and counts capped by the profile limits, and its first
+  step is what the idle builder, factory or army does this tick. A
+  walking builder fighting on its own account counts as idle, a
+  lodestone is planned only for a pad that can take it now, and a
+  factory still trains by the original's weighted draw.
+- Why: The original walks a fixed order and never looks at the map. Its
+  gates are kept: a mana building under 30 percent mana or in a stall,
+  one at a time (legacy:19859), no structure while the pool covers less
+  than 70 percent of what standing frames ask for (legacy:17201,
+  legacy:235975), and no training under 7/30 of that measure
+  (legacy:17991).
 - Citation: The manual describes no AI build rule. Behaviour note
-  `docs/notes/2026-09-04-legacy-ai.md`, "Build decision" and the gap
-  list.
+  `docs/notes/2026-09-04-legacy-ai.md`, "Build decision".
 
 ## A-004: AI passes by a site with no route and remembers a failed one
 
-- Change: Before it orders a build the AI asks the pathfinder for a way
-  from the builder to the site, as the original does (legacy:17327). The
-  original checks the one site its random placement gave it and builds
-  nothing that pass when there is no way. Our placement falls back on a
-  fixed ring (A-014), so a site with no route is passed by and the search
-  goes on, for up to twelve route checks in all, and a spot within 48 px
-  of one that just failed is passed by without a check. A seat also keeps up to sixteen
-  sites for a minute each: the site of a build order its builder's mover
-  gave up on, and a sacred pad its builder had no way to. Nothing is
-  sited within 128 px of one, and a remembered pad is not counted as
-  free.
+- Change: The AI asks the pathfinder for a way from the builder to a
+  site before it orders a build, as the original does (legacy:17327),
+  but where the original then builds nothing that pass, ours passes the
+  site by and goes on round its fallback ring (A-014), up to twelve
+  route checks, skipping any spot within 48 px of one that just failed.
+  A seat also remembers up to sixteen sites for a minute each, the site
+  of a build its builder's mover gave up on and a sacred pad its builder
+  had no way to. Nothing is sited within 128 px of one, and a remembered
+  pad is not counted as free.
 - Why: A fixed ring offers the same first site every pass, so without
-  the memory a builder is sent back to the spot it just failed at, and
+  the memory a builder goes back to the spot it just failed at, and
   without going on round the ring a builder beside a wall never builds.
 - Citation: The manual describes no AI placement rule. Behaviour note
-  `docs/notes/2026-09-04-legacy-ai.md`, "Placement" and the gap list.
+  `docs/notes/2026-09-04-legacy-ai.md`, "Placement".
 
 ## A-005: AI waves go only where the army can walk
 
-- Change: Before the wave pick takes a candidate that beats the running
-  best, it asks whether any of the seat's walkers stands on ground that
-  reaches it, one walker per movement class and up to four classes.
-  Only a candidate one of them can reach raises the best, so an enemy
-  no walker can walk to never becomes the pick. The march then leaves
-  behind each walker whose own ground does not reach the target. With
-  nothing reachable the seat keeps the best of the rest, sends what
-  flies at it and leaves every walker where it is.
-- Why: The original asks the pathfinder the same before it takes a
-  target (legacy:15473) and again before a group marches (legacy:18385),
-  and skips the question for a unit with no ground locomotion. Ours had
-  dropped it, so an AI on an island committed its army to the mainland
-  and the units ground at the shoreline for the rest of the match (issue
-  #232). Two things about the answer are ours. The original runs a
-  search per candidate, which it can afford because it asks once for the
-  group it is scoring for, while we ask once for a seat over every enemy
-  alive, so ours reads a label off the connected ground of the movement
-  class instead (`TAK_PathGroundConnected`). That label is terrain
-  alone, so an enemy walled in behind its own buildings still counts as
-  reachable and the march settles the last few cells, where the
-  original's search would have refused it. And keeping the unreachable
-  best for the flyers is ours, because we hold one wave target per seat
-  where the original holds one per group, and a flying group in the
-  original asks its own question and is told yes. A seat's classes do
-  not share ground, so asking one walker for all of them held a whole
-  army back over the one unit that could not cross: on Lake Lokken the
-  map is one landmass for a two or three tile footprint and four
-  quarters for a four tile one.
+- Change: The wave pick takes a candidate only when a walker of the
+  seat, one per movement class and up to four classes, stands on ground
+  that reaches it, read off a label of the class's connected ground
+  (`TAK_PathGroundConnected`). The label is terrain alone, so an enemy
+  walled in by its own buildings still counts as reachable and the march
+  settles the last few cells. The march leaves behind each walker whose
+  ground does not reach the target, and with nothing reachable the seat
+  keeps the best of the rest, sends its flyers at it and leaves every
+  walker where it is.
+- Why: The original asks the pathfinder before it takes a target
+  (legacy:15473) and before a group marches (legacy:18385), a search per
+  candidate for one group, where we ask once for a seat over every enemy
+  alive. It holds one target per group, and its flying group asks for
+  itself and is told yes.
 - Citation: The manual describes no AI targeting rule. Behaviour note
-  `docs/notes/2026-09-04-legacy-ai.md`, "Target choice" and "Water and
-  transports".
+  `docs/notes/2026-09-04-legacy-ai.md`, "Target choice" and
+  "Water and transports". Issue #232.
 
 ## A-006: An attack goal decomposed into scout, mass, strike and hold
 
-- Change: The goal planner decides the seat is attacking, and a
-  tactical layer decides what the wave does about it. Every tick the
-  seat reads one wave state off the unit list and the fog, which is a
-  known target, whether it can be seen, whether a member is already out
-  on a march, how many mobile combat units the seat fields and how
-  many of those stand idle at the staging point, which is home. A wave
-  waits for a third of what the seat fields, at least one and never
-  more than eight. At strength it strikes, and every waiting member is
-  sent on the same tick, so a wave arrives as one instead of unit by
-  unit. Short of strength with the target unseen and no member of the
-  seat already marching, the waiting member nearest the target goes to
-  look and the rest keep waiting. A gathering of one never sends its
-  only member, and one march at a time holds the next scout back. A wave
-  that never reaches strength goes anyway every thirty seconds, so a
-  seat whose production has stopped still presses. A member away from
-  the staging point is never called back and goes on with the wave.
-- Why: Our AI dispatched each combat unit the moment it fell idle, one
-  at a time at one wave target, which fed a defended base a unit at a
-  time. The original does not do that: spare ground units are collected
-  into an attack group with a launch threshold, and a group whose
-  member count is at or below that threshold disbands rather than
-  attacking (legacy:16187 forms the group and ratchets its thresholds
-  on what the seat owns, legacy:18250 launches or disbands it). The
-  launch count here is that ratchet in one line, and the thirty second
-  cadence stands in for the original's reschedule of a group with no
-  target. The scout is ours. The original has no scout at all and
-  instead lets an idle raid group wander to a random map edge
-  (legacy:18632), which reveals ground by accident rather than the
-  target the wave is about to walk into.
+- Change: A tactical layer runs the wave the goal planner calls for, off
+  one wave state read every tick from the unit list and the fog. A wave
+  waits at home for a third of what the seat fields, at least one and at
+  most eight, and at strength every waiting member is sent on the same
+  tick. Short of strength, with the target unseen and no member out, the
+  member nearest the target goes to look, never a gathering's only
+  member and one march at a time. A wave that never reaches strength
+  goes anyway every thirty seconds, and a member away from home goes on
+  with it.
+- Why: A wave sent unit by unit feeds a defended base a unit at a time.
+  The original collects spare ground units into a group that launches at
+  a threshold and disbands at or below it (legacy:16187 forms the group
+  and ratchets its thresholds on what the seat owns, legacy:18250
+  launches or disbands it). The launch count is that ratchet in one
+  line, and the thirty seconds stand in for its reschedule of a group
+  with no target. The scout is ours, where the original lets an idle
+  raid group wander to a random map edge (legacy:18632).
 - Citation: The manual describes no AI wave rule. Behaviour note
-  `docs/notes/2026-09-04-legacy-ai.md`, "Attack waves" and the gap
-  list.
-
+  `docs/notes/2026-09-04-legacy-ai.md`, "Attack waves".
 
 ## A-007: The AI plans with a goal planner and a task network, and its army weighs strength
 
-- Change: The two planning layers are engines now and the AI's
-  behaviour is data in them. `src/game/ai_goap.c` is goal oriented
-  action planning: actions with conditions and effects, goals as
-  conditions wanted of the world, and a best first search on cost that
-  gives the cheapest plan of up to five steps, the same one on every
-  machine. `src/game/ai_tasknet.c` is a hierarchical task network:
-  compound tasks with ordered methods, primitive tasks with conditions
-  and effects, taken apart depth first with backtracking, so a method
-  that fits where it stands and strands a later task is dropped for the
-  next. The strategy of A-003 is a domain in the first
-  (`src/game/ai_plan.c`) and the wave of A-006 a domain in the second
-  (`src/game/ai_htn.c`). Three things the seat does are new with them.
-  A seat that cannot reach the whole of its economy goal this plan
-  takes the plan that ends nearest to it, where it used to find no plan
-  and spend the builder on something else. An army weighs strength
-  before it strikes: at strength in numbers it goes only when it is a
-  fifth stronger than what it can see around the target, out of
-  patience it goes on less so long as it is not outnumbered two to one,
-  and every ninety seconds it goes whatever waits. What it saw there is
-  believed for a minute after the fog closes. Members in the field
-  facing more than twice their own strength are ordered home, fighting or
-  not. And a gathering held back by strength sends two of its fastest
-  at the softest enemy building it can see, the one worth most over
-  what defends it, while the rest keep gathering.
-- Why: Issue #60 asks for planning rather than reaction, and the owner
-  asked for an AI that holds up against what players expect of one now.
-  The old solver was a depth three search written into a switch and the
-  old wave layer four lines of conditions, so neither could grow. On the
-  old code the new cases measure a starved seat two lodestones short
-  with one builder building a factory, four members walking into a
-  garrison of nine, and three members caught by six left to die. The
-  original has none of the three behaviours. Its group launches on a
-  randomised fraction of its intended size and asks nothing about what
-  it is walking into (legacy:16187, legacy:18250), it ejects a member
-  below three quarters of its hit points from the group rather than
-  calling a losing group back (legacy:18364), and its raid groups march
-  to a random map edge (legacy:18632). Its expansion does weigh threat,
-  skipping a site where the enemies within 50 times 3 exceed what it
-  allows (legacy:16503), and the strength test here is that idea
-  applied to the wave. The long wait stands in for the original's mass
-  attack countdown (legacy:18880-18895), which forces everything out
-  when it elapses.
+- Change: The two planning layers are engines with the AI's behaviour as
+  data: goal oriented action planning in `src/game/ai_goap.c`, a best
+  first search on cost for the cheapest plan of up to five steps, and a
+  hierarchical task network in `src/game/ai_tasknet.c`, taken apart
+  depth first with backtracking. The strategy of A-003 is a domain in
+  the first (`src/game/ai_plan.c`) and the wave of A-006 a domain in the
+  second (`src/game/ai_htn.c`). A seat that cannot reach its whole
+  economy goal takes the plan that ends nearest to it. An army strikes
+  at strength in numbers only when it is a fifth stronger than what it
+  sees round the target, out of patience on less unless it is
+  outnumbered two to one, and every ninety seconds whatever waits,
+  believing what it saw for a minute after the fog closes. Members in
+  the field facing more than twice their strength are ordered home, and
+  a gathering held back by strength sends two of its fastest at the
+  softest enemy building it can see.
+- Why: Issue #60 asks for planning rather than reaction. The original's
+  group launches on a randomised fraction of its size and asks nothing
+  about what it walks into (legacy:16187, legacy:18250), ejects a member
+  under a third to a fifth of its hit points rather than recalling a
+  losing group (legacy:18364), and marches raid groups to a random map edge
+  (legacy:18632). Its expansion weighs threat (legacy:16503), and the
+  strength test applies that to the wave. The long wait stands in for
+  its mass attack countdown (legacy:18880-18895).
 - Citation: The manual describes no AI rule at this level. Behaviour
-  note `docs/notes/2026-09-04-legacy-ai.md`, "Attack waves" and the gap
-  list.
+  note `docs/notes/2026-09-04-legacy-ai.md`, "Attack waves".
 
 ## A-008: The AI does not expand under the enemy's feet
 
 - Change: A sacred site where the seat can see more enemy strength than
-  it has of its own is passed by for the next one, and is not counted
-  as a free site while that lasts. Strength is read off the influence
-  maps of A-002 at the site, both sides spread alike.
-- Why: The seat sent its builder to the nearest free pad whoever was
-  standing on it. The original weighs a site before it goes: it counts
-  the enemies near it, and takes the site only while three times that
-  count is within what the caller allows (legacy:16680-16686). Ours
-  compares strength rather than counting heads because the maps are
-  what the seat already keeps, and a count of heads would call one
-  dragon and one swordsman the same threat.
+  its own, read off the influence maps of A-002, is passed by for the
+  next one and not counted as free while that lasts.
+- Why: The original counts the enemies near a site and takes it only
+  while three times that count is within what the caller allows
+  (legacy:16680-16686). Ours weighs strength, which the seat already
+  keeps, because a count would call one dragon and one swordsman the
+  same threat.
 - Citation: The manual describes no AI expansion rule. Behaviour note
   `docs/notes/2026-09-04-legacy-ai.md`, "Attack waves", the spare
   builders paragraph.
 
 ## A-009: The AI's fighters go out in numbered groups, and its towers face the threat
 
-- Change: A seat's spare fighters, the ones idle at home, in no group
-  and fit to fight, gather into a numbered group, up to four groups a
-  seat, odd from 21 for an attack group and odd from 51 for a raid. A
-  group goes out under the target the seat held when it went and keeps
-  it while it lives, so two groups out at once can be at two places,
-  and the next spare fighters form the next group while the first is
-  still out. Each group in the field is asked for itself whether it
-  breaks off (A-007). A member under its hit points over three, four or
-  five, drawn each time, is dropped from its group and comes home. A
-  group down to a third of what it went out with is spent, and what is
-  left of it comes home to be gathered again. A member whose distance
-  squared from its group's mean position is at least the member count
-  times 200000, or 500000 for a raid, leaves the group and comes home,
-  the furthest first, until the group is that tight. One pass in ten,
-  the spare fighters at home all go to the nearest attack group out in
-  the field that has fewer members than it went out with, rather than
-  forming the next group. A raid (A-007) is a raid group of its own. A walking builder that is badly hurt with the enemy
-  about drops its build and makes for a point near home. And a tower
-  goes up between home and what threatens it, no further out than 384
-  px, and at least 160 px from a tower the seat already has.
-- Why: The original gathers spare ground units into numbered groups
-  with their own launch threshold, target and mode, and disbands one
-  whose members are at or below its threshold (legacy:16187,
-  legacy:18250). It ejects a member whose hit points are under its
-  maximum over `rand(3) + 3` (legacy:18364). Its builder think opens
-  with the retreat: under a quarter of its hit points, under an eighth
-  when it carries a weapon it can pay for, either doubled when its own
-  mana is half gone, and only with enemy firepower near, it drops its
-  order and goes to a random point within 320 of the brain's centre
-  (legacy:17205-17231, legacy:17458). It keeps a group together by
-  returning its furthest member to the parent group while that member's
-  distance squared from the mean is at least the member count times the
-  group's radius, 200000 for an attack group and 500000 for the raid
-  band (legacy:15845-15927, legacy:18285, legacy:19426, legacy:19450).
-  And one strategy pass in ten it gives the spare units to the nearest
-  group under the strength it asked for instead of opening a new one
-  (legacy:16083-16120, legacy:16335-16346). All of these are ports.
-  What differs is small: our launch count is the third of what the seat
-  fields from A-006 rather than a draw on the group's size, the point
-  near home is drawn in a square rather than a disc, a straggler is
-  ordered home where the original's sits in the parent group, and the
-  reinforcing pass covers attack groups only, since the special units
-  the original sends to a support group are raiders here. The tower
-  rule is ours. The
-  original keeps a list of its own defences and a query for the ones
-  within a range of a point (legacy:20985), and nothing in it calls the
-  query, so its towers go where any structure goes, thirty random
-  polar attempts round the base (legacy:20311). Ours went in the first
-  ring round the builder, which put one behind the monarch with the
-  enemy in front of him.
+- Change: A seat's spare fighters, idle at home, in no group and fit to
+  fight, gather into numbered groups, up to four a seat, odd from 21 for
+  an attack group and odd from 51 for a raid (A-007). A group keeps the
+  target the seat held when it went out, so two groups can be at two
+  places, and each is asked for itself whether it breaks off (A-007). A
+  member whose hit points fall under its maximum over `rand(3) + 3`,
+  drawn each time, leaves the group and comes home (legacy:18364), and a
+  group down to a third of what it went out with is spent and comes
+  home. While a member's distance squared from its group's mean is at
+  least the member count times 200000, or 500000 for a raid, the
+  furthest comes home (legacy:15845-15927, legacy:18285, legacy:19426,
+  legacy:19450). One pass in ten the spare fighters join the nearest
+  attack group below the count it went out with (legacy:16083-16120,
+  legacy:16335-16346). A walking builder under a quarter of its hit
+  points, or an eighth when it carries a weapon it can pay for, either
+  doubled when its mana is half gone, drops its build with enemy
+  firepower near and makes for a point near home (legacy:17205-17231,
+  legacy:17458). A tower goes up between home and what threatens it, at
+  most 384 px out and at least 160 px from the seat's other towers.
+- Why: The groups are ports of the original's (legacy:16187,
+  legacy:18250), except that ours launch on the third of A-006 rather
+  than a draw on the group's size, draw the point near home in a square
+  rather than within 320 of the centre, send a straggler home rather
+  than to the parent group, and reinforce attack groups only, the
+  original's support group units being raiders here. The tower rule is
+  ours, since nothing in the original calls its query for defences near
+  a point (legacy:20985) and its towers go where any structure goes
+  (legacy:20311).
 - Citation: The manual describes no AI rule at this level. Behaviour
-  note `docs/notes/2026-09-04-legacy-ai.md`, "Groups", "Unit / factory
-  / builder think" and "Attack waves".
+  note `docs/notes/2026-09-04-legacy-ai.md`, "Groups",
+  "Unit, factory and builder think" and "Attack waves".
+
 ## A-010: A squad on the march keeps in step
 
-- Change: a member of an attack group that is out (A-009), more than
-  480 px from the target, that is nearer it than the group's mean by
-  more than 256 px stands until the rest are within 128 px of that, so
-  the fast do not arrive alone. Within 480 px every member goes on at
-  the target, as the original's do. The math is in
-  `src/game/ai_squad.c`, and it is the tactic bit
-  `TAK_AI_TACTIC_SQUAD`, so the duel can measure it alone.
-- Why: the original sends a group's members at the target and nothing
-  else, apart from ejecting the straggler (A-009). Issue #60 asked for
-  potential fields so squads keep formation. This entry also sent the
-  computer's archers to firing positions round the side of the target
-  away from its guards. That went on 2026-09-29: the original's
-  computer never did it, and it kept the computer's archers out of
-  reach of a player's melee.
-- Citation: the manual describes no AI rule at this level. Issue #60.
+- Change: A member of an attack group out in the field (A-009), more
+  than 480 px from the target and nearer it than the group's mean by
+  more than 256 px, stands until the rest are within 128 px of that, and
+  within 480 px every member goes on at the target as the original's do.
+  It is the tactic bit `TAK_AI_TACTIC_SQUAD`.
+- Why: Issue #60 asks for potential fields so squads keep formation, and
+  the original sends a group's members at the target with nothing more
+  than ejecting the straggler (A-009).
+- Citation: The manual describes no AI rule at this level. Issue #60.
+  The math is in `src/game/ai_squad.c`.
 
 ## A-011: Under the remastered rules the computer sweeps the rubble its units are stuck at and steps out of fire
 
-- Change: with the remastered battlefield rules on (D-036) a computer
-  seat does two things the classic computer has no reason to. Rubble
-  that blocks until swept, lying within 128 px of one of the seat's
-  units that has an order and whose route failed or whose stall ladder
-  has begun, is swept by an idle builder that can sweep, the nearest
-  piece to each builder and one builder to each piece. It is a row of
-  the goal planner, the sweep, under a goal of its own, clearing the
-  way, ranked at 80, below a threat at home and a stalled economy and
-  above building an army, attacking and expanding. And every unit of the
-  seat that can walk asks its footing before anything else, a task
-  network of its own: when a burning feature's centre is within 32 px of
-  the unit's model, the reach its burn hurts by, the unit walks to a
-  point clear of every fire, trying eight ways at steps of 24 px out to
-  six steps. Each way weighs four for every fire it passes, one for
-  every step and one for every 24 px it gives up toward where the unit
-  is bound, the unit it attacks, its order's point or else home, and
-  the lightest is taken, unless the unit is already walking somewhere
-  clear. With the rules off
-  neither happens and the classic computer plays as before. The tactic
-  bits `TAK_AI_TACTIC_SWEEP` and `TAK_AI_TACTIC_FIRE` let the duel
-  measure each, and the code is `ai_find_rubble`, `ai_try_sweep` and
-  `ai_step_out_of_fire` in `src/game/ai.c`, the sweep row in
+- Change: With the remastered battlefield rules on (D-036), an idle
+  builder of a computer seat that can sweep clears rubble that blocks
+  until swept within 128 px of a unit of the seat whose order's route
+  failed or whose stall ladder has begun, the nearest piece to each
+  builder and one builder to each piece. The sweep is a goal planner row
+  ranked at 80, below a threat at home and a stalled economy and above
+  building an army, attacking and expanding. A walking unit of the seat
+  whose model is within 32 px of a burning feature's centre first walks
+  clear of every fire, trying eight ways at steps of 24 px out to six
+  steps, each weighing four for every fire it passes, one a step and one
+  for every 24 px given up toward where the unit is bound, and takes the
+  lightest unless it is already walking somewhere clear. With the rules
+  off neither happens. The tactic bits are `TAK_AI_TACTIC_SWEEP` and
+  `TAK_AI_TACTIC_FIRE`.
+- Why: The original has neither rubble that blocks nor fire that hurts,
+  so it has no behaviour for them. A computer that only routes round
+  what blocks is stuck for good where no route is left, and one that
+  ignores fire stands in it.
+- Citation: The manual describes no rule for either. D-036 makes the
+  conditions they answer. The code is `ai_find_rubble`, `ai_try_sweep`
+  and `ai_step_out_of_fire` in `src/game/ai.c`, the sweep row in
   `src/game/ai_plan.c` and the footing in `src/game/ai_htn.c`.
-- Why: the rules make rubble block until swept and make fire hurt, and
-  the original has neither, so it has no behaviour for them. A computer
-  that only routes around what blocks is stuck for good where no route
-  is left, and one that ignores fire stands in it.
-- Measured: on Two Castles a Taros troop of the computer's walled in by
-  the rubble of eight AraWall01 near its monarch walks out after 70
-  seconds, its seat having ordered two sweeps, and without the sweep it
-  is still inside after two minutes. Six of its troops caught in a
-  burning grove lose 236 hit points to the fire with the footing and 511
-  without. While a tree burned only until its first spark the footing
-  took the nearest way out and they lost 218. Once trees burned through
-  four sparks (D-036) that way lost 1,193, because a troop stepped out
-  on the far side and the seat's next order walked it back through the
-  fire, so the footing now leans toward where the unit is bound. That
-  grove is one placement. With the six troops moved over nine
-  placements in an all-lit grove of 25 trees three cells apart, the
-  footing lost less in five and more in four, 10,256 hit points in all
-  against 5,993 without, because a troop that steps out on the far side
-  from home is still walked back through by the seat's next order. In
-  six duels of ten minutes each on Thorn Boscage and on Two Castles, the
-  seat with the footing against one without killed 192 and lost 214
-  against 194 and 208, and 126 and 142 against 141 and 128, within what
-  six games can tell. In the duel on Two Castles, measured before that
-  change, Taros against Taros
-  under the rules, four seeds each played twice with the seats swapped,
-  the seat with both behaviours killed 409 and lost 390 and the one
-  without killed 357 and lost 426, with three wins each and two draws.
-  No rubble arose in those games, so the sweep never ran there, and the
-  footing stepped units out of fire 80 times. Four classic duels with
-  the rules off play out as before, kill for kill.
-- Citation: the manual describes no rule for either. D-036 makes the
-  conditions they answer.
 
 ## A-012: The computer settles every free pad under cover, holds the ground it wins and builds a varied army
 
-- Change: three behaviours, each a tactic bit the duel can measure on
-  its own. Settling (`TAK_AI_TACTIC_EXPAND`): a seat wants a lodestone
-  on every free sacred pad it can safely take, up to the profile's
-  limit for the type, where it wanted one plus half the free pads. A
-  builder bound for a pad past the base's radius takes the fighters
-  gathering at home with it as an escort group, which stands 160 px
-  past the pad from home, off the site, until the work ends. A builder
-  out past the base's radius puts its next hall up at home. Holding
-  ground (`TAK_AI_TACTIC_HOLD`): a group in the field whose target
-  falls, or whose escort ends, picks its next target from where it
-  stands and a member drawn at random. It presses on when it can see that target
-  and is a fifth stronger than what it sees there, or when the long
-  wait of A-007 is up. Short of that it holds the ground it won. It
-  stands there, fights what comes into reach, walks back to its point
-  after a chase and draws the reinforcements of A-009. What is left of
-  a spent group holds the same way on quiet ground away from home. A
-  holding group answers a threat at home or within 1536 px of it and
-  breaks off like any group when outmatched, a fit fighter idle in the
-  field joins a group near it rather than walk home, a wave still
-  nearer home than its target turns back when home is hit, and a
-  group whose errand ends at home gives its members back to the
-  gathering. A varied army (`TAK_AI_TACTIC_MIX`): a fighter the
-  profile names no weight for weighs the mean of the named fighters in
-  a build list it is in. The code is `ai_group_next`, `ai_escort` and
-  `ai_profile_peers` in `src/game/ai.c` and the group domain in
-  `src/game/ai_htn.c`.
-- Why: a player's report for 0.5.1. With no threat about, the
-  computer gathered everything at home, took no new ground and walked
-  away from a fight it had won, and Veruna fielded mostly Centaurs.
-  The original sends a spare builder to the nearest safe unclaimed
-  sacred site whenever it has one, up to the profile's limit
-  (legacy:16503), and puts every spare ground and air unit of the pass
-  into that builder's group as its escort (legacy:16320-16328). Ours
-  held one plus half the free pads, four of fourteen on Two Castles
-  with the mana pool empty most of the match. The builder the original
-  sends comes from roles that pass over the commander key
-  (legacy:15528-15545, the key read at legacy:163074), so its monarch
-  never goes. Ours may send the monarch: Zhon's other builders summon
-  before they build, and with its monarch kept home a Zhon seat took
-  fewer pads than before and lost seven duels of eight. The
-  original's group whose target dies picks the next from its own
-  position (legacy:18293, legacy:18343), and one with no target waits
-  where it stands (legacy:18350). Ours sent such a group at the seat's
-  target, picked from the middle of the whole army, and sent what was
-  left of a spent group and every idle fighter in the field home. The
-  shipped profile (ai/default.txt of 12-17-99, in the patch and in
-  Iron Plague) names no weight for the Centaur the patch added to
-  Veruna's castle. The original gives a type nobody named 100
-  (legacy:19792) and ours gave it 50, against 3 to 8 for the castle's
-  other troops, so once a seat owned two of each the castle's draw
-  weighed a Centaur at 10 and every other troop at 1. With its peers'
-  mean it weighs 7. The strength test, the hold, the regroup, the turn
-  back, the answer to a threat, the halls at home and the peer weight
-  are ours.
-- Measured: in duels of 20 minutes off the archives a player's folder
-  holds, each seed played twice with the seats swapped, a seat with
-  A-012 against one without. Over 64 games on Two Castles and
-  Tarosian Plain, every kingdom against itself and two mixed pairs,
-  the seat with it won 36 and was ahead at the end of 7 more, against
-  17 wins and 4 ahead, and killed 2,591 for 2,202 lost against 2,122
-  for 2,784. It stood on 5.0 lodestones on average against 3.5, and its
-  fighters were near home 40 percent of the time against 55. On Two
-  Castles Veruna won 10 and was ahead in 2 of 16 against 4 wins,
-  Aramon won 7 of 8 against 1, Taros won 5 and was ahead in 1 against
-  none and 2 ahead, and Zhon won 3 and was ahead in 2 against 2 and 1.
-  Veruna against Taros came out 4 against 3 and 1 ahead, Aramon
-  against Zhon 4 against 4, and Veruna on Tarosian Plain, where 34
-  pads let both seats reach the profile's limit of 7, 3 and 2 ahead
-  against 3. Alone over eight Veruna games each bit was near even:
-  the mix won 4 and was ahead in 1 against 1 and 2, settling 3 and 2
-  against 3, holding 3 and 1 against 2 and 2. The castle's output was
-  46 percent Centaurs without the mix and 16 percent with it. No troop
-  made more than 38 percent of what a seat raised either way. The
-  keep's swordsmen and archers make about a third each, which is the
-  profile's weights at work.
-- Citation: the manual describes no AI rule at this level. Behaviour
-  note `docs/notes/2026-09-04-legacy-ai.md`, "Roles", "Attack waves"
-  and the gap list.
+- Change: Three tactic bits. `TAK_AI_TACTIC_EXPAND`: a seat wants a
+  lodestone on every free sacred pad it can safely take, up to the
+  profile's limit. A builder bound for a pad past the base's radius
+  takes the fighters gathering at home as an escort, which stands 160 px
+  past the pad from home until the work ends, and a builder out past
+  that radius puts its next hall up at home. `TAK_AI_TACTIC_HOLD`: a
+  group whose target falls or whose escort ends picks its next target
+  from where it stands, presses on when it can see that target and is a
+  fifth stronger there or when the long wait of A-007 is up, and
+  otherwise holds the ground it won and draws the reinforcements of
+  A-009, as what is left of a spent group does on quiet ground away from
+  home. A holding group answers a threat within 1536 px of home, a fit
+  fighter idle in the field joins a group near it, and a wave still
+  nearer home than its target turns back when home is hit.
+  `TAK_AI_TACTIC_MIX`: a fighter the profile names no weight for weighs
+  the mean of the named fighters in its build list.
+- Why: The original sends a spare builder with every spare ground and
+  air unit of the pass as escort to the nearest safe sacred site, up to
+  the profile's limit (legacy:16503, legacy:16320-16328), but from roles
+  that pass over the commander key (legacy:15528-15545, the key read at
+  legacy:163074), and ours may send the monarch because Zhon's other
+  builders summon before they build. Its group whose target dies picks
+  the next from its own position (legacy:18293, legacy:18343), and one
+  with no target waits (legacy:18350). It weighs a type nobody named at
+  100 (legacy:19792), and the shipped profile (ai/default.txt in the
+  patch and Iron Plague) names no weight for the Centaur the patch added
+  to Veruna's castle, whose other troops weigh 3 to 8. The strength
+  test, the hold, the regroup, the turn back, the answer to a threat,
+  the halls at home and the peer weight are ours.
+- Citation: The manual describes no AI rule at this level. Behaviour
+  note `docs/notes/2026-09-04-legacy-ai.md`, "Roles" and "Attack waves".
+  The code is `ai_group_next`, `ai_escort` and `ai_profile_peers` in
+  `src/game/ai.c` and the group domain in `src/game/ai_htn.c`.
 
 ## A-013: A computer cut off by water carries its army over
 
-- Change: a seat whose wave target stands on ground no walker of its
-  could walk to from home, each movement class asked and ships never
-  asked, is cut off (`TAK_AI_TACTIC_NAVAL`). Home is what is asked, so a
-  unit shut in by rubble does not cut its seat off, and where one class
-  walks and another cannot the seat is not cut off and plays as without
-  A-013. A cut off seat's goal planner wants a transport before more
-  army: a producer that makes one trains one, and with none a builder
-  puts up a yard that does, on water near home that reaches the
-  target's water. A transport too hurt to sail or still holding a load
-  does not count, so a seat with none fit and nothing to make one
-  strikes as it would without A-013. While a transport is free or
-  coming the walkers wait for it instead of striking, and the flyers
-  gathered with them strike on their own strength. A ferry goes for the
-  enemy asset on the target's ground, a building, lodestone, builder or
-  the monarch, that is worth most for the enemy arms round it, counting
-  every enemy unit the way the target choice does. The walkers go
-  aboard once a full hold, or as many as the seat has, is gathered with
-  the strength a strike needs against those arms, or with a launch's
-  worth of at least half their strength when the long wait of A-007 is
-  up. A rider too hurt to fight stays home, and one aboard stays with
-  its wave. A ship's riders walk to a shore it can stand off first, a
-  flyer picks them up where they are. A ship waits in open water with
-  room round its hull, no other ship close by and no yard near, and a
-  crossing cut short sails on from where it stopped. The transport
-  holds its fire on the way, sets the wave down on ground that walks to
-  the target, the nearest past 448 px from it and dearer where enemy
-  arms stand, and the wave attacks from there. A landing that fails is
-  tried elsewhere twice, then the wave goes back ashore at home. A
-  crossing lost with its transport waits three times as long before
-  the next. A seat runs one ferry, and one more for each 30 walkers
-  waiting at home, three at most (`TAK_AI_TACTIC_CONVOY`), and it may
-  keep up to eight groups where a seat that walks to its enemy keeps
-  four. It wants a further transport for each, after its army. A walker in a group marching at
-  a target over water, and a ship sent at one on land, go back to the
-  gathering, and the wait between crossings is a wait for a boat, not a
-  march at the sea. A cut off seat keeps its transports for the next
-  crossing. They join no group, and when a crossing is over a flyer goes
-  home and a ship sails to a berth, the open water nearest home with no
-  other ship or yard close by. A ship sent home goes to a berth rather
-  than at the land, the seat's idle ships keep off narrow water and its
-  yards the same way, and a ship stalled on a crossing sends the idle
-  ships round it to a berth. A yard goes up where a square of open
-  water 320 px across lies past its pad, and on the nearest water
-  where the shore has no such spot. A transport too hurt to sail, or a
-  ship on water that does not lead to the target's, holds no place
-  under the profile's limit, so one Transport Ship or Roc lost to
-  damage or left on a lake is replaced. A landing is chosen for the hardest rider
-  aboard, the widest and then the one taking the least slope, because
-  an unload ends at the first rider its spot refuses
-  (legacy:14569-14574), and a type no landing suits stays behind. A
-  walker takes no target when no ground it can walk puts it in reach,
-  as the original takes no target it has no route to
-  (legacy:15461-15473), and that goes for a home answering a threat over
-  the water and for a mage or a yard on it. A melee weapon counts at the
-  40 px it lands at. One whose target has gone where it cannot be got at
-  gives it up, and a group that walks to its enemy moves on from such a
-  target. The code is the ferry section of `src/game/ai.c`, the
-  crossing rows of the army domain in `src/game/ai_htn.c` and the ferry
-  goal and its two actions in `src/game/ai_plan.c`.
-- Why: issue #454. On an island start the computer never attacked a
-  player on another landmass, and a player there was safe for good. The
-  original's skirmish AI never loads a transport. A candidate the
-  pathfinder cannot reach is never taken (legacy:15473) and a group
-  whose leader has no route does not march (legacy:18385), so an AI on
-  an island sits. All of this is ours, beyond the original, and the
-  owner agreed to it. The Dark Mason riding a Ghost Ship is A-016, and
-  warships and fighting at sea are A-015. The issue's birds sent out in
-  place of seeing the whole map are not done. The target choice still
-  takes every enemy unit, seen or not, as the original does
-  (legacy:21137-21168). A seat that kept one scout up, which only added
-  sight, did worse in duels against one without, because what it saw fed
-  the strength tests and it held back more. Choosing only from what was
-  seen would want a memory of the enemy per seat in the save and a new
-  balance for those tests.
-- Measured: in duels of 20 minutes, each seed played twice with the
-  seats swapped, a seat with A-013 against one with everything else.
-  Over 48 games on Varro Passage and Cairbray Coast Landing, the two
-  shipped maps whose two starts lie on separate land, every kingdom
-  against itself, the seat with it put a wave ashore in 24, in 17 of
-  them inside ten minutes, the first at 164 seconds and the median at
-  about 475. Taros did in 9 of 12, Aramon and Zhon in 6, and Veruna in
-  3, none of them on Varro. The seat with A-013 killed 255, lost 498
-  and won 4 of the 48, the other seat none. With the computer of before
-  on both seats the same 48 games saw 56 kills, 32 of them in Zhon's
-  games on Varro, where its flyers cross, and no landing. Six games a
-  kingdom and map are few, so a difference of one or two landings
-  there is noise, and the seat without A-013 never punishes a home the
-  ferries leave thin. A wave lost with its transport still costs the
-  most, and a ship crossing narrow water can meet the seat's own ships
-  coming the other way and stop. On Two Castles, Tarosian Plain and
-  Lake Lokken, where every start walks to every other, 24 games played
-  the same to the unit with it and without.
-- Measured again for the stops played on Varro Passage and Meredoc Keys
-  (starts 1 and 3, and 1 and 5), 24 games of 20 minutes, every kingdom
-  against itself, two seeds, both seats with A-013, before and after the
-  later rules. Crossings launched went from 115 to 142 and landings from
-  38 to 58, Veruna's from 3 to 10, Taros's from 13 to 21, Aramon's from
-  11 to 15 and Zhon's from 11 to 12. The first landing came at 444
-  seconds on average against 563, Veruna's at 517 against 817.
-- Measured for the reach rule and the further ferries on the same 24
-  games. With the walker's reach rule and the stake rule of A-002 and no
-  other change, seconds that movers stood stuck went from 133,117 to
-  92,060. On Two Castles and Tarosian Plain, 16 games, they went from
-  18,376 to 20,852, units killed from 1,903 to 1,809 and fighters raised
-  from 2,335 to 2,312, which is noise, and games stayed 16.7 minutes
-  against 16.6. Further ferries gain nothing measured by themselves. In
-  48 games with seats swapped, a seat with one per 12 walkers set 291
-  ashore against 350, and at one per 30, as they stand, 311 against 335,
-  inside the noise. They stay for an army too large for one hold.
-- Citation: the manual describes no AI rule at this level. Behaviour
-  note `docs/notes/2026-09-04-legacy-ai.md`, "Water and transports".
+- Change: Under `TAK_AI_TACTIC_NAVAL` a seat is cut off when no walker
+  of any movement class could walk from home to its wave target, ships
+  never asked. A cut off seat wants a transport before more army,
+  trained or from a yard it puts up on water near home that reaches the
+  target's, where open water 320 px across lies past the pad, and with
+  none fit to sail and none to make it strikes as before. Its walkers
+  wait for a transport while its flyers strike alone, and board once a
+  full hold, or all the seat has, carries the strength a strike needs
+  against the arms round the enemy asset the ferry goes for, or a
+  launch's worth of at least half that strength once the long wait of
+  A-007 is up. The transport holds its fire and lands the wave on ground
+  that walks to the target, the nearest past 448 px from it and dearer
+  near enemy arms, chosen for the hardest rider aboard because an unload
+  ends at the first rider its spot refuses (legacy:14569-14574). A
+  failed landing is tried elsewhere twice before the wave goes home, and
+  a crossing lost with its transport waits three times as long before
+  the next. A seat runs one ferry and one more for each 30 walkers
+  waiting at home, three at most (`TAK_AI_TACTIC_CONVOY`), and may keep
+  eight groups rather than four. Transports join no group and wait at
+  home or a berth between crossings, and one too hurt to sail or
+  stranded on a lake is replaced. A walker takes no target that no
+  ground it can walk puts in reach, as the original takes no target it
+  has no route to (legacy:15461-15473), a melee weapon counting at the
+  40 px it lands at.
+- Why: Issue #454: on an island start the computer never attacked a
+  player on another landmass. The original's skirmish AI never loads a
+  transport, never takes a candidate the pathfinder cannot reach
+  (legacy:15473) and does not march a group whose leader has no route
+  (legacy:18385), so all of this is ours. The target choice still takes
+  every enemy unit, seen or not, as the original does
+  (legacy:21137-21168).
+- Citation: The manual describes no AI rule at this level. Behaviour
+  note `docs/notes/2026-09-04-legacy-ai.md`, "Water and transports". The
+  code is the ferry section of `src/game/ai.c`, the crossing rows of the
+  army domain in `src/game/ai_htn.c` and the ferry goal and its two
+  actions in `src/game/ai_plan.c`. A-015 adds warships and A-016 a
+  builder's ride.
 
 ## A-014: The computer's base keeps the original's spacing, with a fallback for small ground
 
-- Change: a build's site comes from the original's placement
-  (`ai_grid_site` in `src/game/ai.c`, `TAK_AI_TACTIC_SPACING`). Thirty
-  draws round home, or round the builder when it is out past home,
-  each snapped to a square of the seat's grid and set inside it so the
-  footprint leaves six cells to the next square, nine on the wider grid
-  of a type with a water depth to keep. The grid comes from the match's
-  seed and the seat, so it is the same on every machine and after a
-  load, and adds nothing to a save. A site on a sacred pad is refused. A
+- Change: A build's site comes from the original's placement
+  (`ai_grid_site` in `src/game/ai.c`, `TAK_AI_TACTIC_SPACING`): thirty
+  draws round home, or round a builder out past home, each set inside a
+  square of the seat's grid so the footprint leaves six cells to the
+  next square, nine for a type with a water depth to keep. The grid
+  comes from the match's seed and the seat and adds nothing to a save,
+  and a sacred pad is refused. Where the draws find nothing, ours goes
+  on to a ring round the builder that takes the nearest site with a
+  48 px lane to the next building, then the nearest there is, and the
+  lane holds within a square too. A tower keeps its anchor from A-009. A
   unit sent home goes to a spot drawn round home, and an idle builder
-  with another of the seat's walkers within 48 px walks to one.
-- Why: issue #487. Our placement was a ring out from the builder that
-  took the first clear site, so a base stood wall to wall, troops could
-  not get through and builders stood on top of each other. The original
-  draws in a disc of 560 px, 400 for a monarch's second of a type, 800
-  for a type that walks and 560 for a monarch's (legacy:17300-17307,
-  legacy:17353, legacy:17409-17422), on squares of 14 to 23 cells by 14
-  to 16 (legacy:20283, legacy:20311). That is the two or three barracks
-  lengths the report asked for. Its idle units never stand still: each
-  roams round home, 560 px for a builder and 800 for a fighter
-  (legacy:17687-17708).
-- What is ours: where thirty draws find nothing, on a small map, on an
-  island or in a full base, the original builds nothing that pass. Ours
-  goes on to a ring round the builder, which takes the nearest site with
-  a 48 px lane to the next building, then the nearest there is, so a seat
-  never stops for want of room. The lane also holds within a square,
-  where the original lets two small types touch. Builders roam only when
-  crowded, and a walk like that leaves a builder free to take work. A
-  tower keeps its anchor from A-009, near which a ring finds its site.
-- Measured: duels of 20 minutes off the extracted data, every kingdom
-  against itself, two seeds, on the parent and with this. On Two Castles
-  and Tarosian Plain, 16 games a side, the mean gap from a building to its
-  nearest neighbour went from 44 px to 165 and the buildings closer than
-  16 px from 44 to none. A builder had 3.64 of the seat's walkers within
-  96 px and now has 0.26, Zhon's 7.57 and 0.33. Builders stuck with an
-  order stayed about level at 0.2 and 0.1 percent of their time. Units
-  killed went from 1,422 to 1,505, and the simulation took 1.25 s of a
-  processor a game minute against 1.14. On the three island pairings of
-  A-013 the same numbers were 91 px and 135, 64 close and 4, and 3.30
-  walkers and 0.53. The stuck figure there rose from 1.2 percent to 2.0,
-  because a builder boxed in now holds an order it cannot carry out where
-  it used to stand idle. In 16 games on the land maps with one seat
-  spaced and the other not, seats swapped, the spaced seat won 7 and was
-  ahead in 3 more against 5 and 1, and killed 729 for 794 lost against
-  784 for 752, so the spacing costs a seat nothing in a fight.
-- Citation: the manual describes no AI placement rule. Behaviour note
+  walks to one only when another walker of the seat is within 48 px.
+- Why: Issue #487: a base built on the first clear site stands wall to
+  wall and troops cannot get through. The original draws in a disc of
+  560 px, 400 for a monarch's second of a type, 800 for a type that
+  walks and 560 for a monarch's (legacy:17300-17307, legacy:17353,
+  legacy:17409-17422), on squares of 14 to 23 cells by 14 to 16
+  (legacy:20283, legacy:20311), and its idle units roam round home,
+  560 px for a builder and 800 for a fighter (legacy:17687-17708). Its
+  failed draws build nothing, which stalls a seat on a small map, an
+  island or in a full base.
+- Citation: The manual describes no AI placement rule. Behaviour note
   `docs/notes/2026-09-04-legacy-ai.md`, "Placement".
 
 ## A-015: A computer cut off by water trains the warships it needs and fights at sea
 
-- Change: under `TAK_AI_TACTIC_FLEET` a cut off seat with a boat wants
-  two armed ships past those it sees of the enemy's, eight at most, and
-  a yard that makes only ships trains for that goal and for the ferry
-  and otherwise stands idle, so the mana goes to the army. The largest
-  holds are kept for crossings, as many as the walkers at home call for.
-  Every other armed ship is the fleet, which a table in `src/game/ai_htn.c` runs.
-  Enemy ships off home are answered whatever they weigh, two ships or
-  more a fifth stronger than the enemy ships seen go at the nearest, two
-  or more with no enemy ships seen stand off the nearest enemy building
-  with water in gun range and shell it, and otherwise the fleet waits at
-  its berths. A seat that loses every armed ship leaves the sea alone
-  for five minutes, and one with four walkers ashore on ground that
-  walks to its target trains no more warships while they last. Both go
-  back to land play.
-- Why: issue #454 asks for a build that prioritises ships on a map that
-  is mostly water and a return to land play once the sea is lost. It
-  reads the map by the view from its birds. Ours reads it by whether the
-  seat can walk to its target, which A-013 already asks. Before this a
-  Veruna seat's yard drew ships without end while a hundred troops
-  waited at home, and those ships never left it. All of this is ours,
-  since the original's skirmish AI draws ships by weight like anything
-  else and has no rule for the sea (legacy:20033-20041).
-- Measured: duels of 20 minutes on Varro Passage and Meredoc Keys (starts
-  1 and 3, and 1 and 5), every kingdom against itself, two seeds, seats
-  swapped, 48 games. A seat with warships alone against one without won
-  or was ahead at the end in 32 against 16, lost 1,585 against 1,839 and
-  set 387 walkers ashore against 310. With A-015, A-016 and the further
-  ferries of A-013 together against none, the seat with them won 9
-  against 5 and set 497 ashore against 356 in 79 landings against 69,
-  but was ahead at the end in 11 against 23 and killed 1,611 for 1,988
-  lost against 1,959 for 1,731, since more of its army goes where the
-  enemy stands. Both seats with them in 24 games, against both without,
-  raised units killed from 1,435 to 1,779, walkers ashore from 303 to
-  419 and seats that landed from 33 of 48 to 37. On Two Castles and
-  Tarosian Plain none of the three ever fires, and 16 games played the
-  same to the unit with them and without.
-- Citation: the manual describes no AI rule at this level.
+- Change: Under `TAK_AI_TACTIC_FLEET` a cut off seat (A-013) with a boat
+  wants two armed ships more than it sees of the enemy's, eight at most,
+  and its yards that make only ships train for that and the ferry alone.
+  The largest holds are kept for crossings, as many as the walkers at
+  home call for, and the other armed ships are a fleet run by a table in
+  `src/game/ai_htn.c`: it answers enemy ships off home, goes at the
+  nearest enemy ships when two or more and a fifth stronger, shells the
+  nearest enemy building in gun range of water when two or more and no
+  enemy ships are seen, and otherwise waits at its berths. A seat that
+  loses every armed ship leaves the sea for five minutes, and one with
+  four walkers ashore on ground that walks to its target trains no more
+  warships while they last.
+- Why: Issue #454 asks for ships first on a map that is mostly water and
+  a return to land play once the sea is lost. The original's skirmish AI
+  draws ships by weight like anything else and has no rule for the sea
+  (legacy:20033-20041).
+- Citation: The manual describes no AI rule at this level.
 
 ## A-016: A builder rides a free transport to a pad it cannot reach quickly
 
-- Change: under `TAK_AI_TACTIC_RIDE` a builder bound for a free sacred
-  pad, and not the monarch, rides when it cannot walk there or when the
-  pad is more than 1536 px off, if a transport of the seat is free. A
-  ride to a pad it could walk to has to save 512 px of walking. The
-  transport carries it to the nearest ground that walks to the pad and
-  it builds as it would have. One ride a seat at a time, none to a pad
-  with enemy arms near, and without a free transport the builder walks
-  or passes the pad by as before. The ride takes one of the seat's
-  ferry slots.
-- Why: issue #454 names the trick of a Dark Mason on a Ghost Ship, which
-  flies at 2 where the mason walks at 1.45 and crosses water. All of it
-  is ours, as the original's AI never loads a transport (see A-013).
-- Measured: on the 48 games of A-015, a seat with rides alone against one
-  without took 8 rides, held 5.21 lodestones on average against 5.06,
-  raised 2,982 fighters against 2,892 and killed 1,512 against 1,510.
-  Won or ahead at the end it was 25 against 23, so it costs nothing and
-  is rare. Rides are not taken on the land maps.
-- Citation: the manual describes no AI rule at this level.
+- Change: Under `TAK_AI_TACTIC_RIDE` a builder other than the monarch,
+  bound for a free sacred pad it cannot walk to or that lies more than
+  1536 px off, rides a free transport of the seat, and a ride to a pad
+  it could walk to must save 512 px of walking. The transport sets it
+  down on the nearest ground that walks to the pad. One ride a seat at a
+  time, none to a pad with enemy arms near, each taking a ferry slot,
+  and with no free transport the builder walks or passes the pad by.
+- Why: Issue #454 names the trick of a Dark Mason on a Ghost Ship, which
+  flies at 2 where the mason walks at 1.45 and crosses water. The
+  original's AI never loads a transport (A-013).
+- Citation: The manual describes no AI rule at this level.
 
 ## A-017: A computer's monarch keeps home when its fall ends the game
 
-- Change: with Monarch Expendable off, under `TAK_AI_TACTIC_MONARCH`, a
-  computer's monarch keeps to its own ground. That is within 1280 px of
-  home and twice as near home as any enemy still in the game, and always
-  the 480 px at the heart of home. It builds out to 2048 px on the same
-  terms, a pad only where no enemy is seen near it, and leaves a pad or a
-  yard past that to its other builders. Done with a build out there, it
-  takes the next one there or goes home. Past that ground, or on a chase
-  that leads off its ground, it turns for home. It is in danger when the
-  enemy it can see outweighs its side where it stands, when it is shot by
-  what it cannot see or reach, and when it is under half its hit points.
-  In danger away from the heart of home it turns for home and walks on
-  while the danger lasts. In danger at the heart of home it stays there
-  and builds and fights only there. It takes a fight only in its reach, at
-  the heart of home, or on its ground where its side is as strong. The
-  rules are a table in `src/game/ai_htn.c`. With Monarch Expendable on the
-  monarch plays as before.
-- Why: from playtesting, the computer sent its monarch out close to enemy
-  territory, and a player who caught it there won the game. The monarch
-  was the seat's first builder, so it walked to whatever free pad was
-  nearest wherever that lay (A-012), and it chased what it engaged with no
-  leash. The original never makes the monarch the builder of an expedition
-  (legacy:15528-15545), and its idle monarch roams 400 px of home
-  (legacy:17687-17703). Ours lets it build further than that because the
-  first lodestones are the economy, and holds it back by what the seat can
-  see.
-- Measured: 20 minute games of every kingdom against itself with the seats
-  swapped, Monarch Expendable off, a seat with this and the original's
-  choice of attack against one with neither. On Two Castles and Tarosian
-  Plain, 60 games, its monarch fell in 15 against 22. It won 22 against 15
-  and was ahead at the end of an undecided game in 9 against 14, so it won
-  or was ahead in 31 against 29. Its monarch spent 1,211 seconds more than
-  1280 px from home against 27,287. This alone, on Two Castles, 30 games:
-  monarch lost in 7 against 12, won 12 against 7, won or ahead 15 against
-  15. The seat keeps its strongest unit out of the fighting away from home
-  and ends an undecided game with less standing. Against a monarch and
-  eight troops sent at the computer's monarch in the fourth minute it
-  stood in 56 of 60 games against 33 of 60. With Monarch Expendable on, 20
-  games on Two Castles, it won or was ahead in 11 against 9.
-- Citation: the manual describes no AI rule at this level.
+- Change: With Monarch Expendable off, under `TAK_AI_TACTIC_MONARCH`, a
+  computer's monarch keeps to its own ground, within 1280 px of home and
+  twice as near home as any enemy still in the game, and always the
+  480 px at the heart of home. It builds out to 2048 px on the same
+  terms, a pad only where no enemy is seen near it, leaves work past
+  that to its other builders, and turns for home past its ground or on a
+  chase that leads off it. It is in danger when the enemy it can see
+  outweighs its side where it stands, when it is shot by what it cannot
+  see or reach, or under half its hit points. In danger it walks home,
+  or at the heart of home stays and builds and fights only there, and it
+  takes a fight only in its reach, at the heart of home, or on its
+  ground where its side is as strong. The rules are a table in
+  `src/game/ai_htn.c`. With Monarch Expendable on the monarch plays as
+  before.
+- Why: A computer's monarch sent out close to enemy territory could be
+  caught there and the game lost. The original never makes the monarch
+  the builder of an expedition (legacy:15528-15545) and its idle monarch
+  roams 400 px of home (legacy:17687-17703), and ours builds further
+  because the first lodestones are the economy.
+- Citation: The manual describes no AI rule at this level.
 
 ## A-018: Zhon's walking producers are paced as castles are
 
-- Change: a computer seat starts a walking producer, a builder that
+- Change: A computer seat starts a walking producer, a builder that
   walks and trains fighters such as Zhon's Beast Handler, Beast Tamer,
   Beast Lord and Shaman, only at a build efficiency of 0.7 and while no
-  other is under construction or on its way. A castle or a keep is held
-  to the same by the builder's structure pick (legacy:17201,
-  :17271-17290).
-- Why: the original takes a walking producer as a mobile pick, which
-  waits for nothing, and every one of them carries `mogriumincome = 1`,
-  so the orders' gates on what earns nothing never hold one back
-  (legacy:12127). A Zhon seat started them whatever its mana. A Beast
-  Lord or a Shaman asks about 75 to 100 mana a second while it goes up,
-  more than the seat earns, so its pool sat at nothing, its troops,
-  which the walking producers train only at 0.7, were never started, and
-  it raised a fifth of the fighters of the other kingdoms. On main it
-  lost all 40 of its games against them.
-- Measured: every pair of kingdoms both ways round, 20 minute games with
-  every tactic, Two Castles 3 seeds a pair and Tarosian Plain 2, a game
-  still on at the end going to whoever has more standing. Zhon won or
-  was ahead in 12 of its 40 games against 0 of 40 on main: 6 of 10
-  against Aramon, 3 against Taros, 2 against Veruna and 1 against Creon.
-  No other pair moved by more than 2 games in 10. The original's rule 6,
-  the build score's brake on dear types, and its once a think draw did
-  not lift Zhon off 0 in 15 games without this.
-- Citation: the manual describes no AI rule at this level.
+  other is under construction or on its way, as the builder's structure
+  pick holds a castle or a keep (legacy:17201, legacy:17271-17290).
+- Why: The original takes a walking producer as a mobile pick that waits
+  for nothing, and each carries `mogriumincome = 1`, so the gates on
+  what earns nothing never hold one back (legacy:12127). A Beast Lord or
+  a Shaman going up asks more mana a second than a seat earns, so an
+  unpaced Zhon seat sat on an empty pool and never started the troops
+  its walking producers train only at 0.7.
+- Citation: The manual describes no AI rule at this level.
 
 ## T-001: Flying transports load and unload by the ground rules
 
 - Change: The Roc and the Ghost Ship pick up and set down units the way
-  ships do. They close to `transportdistance` of the rider or the drop
-  point and hover there while the hold runs. The original's air missions
-  keep flying past the point between units and turn back for the next
-  (legacy:27164, legacy:27700-27900).
+  ships do, closing to `transportdistance` of the rider or the drop
+  point and hovering there while the hold runs. The original's air
+  missions keep flying past the point between units and turn back for
+  the next (legacy:27164, legacy:27700-27900).
 - Why: That flight pattern needs air movement our flyers do not have
   yet. The reach, the spot test, the effects, the hold and the order the
   units leave in are the original's.
@@ -1204,559 +756,323 @@ Format per entry:
 
 ## T-003: The set-down test covers the cells the unit will take
 
-- Change: The drop test centres the cargo's footprint on the point, which
-  is where the unit is then put. The original tests the footprint from
-  the 16 px cell that holds the point (legacy:14551) and then centres the
-  unit on the point (legacy:234362-234395), so the cells it tests are
-  shifted by up to half a footprint from the cells the unit then takes.
+- Change: The drop test centres the cargo's footprint on the point,
+  which is where the unit is then put. The original tests the footprint
+  from the 16 px cell that holds the point (legacy:14551) and then
+  centres the unit on the point (legacy:234362-234395), so the cells it
+  tests are shifted by up to half a footprint from the cells the unit
+  then takes.
 - Why: A point that passes the test is then one the unit can stand on.
 - Citation: The manual is silent. Behaviour note
   `docs/notes/2026-09-11-transport-load-unload.md`, "Unloading".
 
 ## R-002: One shadow pass, drawn before the units
 
-- Change: Every unit shadow of a frame is drawn into one mask and the
-  mask darkens the ground once, before any unit body. The original
-  draws each unit's shadow immediately before that unit, in the order
-  the units are drawn.
-- Why: One mask means ground under two overlapping pieces, or under
-  two units standing close together, darkens once instead of twice,
-  which is what a shadow looks like. The cost of the pass also stays
-  in one target switch per frame rather than one per unit. What it
-  gives up is a shadow falling across a unit that was drawn earlier,
-  which the original allows for a unit standing north east of a tall
-  building. Shadows there stop at the neighbour's outline instead of
-  crossing it.
-  A shot in flight goes into the same mask, so its shadow also lands
-  before the unit bodies rather than with the shot after them. What
-  that gives up is a shot's shadow crossing a unit it flies over, a
-  blob of about twenty pixels.
+- Change: Every unit shadow of a frame, and every shot's, is drawn into
+  one mask that darkens the ground once, before any unit body. The
+  original draws each unit's shadow just before that unit, and a shot's
+  with the shot.
+- Why: Ground under two overlapping pieces or two close units darkens
+  once, as a shadow does, at one target switch a frame. A shadow no
+  longer falls across a unit drawn earlier, as the original's can north
+  east of a tall building, nor a shot's across a unit it flies over.
 - Citation: The manual describes shadows only as a Visual Options
   setting (Game Options, Visual). Behaviour anchors legacy:197182-197243
   for units and legacy:246719-246746 for shots.
 
 ## R-003: No shadow while a building goes up
 
-- Change: A unit under construction casts no shadow. It gets one the
-  moment it is finished.
-- Why: The original draws the shadow of a unit being built from the
-  halfway mark, fading in to half strength until it turns solid at
-  done. Our shadow mask carries coverage, not per unit opacity, so a
-  faded shadow would need its own pass. A building spends a few
-  seconds going up and the shadow appears with the finished walls.
-  The unit itself is drawn as in the original, see
-  docs/notes/2026-10-02-intangible-mass.md.
-- Citation: Manual is silent on construction visuals. Behaviour
-  anchors legacy:197252-197265 and legacy:197309-197322.
+- Change: A unit under construction casts no shadow until it is
+  finished, where the original fades its shadow in from the halfway mark
+  to half strength and turns it solid at done.
+- Why: Our shadow mask carries coverage, not per unit opacity, so a
+  faded shadow would need its own pass, and a building goes up in a few
+  seconds.
+- Citation: The manual is silent on construction visuals. Behaviour
+  anchors legacy:197252-197265 and legacy:197309-197322. The unit itself
+  is drawn as in the original, see
+  docs/notes/2026-09-04-rendering-visuals.md, "Intangible mass".
 
 ## R-004: Shadows always drawn at full resolution
 
-- Change: Shadows are rasterised at the same resolution as the scene.
-- Why: The original has a shadow scale setting with an automatic mode
-  that drops shadows to half or quarter resolution when a frame runs
-  long. Modern hardware draws them at full size cheaply: with 64
-  monarchs on screen the pass costs about 2.4 ms a frame through
-  OpenGL ES, the browser's path, and 5 ms through Direct3D 9. A player
-  who wants the frames back turns shadows off in Visual Options.
-- Citation: Manual §I.6 lists the Visual settings and warns that
-  higher settings cost system resources. Behaviour anchor for the
-  scale setting is the video options block at legacy:197182.
+- Change: Shadows are always rasterised at the scene's resolution. The
+  original has a shadow scale setting whose automatic mode drops them to
+  half or quarter resolution when a frame runs long. A player who wants
+  the frames back turns shadows off in Visual Options.
+- Why: Modern hardware draws them at full size cheaply.
+- Citation: Manual §I.6 lists the Visual settings and warns that higher
+  settings cost system resources. The scale setting is in the video
+  options block at legacy:197182.
 
 ## R-005: Model textures inset half a texel
 
 - Change: A model polygon samples its texture from half a texel inside
-  the atlas entry rather than from the entry's exact edges.
-- Why: Every model texture shares one atlas, and a sample landing on
-  the boundary would read the neighbouring entry. Half a texel is the
-  smallest inset that cannot, and it shrinks the drawn art by under
-  one percent of a 64 texel tile. The engine point samples, as the
-  original does, so nothing wider is needed.
-- Citation: Manual is silent on texture sampling.
+  its atlas entry rather than from the entry's exact edges.
+- Why: Every model texture shares one atlas, and a sample on the
+  boundary would read the neighbouring entry. Half a texel is the
+  smallest inset that cannot, and with point sampling, as in the
+  original, nothing wider is needed.
+- Citation: The manual is silent on texture sampling.
 
 ## R-006: Shadow sprites step from one counter
 
 - Change: A walking unit's shadow sprite runs its frames off the
   renderer's frame counter, so every moving unit of a kind shows the
-  same shadow frame. A standing unit holds frame zero.
-- Why: The original steps each unit's shadow animation from that
-  unit's own sprite state, which it keeps beside the unit. We do not
-  carry per unit sprite state for shadows, and the difference is a
-  blob of a dozen pixels under a walking soldier.
-- Citation: Manual is silent. Behaviour anchor legacy:197225-197229.
-
+  same shadow frame, and a standing unit holds frame zero.
+- Why: The original steps each unit's shadow from that unit's own sprite
+  state, which we do not carry for shadows, and the difference is a blob
+  of a dozen pixels under a walking soldier.
+- Citation: The manual is silent. Behaviour anchor legacy:197225-197229.
 
 ## R-007: A shake moves the draw and not the camera
 
 - Change: A shot of a weapon that authors `shakemagnitude` and
-  `shakeduration` shakes the view where it lands, the whole magnitude
-  when that is on screen and half when it is not, a second shake on a
-  running one adding its magnitude and averaging the lengths. Each
-  frame's step is put on the camera for the length of the draw and
-  taken off again, so the camera is where the player left it. The
-  original adds the step to the camera and leaves it there.
-- Why: The keys, the on screen rule, the pile up and the shrinking box
-  are the original's (legacy:250066, legacy:244990-244999,
-  legacy:120454-120470, legacy:120568-120594). Leaving the step on the
-  camera makes the view wander by the sum of the steps, which comes out
-  near nought and not at it, and our camera is in a save and is read
-  between frames by the pointer, the minimap and the scroll, none of
-  which should feel a shake. The steps come from a generator of the
-  shake's own, where the original draws from the C library's, so a
-  shake cannot move the simulation's numbers. What a shot shakes by is
-  kept beside the projectile and not in it, so it is in neither the
-  hash nor a save, and a shot in the air across a load lands without
-  its shake. Three units author one: the Acolyte, the Dragon and the
-  god of Aramon.
-- Citation: The manual does not describe the effect.
+  `shakeduration` shakes the view where it lands, in full on screen and
+  half off it, a second shake adding its magnitude and averaging the
+  lengths. Each frame's step is put on the camera for the draw and taken
+  off again, where the original leaves it on, and the steps come from
+  the shake's own generator rather than the C library's. A shot's shake
+  is kept beside the projectile, out of the hash and the save, so a shot
+  in the air across a load lands without it.
+- Why: Our camera is in a save and is read between frames by the
+  pointer, the minimap and the scroll, none of which should feel a
+  shake, and its own generator keeps a shake from moving the
+  simulation's numbers.
+- Citation: The manual does not describe the effect. The keys, the on
+  screen rule, the pile up and the shrinking box are the original's
+  (legacy:250066, legacy:244990-244999, legacy:120454-120470,
+  legacy:120568-120594). The Acolyte, the Dragon and the god of Aramon
+  author one.
 
 ## R-009: Build sparkles drawn fewer and added, with a halo
 
-- Change: a build or raise sparkle draws added over a faint copy 1.75
+- Change: A build or raise sparkle draws added over a faint copy 1.75
   times its size, and ten in sixteen of a ring's sparkles draw.
-- Why: the original shows fewer, softer stars than our full ring. The
+- Why: The original shows fewer, softer stars than our full ring. The
   data names only the art, so the share and the halo come from captures.
-- Citation: the ring box (legacy:198540-198551),
-  docs/notes/2026-09-14-build-sparkles.md. The manual is silent.
+- Citation: The ring box (legacy:198540-198551),
+  docs/notes/2026-09-04-rendering-visuals.md, "Build sparkles". The
+  manual is silent.
 
 ## D-005: A map pack contributes only its map
 
-- Change: Every `.kmp` in the game folder's `Maps` folder is mounted
-  at startup, and a mounted pack only answers for paths under
-  `kmap/`. Anything else inside a pack is ignored.
-- Why: The original mounts a pack only while its map is being loaded
-  (legacy:168765), so a pack carrying, say, a unit definition would
-  have changed the game for that map alone. Mounting them all is
-  simpler and lets the chooser list them without opening 181
-  archives twice, and the `kmap/` guard keeps a downloaded map from
-  quietly replacing units, weapons or art. Shipped packs hold
-  nothing but their map.
-- Citation: The manual describes downloadable maps as maps.
-  Behaviour note `docs/notes/2026-09-11-map-sources.md`.
+- Change: Every `.kmp` in the game folder's `Maps` folder is mounted at
+  startup, and a mounted pack only answers for paths under `kmap/`, so
+  anything else in a pack is ignored. The original mounts a pack only
+  while its map loads (legacy:168765).
+- Why: Mounting them all lets the chooser list the maps without opening
+  every archive twice, and the `kmap/` guard keeps a downloaded map from
+  quietly replacing units, weapons or art. Shipped packs hold nothing
+  but their map.
+- Citation: The manual describes downloadable maps as maps. Behaviour
+  note `docs/notes/files.md`, "Where maps come from".
 
 ## M-006: Our own thresholds for stall recovery
 
-- Change: A unit with a live move order that has not closed 32 pixels
-  of ground on its goal for 240 ticks gets a fresh search, and after
-  four of those have not moved it on the order is ended as
-  unreachable. The order is kept instead while the ground joins the
-  unit to its point and no friend that has stopped stands at its edge.
-  The ladder then goes on counting its rungs as kept ones. A kept order
-  searches once every 240 ticks and not between, unless the tick's
-  search budget refused it, and ends after 30 kept rungs, two minutes
-  with no ground closed. Ground closed starts the ladder over from its
-  first rung. The original scales every retry delay by a per def speed
-  byte derived from maxvelocity (legacy:162838-162851,
-  legacy:184656-184658), so a slow unit waits several times longer
-  than a fast one.
-- What counts as closing ground: with a route, the way still left to
-  walk along it, and with none the straight line to the order point.
-  Each measure is judged against the least it has ever been on this order,
-  so ground closed for the first time starts the ladder over and
-  ground paced over again does not. A unit with a route is judged on
-  that route alone, because the straight line falls and rises on the
-  way round a bay and says nothing about whether the way round is
-  being walked.
-- The way left to walk is not allowed to fall faster than the unit
-  walked. A search run from the same spot can hand back a shorter way
-  round at any time, and a shorter way found while standing still is a
-  different plan, not ground closed. A longer one is taken as it
-  comes, because the unit really does then have further to go.
-- Why not displacement: the ladder used to measure how far the unit
-  had moved from a reference point, and moved the reference whenever
-  the unit left a 32 pixel circle around it. A unit that paces gets
-  nowhere and resets that ladder for ever. Measured on the Athri Cay
-  wander scenario: a swordsman ordered 1900 px across the map paced
-  776 px in 3420 ticks, closed none of it, reset the ladder four times
-  and never reached the rung that ends an order. Covering ground is
-  not making progress.
-- Cost: the way left to walk is wanted every tick for every unit under
-  orders, and a route runs to ninety six waypoints, so all of it past
-  the waypoint being walked is summed once per waypoint per plan and
-  kept. On the ffa probe with three hundred units, over the engine tick
-  with the route search taken out, summing it every tick costs 0.26 ms
-  a tick and keeping it costs 0.03.
-- Measured after the change, over the soak's twenty one scenarios: the
-  longest any unit held a live order without closing ground fell from
-  3420 ticks to 1237, and every offender's ladder now climbs all four
-  rungs instead of stopping at one. The monarch still walks the whole
-  way round the bay in the band fixture, arriving at tick 2257 to
-  2950, which is twice the ladder's own length and is what the route
-  measure is there to allow.
-- Why: The absolute constant in that formula was lost by the tooling at
-  legacy:162841-162842, so the durations cannot be read off the
-  reference and parity on them cannot be claimed. Flat integers are
-  honest until someone times a stuck unit in the retail build against
-  two units of known maxvelocity. They are integers in the simulation
-  hash, so they are deterministic and safe for lockstep.
-- Open: whether a genuinely unreachable goal should end the order at
-  all. In the original the 0x1000 and 0x2000 search status bits are
-  inert and no branch completes a mission on a failed search, so the
-  order appears to persist for ever, but the absence of a terminating
-  branch was not proved. We end it, because issue #60 asks that a unit
-  never sit stuck for good and ours already completes an order in
-  several near miss cases. An owner parity call, not one the reference
-  settles.
-- Also: where the way is blocked by another unit and the corridor is
-  too narrow to pass it, the order is kept on a kept rung, so the unit
-  searches again every 240 ticks. The original does not
-  command the blocker to move either: legacy:191265-191388 re-runs the
-  search on a delay scaled by that same speed byte and never touches
-  the unit in the way. Seen in the original: twelve swordsmen sent
-  through a gap exactly one body wide, with the goal well past it.
-  Three to six get through, and the rest back up and cycle, then find
-  another way or try again later. None stands for good. Until
-  2026-11-15 the order was ended here, and on a gap one body wide the
-  units that gave up stood at the wall face or in the gap and held the
-  rest back for good.
-  A unit whose body comes within 32 px of a friend that has stopped,
-  or a ship within its arrival reach of one, still ends its order,
-  which is how a crowd sent to one point packs. Making a blocking unit stand
-  aside would be a new behaviour, not parity, and is what issue #60's
-  "or another unit" clause still wants.
-- Measured: on the reported band fixture the ladder is what turns the
-  one case a route cannot serve, a monarch bracketed by two of his own
-  on a 48 pixel band, from nine thousand ticks of grinding into an
-  order that ends. Every other case in that fixture is served by the
-  route search alone and never reaches the first rung, so the ladder
-  is a safety net and is meant to be one. The data free case is
-  a_unit_that_covers_ground_without_closing_on_its_goal_climbs_the_ladder
-  in test_movement: a unit pacing a walled pocket with the way out
-  facing away from its goal, which the old ladder never climbed. This
-  one climbs all four rungs, and since the ground joins the pocket to
-  the goal it keeps the order on a kept rung.
-- Citation: Issue #60. Manual is silent.
-
----
+- Change: A unit with a live move order that has not closed 32 px of
+  ground on its goal for 240 ticks gets a fresh search, and after four
+  such rungs the order ends as unreachable. It is kept instead while the
+  ground joins the unit to its point and no stopped friend stands at its
+  edge, searching once every 240 ticks unless the tick's search budget
+  refused it, until 30 kept rungs, two minutes with no ground closed.
+  Progress is the way left along the route, or with no route the
+  straight line to the point, measured against the least it has been on
+  this order, and the way left may not fall faster than the unit walked.
+  Ground closed starts the ladder over. A unit whose body comes within
+  32 px of a stopped friend, or a ship within its arrival reach of one,
+  still ends its order, so a crowd sent to one point packs. A unit
+  blocked by another in a corridor too narrow to pass keeps its order on
+  a kept rung, and nothing moves the blocker. The original scales every
+  retry delay by a per def speed byte derived from maxvelocity
+  (legacy:162838-162851, legacy:184656-184658).
+- Why: The constant in the original's formula cannot be read at
+  legacy:162841-162842, so flat tick counts stand in, deterministic in
+  the simulation hash. A unit that paces covers ground and gets nowhere,
+  so progress is ground closed. The original seems never to end an order
+  on a failed search, its 0x1000 and 0x2000 search status bits being
+  inert, though that is not proved, and ours ends one because issue #60
+  asks that no unit sit stuck for good. Like the original
+  (legacy:191265-191388) it never moves a blocker, and making one stand
+  aside would be new behaviour, which issue #60's "or another unit"
+  clause still wants.
+- Citation: Issue #60. The manual is silent. Test
+  `a_unit_that_covers_ground_without_closing_on_its_goal_climbs_the_ladder`
+  in test_movement.
 
 ## M-007: A diagonal first step is fragile in a packed block
 
-- Change: None. This records a measured consequence of planning on
-  terrain alone, so that the next person to meet it does not read it as
-  a fresh bug.
-- What happens: the route search may make the first step out of a cell
-  a diagonal one. A diagonal step may not cut a corner, so the mover
-  needs BOTH orthogonal neighbours of that diagonal to be clear, while
-  a straight first step needs one cell. In open ground the difference
-  costs nothing. Inside a block of parked units it is the difference
-  between leaving and not leaving, because the two cells a diagonal
-  needs are held by two different units and neither has a reason to
-  move first.
-- Measured: the sixty unit squad in live_skirmish_units_actually_move.
-  One unit begins at 1096,4440 boxed on all four sides, with friends at
-  (0,-40), (-40,0), (+40,0) and (0,+40). Given a first waypoint one
-  cell straight north it follows the column out: it clears that
-  waypoint at tick 90 and has no block flag left by tick 120. Given a
-  first waypoint one cell diagonally north east instead, it needs the
-  unit to its north and the unit to its east to move together, wedges
-  in the corner between them at 1119,4432 with UNIT_ROUTE_BLOCKED_HARD
-  and speed down to 0.11, and is still there 900 ticks later having
-  covered 47 px, its route thrashing between 4, 0, 12, 16 and 18
-  points.
-- Why it is not fixed here: the planner plans on terrain and has no
-  knowledge of the crowd, which is the design rather than an oversight.
-  Issue #60 defers crowd avoidance, flow fields for groups moving to
-  one place and local collision avoidance to a later stage, and this is
-  exactly that work. The alternative on offer was to restore an older,
-  stricter per cell test so the route shape changed by accident, which
-  would undo a correctness fix and force the accuracy claim in M-004 to
-  be withdrawn in order to paper over a crowd artefact.
-- Not a fixture artefact: the arrangement is tighter in real play than
-  in the test. Twenty four units ordered to a single point and left to
-  settle for 3600 ticks (soak_legitimate_waits) come to rest at a
-  nearest neighbour distance of 17 px minimum, 23 px mean and 35 px
-  maximum, with all 24 closer than the 40 px the fixture spawns at.
-  Selecting a group that has just arrived and sending it somewhere else
-  is ordinary play, and that group is packed tighter than anything this
-  test builds by hand.
-- Citation: Issue #60, which defers the crowd layer. Manual is silent.
+- Change: None. A diagonal step may not cut a corner, so a diagonal
+  first step out of a cell needs both orthogonal neighbours clear where
+  a straight one needs one. In a block of parked units those two cells
+  are held by two units and neither moves first, so the mover wedges in
+  the corner with UNIT_ROUTE_BLOCKED_HARD.
+- Why: the planner plans on terrain alone by design, and issue #60
+  defers the crowd layer. Going back to the older, stricter per cell
+  test would undo a correctness fix and the accuracy claim in M-004.
+- Citation: issue #60. live_skirmish_units_actually_move shows the
+  wedge, and soak_legitimate_waits shows real play packs tighter. The
+  manual is silent.
 
 ## M-008: A long route is guided by measured ground distance
 
-- Change: A plan whose straight line to the goal is 32 path cells or
-  more is searched with an estimate built from measured ground
-  distance to three fixed marks on the map, rather than from the
-  straight line alone. The original searches its grid with the
-  straight line and nothing above it, an octile distance of 18 for a
-  straight step and 25 for a diagonal (legacy:189366-189390), and
-  reads its route back by walking a per cell direction byte from the
-  goal, so there is one flat grid and no second layer
-  (legacy:22438-22530).
-- Why: a browser tab runs the whole game on one thread and a thousand
-  unit game has to fit in it. The straight line says nothing about the
-  ground in between, so an order across the map opens every cell in a
-  growing disc and only learns about a lake or a wall when it walks
-  into one. The marks are measured once per map and move class and the
-  search then opens a fraction of the cells.
-- Accuracy: the route is as cheap as the flat search's. For any mark,
-  the difference between its distance to the goal and its distance to
-  a cell can never exceed the real distance from that cell to the
-  goal, so the estimate never overstates what is left, and a search
-  whose estimate never overstates still returns a cheapest route. The
-  distances are measured over the terrain bitmap alone, which holds
-  every cell a live search may enter and more, because clearance,
-  structures and parked units only take cells away, so the estimate
-  stays under the live distance whatever is built. Where several
-  routes are equally cheap a different one of them can come back, so
-  a long order can be walked round the other side of a rock.
-- Not used: a plan shorter than 32 cells, and a plan that starts on
-  ground no route may stand on, which may cross cells the marks never
-  measured. Both run the flat search exactly as before.
-- Citation: `docs/notes/2026-09-10-clearance-grid.md` and issue #60.
-  The manual is silent on pathfinding.
-
----
+- Change: A plan from ground a route may stand on, whose straight line
+  to the goal is 32 path cells or more, is searched with an estimate
+  from measured ground distance to three fixed marks, taken once per map
+  and move class. The original estimates by the straight line alone, an
+  octile distance of 18 a straight step and 25 a diagonal
+  (legacy:189366-189390), over one flat grid (legacy:22438-22530). The
+  estimate never overstates what is left, so a route costs the same, but
+  among equally cheap routes another may come back.
+- Why: a browser tab runs the whole game on one thread, and a straight
+  line estimate opens every cell in a growing disc on a long order.
+- Citation: `docs/notes/pathing.md` and issue #60. The manual is silent
+  on pathfinding.
 
 ## M-009: A frame is held while a helper walks to it
 
-- Change: a frame nobody feeds is held for as long as a builder sent to
-  help it keeps getting nearer to it, or is walking a planned route the
-  mover's ladder (M-006) sees it gaining ground on, and it starts to
-  decay when neither has happened for ten seconds. A frame that was
-  never worked on is removed rather than killed, so no side is counted
-  as having lost a unit.
-- What the original does: once a frame exists it decays on any tick
-  nobody feeds it: its own mission step runs Unit_UpdateAnimation on it
-  (legacy:9640-9644), which is Building_TickConstruction at a negative
-  half rate (legacy:39531-39534), and the flag that stops that is set
-  only by a builder really feeding it (legacy:39470).
-- Why we differ: a helper on a long walk would otherwise find its frame
-  gone. Until 2026-11-06 this entry also put every frame on the ground
-  when the order was given. That part is gone, since it let a build be
-  started far from its builder. The frame now goes up once the builder
-  stands at the site, as in the original
-  (docs/notes/2026-11-06-a-frame-waits-for-its-builder.md).
-- Why the route counts only while there is one: the ladder (M-006)
-  judges a unit on the way left to walk along its route, and a fresh
-  search from the same spot can hand back a shorter way at any time,
-  which starts the ladder over. Measured in test_movement, a builder
-  walled into a pocket 416 px from its site reaches 305 px at tick 162
-  and never moves again, and the ladder still restarts twice on the
-  way. A builder with no planned route is judged on its distance to the
-  frame alone, which cannot be restarted that way, so that frame still
-  goes at tick 742. One walking a planned route round an obstacle,
-  which can lead away from the site for longer than ten seconds, keeps
-  its frame while the ladder sees it gain.
-- Citation: Issue #229. The manual describes no decay rule.
+- Change: a frame nobody feeds is held while a builder sent to help it
+  keeps getting nearer, or walks a planned route the mover's ladder
+  (M-006) sees it gaining ground on, and decays after ten seconds of
+  neither. A frame never worked on is removed rather than killed, so no
+  side loses a unit. The original's frame decays at half the build rate
+  on any tick no builder feeds it (legacy:9640-9644,
+  legacy:39531-39534, legacy:39470).
+- Why: a helper on a long walk, or on a route that leads round an
+  obstacle, would otherwise find its frame gone.
+- Citation: issue #229 and test_movement. docs/notes/economy.md has when
+  a frame goes up. The manual describes no decay rule.
 
 ## M-010: Units give way to each other
 
-- Change: a ground unit with a live move order pulls the point the
-  mover aims at sideways when another unit is on course to walk into
-  it, so a closing pair each take one side of the other instead of
-  meeting head on. The steer is off inside the arrival radius, where a
-  crowd is meant to pack around its order point rather than circle it,
-  and off for fliers, which hold no cells.
-- Why: the original is a 1999 game and has no collision avoidance
-  between units at all. Two of its units walking into each other both
-  refuse the step, both slide along the blocked axis at a fifth of top
-  speed and both wait out a block counter before planning again
-  (legacy:184190-184230, legacy:184244-184262). That still runs here
-  and is still the floor. What it costs is a route search per unit per
-  jam, and the owner plays in a browser where the simulation, the
-  renderer and everything else share one thread. Steering around each
-  other costs no search.
-- What is not changed: the route, the ground a unit may stand on, and
-  the speed law. The planner is untouched, the step refusal test is
-  untouched, and the blocked axis slide still runs when a step really
-  is refused. Only the point the mover turns toward moves, so a unit
-  walks the route it was given, over ground the original would let it
-  stand on, and differs from the original only in how it threads
-  between other units.
-- How it is worked out: for each unit within four occupancy tiles of
-  the footprint, the time of closest approach under the two current
-  velocities, and the gap at that moment. A pass already behind the
-  unit is left alone, and so is a gap already wider than the two
-  footprints plus 20 px. A narrower one is opened by steering away
-  from where the other unit will be, at the slope that covers the
-  missing gap over the ground this unit has left before the pass,
-  capped at 45 degrees off the route. That direction is read off the
-  pair's relative velocity, which is equal and opposite between them,
-  so the two never choose the same side. Dead ahead the reading is
-  degenerate and the line joining the pair serves instead, which is
-  equally opposite.
-- What is deliberately left alone: a pass with under a quarter tile
-  of ground left before it. It is already happening, no heading will
-  widen it, and the missing gap divided by almost no ground reads as
-  a hard swerve. That is also what keeps a line walking abreast from
-  shaking itself apart, because units travelling along together are
-  at their closest approach now and every tick after.
-- What is not left alone: a unit that has parked. Skipping those was
-  tried, on the reasoning that the route search has already gone
-  around them, and it was wrong. A unit that brakes to a crawl in
-  front of another parks while it is still closing, so the pair lost
-  the steer exactly where they needed it and barged the last few
-  pixels as before.
-- Measured: --perf-probe crowd --perf-ticks 3600, 300 walkers
-  marching between two starts, on the same binary either side of the
-  change. The mover itself costs 3286 ms of the run before and 4461
-  ms after, which is the neighbour scan, about a third of a
-  millisecond a tick at 300 units. The planner costs 23247 ms before
-  and 20325 ms after and opens 28.5 million cells before and 24.4
-  million after, because fewer units are jammed when a search runs.
-  The simulation as a whole falls from 27639 ms to 26016 ms, the
-  frame at the 95th percentile from 45.3 ms to 40.8 ms and at the
-  99th from 84.7 ms to 69.9 ms, and frames over the cap fall from 99
-  to 52. The median frame rises from 13.3 ms to 14.0 ms.
-- Citation: Issue #60 asks for optimal reciprocal collision avoidance
-  between units. Manual is silent.
-
----
+- Change: a ground unit with a live move order pulls its aim point
+  sideways when another unit within four occupancy tiles, parked or not,
+  will pass closer than the two footprints plus 20 px at their closest
+  approach. The pull covers the missing gap over the ground left before
+  the pass, at most 45 degrees off the route, and the pair's relative
+  velocity, or the line between them dead ahead, sends each to its own
+  side. A pass behind the unit or under a quarter tile ahead is left
+  alone, and the steer is off inside the arrival radius and for fliers.
+  The route, the ground, the speed law, the step refusal and the blocked
+  axis slide are unchanged.
+- Why: the original has no avoidance between units, only a refused
+  step, a slide at a fifth of top speed and a replan after a block
+  counter (legacy:184190-184230, legacy:184244-184262), and a replan per
+  jam is costly on a browser's one thread.
+- Citation: issue #60 asks for optimal reciprocal collision avoidance
+  between units. --perf-probe crowd --perf-ticks 3600 checks its cost.
+  The manual is silent.
 
 ## M-011: A group sent to one place shares a flow field
 
 - Change: when at least eight of a side's walkers hold a move order for
-  the same point, the first route each of them plans for it is read off
-  one flow field instead of a search of its own. The field is the ground
-  distance from the goal to every cell a route may stand on, measured
-  over terrain and what is built, with the search's own step rules and
-  costs, and each cell keeps the next one on the way. A member's route
-  is that chain from where it stands, laid into waypoints the way a
-  search's route is. It costs nothing from the per tick search budget,
-  so the whole group sets out on the tick it is ordered, and it is not
-  cut short at the search's cap on a long march. A route dropped for a
-  block or a stall is planned by a search, which sees whoever is parked
-  in the way.
+  the same point, the first route each plans for it is read off one flow
+  field, the ground distance from the goal over terrain and what is
+  built, with the search's own step rules and costs. It takes nothing
+  from the per tick search budget and has no cap. A route dropped for a
+  block or a stall is planned by a search.
 - Why: the original plans every unit with a search of its own
-  (legacy:22488-22535). A group of forty took three ticks of our
-  budget to set out, and each search stopped at 8192 cells on a long
-  march and walked towards the nearest point it had reached. Issue #60
-  asked for flow fields for groups moving to one place.
-- Determinism: which route a unit takes is read from the world alone,
-  its order, whether its last route failed or stalled and how many of
-  its side share the point, so every machine and a loaded save make the
-  same call. The field depends on the ground and the buildings only, so
-  a cold cache builds the same field a warm one holds, which the cold
-  planner test checks.
-- Citation: the manual describes no rule for routing. Issue #60.
+  (legacy:22488-22535), so a group took several ticks to set out and a
+  long march stopped at the search's 8192 cell cap.
+- Citation: issue #60 and the cold planner test. The manual describes no
+  rule for routing.
 
 ## M-012: Ships keep apart by their hulls
 
-- Change: a ship keeps its hull off other ships' hulls. The hull is a
-  line along the heading with half the beam round it, from bow to
-  stern, read from the drawn extent of the ship's 3DO. A step that
-  would bring two hulls within 2 px is refused unless it takes the ship
-  no closer than it already stands, and a turn that would swing a hull
-  more than 3 px into another is held. A ship stopped short of its
-  order point by another ship settles within two of its own lengths of
-  it, or behind one of its own that ended a move to the same point.
-  Ships give way to each other by their hulls. A shipyard begins a ship
-  once the last one's hull is off the pad and sends each one out until
-  its hull is clear of the yard and of other ships. A ship is a unit
-  whose move class needs a minimum water depth. Ground, hover and
-  flying units are not changed.
-- Change, the pad: a ship leaves for a spot where its hull keeps 96 px
-  off the next ship to go up on the pad, with a spot ahead of it and no
-  hull on the way there taken first. While a yard waits on its pad it
-  sends its side's own idle ships off the pad's water and out of the
-  way of its launches, which are the ships on the pad and those bound
-  for a point within 1280 px of the yard that is not its rally point.
-  The original only looks again after a random 7 to 21 of its frames
-  and never moves anything (legacy:9373-9382). The Sea Fort's pad lies
-  108 px in front of its centre, and without the push a ship stopped on
-  its way out kept the next from going up.
-- Change, jams: two ships that have closed no ground for 8 s, one
-  pressing on the other, stop holding each other, and a stalled ship
-  sails through a hull by the cells alone, as in the original. A ship
-  leaving its yard goes for a spot it can reach by a straight way or a
-  route. Ships gathered at the yard's rally point are left there unless
-  they are on the pad. A hull the yard cannot move leaves the pad to the
-  original's cell test (legacy:9363-9382).
-- Change, auras: between two ships an aura reaches from hull line to
-  hull line, not centre to centre (legacy:237131-237139), so a Repair
-  Skiff at a ship's bow mends it.
-- Why: the original keeps units apart by the cells of their move
-  class alone (legacy:163193-163195, legacy:219329-219340), and a
-  ship's class is a square one and a half to three times shorter than
-  its hull, so fleets sat bow into stern. The owner asked for ships to
-  overlap less. The measurements are in
-  docs/notes/2026-10-02-ship-hulls.md.
-- What is not changed: the cells a ship holds, the ground it may sail
-  on and the route planner, which plans in the class's cells as before.
-- Citation: the manual describes no rule for spacing. Owner request,
-  2026-10-02.
+- Change: a ship, a unit whose move class needs a minimum water depth,
+  keeps its hull off other ships' hulls. The hull is a line from bow to
+  stern with half the beam round it, read from the ship's 3DO. Its
+  cells, its water and the route planner are unchanged.
+  - A step that brings two hulls within 2 px is refused unless it takes
+    the ship no closer, a turn that swings a hull 3 px into another is
+    held, and ships give way by their hulls. Two ships that close no
+    ground for 8 s, one pressing on the other, go by the cells alone, as
+    in the original.
+  - A ship stopped short of its point by another settles within two of
+    its own lengths, or behind one of its own that ended a move there.
+  - A yard begins a ship once the last hull is off the pad and sends
+    each to a spot it can reach, clear of the yard and other ships and
+    96 px off the next ship's hull, one ahead with no hull in the way
+    first. It moves its side's idle ships off the pad's water and out of
+    the way of ships on the pad or bound for a point within 1280 px of
+    it other than its rally point, where ships stay unless on the pad.
+    The original looks again after a random 7 to 21 frames and moves
+    nothing (legacy:9373-9382), and a hull the yard cannot move leaves
+    the pad to its cell test (legacy:9363-9382).
+  - An aura between two ships reaches from hull line to hull line, not
+    centre to centre (legacy:237131-237139).
+- Why: the original keeps units apart by their move class's cells alone
+  (legacy:163193-163195, legacy:219329-219340), and a ship's class is a
+  square one and a half to three times shorter than its hull, so fleets
+  sat bow into stern.
+- Citation: docs/notes/pathing.md, "Ship hulls". The manual describes no
+  rule for spacing.
 
 ## M-013: A build order goes to one of the builders it names
 
 - Change: a placing click with several builders selected gives the
-  building, or the summons, to the first of them that can take its
-  site. The others keep what they were doing.
-- Why: the original gives the order to every builder selected that can
-  build the def (legacy:39200-39248), and the latecomers help the first
-  frame up. Here the first takes the order, and a player sends more
-  builders with a click on the frame once it is up. A builder given the
-  same order before the frame is up joins it when it gets there, which
-  is ours. The original's builder reports the target blocked
-  (legacy:12096-12116).
-- Citation: the manual's walkthrough in section III sends a second
-  builder to assist with a click on the frame, which still works. The
-  original's rule is in docs/notes/2026-10-04-a-summons-without-end.md.
+  building, or the summons, to the first of them that can take its site,
+  and the others keep what they were doing. A builder given the same
+  order before the frame is up joins it there, where the original's
+  reports the target blocked (legacy:12096-12116).
+- Why: the original gives the order to every builder that can build it
+  (legacy:39200-39248), and the latecomers help the first frame up. Here
+  more builders are sent with a click on the frame.
+- Citation: the walkthrough in manual section III sends a second builder
+  with a click on the frame, which still works. docs/notes/economy.md,
+  "A summons without end", has the original's rule.
 
 ## M-014: Flyers in the air count each other in pairs
 
 - Change: once a frame each airborne flyer counts the airborne flyers
-  whose footprints share a cell with its own, up to seven, and its
-  crowd score moves by that count. The original keeps one flyer per
-  cell of an air layer. A second flyer over the cell goes on the
-  holder's list and the holder on its, and the cell passes to one of
-  them at random, so a third sees the holder and those on its list that
-  cover the cell (legacy:218336-218512). One smaller difference goes
-  with it. A move ends on its ring round the point as
-  clicked, where the original first moves the point onto its
+  whose footprints share a cell with its own, up to seven, and its crowd
+  score moves by that count. The original holds one flyer per cell of an
+  air layer, with the others on lists and the cell passing among them at
+  random (legacy:218336-218512). A move also ends on its ring round the
+  point as clicked, where the original first snaps the point to its
   footprint's cell lattice, at most 8 px away (legacy:25075-25083).
 - Why: the pairs give the original's count for a pair and for a flock
-  without an air layer in the world or a draw from the generator for
-  every shared cell. The lattice step moves a point by less than the
-  ring's smallest size.
-- Citation: the manual describes no rule for it. The original's rules
-  are in docs/notes/2026-10-04-air-traffic.md.
+  without an air layer or a random draw per shared cell, and the snap is
+  smaller than the ring.
+- Citation: docs/notes/pathing.md, "Air traffic". The manual describes
+  no rule for it.
 
 ## M-015: A builder waits for units on its site in silence
 
-- Change: a builder that finds only units on its site when it gets there
-  looks again every 20 ticks. The frame goes up as soon as no unit stands
-  on the site, and the order ends after 30 looks. The waiting and the
-  giving up are silent. The cursor still refuses a building over a unit
-  the player can see, so a player meets this when the unit walks on after
-  the click, or the site was out of sight. A summons is placed over units
-  and always can.
+- Change: a builder that finds only units on its site looks again every
+  20 ticks, puts the frame up once no unit stands there and ends the
+  order after 30 looks, all in silence. The cursor still refuses a
+  building over a unit the player can see, and a summons is placed over
+  units.
 - Why: the original says it is waiting at the sixth look and that the
-  target is blocked when it gives up (legacy:12088-12116). The chatter
-  has no counterpart in the engine yet.
-- Citation: the manual describes no rule for this. The original's rule
-  is in docs/notes/2026-10-04-summons-placement.md.
+  target is blocked when it gives up (legacy:12088-12116), chatter the
+  engine has no counterpart for yet.
+- Citation: docs/notes/economy.md, "Placing a summons". The manual
+  describes no rule for this.
 
 ## M-016: A new unit picks its spot off the pad once
 
 - Change: a unit a factory finishes with no orders of the factory's to
   carry walks to the nearest clear spot in a ring round the factory, as
-  the original sends it, and passes over a spot another unit is already
-  walking to. The spot is chosen once, when the unit is finished. A
-  flyer flies to a random bearing as far out as a walker goes and all
-  the way to its point before it looks for ground.
-- Why: the original finds the spot by a route search and, when the walk
-  there is cut short, searches again a few times (legacy:13813-13879).
-  Two units finished one after the other then end on spots of their own.
-  Passing over a spot already spoken for gets the same end without a
-  second search and the state it would keep. The original takes a size
-  term it does not name off a flyer's range (legacy:13822-13846). Half
-  the factory's footprint, the stand-in the walker's ring uses, would
-  set a flyer down inside the factory and on its own pad, where it holds
-  up the next unit for good.
-- Citation: the manual describes no rule for this. The getbuilt mission
-  that sends the unit off is at legacy:9694-9711.
+  the original sends it, chosen once and passing over a spot another
+  unit is walking to. A flyer flies to a random bearing as far out as a
+  walker goes before it looks for ground.
+- Why: the original searches again when the walk is cut short
+  (legacy:13813-13879), and passing over a taken spot gives two units
+  their own spots without a second search. The original takes an
+  unknown size term off a flyer's range (legacy:13822-13846), and half
+  the factory's footprint, which the walker's ring uses, would set a
+  flyer down on its own pad.
+- Citation: the getbuilt mission that sends the unit off,
+  legacy:9694-9711. The manual describes no rule for this.
 
 ## D-006: Chat messages expire on the wall clock
 
-- Change: A chat message leaves the message list when it has been on
-  screen for (Text Delay + 1) seconds of wall clock, measured off the
-  frame timer. The original counts 30 Hz simulation ticks and drops the
-  oldest entry when `entryTick + (TextScrollTime + 1) * 30` falls
-  behind the current tick (legacy:205907-205910).
-- Why: Counting ticks would make the chat list a reader of simulation
-  state, and the standing rule is that nothing about chat touches the
-  deterministic simulation. Our tick rate is 60 Hz rather than 30 Hz
-  (D-001), so the tick count would have needed converting anyway. Wall
-  clock gives the same 1 to 21 seconds a player sees.
+- Change: A chat message leaves the list after (Text Delay + 1) seconds
+  of wall clock. The original counts 30 Hz ticks and drops the oldest
+  entry when `entryTick + (TextScrollTime + 1) * 30` falls behind the
+  current tick (legacy:205907-205910).
+- Why: chat may not touch the deterministic simulation, and our tick is
+  60 Hz (D-001). A player sees the same 1 to 21 seconds.
 - Citation: Manual §I Game Options describes Text Delay in seconds.
 
 ## D-007: Chat options ship on, at 5 and at 8
@@ -1764,337 +1080,226 @@ Format per entry:
 - Change: `ChatLevel` (Unit Chat On) ships on, `TextScrollTime` (Text
   Delay) at 5 and `MaxTextLines` (Text Lines) at 8, in `options.cfg`
   under the original's own key names (legacy:131691-131696).
-- Why: The original's factory values cannot be read out of the
-  behaviour reference, because its Set Defaults goes through a virtual
-  call the reference does not resolve. Two of the three settings have a
-  value that makes chat look broken rather than off: Text Lines at 0
-  stores and draws nothing at all, and Unit Chat On off hides your own
-  line, since a local copy is stored as your own message and only a
-  received one bypasses that filter (legacy:206003-206004). Picking
-  visible values is the safer guess.
+- Why: the original's factory values are not known, and Text Lines at 0
+  or Unit Chat On off make chat look broken, the second by hiding your
+  own line (legacy:206003-206004), so visible values are the safer
+  guess.
 - Citation: Manual §I Game Options lists all three sliders and the
   checkbox but gives no factory values.
 
 ## D-008: Console commands run on every machine
 
 - Change: A chat line whose first non space character is `+` runs the
-  command it names and then goes out like any other line, so everyone
-  sees `Player: +NOWISEE` (legacy:154470-154500). A command that
-  changes the battle is sent as a command every machine applies on the
-  same tick, where the original changed only the machine that typed it.
-  `+IWin` takes the army of every seat at war with the typist, where
-  the original killed player 0 or 1. `+IWin` and `+ILose` then end the
-  battle on the spot with the typist's own result, as the original
-  does, and a mission ends whatever its objectives say. In a skirmish
-  the beaten seats count as gone at once and the shared rule ends the
-  battle on the same tick, so one player's `+ILose` does not stop a
-  battle two others still fight. `+ShareManaLimit` and
-  `+ShareManaPct` set the typist's own sharing. `+Radar` and `+View`
-  change only the typist's screen. `+IWin`, `+ILose`, `+Kill`,
-  `+NoMana`, `+Gods`, `+BurnOne`, `+BurnAll` and `+LotsaBlood` sit in
-  the original's developer table and here need only the room's power
-  codes, like the rest. `+ShootAll` sits in the open table beside
-  `+GiveMana` and needs none. A refused power code, and a command with
-  nothing here to act on yet, leave the typist a note. Those are
-  `+ShootAll`, `+Gods`, `+BurnOne`, `+BurnAll`, `+LotsaBlood`,
-  `+Contour`, `+ShowRanges`, `+Logo` and `+NetStats`.
-- Why: Lockstep has no machine that may change the battle alone, so a
-  power code is a command like a move order, and the room option that
-  allows them is checked where the command runs. The original kept its
-  toggles per machine, which a shared simulation cannot do.
-- Citation: Manual §I Game Options is silent on console commands. The
-  command table is registered at legacy:38938-38946.
+  command it names and goes out like any other line, so everyone sees
+  `Player: +NOWISEE` (legacy:154470-154500). A command that changes the
+  battle runs on every machine on the same tick, where the original
+  changed only the typist's.
+  - `+IWin` takes the army of every seat at war with the typist, where
+    the original killed player 0 or 1. `+IWin` and `+ILose` end the
+    battle, a mission whatever its objectives, with the typist's result,
+    as in the original. In a skirmish the beaten seats count as gone and
+    the shared rule ends it, so one `+ILose` does not stop two others.
+  - `+ShareManaLimit`, `+ShareManaPct`, `+Radar` and `+View` act for the
+    typist alone.
+  - The developer table's `+IWin`, `+ILose`, `+Kill`, `+NoMana`,
+    `+Gods`, `+BurnOne`, `+BurnAll` and `+LotsaBlood` need only the
+    room's power codes, like the rest, and `+ShootAll`, beside
+    `+GiveMana` in the open table, needs none.
+  - A refused power code leaves the typist a note, as do `+ShootAll`,
+    `+Gods`, `+BurnOne`, `+BurnAll`, `+LotsaBlood`, `+Contour`,
+    `+ShowRanges`, `+Logo` and `+NetStats`, which act on nothing here
+    yet.
+- Why: in lockstep no machine may change the battle alone, so a power
+  code is a command like a move order, and the room option that allows
+  it is checked where it runs.
+- Citation: the command table, legacy:38938-38946. Manual §I Game
+  Options is silent on console commands.
 
-## D-009: A save does not carry the command queue
+## D-009: A save carries the command queue
 
-- Change: A saved game carries the simulation but not the command
-  queue: neither the commands waiting in `TAK_CmdQueue` for a tick that
-  has not arrived, nor the queue's own tick counter. A load starts the
-  queue empty at the restored simulation tick.
-- Why: In a single player game the delay is zero, so every command
-  submitted in a tick runs in that same tick and `TAK_CmdQueue_Pending`
-  is always zero when a save can be taken. A `CMDQ` section would
-  always be empty and a refusal for a non empty queue would never
-  fire, so neither answer could be tested. An untestable section that
-  claims to carry state is worse than a gap that is written down.
-- When this bites: the moment a lockstep delay exists. With a non zero
-  delay, a save taken between a player clicking and the command running
-  loses that command, and the player sees an order they gave quietly
-  not happen. Two candidate answers, both untestable today and neither
-  chosen: carry the pending commands and the queue tick in a `CMDQ`
-  section, or refuse to save while the queue has anything pending.
-  Whichever is picked, it needs a test with a delay set, which is what
-  `TAK_CmdQueue_SetDelay` exists for.
+- Change: none now. A saved game carries the orders still waiting for
+  their tick, and the queue's tick counter, in its `CMDQ` section
+  (src/game/savegame.c), so a load loses no order given before the save.
+  The entry keeps its number because older pull requests cite it.
 - Citation: none. The original is single player and hot seat on this
   path, and the manual says nothing about what a save holds.
 
 ## D-010: A browser can write a saved game out to a file
 
 - Change: In a browser the page carries a Saved games panel, beside the
-  link that forgets the game files. It lists what is in browser storage
-  and writes any of it out as an .oksave file, and it reads one back.
-  An import never overwrites: a name already taken gets a "(2)". The
-  original has no such screen, because on a desktop the saved game
-  directory is already a directory of files the player owns.
-- Why: a save made in a browser is not a file the player owns. Clearing
-  site data takes it, an evicted bucket takes it, and it cannot be
-  carried to another machine or another browser. Without a way out, the
-  same player who saved a campaign can lose it to a setting they
-  changed for an unrelated reason and never see a warning.
-- Where it is: the page, not the game. The engine's own save and load
-  dialogs are the original's, unchanged, and nothing about this is
-  reachable on a desktop build.
+  link that forgets the game files, that writes any save in browser
+  storage out as an .oksave file and reads one back without overwriting,
+  a taken name getting a "(2)". The engine's own save and load dialogs
+  are the original's, and a desktop build has no panel.
+- Why: a save in a browser is not a file the player owns. Clearing site
+  data or an evicted bucket takes it, and it cannot move to another
+  machine or browser.
 - Citation: Manual §III Saving and Loading describes files in a
-  directory, which is what a desktop has and a browser does not.
+  directory, which a desktop has and a browser does not.
 
 ## D-011: Only a campaign the translate table names is offered
 
 - Change: the Book of Deeds lists a `camps\*.tdf` file only when the
-  translate table has a name for it. The expansion ships `ipalt.tdf`
-  beside `the iron plague.tdf`, the same twenty five chapters with
-  another last one, and no table names it, so it is not offered.
-- Why: this entry was written, withdrawn and is back. It was withdrawn
-  because the chapter art has a catch-all frame for a campaign it does
-  not know (legacy:144460-144495), which read as the original expecting
-  such files. A playtester with the retail game reports that its
-  chooser shows Book of Darien and The Iron Plague and never
-  `ipalt.tdf`. The scan in the listing adds every file it finds
-  (legacy:141576-141720) and a lookup that misses hands back the key
-  (legacy:267931), so the difference is in the original's directory
-  scan, which is not in the listing. The retail behaviour is the one to
-  match and the table is the test that gives it.
+  translate table names it, so the expansion's `ipalt.tdf`, the chapters
+  of `the iron plague.tdf` with another last one, is not offered.
+- Why: the retail game's chooser, seen in playtesting, never shows
+  `ipalt.tdf`, whatever the chapter art's catch-all frame
+  (legacy:144460-144495) suggests. The original adds every file its scan
+  finds and a missed lookup hands back the key, so it filters in a
+  directory scan that has no anchor, and the table gives the same
+  result.
 - Citation: legacy:141576-141720 the scan, legacy:267931 the lookup.
 
 ## D-012: The exit caption says Desktop rather than Windows
 
 - Change: the main menu's help text for the exit door reads "Exit to
-  Desktop". The original reads "Exit to Windows".
-- Why: the engine runs natively on Windows, macOS and Linux, and in a
-  browser, and on three of the four the old caption names a system the
-  player is not returning to. It is a string in the help strip, not a
-  rule, a number or a piece of art. The `ExitToWindows` widget name in
-  the game data and the in game menu's own caption are untouched.
-  Contributed in #204.
+  Desktop" where the original's reads "Exit to Windows". The
+  `ExitToWindows` widget name and the in game menu's caption are
+  untouched.
+- Why: the engine runs on Windows, macOS, Linux and in a browser, and on
+  three of the four the old caption names the wrong system. It is a help
+  string, not a rule.
 - Citation: Manual §II, the main menu, names the door Exit to Windows.
 
 ## D-013: Two main menu doors rest a few pixels off their hit rect anchor
 
-- Change: the machine door's sheet is drawn 2 px left and 3 px up of
-  the hit rect anchor, and the knight's 3 px right and 1 px up. The
-  girl's sheet sits on the anchor.
-- Why: a door rests on its sheet and plays a clip when hovered. The
-  clip is drawn where the original draws it, at the widget's own x and
-  y (legacy:35248, 147846). Where the original puts the sheet cannot be
-  read from the reference. Anchoring it on the hit rect fits the girl
-  to the pixel against every one of her clips, and leaves the machine
-  and the knight 2 to 3 px off theirs, so a hover moved the door. The
-  offsets are the best fit of each sheet against the first and last
-  frames of its clips. If the original shows the same small jump, this
-  is where we differ from it.
-- Citation: none. The manual does not describe the menu at this
-  level. Issue #212 carries the measurements.
+- Change: the machine door's sheet is drawn 2 px left and 3 px up of the
+  hit rect anchor, and the knight's 3 px right and 1 px up. The girl's
+  sits on the anchor.
+- Why: the hover clips are drawn where the original draws them
+  (legacy:35248, legacy:147846), but where it rests a sheet is not
+  known. The offsets fit each sheet to its clips, so a hover does not
+  move the door. If the original's doors jump the same way, this is
+  where ours differ.
+- Citation: issue #212. The manual does not describe the menu at this
+  level.
 
 ## D-014: Sight does not grow or shrink with the ground it falls on
 
-- Change: a unit reveals every fog cell inside its sightdistance,
-  plus the nine cells around it. The height of the ground plays no
-  part in what is revealed.
-- Why: the original scales the radius by height instead of blocking
-  on it. It takes the unit's eye, which is its position plus the
-  height of its model, subtracts the lowest ground in the cell it is
-  lighting, and multiplies by sightdistance over the model height
-  times 32. A cell whose ground stands above the eye is not lit at
-  all, and the whole thing is capped at twice sightdistance
-  (legacy:167413-167423). On level ground the model height cancels
-  and the radius is exactly sightdistance, which is what we compute,
-  so we match the original wherever the ground is flat. On a slope we
-  differ: the original sees further downhill and less far uphill.
-  The term needs the height of the unit's 3DO, which the original
-  keeps on the unit type at +0x14c and fills from the model at load,
-  and a record of the ground under each fog cell, which the original
-  builds from the heightmap in projected screen space
-  (legacy:224395-224470). The simulation now reads a unit's model file
-  itself, apart from the renderer, for the span a shot strikes
-  (docs/notes/2026-09-27-shots-meet-what-they-fly-into.md), so the
-  model is no longer out of its reach. The ground record, and the
-  stamp that reads both, are still to be written.
-  The same number drives the third trigger on the original's
-  re-stamp, which fires when the unit's eye moves by more than 5
-  (legacy:167455-167456). With no eye height there is nothing for
-  that trigger to watch, so our reveal is re-stamped on a fog cell
-  change alone.
-- Citation: the manual is silent on sight at this level of detail.
+- Change: a unit reveals every fog cell inside its sightdistance, plus
+  the nine cells around it, whatever the ground's height, and stamps
+  again only on a fog cell change. The original scales the radius by the
+  eye's height over each cell's lowest ground, seeing further downhill
+  and less uphill, lighting no cell above the eye and reaching at most
+  twice sightdistance (legacy:167413-167423), and stamps again when the
+  eye moves by more than 5 (legacy:167455-167456). On level ground the
+  two agree.
+- Why: the height term needs each unit's model height and a record of the
+  ground under each fog cell, which the original builds from the
+  heightmap (legacy:224395-224470), and that record and its stamp are
+  still to be written.
+- Citation: docs/notes/2026-09-04-combat-mechanics.md on the simulation
+  reading a unit's model. The manual is silent on sight at this level of
+  detail.
+
 ## D-015: The sweep clears a building you own
 
-- Change: with the broom armed, a click on a building of your own
-  sends every selected reclaimer to take it down, and the mana comes
-  back as its hit points go, the same pro rata payback a cleared tree
-  gives. The original gives no order at all on a click that lands on a
-  live unit. An ally's building, an enemy's building and anything that
-  walks are refused, so the broom cannot be used as a weapon that pays
-  you the target's build cost. A building still going up is allowed and
-  gives back what has been spent on it so far. A lodestone is a
-  building you own like any other, so the broom takes it. A monarch is
-  not a building, it walks (`canmove` in `araking.fbi`), so the broom
-  refuses it.
-- Why: asked for in issue #235. Clearing a building you no longer want
-  is what players expect of a broom, and without it a misplaced
-  building is stuck on the map for good.
-- Citation: the original's CLEAR order resolves only on the map cell
-  under the click. It matches three feature flags in turn, a
-  resurrectable corpse, an animatable ruin, then a reclaimable feature
-  (legacy:187131-187199). All three read the feature table
-  (legacy:127043-127046) and the flags come straight off the feature
-  TDF: `reclaimable` at legacy:127349, `resurrectable` at
-  legacy:127369, `animatable` at legacy:127371. Nothing in that switch
-  looks at the unit under the cursor, and when the cell matches none of
-  the three the order breaks out and the caller is told no order
-  applies (legacy:187201-187202, legacy:187219-187221). The reclaim
-  mission agrees: it resolves the cell and gives up unless a
-  reclaimable feature is there, with the "Clearing failed" line
-  (legacy:32284-32286, legacy:32278-32281, legacy:32364-32365). So the
-  original sweeps no building of any owner, and the manual has no
-  Sweep rule to cite against.
+- Change: with the broom armed, a click on a building of your own,
+  finished or not and lodestones included, sends the selected reclaimers
+  to take it down, its mana coming back pro rata as a cleared tree's
+  does. An ally's or an enemy's building and anything that walks, the
+  monarch included (`canmove` in `araking.fbi`), are refused.
+- Why: without it a misplaced building is stuck on the map for good.
+- Citation: issue #235. The original's CLEAR order reads only the map
+  cell, for a resurrectable corpse, an animatable ruin or a reclaimable
+  feature (legacy:187131-187199, legacy:127043-127046, `reclaimable` at
+  legacy:127349, `resurrectable` at legacy:127369, `animatable` at
+  legacy:127371), and gives no order otherwise (legacy:187201-187202,
+  legacy:187219-187221). Its reclaim gives up with "Clearing failed"
+  unless a reclaimable feature is there (legacy:32284-32286,
+  legacy:32278-32281, legacy:32364-32365). The manual has no Sweep rule.
 
 ## D-016: A caster checks it can pay for its spell every tick
 
-- Change: a caster that cannot pay for the weapon slot it has
-  selected drops to the next slot down it can pay for on the tick it
-  comes up short, whether or not it has just fired.
-- Why: the original runs the same downward walk, one slot at a time
-  from the current slot, stopping at the primary, and commits the
-  switch to the unit. It runs it only in the branch that has just
-  spawned a mana shot (legacy:245905-245913), so a caster is
-  downgraded on the shot that empties its reserve and at no other
-  time. One that came up short another way, a reserve drained by
-  something else or a slot picked while the reserve was low, keeps a
-  slot it cannot fire and stands in front of its target. The walk and
-  the slot it lands on are the original's, so the two agree wherever
-  the original runs the walk at all. The owner asked for the wider
-  rule in issue #234.
-- Citation: the manual does not describe weapon switching at this
-  level of detail.
+- Change: a caster that cannot pay for its selected weapon slot walks
+  down, one slot at a time and stopping at the primary, to the next it
+  can pay for on the tick it comes up short, not only after a shot.
+- Why: the original walks down only after spawning a mana shot
+  (legacy:245905-245913), so a caster drained some other way keeps a
+  slot it cannot fire and stands in front of its target.
+- Citation: issue #234. The manual does not describe weapon switching at
+  this level of detail.
+
 ## D-017: Campaign progress is a line in the settings file
 
-- Change: the furthest chapter a player has reached is kept as a
-  `HighWater.<player>.<book>` line in options.cfg. The original keeps
-  it as a save file, `highwater.tak` for Book of Darien and
-  `highwaterEXP<book>.tak` for any other, under
-  `savedgames\<player>\`.
-- Why: the fact stored is the same, written when a mission is won and
-  read when the book opens. What differs is the file it lives in. The
-  port has no per player saved game directory, and in a browser the
-  settings file is restored into the filesystem before the first frame
-  where saved games are copied in one promise at a time while a dialog
-  waits. Progress has to be there when the book draws, so it goes where
-  the settings go. A player whose name is longer than the key allows
-  would share a line with another of the same first 31 characters.
+- Change: the furthest chapter a player has reached is a
+  `HighWater.<player>.<book>` line in options.cfg, where the original
+  writes `highwater.tak`, or `highwaterEXP<book>.tak` for a book other
+  than Book of Darien, under `savedgames\<player>\`. Names alike in
+  their first 31 characters share a line.
+- Why: the port has no per player saved game directory, and in a browser
+  the settings file is restored before the first frame and saved games
+  only later, while progress has to be there when the book draws.
 - Citation: legacy:153802-153926 writes the highwater save,
-  legacy:144384-144422 reads it back, legacy:144073 reads the
-  favourite campaign beside it.
+  legacy:144384-144422 reads it back, legacy:144073 reads the favourite
+  campaign beside it.
 
 ## D-018: A mission's order lists and map script, and what they leave out
 
-- Change: a placed unit's `InitialMission` is a list the unit works
-  through one order at a time, and a mission's `missions\<stem>.cob` is
-  run on the unit script machine with a host of its own, as the
-  original does both. Where ours differs:
-  - A patrol of several points is walked by the list, which sends the
-    unit's own patrol order to each point in turn with the next queued
-    behind it, and goes on once the unit is within 64 pixels or has
-    turned for the next point. The original queues patrol orders on the
-    unit.
-  - `w N` is taken as N seconds, which is how the order was documented
-    for Total Annihilation. The original scales the number in floating
-    point code the listing does not show, so the unit is inferred.
-  - `wa` ends when the watched unit's health drops. The original wakes
-    the order on the unit's attacked event, which a miss that does no
-    damage would also raise.
-  - `a TYPE` picks the nearest unit of the type. The original adds a
-    random part to each distance first, up to half of it.
-  - The rest of a list waits behind `a X Z`, an attack on the ground
-    that does not end, as behind an attack on a named unit. What
-    follows it in the original was not seen. No shipped list has a
-    step after it.
-  - `i NAME` puts the unit aboard at once, as the original does, and
-    the rest of its list waits until it is set down. A `w` still runs
-    out aboard. The original runs the rest of the list while the unit
-    rides and the unit goes where its transport goes
-    (legacy:182203-182225, legacy:184105-184124).
-  - `c`, `s` and `v` are read and dropped. Nothing here makes a unit
-    unselectable while its list runs, so there is nothing for `s` to
-    undo, and the speed `v` sets has no field yet.
-  - `SetAttribute` sets health, mana, and the attack and armour scales
-    of D-020.
-  - `ReadValue` and `WriteValue`, which keep a number between missions,
-    are not in. No shipped script of the first campaign calls them.
-  - A trigger circle is measured with the original's distance, the
-    longer side plus a quarter of the shorter, and a unit's square is
-    its position divided by 16.
-- Why: the order list and the script are what a mission is made of.
-  Without the script the first mission has no Emen in it and cannot be
-  won, and without the list every garrison on the map attacks in the
-  first second. Read as written, `o N` is the unit's standing orders.
-  The loader had read it as a change of owner, which handed Veruna's
-  three transports in the fourth mission to the player. The parts left
-  out are the ones that need something the engine does not have yet,
-  and each is listed so it can be found again.
-- Citation: legacy:228246-228770 reads an order list, legacy:8920-8958
-  is the wait and legacy:8963-9031 the attack on a type,
-  legacy:233216 the standing orders. legacy:177876 makes the map
-  script's engine, legacy:178336-178652 is its command host,
-  legacy:178722-178822 its value ports, legacy:178218-178250 the
-  created and trigger events, legacy:177932 the destroyed one and
-  legacy:178706 the verdict. legacy:306687-306699 is the order a query
-  with arguments takes them in, port first.
+- Change: a placed unit works through its `InitialMission` list one
+  order at a time, and a mission's `missions\<stem>.cob` runs on the
+  unit script machine with a host of its own, as in the original. Where
+  ours differs:
+  - A patrol list sends the unit's patrol order to each point in turn,
+    going on within 64 pixels or once it turns for the next. The
+    original queues the patrol orders on the unit.
+  - `w N` is N seconds, as Total Annihilation documented it. The
+    original's time unit is inferred.
+  - `wa` ends when the watched unit's health drops, where the original
+    also wakes on a miss that does no damage.
+  - `a TYPE` takes the nearest unit of the type, where the original
+    first adds a random part, up to half, to each distance.
+  - The list waits behind `a X Z`, an endless attack on the ground. What
+    the original does next is not known, and no shipped list goes on.
+  - `i NAME` boards at once and the list waits until the unit is set
+    down, though a `w` runs out aboard. The original runs the list
+    aboard (legacy:182203-182225, legacy:184105-184124).
+  - `c`, `s` and `v` are read and dropped. Nothing makes a unit
+    unselectable for `s` to undo, and the speed `v` sets has no field.
+  - `SetAttribute` sets health, mana and the scales of D-020.
+    `ReadValue` and `WriteValue` are not in, and no shipped script of
+    the first campaign calls them.
+  - A trigger circle uses the original's distance, the longer side plus
+    a quarter of the shorter, and a unit's square is its position over
+    16.
+- Why: the parts left out need something the engine does not have yet.
+  `o N` is the unit's standing orders, not a change of owner.
+- Citation: legacy:228246-228770 the order list, legacy:8920-8958 the
+  wait, legacy:8963-9031 the attack on a type, legacy:233216 the
+  standing orders. The map script's engine is made at legacy:177876,
+  its command host is legacy:178336-178652, its value ports
+  legacy:178722-178822, its created and trigger events
+  legacy:178218-178250, its destroyed event legacy:177932 and its
+  verdict legacy:178706. legacy:306687-306699 is the order a query takes
+  its arguments in, port first.
 
 ## D-019: The briefing is put away with a click or one of four keys
 
-- Change: a campaign mission opens paused under `briefing.gui`, as the
-  original's does, with the chapter, the chapter's title and the
-  mission's text dealt out over the panel's eight lines. It closes, and
-  the clock starts, on a press of the mouse or of Enter, Escape, Space
-  or Pause. F2 raises it again during the mission, and putting it away
-  then leaves the clock as F2 found it, so a paused battle stays paused.
-  While it is up it owns the keys and the mouse. The key or press that
-  puts it away goes no further: Enter opens no chat line, F1 opens no
-  menu under it, and the click gives the selection no order. A press
-  held on the battle while it comes up gives no order when it is let go.
-- Why: the original builds the panel as the battle screen is built and
-  pauses the game under it. How it is dismissed is in a handler the
-  listing does not name, so the keys are ours. The panel has no button
-  of its own and says Paused across its top, which is why Pause is one
-  of them. A battle brought back out of a save opens under it as well,
-  since the battle screen is built the same way for both.
-- Citation: legacy:153071-153079 opens it for a campaign mission that
-  has text, legacy:154523-154602 fills the lines and pauses,
-  legacy:154608-154620 is the line setter, legacy:167978-168000 reads
-  the mission's text file and trims its end.
+- Change: a campaign mission opens paused under `briefing.gui`, as in
+  the original, and a mouse press or Enter, Escape, Space or Pause puts
+  it away and starts the clock. F2 raises it again, and putting it away
+  then leaves the clock as F2 found it. While it is up it takes every
+  key and press, so the one that closes it, or one held as it came up,
+  gives no order and opens no chat or menu. A battle loaded from a save
+  opens under it too.
+- Why: how the original dismisses it is not known. The panel has no
+  button and says Paused across its top, hence Pause.
+- Citation: legacy:153071-153079 opens it, legacy:154523-154602 fills
+  the lines and pauses, legacy:154608-154620 sets a line,
+  legacy:167978-168000 reads the mission's text.
 
 ## D-020: The attack and armour scales are applied by inference
 
-- Change: a unit carries an attack scale and an armour scale, in
-  percent, 100 each unless a mission's script sets them with
-  `SetAttribute AttackPercentage` or `SetAttribute ArmorPercentage`.
-  Every hit is the weapon's figure times the attacker's attack scale
-  and divided by the victim's armour scale, and never less than one
-  point when there was one. Both scales are hashed and saved. Veteran
-  levels multiply in on top, attack and armour each times 1 + 0.1 a
-  level to level 10. The multiply into the same attack and armour
-  fields is the original's (legacy:232971-232984,
-  legacy:235826-235862). That a hit reads those fields is inferred, as
-  for the scales. The engine keeps the level's factor in integer
-  tenths, which avoids the float loss at levels 3 and 9.
-- Why: the original keeps the two as floats on the unit, attack at
-  +0xe8 and armour at +0xec, percent times 0.01 (legacy:178579-178588),
-  and a placed unit's own percentages multiply into the same fields as
-  it spawns (legacy:173251-173252). Where the damage path reads them is
-  inside floating point code the listing does not carry: at
-  legacy:245334 the hit looks up the weapon's damage and the next thing
-  it has is a `__ftol()` of a value the legacy reference lost. The formula is
-  therefore the natural reading of the two names, not a citation. Seven
-  base missions use them, on the hero the mission is about, and with
-  them dropped Emen died one and a half times too fast.
+- Change: a unit's attack and armour scales, in percent and 100 unless a
+  script sets them with `SetAttribute AttackPercentage` or
+  `SetAttribute ArmorPercentage`, make a hit the weapon's figure times
+  the attack scale over the victim's armour scale, never under one point
+  when there was any. Both are hashed and saved. Veteran levels multiply
+  in by 1 + 0.1 a level to level 10, in integer tenths, into the same
+  fields as the original's (legacy:232971-232984, legacy:235826-235862).
+- Why: the original keeps both on the unit (legacy:178579-178588,
+  legacy:173251-173252), but how its hit reads them is not known
+  (legacy:245334), so the formula is read from their names.
 - Citation: legacy:178530-178600 the SetAttribute command,
   legacy:173251-173252 the placement percentages, legacy:245324-245345
   the hit.
@@ -2102,531 +1307,356 @@ Format per entry:
 ## D-021: Clearing a tree or a rock pays its mana
 
 - Change: a builder clearing a map feature pays its seat the feature's
-  `energy` as it goes, pro rata, the way D-015's broom pays back a
-  building. A tree or a rock is worth a few hundred mana.
-- Why: the owner's call, when the mana audit (#301) found the original
-  pays nothing for it. Clearing is slow work for a builder that could be
-  building, and the payment makes it worth a player's while.
-- Citation: the original parses `energy` into the feature table
-  (legacy:127334) and nothing reads it. Its reclaim order counts down
-  and removes the feature, and no mana changes hands
+  `energy` as it goes, pro rata, as D-015's broom pays back a building.
+  A tree or a rock is worth a few hundred mana.
+- Why: clearing is slow work for a builder that could be building, and
+  the payment makes it worth a player's while.
+- Citation: #301, the mana audit. The original reads `energy` into the
+  feature table (legacy:127334), but its reclaim pays nothing
   (legacy:32366-32400).
 
 ## D-022: A building can be placed turned
 
-- Change: while a building's ghost is armed in the 3D view, R or ] turns
-  it a quarter turn clockwise and Shift+R or [ turns it back. The classic
-  2D view has no camera to turn, so there the keys do nothing and every
-  building is placed unturned, and going back to 2D puts an armed turned
-  ghost back to its original orientation. The 2D view still draws a
-  building that someone else placed turned, so a match can mix
-  clients. The ghost, the site test and the finished building all take
-  the facing. A quarter or three quarter turn swaps the
-  footprint's sides and the yardmap turns with the model, so the cells a
-  building blocks, the ground it is judged on, its water cells and the
-  way a builder closes on it all follow it round. A new placement starts
-  unturned, which is the original's orientation. A lodestone never
-  turns, since its yard has to cover the pad it stands on. The build
-  order carries the facing in its argument, a save keeps it and the
-  state hash counts it, and a client that sends it says so in its hello
-  so the lobby keeps it apart from older clients.
-  A turned building's scripts read the orientation it would have
-  unturned, since they counter-turn pieces by it (the keep's build pad)
-  for the one heading the original places at, and a factory never
-  swings its base toward its own pad. That last is parity at facing 0
-  as well: an unturned VERCASTL used to swing about 0.44 degrees toward
-  its off-centre build emitter with every unit it made, and the original
-  never turns a building.
-- Why: the owner's call, for the 3D view and the remaster. The original
-  places every building facing south.
-- Citation: keys.tdf binds nothing to R, [ or ]. The original's
-  placement turns the cursor into the footprint's top left cell and
-  reads the centre back (legacy:184168, :184216), which a turned
-  footprint does with its sides swapped.
+- Change: in the 3D view R or ] turns an armed building's ghost a
+  quarter turn clockwise and Shift+R or [ turns it back. The footprint
+  and yardmap turn with it, and with them the site test, the blocked and
+  water cells and a builder's approach. The order, the save, the state
+  hash and the client's hello carry the facing. A new placement starts
+  unturned, a lodestone never turns, and the 2D view places unturned but
+  draws turned buildings, so a match can mix clients. A turned
+  building's scripts read its unturned orientation, and a factory never
+  swings its base toward its own pad.
+- Why: a choice for the 3D view and the remaster. The original places
+  every building facing south.
+- Citation: keys.tdf binds nothing to R, [ or ]. The original reads a
+  footprint's centre back from its top left cell (legacy:184168,
+  legacy:184216), which a turned footprint does with its sides swapped.
 
 ## D-023: A formation move from a front end
 
 - Change: a front end can send one order that walks each unit it names
-  to a point of its own. Three things may ride with it. A heading turns
-  each unit to face it once it arrives, and the unit keeps that heading
-  while it stands, turning back to it after a fight it picked for
-  itself, until it is given another order. A group pace holds every
-  unit to the top speed of the slowest unit still walking the move, so
-  one that dies or arrives holds nobody back. A queued order waits
-  behind the one each unit has in hand, and up to sixteen such moves wait
-  in line, taken one after the other as each is done. Any order that is
-  not queued forgets the line, as does a change of owner. A unit of a
-  formation walks until it stands within a few pixels of its point and
-  gives way to others on the way, where a crowd sent to one point stops
-  beside whoever is in its way. The order carries its points as offsets
-  from the first unit's, 128 units a command, and a big move's commands
-  share one pace. A match sends a seat's commands a share a turn, so a
-  move bigger than the relay takes in a turn arrives over several. A
-  save keeps the line, the pace and the heading. The classic view sends
-  none of these and plays as before.
-- Why: the owner's call, for the remaster's front end. The original
-  sends every unit of a group to the one point clicked, where they pack
-  around it, and never turns a unit to a heading it was given. It does
-  keep a list of orders on each unit, which this line is a start on for
-  moves.
-- Citation: the original's move order names a single point for the
-  whole selection (see D-018 on its per unit order lists).
+  to a point of its own, with three options: a heading each unit faces
+  and holds on arrival, a group pace at the top speed of the slowest
+  still walking, and a queue of up to sixteen such moves, which any
+  unqueued order or change of owner clears. A unit of a formation walks
+  to within a few pixels of its point, giving way. The points ride as
+  offsets from the first unit's, 128 units a command, a big move's
+  commands sharing one pace. A save keeps the line, the pace and the
+  heading. The classic view sends none of these.
+- Why: a choice for the remaster's front end. The original packs a group
+  round the one point clicked and never turns a unit to a heading.
+- Citation: the original's move order names a single point for the whole
+  selection (see D-018 on its per unit order lists).
 
 ## D-024: An ally stops a shot and takes nothing from it
 
 - Change: a shot is stopped by a unit, building or wall of any player
-  but the shooter's, as in the original. When what stops it is an ally
-  and the weapon has no areaofeffect, it takes no damage. A splash
-  harms only enemies, unless the shot was fired at a point on the
-  ground. Both rules together mean no shot ever wounds an ally's unit
-  by accident.
-- Why: the original stops a shot on any unit whose owner is not the
-  shooter's and damages whatever it struck, ally or not, and its splash
-  spares only the firing unit itself. The engine's splash has spared
-  allies since before this change, and carrying the original's blocking
-  over without its friendly fire keeps a team game from becoming one
-  where your archers wound your ally's front line. The owner can ask
-  for the original's friendly fire later.
-- Citation: the owner compare in the cell test (legacy:245419), the
-  struck unit taking the hit (legacy:245029-245031), and the area pass
-  sparing only the firing unit (legacy:245150).
-  docs/notes/2026-09-27-shots-meet-what-they-fly-into.md has the rest.
+  but the shooter's, as in the original. An ally that stops a shot from
+  a weapon with no areaofeffect takes no damage, and a splash harms only
+  enemies unless the shot was fired at a point on the ground, so no shot
+  wounds an ally by accident.
+- Why: the original damages what stops a shot, ally or not, and its
+  splash spares only the firing unit. Taking its blocking without its
+  friendly fire keeps archers from wounding an ally's front line.
+- Citation: the cell test's owner check (legacy:245419), the struck
+  unit's hit (legacy:245029-245031), the area pass (legacy:245150).
+  docs/notes/2026-09-04-combat-mechanics.md.
 
 ## D-025: A unit lets go of a target its shots cannot reach
 
-- Change: when three shots in a row from a unit stop short of a target
-  it picked for itself, on the ground, a tree or a rock, the sea, or a
-  unit or wall of a player who is not its enemy, the unit lets that
-  target go and passes it over for ten seconds. A walker that can go
-  and find a place to shoot from, as the original's does, tries that
-  first and lets go only after six. It takes the nearest
-  other enemy it can see, or stands, and a computer's unit goes
-  looking. A shot that strikes an enemy, the target or another, starts
-  the count again, and a shot that flies past its aim point, as a miss
-  at a moving target does, does not count. The skip ends early when
-  the target it passed over hits the unit, which then answers it, or
-  when either has moved more than 32 px from where it stood, though a
-  walker's own moves do not end it, since it walks home after. A unit
-  that cannot move passes the target over for a minute rather than ten
-  seconds, so a trebuchet does not spend three shots on a stationary
-  target behind a wall every ten seconds. A beam
-  fired with the shot pool full counts the same as one that is drawn.
-  A player's own attack order is never let go, and neither is a
-  mission script's, whoever owns the unit. The computer's own orders
-  are, since it has no other way to notice. A unit that cannot move,
-  or one holding position and not on patrol, also lets go of a target
-  it picked as soon as that target is out of its reach or inside its
-  minrange, and neither its search nor its return fire takes one there.
-- Why: shots stop on what they fly into now, and the original fires
-  into a hill without looking first. Its sight also shrinks uphill
-  (D-014), which the engine does not copy yet, so here a unit sees and
-  picks a target up a slope that the original's would not have seen.
-  Without this an archer in a forest clearing, or a tower inside a
-  castle, fires into the trees or the wall until its target dies and
-  never turns to anything it could hit.
-- Citation: the original's fire gate looks at range, reload, mana and
-  facing and nothing else (legacy:249328-249420). A unit with no mover
-  has no leash to answer a shooter with (legacy:15125). The manual is
-  silent. docs/notes/2026-09-27-shots-meet-what-they-fly-into.md has the
-  detail, and docs/notes/2026-11-06-where-a-unit-shoots-from.md what the
-  original's walker does instead of letting go.
+- Change: when three shots in a row stop short of a target a unit picked
+  for itself, on the ground, a tree or a rock, the sea, or a unit or wall
+  of a player not its enemy, it passes the target over for ten seconds,
+  or a minute if it cannot move. It then takes the nearest other enemy
+  it can see or stands, and a computer's unit goes looking. A walker
+  that can look for a place to shoot from tries that first and lets go
+  after six. A hit on an enemy restarts the count, a shot past its aim
+  point does not count, and the skip ends when the target hits the unit
+  or either moves 32 px, not counting a walker's own moves. A player's
+  or a mission script's attack order is never let go, but the
+  computer's own are. A unit that cannot move, or holds position off
+  patrol, also lets go of a picked target out of reach or inside its
+  minrange.
+- Why: shots stop on what they fly into, and the original fires into a
+  hill without looking. With sight not yet shrinking uphill (D-014), an
+  archer in a clearing would shoot the trees until its target died.
+- Citation: the original's fire gate looks only at range, reload, mana
+  and facing (legacy:249328-249420), and a unit with no mover has no
+  leash (legacy:15125). docs/notes/2026-09-04-combat-mechanics.md. The
+  manual is silent.
 
 ## D-026: A flyer holds its fire while it climbs
 
-- Change: a flyer that has taken off to attack or to move does not fire
-  until it reaches its cruise height. A flyer on the ground does not
-  fire at all, as in the original, whose standby turns a flyer's
-  weapons off (legacy:24543). One that takes a target takes off for it.
-- Why: some flyers fire from a piece at or under their feet. The Zhon
-  hunter's lightning leaves a point 5 px under her. Fired in the first
-  ticks of her climb, the shot started under the ground and burst
-  beside her, which reads as a fault. The original turns a flyer's
-  weapons off at BeginFlight and on again at a later stage of its air
-  attack. We could not tie that stage to its height, so the engine
-  ties it to reaching cruise.
-- Citation: BeginFlight turns off all three weapons (legacy:24120) and
-  the air attack turns them on again (legacy:25797), the hover attack at
-  its second stage (legacy:30223-30253). A hover attacker climbs to its
-  `hoverattackaltitude` while it holds a point and holds its fire until
-  it is there. A shot at or under
-  the floor of its cell bursts there (legacy:245470-245476). The manual
-  is silent.
+- Change: a flyer that has taken off to attack or to move holds its fire
+  until it reaches cruise height, and a hover attacker until it reaches
+  its `hoverattackaltitude`. A flyer on the ground does not fire, as in
+  the original (legacy:24543), and takes off for a target.
+- Why: some flyers fire from a piece at or under their feet, so a shot
+  early in the climb burst in the ground beside them. The original's
+  stage that turns weapons back on could not be tied to a height, so the
+  engine ties it to cruise.
+- Citation: BeginFlight turns the weapons off (legacy:24120), the air
+  attack on again (legacy:25797), and the hover attack at its second
+  stage (legacy:30223-30253). A shot at or under its cell's floor bursts
+  there (legacy:245470-245476). The manual is silent.
 
 ## D-027: A factory still being built can take a queue
 
-- Change: a front end may send units to train in a factory of yours
-  that is still going up. They wait on its queue and training starts as
-  soon as it is finished and its yard is open. Every other order to a
-  building still going up is refused, its rally included, and the classic view sends none of
-  these, since there a frame cannot be selected. The command says so
-  itself, so every machine in a match treats it the same.
-- Why: the owner's call, for the remaster, which lets a frame be
-  selected only to queue units in it.
-- Citation: in the original a building cannot be selected until it is
-  finished, so a frame never takes an order. The queue add itself never
-  looks (legacy:181790-181866).
-  docs/notes/2026-09-29-build-queues-and-shift-orders.md has the rest.
+- Change: a front end may queue units in a factory of yours that is
+  still going up, to train once it is finished and its yard is open.
+  Every other order to an unfinished building, its rally included, is
+  refused, and the classic view sends none.
+- Why: the remaster lets a frame be selected only to queue units in it.
+- Citation: the original cannot select an unfinished building, and its
+  queue add never checks (legacy:181790-181866). docs/notes/economy.md,
+  "Build queues and rally points".
 
 ## D-028: A seat can claim its start position
 
-- Change: the skirmish screen draws each start position on the map's
-  picture, and in the battle room the Map and View Map dialogs draw them
-  on theirs while they show the room's map. The room screen itself keeps
-  the original's layout, with no picture. A click on a start takes it
-  for the player, or gives back the one they hold. A drag from one start
-  to another moves the seat standing on the first, any seat in a
-  skirmish and in a room for the host, and a player may move only their
-  own. A start another seat claimed is refused to a player, and the
-  host's click or drag onto it swaps the two, which puts both players
-  back to not ready. A new map in a room frees every start. When the
-  battle is built a claimed start is kept, and every other open seat
-  takes the starts left over in seat order. With Random Start Locations
-  ticked those seats trade the starts the fixed deal gave them, as the
-  original's deal does: three or more in one cycle, so none keeps its
-  own, and two swap or not on a coin flip. With no claims this is the
-  original's own deal. A battle saved before claims loads with every
-  seat on the start it was dealt then.
-- Why: the owner's call, for the remaster's lobby and the browser's, so
-  players can pick where they start. The original offers fixed or random
-  starts only.
-- Citation: the original numbers the open seats in seat order, skipping
-  closed and watching ones, and deals start positions to that list
-  (legacy:195530-195541), so seat 3 behind a closed seat 2 started on
-  StartPos2, not StartPos3. For random starts it trades the first n
-  starts among the n seats, one cycle from three seats on and a coin
-  flip for two (legacy:195522-195576). The draws here are the engine's
-  own, from the session seed, rather than the host's C runtime.
+- Change: the skirmish screen, and the battle room's Map and View Map
+  dialogs, draw the start positions on the map's picture. A click takes
+  a start or gives one back, and a drag moves a seat from one start to
+  another, any seat in a skirmish and in a room for the host, a player
+  only their own. A start another seat claimed is refused, and the
+  host's click or drag onto it swaps the two and unreadies both. A new
+  map frees every start. A claimed start is kept, and the other open
+  seats take the starts left over in seat order, trading them as the
+  original's deal does under Random Start Locations, so with no claims
+  the deal is the original's.
+- Why: so players can pick where they start. The original offers fixed
+  or random starts only.
+- Citation: the original deals starts to the open seats in seat order
+  (legacy:195530-195541), so seat 3 behind a closed seat 2 starts on
+  StartPos2, not StartPos3, and for random starts trades the first n
+  among the n seats, one cycle from three on and a coin flip for two
+  (legacy:195522-195576). Our draws come from the session seed rather
+  than the host's C runtime.
 
 ## D-029: The map list has a search, filters and orders
 
 - Change: the skirmish screen's map list and the room's map chooser take
-  a search on the line above the list, where the original wrote the
-  list's heading, with choosers beside it for the number of players, the
-  map's size and the order: by name, players or size, either way. Every
-  word typed has to appear in the map's name. The size classes go by the
-  size key's area, up to 8 x 8, 12 x 12, 16 x 16 and beyond, and the
-  players filter matches the map's start positions. A right click steps
-  a chooser back and clears the search. Each row also shows the map's
-  start count and, on the skirmish screen, its size.
-- Why: the owner's call. Hundreds of maps with the Darien Crusades packs
-  do not browse by scrolling alone. The remaster lobby has the same
-  search, so both front ends list maps alike.
-- Citation: none, a new control. The original's list is every map in
-  name order (legacy:167740).
+  a search, every word matching the map's name, where the original wrote
+  the heading, and choosers for players, size and order. Players go by
+  the map's start positions, sizes by the size key's area, up to 8 x 8,
+  12 x 12, 16 x 16 and beyond, and the order by name, players or size,
+  either way. A right click steps a chooser back and clears the search.
+  Each row shows the start count and, on the skirmish screen, the size.
+- Why: hundreds of maps with the Darien Crusades packs do not browse by
+  scrolling alone.
+- Citation: none, a new control. The original lists every map in name
+  order (legacy:167740).
 
 ## D-030: Select Game shows ping
 
 - Change: each row of Select Game's game list ends with its host's ping
-  to the server, a plain number the way the battle room's Ping column
-  shows one, blank until the server has measured it. When the status
-  line has nothing else to say it reads "Your ping to the server is N
-  ms." with the player's own round trip.
-- Why: the owner's call (#295). Every game goes through one server, so
-  the two numbers together say how a game will play before joining it.
-- Citation: none, new text on an existing list and status line.
+  to the server, blank until measured, and the status line reads "Your
+  ping to the server is N ms." when it has nothing else to say.
+- Why: every game goes through one server, so the two numbers say how a
+  game will play before joining it.
+- Citation: #295, new text on an existing list and status line.
 
 ## D-031: Shift shows the selection's orders
 
-- Change: while Shift is held, the classic view draws a thin line from
-  each of your selected units through the orders it holds, with a
-  marker at each: a move, an attack on its target, a patrol and the
-  way its route comes back round, a factory's rally point. A building
-  a builder has queued shows as a ghost at its spot and facing. Nothing
-  is drawn when Shift is up, and another player's units show nothing.
-  An order on a target you cannot see gives no position away.
-- Why: the owner's rule, as Beyond All Reason draws a queue. Shift
-  queues orders (manual section IV), and without a picture of the
-  queue a player cannot tell what they have lined up.
-- Citation: no drawing of a unit's orders was found in the original.
-  docs/notes/2026-09-29-build-queues-and-shift-orders.md has the rest.
+- Change: while Shift is held, the classic view draws a line from each
+  of your selected units through its orders, with a marker for each
+  move, attack target, patrol and its way round, and rally point, and a
+  queued building as a ghost at its spot and facing. Other players'
+  units show nothing, and a target you cannot see gives nothing away.
+- Why: Shift queues orders (manual section IV), and a player cannot tell
+  what is lined up without a picture, as Beyond All Reason draws one.
+- Citation: no such drawing was found in the original.
+  docs/notes/ui.md, "Shift orders".
 
 ## D-032: Battles are recorded, and the main menu plays them back
 
-- Change: every skirmish and every multiplayer match started fresh is
-  recorded from its first tick into a .okreplay file beside the saved
-  games. A Replays line on the main menu, beside the exit door on the
-  version line's row, opens the original's load dialog over those files:
-  a row is the date the battle was played, the panel shows the recording
-  player's kingdom, the map and the length, and the help strip names the
-  players. Load plays it back through the normal simulation with every
-  local order refused. Space pauses, and = and - step the speed through
-  1x, 2x, 4x and 8x. The camera and the selection stay free for looking.
-  In the in game menu Restart plays the replay again and Save Game does
-  nothing. A campaign mission and a battle loaded from a save are not
-  recorded. The directory keeps the newest 30 replays within 48 MB and
-  prunes the oldest, never a save.
+- Change: every skirmish and multiplayer match started fresh is recorded
+  into a .okreplay file beside the saved games, keeping the newest 30
+  within 48 MB and never pruning a save. A Replays line on the main menu
+  opens the original's load dialog over them, and Load plays one back
+  through the normal simulation with local orders refused, Space pausing
+  and = and - stepping 1x, 2x, 4x and 8x. Restart plays it again and
+  Save Game does nothing. A campaign mission and a battle loaded from a
+  save are not recorded.
 - Why: a lockstep battle is its seed, its configuration and its
-  commands, so a replay costs a few kilobytes a minute and needs no
-  simulation of its own. Issue #294 asked for it.
-- Where it is: the file format and its checks are in
-  `src/net/replay.c`, the recorder and the player in
-  `src/ui/replay_session.c`, and the note is
-  docs/notes/2026-09-30-replays.md.
-- Citation: none, a new feature. The original has no replays.
+  commands, so a replay is small and needs no simulation of its own.
+- Citation: issue #294. `src/net/replay.c`, `src/ui/replay_session.c`,
+  and docs/notes/2026-09-04-multiplayer-hapinet.md, "Replays". The
+  original has no replays.
 
 ## D-033: A match under way can be watched, and the watcher sees the whole map
 
-- Change: Select Game lists a game under way with Watch on its row
-  when its host allows watching and a watcher's place is free, and Join
-  on a running game watches it too. The web page's list of games and
-  the leaderboard offer the same through a watch link. A watcher builds
-  the world, replays the match from its first turn and then follows it
-  live. It gives no order, and its F1 menu does not save, load or
-  restart. It sees the whole map without fog, and Tab looks through
-  each player's eyes in turn, fog and sidebar included, then back to the
-  whole map. The players are told who begins and who stops watching,
-  as a line in the chat block. Leaving the battle leaves the match.
-- Why: a watcher in the original joined before the game started and
-  took one of the eight places (N-008). Joining a match already under
-  way is only possible because every turn is kept on the relay, so the
-  rest of the design is ours. A watcher holds no seat and so has no
-  side's fog of its own, and a whole map view is what people watching
-  a match want. Its world never counts when the players' worlds are
-  compared, so a watcher cannot outvote a player or halt a match, and
-  it cannot delay a turn.
-- Where it is: the relay and the turn clock in `src/net/relay.c` and
-  `src/net/turnclock.c`, the screens in `src/ui/select_game.c` and
-  `src/ui/ingame.c`, and the note is
-  docs/notes/2026-09-30-watching-a-match.md.
-- Citation: none, a new feature. Issue #294.
+- Change: Select Game lists a match under way with Watch when its host
+  allows watching and a watcher's place is free, and the web page's game
+  list and leaderboard give a watch link. A watcher replays the match
+  from its first turn and follows it live, gives no order, cannot save,
+  load or restart, and sees the whole map, with Tab looking through each
+  player's eyes in turn. The players see a chat line when someone starts
+  or stops watching. A watcher's world never counts when worlds are
+  compared, and it cannot delay a turn.
+- Why: the original's watcher joined before the start and took one of
+  the eight places (N-008). The relay keeps every turn, so a later join
+  works, and a watcher has no side's fog of its own.
+- Citation: issue #294. `src/net/relay.c`, `src/net/turnclock.c`,
+  `src/ui/select_game.c`, `src/ui/ingame.c`, and
+  docs/notes/2026-09-04-multiplayer-hapinet.md, "Watching a match".
 
 ## D-034: A lost skirmish plays on between the computers
 
-- Change: a skirmish the local player lost goes on while two seats
-  still standing are at war, so the player can watch the computers
-  fight it out. The Defeat banner shows for its three seconds, then the
-  battle plays on with the fog lifted and Tab looks through each
-  player's eyes, as a watcher of a match does. The defeat stands, and so
-  do the end's tick and its cue. When one side is left the battle stops
-  where it stands, with no second verdict and no second cue, and the
-  statistics screen opens. A front end may also ask for it after its
-  own end screen. It never runs in a match or a campaign mission, and a
-  replay of a skirmish plays on where the battle did.
-- Why: the owner's call, first for the remaster's Look at the field and
-  then for every skirmish, so a beaten player can watch the rest as in
-  a match. In the original a skirmish is over for the player once their
-  side is gone, whoever is still fighting (legacy:240018-240028).
-- Where it is: `InGame_PlayOn` in `src/ui/ingame.c`.
+- Change: a skirmish the local player lost plays on while two seats
+  still standing are at war, after the Defeat banner's three seconds,
+  with the fog lifted and Tab looking through each player's eyes. The
+  defeat, its tick and its cue stand, and when one side is left the
+  battle stops with no second verdict and the statistics screen opens.
+  It never runs in a match or a campaign mission.
+- Why: so a beaten player can watch the rest, as in a match. In the
+  original a skirmish is over for the player once their side is gone
+  (legacy:240018-240028).
+- Citation: `InGame_PlayOn` in `src/ui/ingame.c`.
 
 ## D-035: The wind keeps its own clock, and a save keeps a fire where it was
 
-- Change: the wind's next change, 3 to 14 seconds on, is drawn from a
+- Change: the wind's next change, 3 to 14 seconds on, comes from a
   stream of its own that starts where the original starts its C library
-  generator at the battle's start. Every machine runs every hit on
-  scenery, where the original's host decided each and told the others.
-  A save keeps a death or a burn at the picture it had reached.
-- Why: the original draws the wind's timing from the C library's
-  generator, which every picture it draws shares, so its wind changed
-  with what was on screen (legacy:241703-241718). Lockstep needs it the
-  same on every machine. The original's host decides scenery hits
-  because its machines do not run the same battle (legacy:128759-128776),
-  and its save restarts a burning or dying feature from the first
-  picture (legacy:129249-129270), which a lockstep load cannot do
-  without leaving the battle it was saved from. The wind's speed and
-  turn, the spark and the spread rolls draw from the simulation's
-  generator as the original's do.
-- Where it is: `wind_step` and `wind_rand` in `src/game/features.c`, the
+  generator. The wind's speed and turn and the fire's rolls draw from the
+  simulation's generator, as the original's do. Every machine runs every
+  hit on scenery, and a save keeps a death or a burn at the picture it
+  had reached.
+- Why: the original's wind timing shares that generator with its drawing
+  (legacy:241703-241718), its host alone decides scenery hits
+  (legacy:128759-128776), and its save restarts a burning or dying
+  feature (legacy:129249-129270), none of which lockstep allows.
+- Citation: `wind_step` and `wind_rand` in `src/game/features.c`, the
   FEAT and WRLD sections in `src/game/savegame.c`.
 
 ## D-036: Remastered battlefield rules, a room option
 
-- Change: a skirmish or a room may turn on the remastered battlefield
-  rules, a row of our own under the original's rules on the skirmish
-  screen and in the battle room, off by default. Stars of Darien always
-  plays them. With them on, rocks, ruins, spires and grass break. Each
-  takes the damage its file gives, or 3000, 4000, 2000 and 200 where it
-  gives none, and leaves nothing behind. Lodestones, sacred sites, waves
-  and sound emitters never break. The original ignores every hit on an
-  indestructible feature (legacy:128756). The twelve `unitsonly` spells,
-  the waves, the mind controls and Death Aura among them, reach scenery
-  as any other blast does, where the original skips the scenery for them
-  (legacy:245240). Burning scenery hurts what stands in it. Every unit
-  whose model is within 32 px of a burning feature's centre takes 25
-  every 15 of the original's frames, half a second, credited to nobody.
-  The files name `burnweapon = TreeBurn` and no file defines it, and the
-  original's loader reads only a `[BurnWeapon]` section no feature has,
-  so its fire hurts nobody (legacy:127389-127401). These numbers are
-  ours. A fire spreads. In the shipped data a feature's spark comes 75
-  to 149 frames after it catches and its flames end 44 to 72 frames in,
-  so the original's fires never spread. Its spark would reach three
-  cells, and the scenery that burns stands farther apart than that. Of
-  the 50,524 flammable features on the 310 shipped maps, skirmish and
-  campaign, 28 percent have another within three cells, 58 percent
-  within five, 69 percent within six and 82 percent within eight. Under
-  the rules a burning feature throws four sparks, each 125 percent of
-  the original's spark time after the last, 93 to 186 frames for a tree,
-  and its flames start over until the last, so a tree burns 12 to 27
-  seconds. A spark reaches every flammable feature within three cells, or
-  out to the nearest ring that holds one, at most six, which puts a
-  quarter of the shipped scenery that burns in a group of ten or more a
-  fire can cross, against 5 percent at three. The wind stretches the
-  reach downwind by five steps of twice its parts in 1/4096 of a cell,
-  at most two cells along each axis, and a spark with nothing within six
-  cells can still light a feature up to eight cells downwind. A feature
-  catches at twice its spreadchance, 80 percent for most trees, and
-  upwind at a quarter of that. No more than four features catch from
-  sparks in one frame, and a spark due past that waits for the next
-  when its reach holds a feature that could catch. One with nothing in
-  its reach to light never waits, however busy the frame. Each spark
-  starts its cells from another corner, so the cap favours no side. Measured with no units on the field, one tree lit near the
-  middle of each map's largest group, five seeds: calm, Lake Ferrix_JM
-  burns all of its 78 in 48 seconds, New Hindigal all 63 in 67,
-  Riverfork Wood all 88 in 117, Two Castles 13 of 14 in 57, Thorn
-  Boscage 48 of 58 in 119 and Black Heart Jungle 9 of 10 in 50. Under
-  each map's own wind the fire runs downwind at 5 to 11 px a second on
-  average and creeps upwind at 1 to 6, so less of a forest burns: 77,
-  60, 57, 5, 42 and 6 of them. In a square of AraTree01 under a steady
-  wind it crosses 20 to 24 px a second downwind and 8 to 13 upwind, and
-  11 to 21 calm. Lit the same way in battles loaded from Sea Dragon
-  Spine, Lake Ferrix_JM, Thorn Boscage, Riverfork Wood and Lake
-  Cuhmoniwanakilya under their own wind, six seeds each, the front from
-  the first tree to one 10 or more cells off averaged 11 to 26 px a
-  second in 26 of the 30 runs and 30 to 42 in the other four, all on
-  the sparse woods, where a spark the wind carries crosses up to eight
-  cells at a time. Over 20 or more cells the fastest averaged 39. No
-  frame lit more than four and no tree outlasted its 27 seconds.
-  Lit along one edge, a grove of AraTree01 28 cells (448 px) across
-  burns through in 18 to 33 seconds with a tree on every cell or on
-  every other. A wood of 10,000 AraTree01, one on every cell or on every
-  other, burns through in 126 to 144 seconds at the cap of four a frame.
-  With the rules off each map burns the one tree and stops. Infantry
-  walks 33 to 45 px a second, so it outruns most fires, but the slowest
-  infantry fleeing straight downwind through a sparse wood can be
-  caught by the fastest. And the rubble a wall, a model wall or
-  a building leaves blocks until it is swept, which pays its mana as
-  clearing anything does (D-021). The original's wall rubble and the
-  wrecks of model walls let units through.
-- Why: the owner's call, decisions three and four of the destruction
-  plan. The rules make the field matter more, and they stay a choice so
+- Change: a row of our own on the skirmish screen and in the battle room
+  turns on the remastered battlefield rules. They are off by default,
+  always on in Stars of Darien, and the game list marks a room that
+  plays them. With them on:
+  - Rocks, ruins, spires and grass break, at the damage their file gives
+    or else 3000, 4000, 2000 and 200, and leave nothing. Lodestones,
+    sacred sites, waves and sound emitters never break. The original
+    ignores every hit on an indestructible feature (legacy:128756).
+  - The twelve `unitsonly` spells reach scenery as any blast does, where
+    the original skips it for them (legacy:245240).
+  - A unit whose model is within 32 px of a burning feature's centre
+    takes 25 every 15 of the original's frames, credited to nobody. The
+    original's fire hurts nobody, since `burnweapon = TreeBurn` is never
+    defined and its loader reads only a `[BurnWeapon]` section no feature
+    has (legacy:127389-127401).
+  - A fire spreads. A burning feature throws four sparks, each 125
+    percent of the original's spark time after the last, and its flames
+    start over until the last. A spark reaches every flammable feature
+    within three cells, or the nearest ring that holds one, at most six.
+    The wind stretches that downwind by five steps of twice its parts in
+    1/4096 of a cell, at most two cells an axis, and a spark with nothing
+    within six cells can light one up to eight cells downwind. A feature
+    catches at twice its spreadchance, a quarter of that upwind. At most
+    four catch from sparks in a frame, a spark past that waits only when
+    it could light something, and each spark starts its cells from
+    another corner, so the cap favours no side. In the shipped data the
+    original's flames die before its spark comes, so its fires never
+    spread.
+  - The rubble of a wall, a model wall or a building blocks until it is
+    swept, which pays its mana (D-021). The original's wall rubble and
+    model wall wrecks let units through.
+- Why: the rules make the field matter more, and they stay a choice so
   the original's game is the default everywhere but Stars of Darien.
-- How it travels: `remastered` on the BattleConfig, the room option bit
-  TAK_ROOMOPT_REMASTERED on CREATE_ROOM, the room's state and
-  START_GAME, a flag in the save's CFGB section, the replay header's
-  spare byte, and the state hash. The relay passes the bit on untouched,
-  so no protocol change is needed, and the engine build a room requires
-  keeps a build without the rules out of it. The game list marks a room
-  that plays them.
-- Where it is: `remaster_breakable_hp`, `remaster_leaves_rubble`,
-  `Features_InstanceBlocks`, the burn in `Features_TickFrame` and the
-  spark in `feat_spark_remastered` in `src/game/features.c`,
-  `blast_scenery`
-  and `Units_ScorchAt` in `src/render/units.c`, the rows from
-  `GUIDialog_AddOptionRow` in `src/ui/gui_loader.c`.
+- Citation: `remastered` on the BattleConfig, TAK_ROOMOPT_REMASTERED on
+  CREATE_ROOM and START_GAME, the save's CFGB section, the replay header
+  and the state hash carry the option. `remaster_breakable_hp`,
+  `remaster_leaves_rubble`, `Features_InstanceBlocks`,
+  `Features_TickFrame` and `feat_spark_remastered` in
+  `src/game/features.c`, `blast_scenery` and `Units_ScorchAt` in
+  `src/render/units.c`, and `GUIDialog_AddOptionRow` in
+  `src/ui/gui_loader.c`.
 
 ## D-037: The minimap's left button looks when nothing of yours is selected
 
-- Change: under the left click interface, the only one the engine has, a
-  left press on the minimap with none of your own units selected centres
-  the view there and follows a drag while the button is held, the way the
-  right button does with any selection. With your units selected the left
-  button gives the order a click on the field there would, as the
-  original's does, and the right button looks or disarms an armed command
-  as the original's does.
-- Why: the engine has looked on that press from the start, and keeping
-  it takes nothing from the original's controls. There that press selects
-  a unit of yours standing at the point and otherwise does nothing
-  (legacy:238837-238848, legacy:243640-243644). Taking it
-  away would leave a minimap that seems dead to a player who has not yet
-  found the right button.
+- Change: under the left click interface, the engine's only one, a left
+  press on the minimap with none of your units selected centres the view
+  there and follows a drag, as the right button does. With your units
+  selected both buttons act as the original's.
+- Why: the original's left press there only selects a unit of yours at
+  the point (legacy:238837-238848, legacy:243640-243644), so the minimap
+  would seem dead to a player who has not found the right button.
 - Citation: manual p.69 says the left click interface uses the right
-  button to find a location within the Mini-Map.
-- Where it is: `ig_minimap` in `src/ui/ingame.c`.
+  button to find a location within the Mini-Map. `ig_minimap` in
+  `src/ui/ingame.c`.
 
 ## D-038: Every shot but mind control reaches its target and aims where it stands
 
-- Change: a shot fired at a unit strikes that unit when it passes
-  within 24 px of the unit's body, leaves for where the unit stands
-  when it is fired, and crosses the ground at its full weaponvelocity
-  however steep its line. A shot that reaches its target this way
-  bursts on the nearest point of the target's model box, as the
-  original's bursts inside the unit's selection quad, so a splash
-  weapon's direct hit does its whole damage. A mind control shot now
-  flies by the original's rules instead. It leaves for where its
-  target will be, four fifths of the way through its flight, and
-  strikes only a unit in its own 16 px cell whose selection quad,
-  turned with the unit, holds it and whose model span holds its
-  height. It flies at its
-  weaponvelocity along its line rather than across the ground, it is
-  gone after its range at its speed across the ground, and it ends the
-  frame its caster is seen dead or dying.
-- Why: every other weapon's hit rate rests on the reach and the
-  missing lead, so moving them all is a balance change of its own that
-  needs checking against the original weapon by weapon. Mind control
-  went first because the owner found the Harpy too sure, and its shot
-  flies slowly enough that the reach turned near misses into captures.
-  The capture roll itself was always the original's.
-- Citation: the lead by 0.8 of the flight time (legacy:234031-234060,
-  the multiply at legacy:234049), the cell test (legacy:245376-245476),
-  the span and selection quad test (legacy:236974-237027), the line's
-  speed (legacy:246885-246892), the life (legacy:246919-246922) and the
-  caster check (legacy:247710-247713). The manual is silent.
-  docs/notes/2026-09-19-the-harpy-takes-units-over.md has the detail.
+- Change: a shot fired at a unit leaves for where the unit stands,
+  strikes it within 24 px of its body, bursting on the nearest point of
+  its model box so a splash does its whole damage, and crosses the
+  ground at its full weaponvelocity however steep its line. A mind
+  control shot follows the original instead. It leads its target by four
+  fifths of its flight, strikes only a unit in its own 16 px cell whose
+  turned selection quad and model span hold it, flies at its
+  weaponvelocity along its line, lasts its range at its speed across the
+  ground, and ends when its caster is seen dead or dying.
+- Why: moving every weapon to the original's reach and lead is a balance
+  change to check weapon by weapon. Mind control went first, since its
+  slow shot let the reach turn near misses into captures.
+- Citation: the lead (legacy:234031-234060, legacy:234049), the cell
+  test (legacy:245376-245476), the quad and span test
+  (legacy:236974-237027), the line's speed (legacy:246885-246892), the
+  life (legacy:246919-246922), the caster check (legacy:247710-247713).
+  docs/notes/2026-09-04-combat-mechanics.md, "Mind control". The manual
+  is silent.
 
 ## D-039: Where a hover attack stops closing in by the common rule
 
-- Change: a flyer with `hoverattack` closes on its target and then holds
-  its own bearing at its `hoverattackdistance` as the original's does
-  (docs/notes/2026-10-10-hover-attack.md). While it is still further
-  than that distance plus 160 px it steps out of a crowd by the other
-  missions' rule, and from there on by the hover attack's own. It
-  counts a point reached within 8 px. Turned onto its target, it moves
-  off its heading at one fixed creep a frame, (2 brakerate +
-  acceleration) / (2 - acceleration / maxvelocity), and along it at the
-  walk's speed. On a point on the ground it turns onto that point while
-  it is in range and flies straight at its own point at full speed.
-- Why: the original sends a target that fails a reach test on the
-  unit's path to a formation move, which steps out by the common rule,
-  and flies the rest with a plain move that does not. That test was not
-  traced, so the engine draws the line where the attack turns its
-  weapons on. The original's move to a point stops within 4 px. Ours
-  stops within 8, and a point it stopped short of would never wake the
-  attack, so the attack takes the walk's radius. The original's flyer
-  keeps a velocity of its own, drags it, turns all but brakerate of it
-  onto the heading each frame and thrusts at its point. Our walk keeps a
-  speed and a heading and no velocity, so it takes the speed off the
-  heading that this settles at, the original's when the flyer backs
-  away. Sideways the original's is about 40% faster and drifts forward
-  as fast again. Against a point on the ground the original builds a
-  plain move with nothing to face (legacy:30328-30338,
-  legacy:190557-190562), so it faces its way, and how it then aims its
-  weapons there was not traced. Ours keeps what it did before.
-- Citation: the far test and the formation move (legacy:30139,
-  legacy:30467-30502, legacy:235678-235762), the hover attack's step out
-  (legacy:30636-30705), the move to its point (legacy:30362-30364) and
-  the flight (legacy:183961-184057). The manual is silent.
+- Change: a flyer with `hoverattack` closes on its target and holds its
+  own bearing at its `hoverattackdistance`, as the original's does, with
+  four differences.
+  - Beyond that distance plus 160 px it steps out of a crowd by the
+    common rule, and nearer by the hover attack's own. The original
+    switches at a reach test that is not known, so the line sits where
+    the attack turns its weapons on.
+  - It counts a point reached within 8 px, the walk's radius. The
+    original's move stops within 4.
+  - Turned onto its target it creeps off its heading at
+    (2 brakerate + acceleration) / (2 - acceleration / maxvelocity) a
+    frame, the original's settled speed as it backs away, and along it
+    at the walk's speed.
+  - Against a point on the ground it turns onto that point in range and
+    flies straight at its own point at full speed, where the original's
+    plain move faces its way (legacy:30328-30338, legacy:190557-190562).
+- Why: our walk keeps no velocity of its own, a point it stops short of
+  would never wake the attack, and how the original aims at a point on
+  the ground is not known.
+- Citation: the far test and formation move (legacy:30139,
+  legacy:30467-30502, legacy:235678-235762), the step out
+  (legacy:30636-30705), the move to its point (legacy:30362-30364), the
+  flight (legacy:183961-184057).
+  docs/notes/2026-09-04-combat-mechanics.md. The manual is silent.
 
 ## D-040: A unit at its leash still fights what it reaches
 
-- Change: a fight a unit takes on for itself ends once it stands its
-  `maneuverleashlength` from where the fight began, as the original's
-  does, but only while the target is out of its reach. A target in
-  reach is fought on there. On the walk back it takes on what stands
-  inside the leash round that point, as the original's does, and also
-  anything its weapon reaches from where it stands. A hit it answers on
-  the way keeps the first point, where the original would start a new
-  fight from where the unit was hit and walk back to each point in turn.
-  A computer player's builder on patrol draws only among finished
-  buildings, where the original draws among everything and then passes
-  over what is not one.
-- Why: the owner asked that units fire at what they can reach and never
-  stand under fire doing nothing. One point per fight keeps the walk
-  back short and easy to read.
-- Citation: the leash ends the attack (legacy:11020, legacy:11380), the
-  walk back takes only what is inside it (legacy:10438-10443), a hit
-  starts a fight from where the unit stands (legacy:15170,
-  legacy:181879-181947) and the patrol's draw (legacy:10877-10884). The
-  manual is silent. docs/notes/2026-09-29-combat-parity-follow-ups.md
-  has the rule.
+- Change: a fight a unit took on for itself ends at its
+  `maneuverleashlength` from where it began, as in the original, but
+  only while the target is out of reach. Walking back, it takes on what
+  is inside the leash, as the original does, and anything its weapon
+  reaches. A hit answered on the way keeps the first point, where the
+  original starts a new fight from where the unit was hit. A computer
+  player's builder on patrol draws only among finished buildings, where
+  the original draws among everything.
+- Why: units should fire at what they can reach and never stand under
+  fire doing nothing, and one point per fight keeps the walk back short.
+- Citation: the leash (legacy:11020, legacy:11380), the walk back
+  (legacy:10438-10443), a new fight on a hit (legacy:15170,
+  legacy:181879-181947), the patrol's draw (legacy:10877-10884).
+  docs/notes/2026-09-04-combat-mechanics.md. The manual is silent.
 
 ## D-041: Ctrl+D asks before a self destruct starts
 
-- Change: when Ctrl+D would start the selection's self destruct, the
-  game's yes or no box asks first. Enter or Yes starts it, Escape or No
-  leaves the units be. Calling off a countdown already running asks
-  nothing. The clock stops under the box in single player and skirmish,
-  as it does under the in game menu, and runs on in a match.
-- Why: a player asked for it, since one slip of the keys ends an army.
-  The owner wants it.
+- Change: Ctrl+D asks in the game's yes or no box before the selection's
+  self destruct starts. Enter or Yes starts it, Escape or No does not,
+  and calling off a running countdown asks nothing. The clock stops
+  under the box in single player and skirmish and runs on in a match.
+- Why: one slip of the keys would otherwise end an army.
 - Citation: the original starts the countdown at once
   (legacy:122248-122294). The box is the shipped data/guis/yesno.gui,
   the question form of the original's message dialog
@@ -2634,221 +1664,161 @@ Format per entry:
 
 ## D-042: An aim its script never answers fires after two seconds
 
-- Change: a weapon fires once its script sets the aimed port, as the
-  original's does, with one exception. When AimWeapon is still running
-  after 120 ticks, two seconds, while the unit stands still with the
-  target in reach, the weapon counts as aimed and fires. Every other aim
-  the script never answers is asked again, as before. The exception
-  never applies while the weapon's FireWeapon from the last shot is
-  still playing. Musketeers, grenadiers and trebuchets hold AimWeapon
-  until their firing and reloading animation ends, and fired from the
-  exception they started a second FireWeapon over the first, so two
-  animations fought over the same pieces. Nor does it apply while the
-  aim, or a script it called, waits on a piece it is turning or moving.
-  A tower's turret turns at 3640 a second, so a quarter turn takes
-  four and a half seconds, and the exception fired VERTOWER and ARASSH
-  half way round, then every shot after at whatever their turret
-  faced. In the original they fire only once the turret is on the
-  target.
-- Why: some casters' scripts hold AimWeapon until their own can-aim
-  flag is set, and their walk sets that flag only for an aim that began
-  while the unit was still walking. Our attack approach starts the aim
-  on the tick the unit stops in reach, so such a script never answered,
-  and since 0.5.1 Kirenna's Water Blast at a point she had to walk to
-  never fired. The original lets these scripts answer, which points to
-  its approach starting the aim before the stop. Until ours does the
-  same, this keeps those spells working.
+- Change: a weapon fires once its script sets the aimed port, as in the
+  original, except that an AimWeapon still running after 120 ticks, two
+  seconds, with the unit still and the target in reach counts as aimed.
+  The exception never applies while the last shot's FireWeapon is still
+  playing, or while the aim, or a script it called, waits on a piece
+  turning or moving, so firing animations never overlap and a turret
+  fires only on target. Any other unanswered aim is asked again.
+- Why: some casters' scripts answer only an aim begun while walking, and
+  ours starts the aim when the unit stops, so spells like Kirenna's Water
+  Blast at a point she walked to never fired. The original's approach
+  seems to start the aim earlier, and this stands in until ours does.
 - Citation: the aimed port (legacy:223392-223395) and the fire gate
-  that waits for it (legacy:249328-249384). The manual is silent. The
-  turret: an observation in the original, VERTOWER and ARASSH turning
-  fully onto a target before they fire.
+  (legacy:249328-249384). VERTOWER and ARASSH in the original turn fully
+  onto a target before firing. The manual is silent.
 
 ## D-043: A fallen player is marked by a low horn
 
 - Change: when a player's last unit is gone, beside the line that names
-  them, the engine plays a cue of its own, a low horn over a muffled
-  drum lasting about a second. It plays for every player who falls,
-  computer or human, in a skirmish and in a match, on every machine, at
-  the sound volume. A battle being caught up to the present stays quiet.
-- Why: the original plays MessageArrived for that line, and the shipped
-  archives have no such file, so the fall passed in silence. The owner
-  wants a sound there. The cue is made by the engine from sine waves at
-  run time (src/sound/fallen_cue.c), so no recording ships.
+  them, the engine plays a low horn over a muffled drum of about a
+  second, made from sine waves at run time (src/sound/fallen_cue.c). It
+  plays for every player who falls, in a skirmish or a match, on every
+  machine, at the sound volume, but not while a battle is being caught
+  up to the present.
+- Why: the original plays MessageArrived for that line, a file the
+  shipped archives lack, so the fall passed in silence.
 - Citation: the line and its cue (legacy:206939-207005,
-  legacy:227378-227387), docs/notes/2026-10-15-self-destruct.md. The
+  legacy:227378-227387), docs/notes/gameflow.md, "A fallen player". The
   manual is silent.
 
 ## D-044: A finished sweep plays a flash
 
-- Change: when a sweep takes a feature off the map, the Death01
-  sequence from the game's own deathmagic sheet plays once where it
-  stood. A sweep called off, a feature that rots away or one removed by
-  anything else plays nothing.
-- Why: a contributor added it so a finished sweep shows, and the owner
-  took it in. Our sweep removes the feature at once, where the
-  original's lingers a moment.
-- Citation: the original keeps a swept feature a moment as an animating
-  record and then clears its cell, with no effect sprite
-  (legacy:127856-127884, legacy:128007).
-  docs/notes/2026-10-02-cleanup-completion-effect.md.
+- Change: when a sweep takes a feature off the map, the Death01 sequence
+  of the game's deathmagic sheet plays once where it stood. A cancelled
+  sweep, a feature that rots away or one removed any other way plays
+  nothing.
+- Why: ours removes the feature at once, where the original's lingers a
+  moment, so the flash shows the sweep is done.
+- Citation: the original lingers as an animating record and clears its
+  cell with no effect sprite (legacy:127856-127884, legacy:128007).
+  docs/notes/features.md.
 
 ## D-045: Radar and sight jamming, tags for mods
 
-- Change: two unit tags the original never reads, `radardistancejam`
-  and `sightdistancejam`, radii in world pixels that no shipped unit
-  sets (docs/MODDING.md). Within an enemy radar jammer's radius a unit
-  gets no radar blip. Within an enemy sight jammer's radius the ground
-  goes back to explored for that player's sight, all but the nine cells
-  round each of its own units, and its units cannot see or pick targets
-  there. A builder walks up to a jammed site before it is judged, a site
-  there is not checked for hidden units, and the computer players read
-  the jammed fog too. Targets already held or ordered are still fired
-  on. Sight jamming does nothing with Line of Sight off, and it hides no
-  radar blips. A jammer works while it is finished and alive, and with
-  `onoffable` only while it is on, which the Active and Inactive buttons
-  switch. With `activatewhenbuilt` it comes on when built, with a script
-  or without. It never jams its own side or its allies. Whoever it does not
-  jam, owner, allies and watchers, sees a pale haze on its ground in both
-  views, under the fog like the ground. Those it jams see no haze.
-- Why: a playtester asked for Total Annihilation's radar jamming and
-  for sight jamming (#319). The original has neither, so the base game
-  is unchanged. Sight jamming changes each seat's fog, which the
-  simulation and the computer players read, so it is simulation state
-  and in the hash and saves through the fog layers. Radar jamming, like
-  radar, is drawing only, and so is the haze, which keeps the veil from
-  reading as a fog bug. The nine cells are the ones the original's
-  stamp lights round a unit whatever its sight (legacy:167402).
-- Citation: the manual is silent. Radar itself is the original's
-  (legacy:208642-208655, docs/notes/2026-10-21-radar.md).
+- Change: two unit tags the original never reads, `radardistancejam` and
+  `sightdistancejam`, radii in world pixels that no shipped unit sets
+  (docs/MODDING.md).
+  - Inside an enemy radar jammer's radius a unit shows no radar blip.
+  - Inside an enemy sight jammer's radius a player's ground falls back
+    to explored, but for the nine cells round each of their units, and
+    their units cannot see or pick targets there, though targets already
+    held or ordered are still fired on. A builder walks up to a jammed
+    site to judge it, a site there is not checked for hidden units, and
+    the computer players read the jammed fog too. Sight jamming does
+    nothing with Line of Sight off and hides no radar blips.
+  - A jammer works while finished and alive, with `onoffable` only while
+    the Active and Inactive buttons have it on, and `activatewhenbuilt`
+    turns it on when built. It never jams its own side or allies, who
+    with watchers see a pale haze on its ground.
+- Why: mods get Total Annihilation's radar jamming and a sight jamming,
+  and the base game, which has neither, is unchanged. Sight jamming is
+  simulation state, in the hash and the saves, while radar jamming and
+  the haze are drawing only.
+- Citation: #319. The nine cells are those the original's stamp always
+  lights (legacy:167402). Radar is the original's (legacy:208642-208655,
+  docs/notes/fog.md, "Radar"). The manual is silent.
 
 ## D-046: M held on a drag box leaves the monarch out
 
-- Change: with M held at any point while a box is dragged over the
-  battle, the box selects every unit of yours it would select except
-  your monarch. That is any unit whose category line holds Monarch, the
-  units Ctrl+M takes. Shift with it adds them to the selection and keeps
-  the units already selected. It works in both views. With Ctrl held, M
-  is still Ctrl+M, and while a chat line is open M is a typed letter.
-  The press of M arms Move, as it does in the original, and a box
-  dragged with M held drops the Move it armed. Three things follow from
-  the shared key. A click with M held that moves less than 4 px is not
-  a box, so it gives the armed Move to that spot. A drag with M held
-  that is let go over the HUD is no box either, and leaves Move
-  armed. A press of M while Move is armed from its button disarms it,
-  as a second click on the button does.
-- Why: the owner asked for a quick way to take an army into a fight and
-  leave the monarch behind.
+- Change: with M held during a box drag over the battle, the box selects
+  as it would but leaves out your monarch, the units Ctrl+M takes, and
+  with Shift adds to the selection, in both views. M still arms Move, as
+  in the original, and a box drops it. A click with M held that moves
+  under 4 px gives that Move to the spot, a drag let go over the HUD
+  keeps Move armed, and M while Move is armed from its button disarms
+  it.
+- Why: a quick way to take an army into a fight and leave the monarch
+  behind.
 - Citation: the original's Keys.TDF binds M, LOWER_M and UPPER_M, to
-  UnitCommand Move, and the engine binds it so. The box rule is ours
-  and shares the key with Move. The manual is silent.
+  UnitCommand Move. The box rule is ours. The manual is silent.
 
 ## D-047: Battle chat is larger, in the sender's colour, on a plate
 
-- Change: the chat lines in the top left of a battle, the chat edit box
-  and the +Clock line scale with the screen. They draw at one and a
-  quarter times the original on the 480 row canvas, twice on a 1080 row
-  screen, and at most four times, in steps of a quarter. The game's own
-  Times sheets are scaled by edge directed doubling and then resampled,
-  so the strokes stay crisp. A player's line carries their team badge,
-  their name in the bold sheet in their player colour, and the message
-  in a paler tint of that colour. A colour too dark to read is lifted
-  toward white in linear light, which keeps its hue, until the name
-  reaches a relative luminance of 0.34 and the message 0.64. Each
-  message sits on a rounded warm dark plate about three quarters
-  opaque, every glyph has a dark halo, and a line fades out over the
-  last half second of its life. A system line keeps the margin, has no
-  badge, and is drawn in the parchment of the game's own text. A line
-  stops at 560 original pixels across before it wraps, and when the
-  block would reach the edit box the oldest messages give way.
-- Why: the owner asked for chat that is larger, easy to see, in colours
-  near the units' own, and more modern while keeping the game's feel.
-  The original draws its 8 point face one to one in white, which reads
-  at 640x480 but is tiny on a browser sized canvas and vanishes over
-  snow and sand. The badge, the margins and the 18 pixel row are the
-  original's, scaled.
-- Citation: the block and its badge, legacy:205958-206051 and
-  legacy:206008-206015. Covered by
-  `chat_ink_reads_on_snow_and_water_for_every_player_colour`. The
-  manual is silent on how chat looks.
+- Change: battle chat, its edit box and the +Clock line draw at one and
+  a quarter times the original on the 480 row canvas, twice at 1080
+  rows and at most four times, in quarter steps, from the game's Times
+  sheets scaled by edge directed doubling and resampled. A line carries
+  the team badge, the name in the bold sheet in the player's colour and
+  the message in a paler tint, a colour too dark to read being lifted
+  toward white in linear light to a relative luminance of 0.34 for the
+  name and 0.64 for the message. It sits on a rounded warm dark plate,
+  every glyph with a dark halo, and fades over its last half second.
+  Lines wrap at 560 original pixels.
+- Why: the original's 8 point white face is tiny on a browser sized
+  canvas and vanishes over snow and sand.
+- Citation: legacy:205958-206051 and legacy:206008-206015, the block and
+  its badge. `chat_ink_reads_on_snow_and_water_for_every_player_colour`.
+  The manual is silent on how chat looks.
 
 ## D-048: A ranged unit turns on a flyer hitting a friend
 
 - Change: when a flyer hits a ground unit, every ranged unit of that
-  unit's side or an allied side within 640 px of the flyer whose weapon
-  in hand reaches it and can hurt it, and that is in a fight against a
-  unit on the ground that it picked for itself or its computer player
-  sent it to, takes the flyer as its target instead. The new fight is
-  one it picked, so its leash holds. A fight a human player or a
-  mission script ordered is left alone, and so is a unit holding fire.
-- Why: a playtester asked for archers to help against flyers attacking
-  the units round them while they have targets of their own (#503).
-- Citation: none. The original's target search scores what it finds by
-  distance, the damage the weapon does and the turn to face it
-  (legacy:21170-21246), and a hit draws only the unit that was hit
-  (legacy:15187-15215), or a guard's charge (legacy:233765-233768).
+  side or an ally within 640 px of the flyer, whose weapon in hand can
+  reach and hurt it and which is fighting a ground target it picked or
+  its computer player sent it to, takes the flyer as its target, a fight
+  it picked, so its leash holds. A fight a human player or a mission
+  script ordered, and a unit holding fire, are left alone.
+- Why: so archers help against flyers attacking the units round them.
+- Citation: #503. The original's target search scores by distance,
+  damage and turn (legacy:21170-21246), and a hit draws only the unit
+  hit (legacy:15187-15215) or a guard's charge (legacy:233765-233768).
 
 ## D-049: Where an attack run and a flyer's patrol depart from the original
 
-- Change: a flyer without hoverattack, the Dirigible, the Gryphon, the
-  Fallen Angel, the Aerial Juggernaut and the Wrath of Tammuz among the
-  shipped units, flies its attack runs as the original does, with three
-  differences. It flies its run at a target from the start, where the
-  original first hands a target that fails a reach test on its path to a
-  formation move. Its points are kept its turning circle and 32 px
-  inside the map, where the original sends a flyer near the edge 800 px
-  back in. A flyer attacking another flyer stands off it and fires, as
-  the engine did before, where the original hands it to another mission.
-  A flyer on patrol takes its next leg once within 128 px of its point,
-  unless that next point is as near, and flies its patrol point to
-  point.
-- Why: the formation move, the edge push and the air to air mission are
-  missions the engine does not have yet, and the run's own legs cover
-  the approach. A patrol leg walked to within 8 px braked every flyer to
-  a stop on each point, which the playtest saw on Parrots.
+- Change: a flyer without hoverattack, such as the Dirigible or the
+  Gryphon, flies its attack runs as the original does, except that it
+  runs at a target from the start without the original's formation
+  move, keeps its points its turning circle and 32 px inside the map
+  where the original sends it 800 px back in, and stands off another
+  flyer and fires. On patrol it takes its next leg within 128 px of its
+  point, unless that point is as near, and flies point to point rather
+  than round the order point at its weapon's range plus 160 px.
+- Why: the engine has no formation move, edge push or air to air mission
+  yet, and walking a leg to within 8 px braked every flyer to a stop.
 - Citation: the run (legacy:28491-29118), the reach test and formation
-  move (legacy:28572-28630), the edge push (legacy:28854-28924) and the
-  flying target and dropped key handed elsewhere (legacy:28524-28545).
-  The original's flyer patrol ends each leg within 128 px (legacy:26275)
-  and flies its legs round the order point at its weapon's range plus
-  160 px, a shape the engine does not copy. The manual is silent.
-  docs/notes/2026-11-14-air-attacks-and-dropped-shots.md has the detail.
+  move (legacy:28572-28630), the edge push (legacy:28854-28924), the
+  flying target and dropped key handed elsewhere (legacy:28524-28545),
+  the patrol leg (legacy:26275).
+  docs/notes/2026-09-04-combat-mechanics.md. The manual is silent.
 
 ## D-050: W, A, S and D pan, and Attack and Stop sit on B and N
 
 - Change: W, A, S and D pan the camera in both views, as the arrows and
-  the screen edge do, except while Ctrl is held, when they are select
-  keys. B arms Attack and N gives Stop, in upper and lower case alike,
-  where the original has A and S. The other order letters are the
-  original's: M, G, P, L, U, H, C, K and O.
+  the screen edge do, except while Ctrl is held. B arms Attack and N
+  gives Stop, where the original has A and S. The other order letters,
+  M, G, P, L, U, H, C, K and O, are the original's.
 - Why: letter panning ranks above the original's two letters, and A and
-  S cannot both pan and give orders. B and N are free in both views,
-  sit by the index finger beside WASD, and keep their labels on QWERTZ
-  and AZERTY. Ctrl+B and Ctrl+N stay the select keys, which no order
-  letter answers.
+  S cannot both pan and give orders. B and N are free in both views, sit
+  beside WASD and keep their labels on QWERTZ and AZERTY.
 - Citation: the original's Keys.TDF binds LOWER_A and UPPER_A to
   UnitCommand Attack and LOWER_S and UPPER_S to Stop, leaves B empty,
-  gives N to MoveToNextUnit, which the engine does not have, and binds
-  no letter to the camera, which pans on the arrows and the edge. The
+  gives N to MoveToNextUnit and binds no letter to the camera. The
   manual is silent.
 
 ## R-008: A reel's soundtrack goes through the game's mixer
 
-- Change: a clip's audio track is decoded beside its picture and played
-  through the same mixer as the game's sounds, at the effects volume,
-  from a ring the player keeps about a third of a second ahead of the
-  frame on show. A reel with no track, which is every door clip under
-  Gui, plays as it did. With sound turned off a reel plays silent.
-- Why: the original hands a clip to its video library, which plays the
-  sound itself through the sound library it was built with
-  (legacy:35289 waits on its clock). Ours decodes with FFmpeg and has
-  one mixer, so the track goes through it. That puts the clip's sound
-  under the effects volume rather than a level of its own, which the
-  original does not offer either. The lead is ours: the picture is paced
-  by the frame timer and the sound by the audio device, and a ring with
-  nothing in hand crackles at the first late frame.
-- Citation: legacy:35289 the clip's clock. The two Bink audio decoders
-  are built into the FFmpeg the site and the Mac and Linux releases
-  carry, the Windows release takes the full library.
+- Change: a clip's audio is decoded beside its picture and played
+  through the game's mixer at the effects volume, about a third of a
+  second ahead of the frame on show. With sound off a reel is silent.
+- Why: the original's video library plays the sound itself
+  (legacy:35289), and ours decodes with FFmpeg into its one mixer, so
+  the clip takes the effects volume, the original having no level for it
+  either. The lead keeps the ring from crackling at the first late frame.
+- Citation: legacy:35289 the clip's clock. The FFmpeg the site and the
+  Mac and Linux releases carry has the two Bink audio decoders, and the
+  Windows release takes the full library.
 
 ## D-053: The classic view's fog is a drifting mist on a hardware renderer
 

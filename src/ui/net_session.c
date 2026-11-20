@@ -26,7 +26,7 @@
 
 /* Which float environment this build simulates in. Every native build
  * used to claim one class, and the handshake then let two of them into
- * one room (docs/notes/2026-09-14-float-determinism.md). */
+ * one room (docs/notes/2026-09-04-multiplayer-hapinet.md). */
 #define SESSION_DETERMINISM_CLASS TAK_Net_DeterminismClass()
 
 uint8_t NetSession_DeterminismClass(void) { return SESSION_DETERMINISM_CLASS; }

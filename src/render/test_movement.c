@@ -190,7 +190,7 @@ static GameWorld *mv_world_with(int sea) {
     }
     /* The ships' FBI numbers and the hulls their 3DOs measure: the War
      * Galley, the Iron Clad, the Trebuchet Ship, the Skiff and the Man
-     * of War (docs/notes/2026-10-02-ship-hulls.md). */
+     * of War (docs/notes/pathing.md, Ship hulls). */
     UnitDef sea_defs[MV_DEF_SEA_COUNT];
     memcpy(sea_defs, defs, sizeof(defs));
     mv_fill_ship(&sea_defs[MV_DEF_GALLEY], "TESTGALLEY", "TESTWATER4",

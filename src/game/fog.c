@@ -16,8 +16,8 @@
  *   206481-206492  the per-player sweep that drives that recheck.
  *   167179  LOS_UpdateAll rebuilds every entry from nothing.
  *   130167-130436  Fog_DrawOverlay — the legacy overlay algorithm the
- *                  renderer below reproduces (see docs/digs/
- *                  2026-09-04-rendering-visuals.md §Fog).
+ *                  renderer below reproduces (see docs/notes/
+ *                  2026-09-04-rendering-visuals.md, Fog of war overlay).
  * This module keeps the same model: line-of-sight is session-configured,
  * recomputed from live units, and consumed by world + minimap rendering.
  *

@@ -985,7 +985,7 @@ static int unit_side_sees(int player_id, const Unit *t) {
     if (t->cloaked) return 0;
     const GameWorld *w = World_Get();
     /* With Line of Sight off the side's sight map is full
-     * (legacy:167211-167219). See docs/notes/2026-09-15-line-of-sight-off.md
+     * (legacy:167211-167219). See docs/notes/fog.md, Line of Sight off,
      * for the explored map read this leaves out. */
     if (!w || !w->cfg.line_of_sight) return 1;
     return unit_seat_sees(w, player_id, t);
@@ -19390,7 +19390,8 @@ static void compose_node_xforms_ex(const UnitMesh *m,
      * uses right-handed Euler formulas and the model->world map has
      * det = -1, so rotations conjugate as R(A·n, -θ): negate the
      * angle scale or every TURN plays backwards (BOS oracle table in
-     * docs/digs). MOVE x and z flip as well, see the piece loop. */
+     * docs/notes/2026-09-09-cob-entry-points.md). MOVE x and z flip as
+     * well, see the piece loop. */
     const float ANGLE_TO_RAD = -6.28318530718f / 65536.0f;
     /* COB linear values share the raw 3DO fixed-point space of the
      * mesh offsets (move [-0.6] compiles to -98304; Hip y=1894644):
@@ -19725,7 +19726,7 @@ static int unit_effects_live(const Unit *u, int puffs) {
 }
 
 /* A damage flame burns 30 ticks whatever its anim, as the original's do
- * (captures, docs/notes/2026-10-02-damaged-building-flames.md). */
+ * (captures, docs/notes/2026-09-04-rendering-visuals.md). */
 #define DAMAGE_FLAME_TICKS 30
 
 /* A new flame takes one of its size's anims at random

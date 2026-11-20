@@ -147,7 +147,7 @@ the rest of this document is still design.
   60 ticks, and the main menu plays one back through the same queue.
   Playback refuses a file from another engine build, other game data or
   another copy of the map, and says so when the hash leaves the
-  recording. See docs/notes/2026-09-30-replays.md.
+  recording. See docs/notes/2026-09-04-multiplayer-hapinet.md, Replays.
 - Watching a match under way. Select Game offers Watch on a running
   game, the watcher takes a snapshot of a player's world and the turns
   after it, or replays the turn log a window at a time when it is older
@@ -158,7 +158,7 @@ the rest of this document is still design.
   who is watching. A player beaten while the others fight on watches the
   same way. The beaten client gives its seat up to watch, so from then on
   its world is checked like a watcher's and never counts. See
-  docs/notes/2026-09-30-watching-a-match.md.
+  docs/notes/2026-09-04-multiplayer-hapinet.md, Watching a match.
 - Co-op against the computer with drop in seats (#292, N-010). A
   hosted room lets players drop in. A leaving player's army goes to the
   computer when the seat was a computer's at the start or a human of the
@@ -343,7 +343,7 @@ can skip it.
   tallies for every seat and which seats still stood. The relay keeps the
   first report from a seat as the game's record for the leaderboard and
   checks every later one against it. See
-  docs/notes/2026-09-14-multiplayer-leaderboard.md.
+  docs/notes/2026-09-04-multiplayer-hapinet.md, The leaderboard.
 
 Chat rides its own channel rather than the turn stream, so it is never
 delayed by a turn and cannot affect the hash. The server stamps each line
@@ -590,7 +590,7 @@ group that differs, which the lobby names: "the units differ" points at a
 unit file or a mod, "the scripts differ" at a script. A finished game's
 result is filed under the host's mod set and fingerprint, so each mod set
 keeps a leaderboard of its own (#287,
-docs/notes/2026-09-14-multiplayer-leaderboard.md). `--data-report` prints a
+docs/notes/2026-09-04-multiplayer-hapinet.md). `--data-report` prints a
 line per file with its hash and then the group totals, so two players can
 find the single file at fault. The game also logs the fingerprint once per
 mount, as `Data fingerprint: content ...`. A full install gives the same
