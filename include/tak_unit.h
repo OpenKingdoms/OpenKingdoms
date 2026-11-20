@@ -102,12 +102,9 @@ typedef struct UnitMesh {
     uint32_t       *colors;      /* 1 * vert_count, RGBA8, unlit */
     uint16_t       *indices;     /* 3 * tri_count, into positions */
     uint16_t       *vert_node_idx; /* vert_count entries; index into nodes[] */
-    /* Authored draw order per triangle (global tri index → sequence in
-     * the 3DO tree walk). The legacy renderer draws prims in model
-     * order with backface culling only — NO depth sort
-     * (legacy:197793-197807) — and artists authored prim order
-     * for correct layering (capes after torsos). Single-unit draws
-     * replay this order. */
+    /* Authored draw order per triangle in the 3DO walk (legacy:197793-197807).
+     * The original keys each pixel by height within a unit (legacy:265317),
+     * so this order decides only ties. */
     uint32_t       *tri_seq;     /* tri_count entries */
     /* An artist's model brings these. A baked 3DO leaves them NULL and
      * the 3D view makes a flat normal per triangle instead. */
@@ -1853,6 +1850,11 @@ void              Units_WarmPathCaches(const struct GameWorld *w);
  * Units_LoadDefs. Lazy-bake still works for any def the eager pass
  * skipped. Returns the number of meshes successfully baked. */
 int               Units_BakeMonarchMeshes(void);
+/* The band path: note the brightest level each atlas's meshes can reach,
+ * from every unit, feature and shot model, before the first bake. */
+void              Units_PlanShadeBands(void);
+/* 1 when models draw through the GL classic path's depth. */
+int               Units_ModelDepthReady(struct TAK_Platform *plat);
 
 /* The RGBA of an authored player colour, the same one the setup
  * screen shows for that index. Out of range wraps, as

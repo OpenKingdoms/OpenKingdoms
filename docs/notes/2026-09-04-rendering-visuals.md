@@ -156,6 +156,14 @@ of 120 primitives anyway. The buffer holds bytes, so the key is in
 whole units and coplanar pieces tie, which leaves them to the node
 order.
 
+Our GL renderers give each model its own slice of the depth buffer, so a
+model is depth tested within itself as here and models keep their row order.
+The software, Direct3D and Metal renderers have no per-pixel buffer, so they
+resolve the same comparison per triangle: order by the triangle's tallest
+vertex key, break ties with the reverse-node authored order. Quantising the
+key to whole units, as the byte buffer does, keeps coplanar pieces tied so
+the authored order still decides them.
+
 ARAKING shows both rules. In reverse node order he paints legs,
 shoulders, Head, Cape4 to Cape1, the blood emitters, sword, hands and
 arms, Torso, Hip and the root. His cape is a chain from Torso through
