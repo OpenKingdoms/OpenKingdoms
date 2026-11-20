@@ -871,7 +871,7 @@ TEST(damaged_building_flames_follow_the_retail_script) {
             ASSERT(births <= 8);
             if (step == 0) ASSERT_EQ_INT(1, births);
             else ASSERT(births >= 6);
-            if (previous >= 0) ASSERT_EQ_INT(30, t - previous);
+            if (previous >= 0) ASSERT_EQ_INT(28, t - previous);
             previous = t;
             batches++;
         }

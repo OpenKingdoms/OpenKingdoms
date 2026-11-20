@@ -731,6 +731,9 @@ typedef struct UnitDef {
     /* The battle's mission leaves the type off its roster, so no one
      * may make one (legacy:226872-226874). */
     uint8_t  mission_barred;
+    /* Its script runs its own walk cycle, from a watcher thread or from
+     * MoveRate, by calling or starting `walk` itself. */
+    uint8_t  script_walks;
 
     /* COB script bundle (Phase D). Loaded eagerly per-def. */
     CobScript *cob_script;
@@ -980,7 +983,7 @@ typedef struct Unit {
     uint32_t   stable_id;   /* deterministic replay/network identity */
     int32_t    world_x;     /* pixel position, top-left of footprint */
     int32_t    world_y;
-    float      heading;     /* radians, 0 = facing south             */
+    float      heading;     /* radians, 0 = facing north, turning east */
     float      pitch, roll; /* model tilt, radians, 0 = upright      */
     int32_t    velocity;    /* current speed in COB units/sec; 0 = stationary */
     int32_t    health;      /* current HP (Sprint 1 placeholder — Phase G refines) */
@@ -1554,7 +1557,7 @@ void              Units_SetBackfaceCullInvert(int v);
  * sides of the model. */
 void              Units_DebugRotateAll(float delta_rad);
 
-/* Set one unit's heading (radians, 0 = facing south). No-op if `handle`
+/* Set one unit's heading (radians, 0 = facing north). No-op if `handle`
  * is out of range or the slot is not alive. */
 void              Units_SetHeading(int handle, float heading);
 
@@ -2113,7 +2116,6 @@ int               Units_DebugBuildSparkleRadius(int handle);
 int               Units_CanStandAt(int handle, int32_t x, int32_t y);
 /* Veteran rank 0..10 (0 = not a veteran). */
 int               Units_GetVeteranLevel(int handle);
-int               Units_GetSelectedVeteranLevel(void);
 void              Units_CommandAttackGroundSelected(int32_t world_x,
                                                     int32_t world_y);
 int               Units_SelectionHasBuilder(void);
@@ -2139,7 +2141,6 @@ int               Units_SelectionCanHelpBuild(int frame);
  * selection). Display strings are derived from the unit's anim_state
  * and def fields. The strings are static — caller must not free or
  * cache them past the next call. */
-const char       *Units_GetSelectedName(void);
 const char       *Units_GetSelectedStatus(void);
 /* The first selected unit's mission as the original names it, a key in
  * english/translate/unitmissions.tdf such as "UNITMISSIONCODE_PATROL".
@@ -2153,8 +2154,6 @@ const UnitDef    *Units_GetSelectedDef(void);   /* NULL when nothing selected */
  * or it carries none. Counted from the units recorded as carried by it,
  * the way the original walks the carrier's chain (legacy:152083-152086). */
 int               Units_GetSelectedCargoCount(void);
-/* Kills credited to the first selected unit, 0 with no selection. */
-int               Units_GetSelectedKills(void);
 /* Bit p set when player p owns a live unit. */
 uint32_t          Units_PlayersWithUnits(void);
 /* The units whose centre may lie in the box, from the simulation's

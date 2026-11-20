@@ -198,8 +198,14 @@
  * aim, a flyer on patrol keeps its speed, and a shot waits for its aim. 76:
  * a unit wedged at a ridge or in a pocket is routed out, a tower fires once
  * its turret is on the target, a landing flyer keeps its pose, and a unit's
- * step tests its whole body. */
-#define TAK_ENGINE_BUILD_ID           76
+ * step tests its whole body. 77: a Sea Fort on tight water launches its
+ * queue, ships caught bow to bow get past each other, a unit turns onto its
+ * work at its own rate, and a Repair Skiff mends a ship hull to hull. 78: a
+ * unit script's sleep lasts the original's frames and ends on the tick it
+ * runs out. 79: a unit whose script runs its own walk gets no second walk
+ * from the engine. 80: a mission's order lists run patrols, attacks on a
+ * place, standing orders and placed angles as the original's do. */
+#define TAK_ENGINE_BUILD_ID           80
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
