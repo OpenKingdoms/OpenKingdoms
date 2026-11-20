@@ -496,7 +496,7 @@ in the [all-contributors](https://allcontributors.org) way.
     </td>
     <td align="center" valign="top" width="20%">
       <a href="https://github.com/Danvern"><img src="https://github.com/Danvern.png?size=100" width="100" alt="Artificer-111" style="border-radius: 50%"/><br /><sub><b>Artificer-111</b></sub></a><br />
-      <sub>pathing, tower aim and flyer landing</sub>
+      <sub>pathing, tower aim, flyer landing, keys and the classic view</sub>
     </td>
   </tr>
 </table>
