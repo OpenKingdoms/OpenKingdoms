@@ -735,6 +735,7 @@ static void loading_advance_step(TAK_Platform *platform) {
         Units_LoadDefsFor(world ? world->cfg.crusades_balance : 0);
         uint64_t t_build = SDL_GetPerformanceCounter();
         Units_LoadAllBuildables();
+        Units_PlanShadeBands();
         uint64_t t_bake = SDL_GetPerformanceCounter();
         Units_ClearInstances();
         /* M6: pre-bake the canonical monarch meshes so the LS_FINALIZE

@@ -13409,8 +13409,8 @@ TEST(render_probe_unit_shadows) {
                                     units[0].world_y, 112, &gx, &gy));
 
     /* One of each shape the FBI keys describe: a lodestone casts a
-     * silhouette, a swordsman blits its shadow sprite, a wall carries
-     * noshadow. */
+     * silhouette, a swordsman blits its shadow sprite, and a wall carries
+     * noshadow but, being a feature once built (isfeature), casts one. */
     int lode_def  = Units_FindDefByName("ARALODE");
     int sword_def = Units_FindDefByName("ARASWORD");
     int wall_def  = Units_FindDefByName("ARAWALL");
@@ -13421,7 +13421,7 @@ TEST(render_probe_unit_shadows) {
     ASSERT_NOT_NULL(ld); ASSERT_NOT_NULL(sd); ASSERT_NOT_NULL(wd);
     ASSERT(ld->shadow_gaf[0] != '\0' && ld->shadow_art[0] == '\0');
     ASSERT(sd->shadow_gaf[0] != '\0' && sd->shadow_art[0] != '\0');
-    ASSERT(wd->no_shadow != 0);
+    ASSERT(wd->no_shadow != 0 && wd->is_feature != 0);
 
     int lode  = Units_Spawn(lode_def,  1, 0, gx,        gy);
     int sword = Units_Spawn(sword_def, 1, 0, gx + 110,  gy);
@@ -13486,7 +13486,7 @@ TEST(render_probe_unit_shadows) {
     ASSERT(lcx > (lo[0] + hi[0]) * 0.5f);
     ASSERT(lcy > (lo[1] + hi[1]) * 0.5f);
     ASSERT(sn >= 10);
-    ASSERT_EQ_INT(0, wn);
+    ASSERT(wn >= 300);
 
     free(lit0);
     free(lit);
