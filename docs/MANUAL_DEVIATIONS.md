@@ -18,8 +18,10 @@ Format per entry:
   lockstep multiplayer at higher tick rate. Real-time gameplay is
   unaffected because TAK speeds are stored as units/second (divided
   by tick rate per tick). Doubling tick rate halves per-tick delta
-  but applies it twice as often. SLEEP times in milliseconds
-  translate identically.
+  but applies it twice as often. A SLEEP of n milliseconds lasts
+  30n/1000 of the original's frames, rounded down, at two ticks a
+  frame. A sleep shorter than one frame still lasts one. The thread
+  runs again on the last of those ticks.
 - Citation: Manual is silent on tick rate (player-facing rules
   describe wall-clock seconds via Game Speed slider, §I).
 
@@ -1642,6 +1644,16 @@ Format per entry:
   and never moves anything (legacy:9373-9382). The Sea Fort's pad lies
   108 px in front of its centre, and without the push a ship stopped on
   its way out kept the next from going up.
+- Change, jams: two ships that have closed no ground for 8 s, one
+  pressing on the other, stop holding each other, and a stalled ship
+  sails through a hull by the cells alone, as in the original. A ship
+  leaving its yard goes for a spot it can reach by a straight way or a
+  route. Ships gathered at the yard's rally point are left there unless
+  they are on the pad. A hull the yard cannot move leaves the pad to the
+  original's cell test (legacy:9363-9382).
+- Change, auras: between two ships an aura reaches from hull line to
+  hull line, not centre to centre (legacy:237131-237139), so a Repair
+  Skiff at a ship's bow mends it.
 - Why: the original keeps units apart by the cells of their move
   class alone (legacy:163193-163195, legacy:219329-219340), and a
   ship's class is a square one and a half to three times shorter than
@@ -1978,8 +1990,10 @@ Format per entry:
   run on the unit script machine with a host of its own, as the
   original does both. Where ours differs:
   - A patrol of several points is walked by the list, which sends the
-    unit's own patrol order to each point in turn and counts a point
-    reached at 64 pixels. The original queues patrol orders on the unit.
+    unit's own patrol order to each point in turn with the next queued
+    behind it, and goes on once the unit is within 64 pixels or has
+    turned for the next point. The original queues patrol orders on the
+    unit.
   - `w N` is taken as N seconds, which is how the order was documented
     for Total Annihilation. The original scales the number in floating
     point code the listing does not show, so the unit is inferred.
@@ -1988,6 +2002,10 @@ Format per entry:
     damage would also raise.
   - `a TYPE` picks the nearest unit of the type. The original adds a
     random part to each distance first, up to half of it.
+  - The rest of a list waits behind `a X Z`, an attack on the ground
+    that does not end, as behind an attack on a named unit. What
+    follows it in the original was not seen. No shipped list has a
+    step after it.
   - `i NAME` puts the unit aboard at once, as the original does, and
     the rest of its list waits until it is set down. A `w` still runs
     out aboard. The original runs the rest of the list while the unit

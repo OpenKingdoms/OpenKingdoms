@@ -20,6 +20,9 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world);
  * Terrain_Render / Units_Render and before Minimap_Draw (so the
  * minimap sits at the top of the right sidebar). */
 void HUD_Draw(TAK_Platform *plat, const GameWorld *world);
+/* The unit and the world->features index under the pointer, -1 for
+ * none, which the next HUD_Draw describes before the selection. */
+void HUD_SetPointerInfo(int unit, int feature);
 
 /* Convert a window-pixel position into "is this in the HUD?" so
  * mouse handlers can dispatch correctly between game-world clicks

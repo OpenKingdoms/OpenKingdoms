@@ -80,6 +80,9 @@ static int parse_feature_tdf(const char *vfs_path) {
                 FeatureDef *f = &g_feats[g_feat_count];
                 memset(f, 0, sizeof(*f));
                 copy_str(f->name,     sizeof(f->name),     name);
+                copy_str(f->description, sizeof(f->description),
+                         TDF_ReadString(t, "description", ""));
+                f->no_display_info = (uint8_t)(TDF_ReadInt(t, "nodisplayinfo", 0) & 1);
                 copy_str(f->world,    sizeof(f->world),
                          TDF_ReadString(t, "world",    ""));
                 copy_str(f->category, sizeof(f->category),
@@ -337,6 +340,23 @@ static int find_offering_at(const struct GameWorld *world,
         if (feat_instance_rotting(&world->features[i])) continue;
         if (!feat_footprint_hit(fd, &world->features[i], world_x, world_y))
             continue;
+        int32_t cx, cy;
+        if (Features_InstanceCentre(world, i, &cx, &cy) != 0) continue;
+        int64_t dx = cx - world_x, dy = cy - world_y;
+        int64_t d2 = dx * dx + dy * dy;
+        if (best < 0 || d2 < best_d2) { best = i; best_d2 = d2; }
+    }
+    return best;
+}
+
+int Features_InfoAt(const struct GameWorld *world, int32_t world_x, int32_t world_y) {
+    if (!world || !world->features) return -1;
+    int best = -1;
+    int64_t best_d2 = 0;
+    for (int i = 0; i < world->feature_count; i++) {
+        const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
+        if (!fd || fd->no_display_info) continue;
+        if (!feat_footprint_hit(fd, &world->features[i], world_x, world_y)) continue;
         int32_t cx, cy;
         if (Features_InstanceCentre(world, i, &cx, &cy) != 0) continue;
         int64_t dx = cx - world_x, dy = cy - world_y;
@@ -1028,6 +1048,23 @@ static int remaster_breakable_hp(const FeatureDef *fd) {
         if (tak_stricmp(fd->category, kinds[i].kind) == 0)
             return (fd->damage & 0xffff) > 0 ? (fd->damage & 0xffff) : kinds[i].hp;
     return 0;
+}
+
+/* The same health feat_hit counts a blast against. */
+int Features_InstanceHealth(const struct GameWorld *world, int idx,
+                            int *out_hp, int *out_max) {
+    if (out_hp) *out_hp = 0;
+    if (out_max) *out_max = 0;
+    if (!world || idx < 0 || idx >= world->feature_count) return 0;
+    const struct MapFeature *mf = &world->features[idx];
+    const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+    if (!fd) return 0;
+    int hp = fd->damage & 0xffff;
+    if (fd->indestructible) hp = world->cfg.remastered ? remaster_breakable_hp(fd) : 0;
+    if (hp <= 0) return 0;
+    if (out_max) *out_max = hp;
+    if (out_hp) *out_hp = hp > mf->damage_taken ? hp - mf->damage_taken : 0;
+    return 1;
 }
 
 /* A wall, a model wall or a building leaves rubble that blocks. */
