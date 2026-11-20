@@ -31,9 +31,9 @@
 #include <string.h>
 
 /* The pinned answer. Every platform in CI has to reach this. Retaken
- * when the heading each aim was asked for joined the hash; the battle
- * itself did not change. */
-#define SIM_PROBE_HASH 0x06db88b6u
+ * when a script's sleep came to end on its tick, which retimes every
+ * unit's script and so the battle. */
+#define SIM_PROBE_HASH 0x8bded75au
 
 #define PB_TILES   192      /* 16 px tiles per side, so a 3072 px map */
 #define PB_GROUND  64       /* flat height, clear of the water line */

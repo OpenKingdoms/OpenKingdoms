@@ -149,9 +149,9 @@ and the mindspin 28. `transportfx.gaf` is a paletted file and takes the
 
 Deviations T-001 to T-003 in `docs/MANUAL_DEVIATIONS.md` cover the
 deliberate differences. Not done yet are the target blocked and cannot
-transport unit chatter (we have no unit chatter), Ctrl as a second append
-key, and the Load cursor turning back into the normal pointer over a unit
-the transport cannot take (legacy:186387-186402). A unit with `canload`
+transport unit chatter (we have no unit chatter) and Ctrl as a second
+append key. The Load cursor turns back into the normal pointer over a
+unit the transport cannot take (legacy:186387-186402). A unit with `canload`
 that is not a transport (ARADRAG, ZONDRAG) keeps the walk-to order it had
 before. The original reads no canload key at all.
 
