@@ -1850,6 +1850,11 @@ void              Units_WarmPathCaches(const struct GameWorld *w);
  * Units_LoadDefs. Lazy-bake still works for any def the eager pass
  * skipped. Returns the number of meshes successfully baked. */
 int               Units_BakeMonarchMeshes(void);
+/* The band path: note the brightest level each atlas's meshes can reach,
+ * from every unit, feature and shot model, before the first bake. */
+void              Units_PlanShadeBands(void);
+/* 1 when models draw through the GL classic path's depth. */
+int               Units_ModelDepthReady(struct TAK_Platform *plat);
 
 /* The RGBA of an authored player colour, the same one the setup
  * screen shows for that index. Out of range wraps, as

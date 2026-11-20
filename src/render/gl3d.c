@@ -111,7 +111,7 @@ static struct {
 
 /* ── State ────────────────────────────────────────────────────────── */
 
-struct GL3D_Texture { GLuint id; int w, h; };
+struct GL3D_Texture { GLuint id; int w, h; SDL_GLContext ctx; };
 struct GL3D_Mesh    { GLuint vbo, ibo; GL3D_Layout layout; int vert_count, index_count; };
 
 typedef struct Program {
@@ -124,14 +124,17 @@ typedef struct Program {
     GLint  u_nrmtex, u_mrtex, u_emtex, u_hasnrm, u_hasmr, u_hasem;
     GLint  u_emissive, u_metallic, u_roughness, u_nrmscale, u_blend;
     GLint  u_time, u_pulse;
+    GLint  u_ramp;
 } Program;
 
 static struct {
     int         ready;
     SDL_Window *window;
     SDL_Renderer *renderer;
+    SDL_GLContext context;
     Program     terrain, model, model_pbr, sprite;
     Program     classic;   /* the classic view's models, depth per model */
+    Program     classic_shade;   /* the same, shaded through a palette ramp */
     int         max_nodes;
 #ifdef __EMSCRIPTEN__
     /* The scene draws inside this render target of SDL's. */
@@ -163,6 +166,9 @@ static struct {
     SDL_Texture *bound_sdl_tex;   /* the atlas bound through SDL this frame */
     int frame_open;
     int classic_open;      /* a GL3D_ClassicBegin session is running */
+    GLuint classic_prog;   /* the program the session has in use */
+    int classic_shade_failed;
+    float classic_vp[16];
     int depth_bits;        /* the window's, read on the first session */
     int no_depth_write;    /* GL3D_SetDepthWrite(0) is in force */
     int no_color_write;    /* GL3D_SetColorWrite(0) is in force */
@@ -449,6 +455,7 @@ static int build_program(Program *p, const char *vs_src, const char *fs_src) {
     p->u_nodebase = GLF(GetUniformLocation)(p->id, "u_nodebase");
     p->u_tint     = GLF(GetUniformLocation)(p->id, "u_tint");
     p->u_tintmix  = GLF(GetUniformLocation)(p->id, "u_tintmix");
+    p->u_ramp     = GLF(GetUniformLocation)(p->id, "u_ramp");
     p->u_nrmtex   = GLF(GetUniformLocation)(p->id, "u_nrmtex");
     p->u_mrtex    = GLF(GetUniformLocation)(p->id, "u_mrtex");
     p->u_emtex    = GLF(GetUniformLocation)(p->id, "u_emtex");
@@ -480,10 +487,12 @@ static char *format_model_vs(const char *fmt, int nodes) {
 /* ── Init ─────────────────────────────────────────────────────────── */
 
 int GL3D_Init(SDL_Window *window, SDL_Renderer *renderer) {
-    if (g.ready) return 0;
+    /* A helper still up from a renderer since destroyed holds nothing usable. */
+    if (g.ready && g.renderer == renderer && g.context == SDL_GL_GetCurrentContext()) return 0;
     memset(&g, 0, sizeof(g));
     if (!window || !renderer) return -1;
-    if (!SDL_GL_GetCurrentContext()) {
+    g.context = SDL_GL_GetCurrentContext();
+    if (!g.context) {
         fprintf(stderr, "GL3D: the renderer has no GL context\n");
         return -1;
     }
@@ -546,6 +555,7 @@ void GL3D_Shutdown(void) {
     if (g.model_pbr.id) GLF(DeleteProgram)(g.model_pbr.id);
     if (g.sprite.id)  GLF(DeleteProgram)(g.sprite.id);
     if (g.classic.id) GLF(DeleteProgram)(g.classic.id);
+    if (g.classic_shade.id) GLF(DeleteProgram)(g.classic_shade.id);
     if (g.stream_vbo) GLF(DeleteBuffers)(1, &g.stream_vbo);
     if (g.stream_ibo) GLF(DeleteBuffers)(1, &g.stream_ibo);
 #ifdef __EMSCRIPTEN__
@@ -807,6 +817,7 @@ GL3D_Texture *GL3D_UploadTextureRGBA(const uint32_t *rgba, int w, int h,
     GL3D_Texture *t = (GL3D_Texture *)tak_malloc(sizeof(*t));
     if (!t) return NULL;
     t->w = w; t->h = h;
+    t->ctx = SDL_GL_GetCurrentContext();
     GLF(GenTextures)(1, &t->id);
     GLF(BindTexture)(GL_TEXTURE_2D, t->id);
     unpack_tight(4);
@@ -833,6 +844,7 @@ GL3D_Texture *GL3D_UploadTextureGrey(const uint8_t *grey, int w, int h) {
     GL3D_Texture *t = (GL3D_Texture *)tak_malloc(sizeof(*t));
     if (!t) return NULL;
     t->w = w; t->h = h;
+    t->ctx = SDL_GL_GetCurrentContext();
     GLF(GenTextures)(1, &t->id);
     GLF(BindTexture)(GL_TEXTURE_2D, t->id);
     unpack_tight(1);
@@ -857,7 +869,9 @@ void GL3D_UpdateTextureGrey(GL3D_Texture *tex, const uint8_t *grey, int w, int h
 
 void GL3D_FreeTexture(GL3D_Texture *tex) {
     if (!tex) return;
-    if (g.ready && tex->id) GLF(DeleteTextures)(1, &tex->id);
+    /* The 3D view may have shut the helper down. A texture lives while its context does. */
+    if (tex->id && tex->ctx && tex->ctx == SDL_GL_GetCurrentContext())
+        GLF(DeleteTextures)(1, &tex->id);
     tak_free(tex);
 }
 
@@ -1145,15 +1159,16 @@ void GL3D_DrawSprites(const float *verts, int vert_count,
 }
 
 /* ── The classic view's models ───────────────────────────────────────
- * Screen space triangles in SDL's window between its batches, depth tested. */
+ * Screen space triangles in SDL's window between its batches, depth tested.
+ * A vertex is x y z, u v, r g b a, then the .shd row its face takes. */
 static const char *k_classic_vs =
     GLSL_VERSION GLSL_PRECISION
-    "attribute vec3 a_pos; attribute vec2 a_uv; attribute vec4 a_col;\n"
+    "attribute vec3 a_pos; attribute vec2 a_uv; attribute vec4 a_col; attribute float a_node;\n"
     "uniform mat4 u_vp; uniform vec2 u_texscale;\n"
-    "varying vec2 v_uv; varying vec4 v_col;\n"
+    "varying vec2 v_uv; varying vec4 v_col; varying float v_row;\n"
     "void main() {\n"
     "  gl_Position = u_vp * vec4(a_pos, 1.0);\n"
-    "  v_uv = a_uv * u_texscale; v_col = a_col;\n"
+    "  v_uv = a_uv * u_texscale; v_col = a_col; v_row = a_node;\n"
     "}\n";
 
 /* A clear texel, or a face SDL would blend to nothing, is discarded
@@ -1161,14 +1176,92 @@ static const char *k_classic_vs =
 static const char *k_classic_fs =
     GLSL_VERSION GLSL_PRECISION
     "uniform sampler2D u_tex; uniform float u_textured;\n"
-    "varying vec2 v_uv; varying vec4 v_col;\n"
+    "varying vec2 v_uv; varying vec4 v_col; varying float v_row;\n"
     "void main() {\n"
     "  vec4 t = u_textured > 0.5 ? texture2D(u_tex, v_uv) : vec4(1.0);\n"
     "  if (t.a < 0.5 || v_col.a <= 0.0) discard;\n"
     "  gl_FragColor = t * v_col;\n"
     "}\n";
 
+/* The texel is a palette index (luminance) and coverage (alpha); the
+ * ramp, 256 indices by 32 .shd rows, gives the colour the baked copy has. */
+static const char *k_classic_shade_fs =
+    GLSL_VERSION GLSL_PRECISION
+    "uniform sampler2D u_tex; uniform sampler2D u_ramp;\n"
+    "varying vec2 v_uv; varying vec4 v_col; varying float v_row;\n"
+    "void main() {\n"
+    "  vec4 t = texture2D(u_tex, v_uv);\n"
+    "  if (t.a < 0.5 || v_col.a <= 0.0) discard;\n"
+    "  float i = floor(t.r * 255.0 + 0.5);\n"
+    "  gl_FragColor = texture2D(u_ramp, vec2((i + 0.5) / 256.0, (v_row + 0.5) / 32.0)) * v_col;\n"
+    "}\n";
+
 int GL3D_ClassicDepthBits(void) { return g.depth_bits; }
+
+/* Reads the window's depth bits, outside a session. */
+static void read_depth_bits(void) {
+    if (g.depth_bits) return;
+    GLint bits = 0;
+    GLF(GetIntegerv)(GL_DEPTH_BITS, &bits);
+    (void)GLF(GetError)();
+    g.depth_bits = bits > 0 ? bits : -1;
+    fprintf(stderr, "GL3D: classic view depth %d bits\n", (int)bits);
+}
+
+/* GL work outside a frame or a session keeps SDL's state as SDL left it. */
+static int keep_sdl_begin(void) {
+    if (g.frame_open || g.classic_open) return 0;
+    SDL_RenderFlush(g.renderer);
+    save_state();
+    return 1;
+}
+
+static void keep_sdl_end(int kept) {
+    if (kept) restore_state();
+}
+
+int GL3D_ClassicShadeInit(SDL_Renderer *renderer) {
+    if (!g.ready || renderer != g.renderer || SDL_GetRenderTarget(renderer)) return -1;
+    const int kept = keep_sdl_begin();
+    read_depth_bits();
+    int rc = g.depth_bits >= 16 ? 0 : -1;
+    if (rc == 0 && !g.classic.id) rc = build_program(&g.classic, k_classic_vs, k_classic_fs);
+    if (rc == 0 && !g.classic_shade.id)
+        rc = build_program(&g.classic_shade, k_classic_vs, k_classic_shade_fs);
+    keep_sdl_end(kept);
+    return rc;
+}
+
+GL3D_Texture *GL3D_UploadClassicIndex(const uint8_t *la, int w, int h) {
+    if (!g.ready || !la || w <= 0 || h <= 0) return NULL;
+    GL3D_Texture *t = (GL3D_Texture *)tak_malloc(sizeof(*t));
+    if (!t) return NULL;
+    t->w = w; t->h = h;
+    t->ctx = SDL_GL_GetCurrentContext();
+    const int kept = keep_sdl_begin();
+    GLF(GenTextures)(1, &t->id);
+    GLF(BindTexture)(GL_TEXTURE_2D, t->id);
+    unpack_tight(2);
+    GLF(TexImage2D)(GL_TEXTURE_2D, 0, GL_LUMINANCE_ALPHA, w, h, 0, GL_LUMINANCE_ALPHA,
+                    GL_UNSIGNED_BYTE, la);
+    GLF(TexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    GLF(TexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    GLF(TexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    GLF(TexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    GLF(PixelStorei)(GL_UNPACK_ALIGNMENT, 4);
+    const int ok = GLF(GetError)() == GL_NO_ERROR;
+    keep_sdl_end(kept);
+    if (!ok) { GL3D_FreeTexture(t); return NULL; }
+    return t;
+}
+
+GL3D_Texture *GL3D_UploadClassicRamp(const uint32_t *rgba) {
+    if (!g.ready || !rgba) return NULL;
+    const int kept = keep_sdl_begin();
+    GL3D_Texture *t = GL3D_UploadTextureRGBA(rgba, 256, 32, 0, 0);
+    keep_sdl_end(kept);
+    return t;
+}
 
 int GL3D_ClassicBegin(SDL_Renderer *renderer, int clear_depth) {
     if (!g.ready || g.frame_open || g.classic_open || renderer != g.renderer) return -1;
@@ -1177,6 +1270,11 @@ int GL3D_ClassicBegin(SDL_Renderer *renderer, int clear_depth) {
     SDL_RenderGetScale(renderer, &scx, &scy);
     if (SDL_GetRenderTarget(renderer) || scx != 1.0f || scy != 1.0f) return -1;
     if (!g.classic.id && build_program(&g.classic, k_classic_vs, k_classic_fs) != 0) return -1;
+    /* The 3D view's shutdown takes the programs with it; a failure here
+     * leaves the session drawing from the SDL copy. */
+    if (!g.classic_shade.id && !g.classic_shade_failed &&
+        build_program(&g.classic_shade, k_classic_vs, k_classic_shade_fs) != 0)
+        g.classic_shade_failed = 1;
     int ow = 0, oh = 0;
     SDL_Rect vp;
     if (SDL_GetRendererOutputSize(renderer, &ow, &oh) != 0 || ow < 1 || oh < 1) return -1;
@@ -1184,13 +1282,7 @@ int GL3D_ClassicBegin(SDL_Renderer *renderer, int clear_depth) {
     if (vp.w < 1 || vp.h < 1) return -1;
     SDL_RenderFlush(renderer);
     save_state();
-    if (!g.depth_bits) {
-        GLint bits = 0;
-        GLF(GetIntegerv)(GL_DEPTH_BITS, &bits);
-        (void)GLF(GetError)();
-        g.depth_bits = bits > 0 ? bits : -1;
-        fprintf(stderr, "GL3D: classic view depth %d bits\n", (int)bits);
-    }
+    read_depth_bits();
     if (g.depth_bits < 16) { restore_state(); return -1; }
     /* SDL sets its viewport and clip lazily, at its next draw, so both
      * are put in place here from what it holds. */
@@ -1205,31 +1297,48 @@ int GL3D_ClassicBegin(SDL_Renderer *renderer, int clear_depth) {
         GLF(Enable)(GL_SCISSOR_TEST);
     }
     /* Viewport pixels to clip space, depth 1 nearest. */
-    float m[16] = { 0 };
+    float *m = g.classic_vp;
+    memset(m, 0, sizeof(g.classic_vp));
     m[0] = 2.0f / (float)vp.w;  m[12] = -1.0f;
     m[5] = -2.0f / (float)vp.h; m[13] = 1.0f;
     m[10] = -2.0f;              m[14] = 1.0f;
     m[15] = 1.0f;
     GLF(Enable)(GL_DEPTH_TEST);
     GLF(Disable)(GL_CULL_FACE);
-    const Program *p = &g.classic;
-    GLF(UseProgram)(p->id);
-    GLF(UniformMatrix4fv)(p->u_vp, 1, GL_FALSE, m);
-    GLF(Uniform1i)(p->u_tex, 0);
-    GLF(ActiveTexture)(GL_TEXTURE0);
+    g.classic_prog = 0;
     GLF(BindBuffer)(GL_ARRAY_BUFFER, g.stream_vbo);
     GLF(BindBuffer)(GL_ELEMENT_ARRAY_BUFFER, g.stream_ibo);
     g.classic_open = 1;
     return 0;
 }
 
-void GL3D_ClassicDraw(SDL_Texture *tex, const float *verts, int vert_count,
+static const Program *classic_use(const Program *p) {
+    if (g.classic_prog != p->id) {
+        GLF(UseProgram)(p->id);
+        GLF(UniformMatrix4fv)(p->u_vp, 1, GL_FALSE, g.classic_vp);
+        GLF(Uniform1i)(p->u_tex, 0);
+        if (p->u_ramp >= 0) GLF(Uniform1i)(p->u_ramp, 1);
+        g.classic_prog = p->id;
+    }
+    return p;
+}
+
+void GL3D_ClassicDraw(SDL_Texture *tex, const GL3D_Texture *index, const GL3D_Texture *ramp,
+                      const float *verts, int vert_count,
                       const uint16_t *indices, int index_count, GL3D_ClassicPass pass) {
     if (!g.classic_open || vert_count <= 0 || index_count <= 0) return;
-    const Program *p = &g.classic;
+    const int shaded = index && ramp && g.classic_shade.id;
+    const Program *p = classic_use(shaded ? &g.classic_shade : &g.classic);
     float sx = 1.0f, sy = 1.0f;
-    if (tex) SDL_GL_BindTexture(tex, &sx, &sy);
-    GLF(Uniform1f)(p->u_textured, tex ? 1.0f : 0.0f);
+    if (shaded) {
+        GLF(ActiveTexture)(GL_TEXTURE1);
+        GLF(BindTexture)(GL_TEXTURE_2D, ramp->id);
+        GLF(ActiveTexture)(GL_TEXTURE0);
+        GLF(BindTexture)(GL_TEXTURE_2D, index->id);
+    } else {
+        if (tex) SDL_GL_BindTexture(tex, &sx, &sy);
+        GLF(Uniform1f)(p->u_textured, tex ? 1.0f : 0.0f);
+    }
     GLF(Uniform2f)(p->u_texscale, sx, sy);
     /* A translucent model writes its depth first, then blends only the
      * faces that won it, once. */
@@ -1247,18 +1356,30 @@ void GL3D_ClassicDraw(SDL_Texture *tex, const float *verts, int vert_count,
         GLF(ColorMask)(c, c, c, c);
         GLF(Disable)(GL_BLEND);
     }
-    GLF(BufferData)(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(float) * 9 * (size_t)vert_count),
-                    verts, GL_STREAM_DRAW);
-    bind_layout(GL3D_LAYOUT_SPRITE);
+    const GLsizei stride = (GLsizei)(sizeof(float) * GL3D_CLASSIC_FLOATS);
+    const char *base = NULL;
+    GLF(BufferData)(GL_ARRAY_BUFFER, (GLsizeiptr)(stride * (size_t)vert_count), verts, GL_STREAM_DRAW);
+    for (int i = 0; i < 8; i++) GLF(DisableVertexAttribArray)((GLuint)i);
+    GLF(VertexAttribPointer)(0, 3, GL_FLOAT, GL_FALSE, stride, base + 0);
+    GLF(VertexAttribPointer)(2, 2, GL_FLOAT, GL_FALSE, stride, base + 12);
+    GLF(VertexAttribPointer)(3, 4, GL_FLOAT, GL_FALSE, stride, base + 20);
+    GLF(VertexAttribPointer)(4, 1, GL_FLOAT, GL_FALSE, stride, base + 36);
+    GLF(EnableVertexAttribArray)(0);
+    GLF(EnableVertexAttribArray)(2);
+    GLF(EnableVertexAttribArray)(3);
+    GLF(EnableVertexAttribArray)(4);
     GLF(BufferData)(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(sizeof(uint16_t) * (size_t)index_count),
                     indices, GL_STREAM_DRAW);
     GLF(DrawElements)(GL_TRIANGLES, index_count, GL_UNSIGNED_SHORT, NULL);
-    if (tex) SDL_GL_UnbindTexture(tex);
+    if (!shaded && tex) SDL_GL_UnbindTexture(tex);
 }
 
 void GL3D_ClassicEnd(void) {
     if (!g.classic_open) return;
+    /* Unit 1 held a ramp; SDL draws through unit 0 alone. */
+    GLF(ActiveTexture)(GL_TEXTURE1);
+    GLF(BindTexture)(GL_TEXTURE_2D, 0);
+    GLF(ActiveTexture)(GL_TEXTURE0);
     restore_state();
     g.classic_open = 0;
 }
-

@@ -8887,6 +8887,9 @@ static float    *g_scratch_hkey  = NULL;
 static uint32_t *g_lit_color     = NULL;
 static float    *g_lit_dv        = NULL;
 static float    *g_lit_du        = NULL;   /* a time-played texture's picture */
+/* The .shd row a face's level takes, by mesh vertex and by scratch vertex. */
+static uint8_t  *g_lit_row       = NULL;
+static uint8_t  *g_scratch_row   = NULL;
 static int       g_scratch_vcap  = 0;
 static uint16_t *g_scratch_idx   = NULL;
 static int       g_scratch_icap  = 0;
@@ -10093,7 +10096,11 @@ static int ensure_scratch(int need_verts, int need_idx) {
         uint32_t *lc = (uint32_t *)tak_malloc(sizeof(uint32_t) * (size_t)new_cap);
         float    *ld = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
         float    *lu = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
-        if (!xy || !cl || !uv || !wy || !hk || !wt || !lc || !ld || !lu) {
+        uint8_t  *lr = (uint8_t *)tak_malloc((size_t)new_cap);
+        uint8_t  *sr = (uint8_t *)tak_malloc((size_t)new_cap);
+        if (!xy || !cl || !uv || !wy || !hk || !wt || !lc || !ld || !lu || !lr || !sr) {
+            tak_free(lr);
+            tak_free(sr);
             if (xy) tak_free(xy);
             if (cl) tak_free(cl);
             if (uv) tak_free(uv);
@@ -10114,9 +10121,11 @@ static int ensure_scratch(int need_verts, int need_idx) {
         if (g_lit_color)     tak_free(g_lit_color);
         if (g_lit_dv)        tak_free(g_lit_dv);
         if (g_lit_du)        tak_free(g_lit_du);
+        tak_free(g_lit_row);
+        tak_free(g_scratch_row);
         g_scratch_xy = xy; g_scratch_color = cl; g_scratch_uv = uv; g_scratch_wy = wy;
         g_scratch_hkey = hk; g_scratch_wet = wt; g_lit_color = lc; g_lit_dv = ld;
-        g_lit_du = lu;
+        g_lit_du = lu; g_lit_row = lr; g_scratch_row = sr;
         g_scratch_vcap = new_cap;
     }
     /* Node xform scratch — sized to the largest mesh seen. */
@@ -10169,6 +10178,9 @@ static void scratch_free(void) {
     if (g_lit_color)     { tak_free(g_lit_color);     g_lit_color     = NULL; }
     if (g_lit_dv)        { tak_free(g_lit_dv);        g_lit_dv        = NULL; }
     if (g_lit_du)        { tak_free(g_lit_du);        g_lit_du        = NULL; }
+    tak_free(g_lit_row);
+    tak_free(g_scratch_row);
+    g_lit_row = g_scratch_row = NULL;
     if (g_scratch_idx)        { tak_free(g_scratch_idx);        g_scratch_idx        = NULL; }
     if (g_scratch_tri)        { tak_free(g_scratch_tri);        g_scratch_tri        = NULL; }
     if (g_scratch_node_xform) { tak_free(g_scratch_node_xform); g_scratch_node_xform = NULL; }
@@ -20066,21 +20078,21 @@ typedef struct FaceLight { float part; int scale, ambient; } FaceLight;
 
 /* All of the light for a building (bmcode 0), UNIT_LIGHT_FACTOR for a
  * mobile unit, whose shading is painted in, as in the original. */
-static FaceLight model_def_light(const UnitDef *d) {
-    FaceLight fl = { (!d || d->bmcode == 0) ? 1.0f : UNIT_LIGHT_FACTOR,
-                     MODEL_LIGHT_SCALE, MODEL_LIGHT_AMBIENT };
+static FaceLight face_light(int mobile, int statue) {
+    FaceLight fl = { mobile ? UNIT_LIGHT_FACTOR : 1.0f,
+                     statue ? STATUE_LIGHT_SCALE : MODEL_LIGHT_SCALE,
+                     statue ? STATUE_LIGHT_AMBIENT : MODEL_LIGHT_AMBIENT };
     return fl;
+}
+
+static FaceLight model_def_light(const UnitDef *d) {
+    return face_light(d && d->bmcode != 0, 0);
 }
 
 /* A stone or ice statue takes the light at its own scale and ambient: the
  * original's statues reach brighter rows than its buildings. */
 static FaceLight feature_light(const FeatureDef *fd) {
-    FaceLight fl = { 1.0f, MODEL_LIGHT_SCALE, MODEL_LIGHT_AMBIENT };
-    if (fd && (fd->is_stone || fd->is_frozen)) {
-        fl.scale = STATUE_LIGHT_SCALE;
-        fl.ambient = STATUE_LIGHT_AMBIENT;
-    }
-    return fl;
+    return face_light(0, fd && (fd->is_stone || fd->is_frozen));
 }
 
 /* A face's level: the scaled cosine rounded plus the ambient, 15 with
@@ -20109,6 +20121,7 @@ static void light_mesh_faces(const UnitMesh *m, const NodeXform *xf,
             g_lit_color[v] = m->colors[v];
             g_lit_dv[v] = 0.0f;
             g_lit_du[v] = 0.0f;
+            g_lit_row[v] = TEX_SHADE_IDENTITY;
         }
         return;
     }
@@ -20128,10 +20141,12 @@ static void light_mesh_faces(const UnitMesh *m, const NodeXform *xf,
         const UnitMeshBatch *b = &m->batches[fc->batch];
         uint32_t rgb;
         float dv = 0.0f;
+        int band = 0;
         if (b->atlas_tex) {
             const uint32_t g = b->shade.grey[level];
             rgb = g | (g << 8) | (g << 16);
-            dv = (float)b->shade.band[level] * b->shade.band_dv;
+            band = b->shade.band[level];
+            dv = TexAtlas_ShadeBandV(&b->shade, level);
         } else if (m->flat_ramp) {
             rgb = m->flat_ramp[level * 256 + fc->flat_idx] & 0x00FFFFFFu;
         } else {
@@ -20143,6 +20158,7 @@ static void light_mesh_faces(const UnitMesh *m, const NodeXform *xf,
             g_lit_color[v] = (m->colors[v] & 0xFF000000u) | rgb;
             g_lit_dv[v] = dv;
             g_lit_du[v] = du;
+            g_lit_row[v] = (uint8_t)(TEX_SHADE_IDENTITY + band);
         }
     }
 }
@@ -20243,6 +20259,7 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
         g_scratch_color[i] = c;
         g_scratch_uv[2 * i + 0] = m->uvs[2 * v + 0] + g_lit_du[v];
         g_scratch_uv[2 * i + 1] = m->uvs[2 * v + 1] + g_lit_dv[v];
+        g_scratch_row[i] = g_lit_row[v];
     }
 }
 
@@ -20854,6 +20871,7 @@ static int split_vert(int n, int a, int b, float t, uint32_t c) {
     g_scratch_uv[2 * n + 0] = g_scratch_uv[2 * a + 0] + t * (g_scratch_uv[2 * b + 0] - g_scratch_uv[2 * a + 0]);
     g_scratch_uv[2 * n + 1] = g_scratch_uv[2 * a + 1] + t * (g_scratch_uv[2 * b + 1] - g_scratch_uv[2 * a + 1]);
     g_scratch_wy[n] = g_scratch_wy[a] + t * (g_scratch_wy[b] - g_scratch_wy[a]);
+    g_scratch_row[n] = g_scratch_row[a];
     g_scratch_color[n] = c;
     return n;
 }
@@ -21174,7 +21192,7 @@ static int       g_depth_state;     /* 0 untried, 1 on, -1 off for this renderer
 static uint32_t  g_depth_gen;
 static int       g_depth_open;
 static int       g_depth_slot, g_depth_slots;
-static float    *g_dv;              /* SPRITE layout, 9 floats a vertex */
+static float    *g_dv;              /* GL3D_CLASSIC_FLOATS a vertex */
 static uint16_t *g_di;
 static uint32_t *g_dstamp;
 static uint16_t *g_dmap;
@@ -21209,10 +21227,14 @@ static int depth_ready(TAK_Platform *plat) {
     if (SDL_GetRendererInfo(plat->renderer, &info) != 0 || !info.name ||
         strncmp(info.name, "opengl", 6) != 0)
         return 0;
-    if (!GL3D_Available() && GL3D_Init(plat->window, plat->renderer) != 0) return 0;
+    if (GL3D_Init(plat->window, plat->renderer) != 0) return 0;
     if (GL3D_Renderer() != plat->renderer) return 0;
     g_depth_state = 1;
     return 1;
+}
+
+int Units_ModelDepthReady(TAK_Platform *plat) {
+    return plat && plat->renderer && depth_ready(plat);
 }
 
 /* A session never outlives the call that opened it, but for Units_Submit's
@@ -21244,7 +21266,7 @@ static int depth_open(TAK_Platform *plat) {
 static int depth_grow(int nv, int w, int copies) {
     if (nv > g_dvcap) {
         const int cap = nv * 2;
-        float *v = (float *)tak_malloc(sizeof(float) * 9 * (size_t)cap);
+        float *v = (float *)tak_malloc(sizeof(float) * GL3D_CLASSIC_FLOATS * (size_t)cap);
         uint32_t *st = (uint32_t *)tak_calloc((size_t)cap, sizeof(uint32_t));
         uint16_t *mp = (uint16_t *)tak_malloc(sizeof(uint16_t) * (size_t)cap);
         if (!v || !st || !mp) { tak_free(v); tak_free(st); tak_free(mp); return -1; }
@@ -21290,7 +21312,7 @@ static void depth_draw(const GPU_Texture *tex, int nv, int w, int total, int V,
             else while (ci + 1 < n && v >= g_dsplit[ci + 1]) ci++;
             g_dstamp[v] = g_dclock;
             g_dmap[v] = (uint16_t)out;
-            float *o = &g_dv[9 * out];
+            float *o = &g_dv[GL3D_CLASSIC_FLOATS * out];
             o[0] = g_scratch_xy[2 * v];
             o[1] = g_scratch_xy[2 * v + 1];
             o[2] = Units_DepthKey(slot0 + ci, g_depth_slots, g_scratch_wy[v], g_dbase[ci]);
@@ -21298,11 +21320,14 @@ static void depth_draw(const GPU_Texture *tex, int nv, int w, int total, int V,
             o[4] = g_scratch_uv[2 * v + 1];
             const uint32_t c = g_scratch_color[v];
             for (int q = 0; q < 4; q++) o[5 + q] = (float)((c >> (8 * q)) & 0xFFu) * (1.0f / 255.0f);
+            o[9] = (float)g_scratch_row[v];
             out++;
         }
         g_di[i] = g_dmap[v];
     }
-    GL3D_ClassicDraw(tex ? GPU_TextureSDL(tex) : NULL, g_dv, out, g_di, w, pass);
+    const GL3D_Texture *index = NULL, *ramp = NULL;
+    if (tex) (void)TexAtlas_GpuShade(tex, &index, &ramp);
+    GL3D_ClassicDraw(tex ? GPU_TextureSDL(tex) : NULL, index, ramp, g_dv, out, g_di, w, pass);
 }
 
 /* Draws the copies at vertex offsets 0, V, 2V on, each in its own slice;
@@ -22062,6 +22087,7 @@ static void render_build_ghost(TAK_Platform *plat, const struct GameWorld *world
         g_scratch_color[v] = cr | (cg << 8) | (cb << 16) | (ca << 24);
         g_scratch_uv[2 * v + 0] = m->uvs[2 * v + 0] + g_lit_du[v];
         g_scratch_uv[2 * v + 1] = m->uvs[2 * v + 1] + g_lit_dv[v];
+        g_scratch_row[v] = g_lit_row[v];
     }
 
     /* As a live unit: depth tested on GL, blended once; else by height key,
@@ -22486,6 +22512,7 @@ static void submit_static_mesh_run(TAK_Platform *plat,
                 g_scratch_color[i]  = g_lit_color[v];
                 g_scratch_uv[2*i+0] = m->uvs[2*v+0] + g_lit_du[v];
                 g_scratch_uv[2*i+1] = m->uvs[2*v+1] + g_lit_dv[v];
+                g_scratch_row[i]    = g_lit_row[v];
             }
         }
 
@@ -22638,6 +22665,59 @@ const char *Units_FeaturePaint(const FeatureDef *fd) {
     if (!si) return NULL;
     const char *paint = fd->is_stone ? si->stoneanim : si->frozenanim;
     return paint[0] ? paint : NULL;
+}
+
+/* The brightest level a mesh lit by `fl` reaches: a face square to the light. */
+static int face_light_top(FaceLight fl) {
+    const float n[3] = { 1.0f, 0.0f, 0.0f };
+    return model_face_level(n, n, 0, &fl);
+}
+
+static void note_node_tops(const Obj3DNode *nd, int top) {
+    for (; nd; nd = nd->next_sibling) {
+        for (int p = 0; p < nd->num_primitives; p++)
+            if (nd->primitives[p].texture_name[0])
+                TexAtlas_NoteShadeTop(nd->primitives[p].texture_name, top);
+        note_node_tops(nd->first_child, top);
+    }
+}
+
+static void note_model_tops(const char *object_name, int top) {
+    char obj_lc[TAK_UNITDEF_OBJ_MAX], path[TAK_UNITDEF_OBJ_MAX + 16];
+    lowercase_into(obj_lc, sizeof(obj_lc), object_name);
+    snprintf(path, sizeof(path), "objects3d/%s.3do", obj_lc);
+    Obj3DFile *obj = NULL;
+    if (Obj3D_Load(&obj, path) == 0 && obj) note_node_tops(obj->root, top);
+    Obj3D_Close(obj);
+}
+
+void Units_PlanShadeBands(void) {
+    if (!TexAtlas_ShadePlanWanted()) return;
+    const uint64_t t0 = SDL_GetPerformanceCounter();
+    const int shot_top = face_light_top(model_def_light(NULL));
+    for (int d = 0; d < g_def_count; d++) {
+        const UnitDef *def = &g_defs[d];
+        if (def->objectname[0])
+            note_model_tops(def->objectname, face_light_top(model_def_light(def)));
+        for (int w = 0; w < def->num_weapons + 2; w++) {
+            const int k = w - def->num_weapons;
+            const UnitWeapon *wp = k < 0 ? &def->weapons[w]
+                                 : (def->death_weapon_set >> k) & 1u ? &def->death_weapons[k] : NULL;
+            if (!wp || wp->art_kind != UNIT_WEAPON_ART_MODEL) continue;
+            note_model_tops(wp->art_name, shot_top);
+            if (wp->veteran_art_name[0]) note_model_tops(wp->veteran_art_name, shot_top);
+        }
+    }
+    for (int f = 0; f < Features_GetCount(); f++) {
+        const FeatureDef *fd = Features_GetByIndex(f);
+        if (!fd || !fd->object[0]) continue;
+        const char *paint = Units_FeaturePaint(fd);
+        if (paint) TexAtlas_NoteShadeTop(paint, face_light_top(feature_light(fd)));
+        else note_model_tops(fd->object, face_light_top(feature_light(fd)));
+    }
+    TexAtlas_PlanShades();
+    fprintf(stderr, "Units_PlanShadeBands: %.0f ms%c",
+            (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 / (double)SDL_GetPerformanceFrequency(), 10);
 }
 
 static const UnitMesh *corpse_model_mesh(int feat_idx, int color_idx) {
