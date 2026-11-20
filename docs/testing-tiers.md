@@ -24,7 +24,8 @@ lock. About a minute and a half on Linux.
 
 Tests labelled `on-demand` are measurements and soaks: the issue #60 stall
 soak (`test_unit_stall_soak`) and, inside the screen suite, the perf probes
-(`TAK_PERF_PROBE=1`) and the render probe picture (`TAK_RENDER_PROBE=1`).
+(`TAK_PERF_PROBE=1`), the render probe picture (`TAK_RENDER_PROBE=1`), and the
+soaks and sweeps over every seat, flyer or structure (`TAK_SOAK=1`).
 Neither the gate nor CI runs them. Run them when the change is about what
 they measure, with `ctest -L on-demand` or the variable set.
 

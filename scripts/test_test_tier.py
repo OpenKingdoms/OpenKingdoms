@@ -283,7 +283,7 @@ def half_one():
     names_run = [f for f, _ in ui]
     check(problem is None and any("test_fog" in t for t in targets)
           and len(ui) >= 9
-          and "trebuchet_waits_for_a_spotter" in names_run,
+          and "idle_units_of_a_closed_slot_see_their_foes" in names_run,
           "the fog rule should run test_fog and the sight gated cases, got "
           "%s and %d invocations" % (targets, len(ui)))
     _, d = tier_of(["src/core/test_util.c"])
