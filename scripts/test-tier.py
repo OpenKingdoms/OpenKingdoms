@@ -203,14 +203,14 @@ class CMakeIndex:
         self.exe_sources = exe_sources
         # Tests labelled on-demand are measurements left out of the gate,
         # so no rule has to run them. layout-only runs on the extracted
-        # folder alone.
-        self.layout_only = set()
+        # folder alone. golden-only repeats cases the shards already run.
+        self.not_in_gate = set()
         for m in re.finditer(r"set_tests_properties\(([^()]*?)PROPERTIES\s+LABELS\s+\"([^\"]*)\"", text):
             labels = m.group(2).split(";")
             if "on-demand" in labels:
                 self.on_demand.update(expand(m.group(1)).split())
-            if "layout-only" in labels:
-                self.layout_only.update(expand(m.group(1)).split())
+            if "layout-only" in labels or "golden-only" in labels:
+                self.not_in_gate.update(expand(m.group(1)).split())
         for test, exe in self.tests.items():
             for src in exe_sources.get(exe, []):
                 self.sources.setdefault(src, set()).add(test)
@@ -221,7 +221,7 @@ class CMakeIndex:
 
     # What one pass over every data path test but the measurements runs.
     def gate_test_count(self):
-        return len(set(self.tests) - self.on_demand - self.layout_only)
+        return len(set(self.tests) - self.on_demand - self.not_in_gate)
 
     # The screen suite is covered by the named case list on each rule,
     # not by a ctest regex, so the tests that run it are left out of the
@@ -498,7 +498,7 @@ def print_report(decision, rules, index, args):
         out("  4. Paste the \"SUITE CLEAN on both layouts\" line.")
     else:
         out("       with_test_lock ctest --test-dir %s -C %s -j 6 --output-on-failure"
-            " -LE \"on-demand|layout-only\"" % (b, config))
+            " -LE \"on-demand|layout-only|golden-only\"" % (b, config))
         out("  4. Paste the \"100%% tests passed, 0 tests failed out of %d\" line."
             % gate)
     return 0
