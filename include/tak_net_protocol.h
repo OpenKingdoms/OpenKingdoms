@@ -202,8 +202,9 @@
  * queue, ships caught bow to bow get past each other, a unit turns onto its
  * work at its own rate, and a Repair Skiff mends a ship hull to hull. 78: a
  * unit script's sleep lasts the original's frames and ends on the tick it
- * runs out. */
-#define TAK_ENGINE_BUILD_ID           78
+ * runs out. 79: a unit whose script runs its own walk gets no second walk
+ * from the engine. */
+#define TAK_ENGINE_BUILD_ID           79
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
