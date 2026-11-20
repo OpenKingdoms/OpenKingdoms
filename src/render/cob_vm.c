@@ -441,6 +441,20 @@ int Cob_IsThreadAlive(const CobEngine *e, int slot) {
     return e->threads[slot].alive ? 1 : 0;
 }
 
+int Cob_ThreadRunsScript(const CobEngine *e, int slot, const char *name) {
+    if (!Cob_IsThreadAlive(e, slot) || !e->script) return 0;
+    const CobScript *s = e->script;
+    int idx = Cob_FindScript(s, name);
+    if (idx < 0) return 0;
+    uint32_t pc = e->threads[slot].pc, at = 0;
+    int found = 0;
+    for (uint16_t i = 0; i < s->num_scripts; i++) {
+        uint32_t o = s->script_offsets[i];
+        if (o <= pc && (!found || o > at)) { at = o; found = 1; }
+    }
+    return found && at == s->script_offsets[idx];
+}
+
 int Cob_GetThreadReturn(const CobEngine *e, int slot, int32_t *out_value) {
     if (!e || !out_value) return 0;
     if (slot < 0 || slot >= COB_THREADS_PER_UNIT) return 0;
@@ -622,6 +636,33 @@ static const char *opcode_name(uint32_t op) {
  * small immediates into the low 12 bits). Most opcodes leave the
  * inline bits zero. */
 #define COB_OPCODE_MASK 0x100ff000u
+
+int Cob_OperandWords(uint32_t raw) {
+    switch (raw & COB_OPCODE_MASK) {
+    case OP_MOVE: case OP_TURN: case OP_SPIN: case OP_STOP_SPIN:
+    case OP_MOVE_NOW: case OP_TURN_NOW: case OP_WAIT_FOR_TURN: case OP_WAIT_FOR_MOVE:
+    case OP_START_SCRIPT: case OP_CALL_SCRIPT: case OP_HOST_ARGS_63:
+    case OP_SOUND_CMD_74: case OP_MISSION_COMMAND:
+        return 2;
+    case OP_SHOW: case OP_HIDE: case OP_CACHE_PIECE: case OP_DONT_CACHE_PIECE:
+    case OP_SHADOW: case OP_DONT_SHADOW: case OP_SHADE: case OP_DONT_SHADE:
+    case OP_EMIT_SFX: case OP_EXPLODE: case OP_PUSH_CONSTANT: case OP_POP_VAR:
+    case OP_JUMP: case OP_JUMP_IF_FALSE: case OP_HOST_MARK_75: case OP_PLAY_SOUND:
+        return 1;
+    case OP_SLEEP: case OP_ALLOC_LOCAL: case OP_POP_STACK:
+    case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_AND_BIT:
+    case OP_OR_BIT: case OP_XOR_BIT: case OP_NOT_BIT: case OP_SHL: case OP_SHR:
+    case OP_MOD: case OP_RAND: case OP_GET_UNIT_VALUE: case OP_GET_WITH_ARGS:
+    case OP_GET_HOST_QUERY: case OP_GET_HOST_QUERY0: case OP_LT: case OP_LE:
+    case OP_GT: case OP_GE: case OP_EQ: case OP_NE: case OP_LAND: case OP_LOR:
+    case OP_LXOR: case OP_LNOT: case OP_RETURN: case OP_SIGNAL:
+    case OP_SET_SIGNAL_MASK: case OP_SET_UNIT_VALUE: case OP_ATTACH_UNIT:
+    case OP_DROP_UNIT:
+        return 0;
+    default:
+        return -1;
+    }
+}
 
 static void run_thread(CobEngine *e, int slot, int budget) {
     CobThread *t = &e->threads[slot];

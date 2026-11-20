@@ -781,6 +781,9 @@ typedef struct UnitDef {
     /* The battle's mission leaves the type off its roster, so no one
      * may make one (legacy:226872-226874). */
     uint8_t  mission_barred;
+    /* Its script runs its own walk cycle, from a watcher thread or from
+     * MoveRate, by calling or starting `walk` itself. */
+    uint8_t  script_walks;
 
     /* COB script bundle (Phase D). Loaded eagerly per-def. */
     CobScript *cob_script;
@@ -1030,7 +1033,7 @@ typedef struct Unit {
     uint32_t   stable_id;   /* deterministic replay/network identity */
     int32_t    world_x;     /* pixel position, top-left of footprint */
     int32_t    world_y;
-    float      heading;     /* radians, 0 = facing south             */
+    float      heading;     /* radians, 0 = facing north, turning east */
     float      pitch, roll; /* model tilt, radians, 0 = upright      */
     int32_t    velocity;    /* current speed in COB units/sec; 0 = stationary */
     int32_t    health;      /* current HP (Sprint 1 placeholder — Phase G refines) */
@@ -1534,6 +1537,13 @@ void              Units_RenderBuildGhostFacing(struct TAK_Platform *plat,
                                                 int32_t world_x, int32_t world_y,
                                                 uint8_t alpha255, int valid,
                                                 int facing);
+/* The same at (world_x, world_y) as given, unsnapped: the armed cursor's. */
+void              Units_RenderBuildGhostFree(struct TAK_Platform *plat,
+                                              const struct GameWorld *world,
+                                              int def_idx, int color_idx,
+                                              int32_t world_x, int32_t world_y,
+                                              uint8_t alpha255, int valid,
+                                              int facing);
 
 /* ── Read only accessors for a second view ───────────────────────────
  *
@@ -1600,7 +1610,7 @@ void              Units_SetBackfaceCullInvert(int v);
  * sides of the model. */
 void              Units_DebugRotateAll(float delta_rad);
 
-/* Set one unit's heading (radians, 0 = facing south). No-op if `handle`
+/* Set one unit's heading (radians, 0 = facing north). No-op if `handle`
  * is out of range or the slot is not alive. */
 void              Units_SetHeading(int handle, float heading);
 
@@ -1907,12 +1917,17 @@ int               Units_OrderMoveLeg(int handle, const UnitMoveLeg *leg, int que
  * the unit's orders the way the Units_Order* call for it does. Queued it
  * goes behind the order in hand and the legs before it, as Shift does,
  * and runs when those are done (manual section IV). A unit that could
- * not take it, or a full queue, refuses it. A factory takes a move or a
- * patrol as a standing order for its products. */
+ * not take it, a full queue, or a builder holding a summons without end
+ * refuses it. A factory takes a move or a patrol as a standing order for
+ * its products. */
 int               Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued);
 /* Units_OrderLeg's queued for the manual's Ctrl-click: the order replaces
  * the one in hand and the queued ones stay behind it. */
 #define UNIT_ORDER_KEEP 2
+/* Units_OrderLeg's queued for Ctrl+Shift: the order goes in hand and the
+ * one it displaces waits ahead of the queued ones. A patrol, a load or a
+ * boarding in hand has no queued form and is replaced, as with Ctrl. */
+#define UNIT_ORDER_FRONT 3
 /* The orders a unit holds, the one in hand first and then each queued
  * leg, patrol points with the one the route comes back through, and a
  * factory's rally with its standing orders. Writes up to cap, returns
@@ -2401,6 +2416,10 @@ void              Units_SnapBuildSite(int def_idx,
                                        int32_t *world_x, int32_t *world_y);
 void              Units_SnapBuildSiteFacing(int def_idx, int facing,
                                              int32_t *world_x, int32_t *world_y);
+/* The cells a build of this def turned `facing` covers, the snap's own:
+ * a walker's move class footprint, else its own, 2x2 when it names none. */
+void              Units_BuildSiteCells(int def_idx, int facing,
+                                       int *out_fx, int *out_fz);
 
 /* Yardmap cell-code bits, as the FBI parse assigns them
  * (legacy:163224-163256) and placement tests them (legacy:218804). */

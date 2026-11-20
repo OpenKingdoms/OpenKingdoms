@@ -2000,8 +2000,10 @@ Format per entry:
   run on the unit script machine with a host of its own, as the
   original does both. Where ours differs:
   - A patrol of several points is walked by the list, which sends the
-    unit's own patrol order to each point in turn and counts a point
-    reached at 64 pixels. The original queues patrol orders on the unit.
+    unit's own patrol order to each point in turn with the next queued
+    behind it, and goes on once the unit is within 64 pixels or has
+    turned for the next point. The original queues patrol orders on the
+    unit.
   - `w N` is taken as N seconds, which is how the order was documented
     for Total Annihilation. The original scales the number in floating
     point code the listing does not show, so the unit is inferred.
@@ -2010,6 +2012,10 @@ Format per entry:
     damage would also raise.
   - `a TYPE` picks the nearest unit of the type. The original adds a
     random part to each distance first, up to half of it.
+  - The rest of a list waits behind `a X Z`, an attack on the ground
+    that does not end, as behind an attack on a named unit. What
+    follows it in the original was not seen. No shipped list has a
+    step after it.
   - `i NAME` puts the unit aboard at once, as the original does, and
     the rest of its list waits until it is set down. A `w` still runs
     out aboard. The original runs the rest of the list while the unit

@@ -5036,15 +5036,28 @@ const int *Units_GetSelection(int *out_count) {
     return g_selection;
 }
 
+/* A unit whose script runs its own walk is left to it. The engine's walk
+ * thread beside the script's ran the same cycle out of step. */
+static int unit_script_walks(const Unit *u) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    return d && d->script_walks;
+}
+
+/* The engine's walk thread still runs walk. A finished walk frees its
+ * slot, and the script may have reused it for another thread. */
+static int unit_walk_running(const Unit *u) {
+    return u->cob && Cob_ThreadRunsScript(u->cob, u->walk_thread_slot, "walk");
+}
+
 /* Start the walk cycle unless one is already running. Orders arrive in
  * bursts and each one used to stack another thread on the sixteen-slot
  * engine. Legacy never starts walk at all, its own watcher threads do
  * (docs/notes/2026-09-09-cob-entry-points.md). */
 static void unit_kick_walk(Unit *u) {
     if (!u->cob) return;
+    if (unit_script_walks(u)) return;
     if (u->under_construction) return;   /* the MOVE tick kicks it later */
-    if (u->walk_thread_slot >= 0 &&
-        Cob_IsThreadAlive(u->cob, u->walk_thread_slot)) return;
+    if (unit_walk_running(u)) return;
     u->walk_thread_slot = (int8_t)unit_start_script(u, "walk", NULL, 0);
 }
 
@@ -5327,6 +5340,60 @@ int Units_OrderMove(int handle, int32_t world_x, int32_t world_y) {
     return 1;
 }
 
+/* The order in hand as a leg that waits at the head of the queue. 0 for
+ * none, or one with no leg to wait as: a patrol, a load, a boarding. */
+static int hand_as_leg(const Unit *u, UnitMoveLeg *leg) {
+    memset(leg, 0, sizeof *leg);
+    leg->x = u->cmd_x;
+    leg->y = u->cmd_y;
+    int t = u->target;
+    uint32_t tid = t >= 0 && t < g_unit_count ? g_units[t].stable_id : 0u;
+    switch (u->cmd_kind) {
+        case UNIT_CMD_MOVE:
+            leg->kind = UNIT_LEG_MOVE;
+            leg->group = u->move_group;
+            leg->paced = u->move_paced ? 1 : 0;
+            leg->face = u->face_mode == UNIT_FACE_ARRIVE;
+            leg->heading = leg->face ? u->face_heading : 0;
+            return 1;
+        case UNIT_CMD_ATTACK:
+            if (!u->attack_explicit || !tid) return 0;
+            leg->kind = UNIT_LEG_ATTACK;
+            break;
+        case UNIT_CMD_ATTACK_GROUND: leg->kind = UNIT_LEG_ATTACK_GROUND; return 1;
+        case UNIT_CMD_GUARD:         leg->kind = UNIT_LEG_GUARD; break;
+        case UNIT_CMD_REPAIR:        leg->kind = UNIT_LEG_REPAIR; break;
+        case UNIT_CMD_RECLAIM:
+            leg->kind = tid ? UNIT_LEG_RECLAIM : UNIT_LEG_SWEEP;
+            leg->target = tid;
+            return 1;
+        case UNIT_CMD_RESURRECT:     leg->kind = UNIT_LEG_RAISE; return 1;
+        case UNIT_CMD_UNLOAD:        leg->kind = UNIT_LEG_UNLOAD; return 1;
+        case UNIT_CMD_BUILD: {
+            /* A frame already up is finished when its turn comes. A
+             * summons without end resumes on its spot, frame and all. */
+            int b = u->build_target;
+            if (!u->build_endless && b >= 0 && b < g_unit_count &&
+                g_units[b].alive == UNIT_ALIVE_ACTIVE &&
+                g_units[b].under_construction) {
+                leg->kind = UNIT_LEG_REPAIR;
+                leg->target = g_units[b].stable_id;
+                return 1;
+            }
+            if (!u->build_held && !u->build_endless) return 0;
+            leg->kind = UNIT_LEG_BUILD;
+            leg->def = u->build_def;
+            leg->facing = (uint8_t)(u->build_facing & 3u);
+            leg->endless = u->build_endless ? 1 : 0;
+            return 1;
+        }
+        default:
+            return 0;
+    }
+    leg->target = tid;
+    return tid != 0;
+}
+
 int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
     Unit *u = order_unit(handle);
     if (!u || !leg || leg->kind >= UNIT_LEG_KINDS) return 0;
@@ -5334,15 +5401,17 @@ int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
     const UnitDef *ud = Units_GetDef(u->def_idx);
     if (unit_def_is_factory(ud)) {
         if (leg->kind != UNIT_LEG_MOVE && leg->kind != UNIT_LEG_PATROL) return 0;
-        return factory_standing_order(u, leg->kind, leg->x, leg->y, queued);
+        /* Its standing orders take a front one behind, as Shift does. */
+        return factory_standing_order(u, leg->kind, leg->x, leg->y,
+                                      queued == UNIT_ORDER_FRONT ? 1 : queued);
     }
     /* A fight the unit picked for itself is no order to wait behind. */
     int busy = u->cmd_kind != UNIT_CMD_NONE &&
                !(u->cmd_kind == UNIT_CMD_ATTACK && !u->attack_explicit);
-    /* A building queued with Shift never goes behind a summons without
-     * end, which would never come to it (legacy:39208-39219). */
-    if (queued == 1 && leg->kind == UNIT_LEG_BUILD &&
-        builder_summons_of(u) >= 0)
+    /* Nothing queued with Shift goes behind a summons without end, which
+     * would never come to it: a building (legacy:39208-39219) or any other
+     * order (legacy:238562-238574). */
+    if (queued == 1 && builder_summons_of(u) >= 0)
         return 0;
     if (queued == 1 && (busy || u->leg_count > 0)) {
         if (u->leg_count >= UNIT_MOVE_LEGS_MAX) return 0;
@@ -5356,6 +5425,24 @@ int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
             l->def = 0;
             l->facing = 0;
             l->endless = 0;
+        }
+        return 1;
+    }
+    if (queued == UNIT_ORDER_FRONT) {
+        UnitMoveLeg hand;
+        int waits = hand_as_leg(u, &hand);
+        int before = u->leg_count;
+        /* A dragged sweep keeps its box as a leg ahead, so it needs room
+         * for that too, or the order in hand would be lost. */
+        int own = leg->kind == UNIT_LEG_SWEEP_AREA;
+        if (waits && before + own >= UNIT_MOVE_LEGS_MAX) return 0;
+        if (!unit_take_leg(handle, leg)) return 0;
+        int at = u->leg_count > before ? u->leg_count - before : 0;
+        if (waits && u->leg_count < UNIT_MOVE_LEGS_MAX) {
+            memmove(&u->legs[at + 1], &u->legs[at],
+                    sizeof u->legs[0] * (size_t)(u->leg_count - at));
+            u->legs[at] = hand;
+            u->leg_count++;
         }
         return 1;
     }
@@ -5947,6 +6034,9 @@ int Units_OrderSetAggro(int handle, int aggro_mode) {
     if (aggro_mode < UNIT_AGGRO_PASSIVE || aggro_mode > UNIT_AGGRO_OFFENSIVE)
         return 0;
     Unit *u = order_unit(handle);
+    /* A rider takes one too, as a mission list sets its `o` when given. */
+    if (!u && handle >= 0 && handle < g_unit_count &&
+        g_units[handle].alive == UNIT_ALIVE_TRANSPORTED) u = &g_units[handle];
     if (!u) return 0;
     u->aggro_mode = (uint8_t)aggro_mode;
     /* Passive units must drop any in-flight auto-target. */
@@ -6241,10 +6331,7 @@ static void issue_feature_order(Unit *u, const GameWorld *w, int fi,
     u->raise_mode = (uint8_t)mode;
     u->raise_left = 0;
     unit_clear_path(u);
-    if (u->cob) {
-        int slot = Cob_StartThreadByName(u->cob, "walk", NULL, 0);
-        u->walk_thread_slot = (int8_t)slot;
-    }
+    unit_kick_walk(u);
 }
 
 /* What the broom may take once the cell holds nothing: a building of
@@ -7063,6 +7150,14 @@ static void build_site_cells(const UnitDef *d, int facing, int *fx, int *fz) {
     *fx = d->footprint_x > 0 ? d->footprint_x : 2;
     *fz = d->footprint_z > 0 ? d->footprint_z : 2;
     if (facing & 1) { int t = *fx; *fx = *fz; *fz = t; }
+}
+
+void Units_BuildSiteCells(int def_idx, int facing, int *out_fx, int *out_fz) {
+    const UnitDef *d = Units_GetDef(def_idx);
+    int fx = 0, fz = 0;
+    if (d) build_site_cells(d, Units_DefFacing(def_idx, facing), &fx, &fz);
+    if (out_fx) *out_fx = fx;
+    if (out_fz) *out_fz = fz;
 }
 
 void Units_SnapBuildSiteFacing(int def_idx, int facing,
@@ -10212,6 +10307,33 @@ static int cob_sets_launch_port(const CobScript *cs) {
     return 0;
 }
 
+/* 1 when the script calls or starts its own `walk`: a watcher thread
+ * or MoveRate drives the cycle, as the original has it
+ * (docs/notes/2026-09-09-cob-entry-points.md). */
+static int cob_walks_itself(const CobScript *cs) {
+    if (!cs || !cs->code) return 0;
+    int walk = Cob_FindScript(cs, "walk");
+    if (walk < 0) return 0;
+    /* Decode each body by instruction, so an operand never reads as an opcode. */
+    for (uint16_t s = 0; s < cs->num_scripts; s++) {
+        uint32_t pc = cs->script_offsets[s], end = cs->num_code_words;
+        for (uint16_t k = 0; k < cs->num_scripts; k++) {
+            uint32_t o = cs->script_offsets[k];
+            if (o > pc && o < end) end = o;
+        }
+        while (pc < end) {
+            uint32_t op = cs->code[pc] & 0x100ff000u;
+            int n = Cob_OperandWords(cs->code[pc]);
+            if (n < 0) break;
+            if ((op == 0x10061000u || op == 0x10062000u) &&
+                pc + 1 < end && cs->code[pc + 1] == (uint32_t)walk)
+                return 1;
+            pc += 1u + (uint32_t)n;
+        }
+    }
+    return 0;
+}
+
 int Units_LoadDefs(void) {
     return Units_LoadDefsFor(0);
 }
@@ -10268,6 +10390,7 @@ int Units_LoadDefsFor(int crusades_balance) {
         d.cob_script = NULL;
         Cob_Load(&d.cob_script, cob_path);   /* NULL on miss — that's OK */
         d.script_launches = (uint8_t)cob_sets_launch_port(d.cob_script);
+        d.script_walks = (uint8_t)cob_walks_itself(d.cob_script);
         if (d.script_launches) launchers++;
         if (src) src[g_def_count] = paths[i];
         g_defs[g_def_count++] = d;
@@ -12051,7 +12174,8 @@ static int unit_start_script(Unit *u, const char *name,
 }
 
 /* Ensure a thread is running for the given script; if the previous
- * slot has died, start a fresh thread and update the slot pointer.
+ * slot no longer runs the script, start a fresh thread and update the
+ * slot pointer.
  * Only for scripts the engine is entitled to keep alive. See the
  * entry-point table before adding a caller. */
 static int ensure_thread(Unit *u, const char *script_name,
@@ -12059,8 +12183,10 @@ static int ensure_thread(Unit *u, const char *script_name,
                           const int32_t *args, int n_args)
 {
     if (!u->cob) return -1;
-    if (*slot_ref >= 0 && Cob_IsThreadAlive(u->cob, *slot_ref)) {
-        return *slot_ref;
+    if (Cob_ThreadRunsScript(u->cob, *slot_ref, script_name)) return *slot_ref;
+    if (slot_ref == &u->walk_thread_slot && unit_script_walks(u)) {
+        *slot_ref = -1;
+        return -1;
     }
     int slot = unit_start_script(u, script_name, args, n_args);
     *slot_ref = (int8_t)slot;
@@ -12123,8 +12249,7 @@ static void enter_state(Unit *u, UnitAnimState new_state) {
         /* We started this walk thread, so we end it. Legacy never has
          * to: its walk loops end themselves on the signal MoveRate(0)
          * raises (legacy:184448). Left running it walks in place. */
-        if (u->cob && u->walk_thread_slot >= 0)
-            Cob_StopThread(u->cob, u->walk_thread_slot);
+        if (unit_walk_running(u)) Cob_StopThread(u->cob, u->walk_thread_slot);
         u->walk_thread_slot = -1;
     }
     if (u->anim_state == UNIT_ANIM_ATTACKING && new_state != UNIT_ANIM_ATTACKING &&
@@ -19011,6 +19136,7 @@ int Units_DebugSetDefScript(int def_idx, const uint32_t *code, int words,
     if (d->cob_script) Cob_Free(d->cob_script);
     d->cob_script = cs;
     d->script_launches = (uint8_t)cob_sets_launch_port(cs);
+    d->script_walks = (uint8_t)cob_walks_itself(cs);
     g_def_gen++;
     return 0;
 }
@@ -21811,11 +21937,33 @@ void Units_RenderBuildGhost(TAK_Platform *plat,
                                  world_x, world_y, alpha255, valid, 0);
 }
 
+static void render_build_ghost(TAK_Platform *plat, const struct GameWorld *world,
+                               int def_idx, int color_idx,
+                               int32_t world_x, int32_t world_y,
+                               uint8_t alpha255, int valid, int facing, int snap);
+
 void Units_RenderBuildGhostFacing(TAK_Platform *plat,
                                   const struct GameWorld *world,
                                   int def_idx, int color_idx,
                                   int32_t world_x, int32_t world_y,
                                   uint8_t alpha255, int valid, int facing) {
+    render_build_ghost(plat, world, def_idx, color_idx, world_x, world_y,
+                       alpha255, valid, facing, 1);
+}
+
+void Units_RenderBuildGhostFree(TAK_Platform *plat,
+                                const struct GameWorld *world,
+                                int def_idx, int color_idx,
+                                int32_t world_x, int32_t world_y,
+                                uint8_t alpha255, int valid, int facing) {
+    render_build_ghost(plat, world, def_idx, color_idx, world_x, world_y,
+                       alpha255, valid, facing, 0);
+}
+
+static void render_build_ghost(TAK_Platform *plat, const struct GameWorld *world,
+                               int def_idx, int color_idx,
+                               int32_t world_x, int32_t world_y,
+                               uint8_t alpha255, int valid, int facing, int snap) {
     if (!plat || !plat->renderer || !world) return;
     g_live_renderer_gen = plat->renderer_gen;
     UnitDef *def = (UnitDef *)Units_GetDef(def_idx);
@@ -21830,11 +21978,10 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
     const int V = m->vert_count;
     if (ensure_scratch(V, m->tri_count * 3) != 0) return;
 
-    /* Draw the preview on the cell the build will occupy, with the
-     * terrain lift a live unit gets, so the ghost and the finished
-     * building sit on exactly the same pixels (legacy:184168). */
+    /* A placed or queued ghost sits on the cell the build will occupy
+     * (legacy:184168), the cursor's on the free pointer, as in the original. */
     facing = Units_DefFacing(def_idx, facing);
-    Units_SnapBuildSiteFacing(def_idx, facing, &world_x, &world_y);
+    if (snap) Units_SnapBuildSiteFacing(def_idx, facing, &world_x, &world_y);
     const float cam_x = (float)world->cam_x;
     const float cam_y = (float)world->cam_y;
     const float ta    = g_ta_scale;

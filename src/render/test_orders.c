@@ -2186,8 +2186,8 @@ TEST(ctrl_through_both_clicks_summons_without_end) {
 }
 
 /* With Shift the summons queues and the placement still ends after the
- * one click (legacy:242531-242540). Nothing Shift places goes behind it
- * (legacy:39208-39219). */
+ * one click (legacy:242531-242540). Nothing Shift places goes behind it,
+ * a building (legacy:39208-39219) or a move (legacy:238562-238574). */
 TEST(a_shift_click_queues_a_summons_and_nothing_goes_behind_it) {
     ASSERT_NOT_NULL(oq_world());
     int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
@@ -2203,8 +2203,9 @@ TEST(a_shift_click_queues_a_summons_and_nothing_goes_behind_it) {
     ASSERT_EQ_INT(OQ_SOLDIER, Units_FactoryRepeatOf(bd));
     ASSERT_EQ_INT(0, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 200, OQ_CY + 8, -1,
                                 OQ_HALL, TAK_CMD_ARG_QUEUE));
-    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, bd, OQ_CX, OQ_CY + 300, -1, -1,
+    ASSERT_EQ_INT(0, oq_command(TAK_CMD_MOVE, bd, OQ_CX, OQ_CY + 300, -1, -1,
                                 TAK_CMD_ARG_QUEUE));
+    ASSERT_EQ_INT(1, (int)oq_unit(bd)->leg_count);
     oq_ticks(1500);
     ASSERT_EQ_INT(1, oq_count(OQ_HALL));
     ASSERT(oq_count(OQ_SOLDIER) >= 2);
