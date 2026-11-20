@@ -30,7 +30,8 @@ flag set, Ctrl drops both, so a player who keeps Ctrl down through both
 clicks replaces what the builder was doing (legacy:39177-39180). Shift
 alone still queues it. A building queued with Shift is never given to a
 builder that holds an order of ten million, since it would never be
-reached (legacy:39208-39219). The placement ends after this one click
+reached (legacy:39208-39219), and neither is any other order given with
+Shift alone (legacy:238562-238574). The placement ends after this one click
 even with Shift held (legacy:242531-242540).
 
 ## The summons

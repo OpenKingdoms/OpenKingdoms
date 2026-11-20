@@ -243,6 +243,11 @@ static int append_command(MissionCommand **commands,
     return 0;
 }
 
+float Mission_AngleToHeading(int angle) {
+    int east = (360 - angle % 360) % 360;
+    return (float)east * 3.14159265f / 180.0f;
+}
+
 int Mission_ParseInitialMission(const char *text,
                                 MissionCommand **out_commands,
                                 int *out_count) {

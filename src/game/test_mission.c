@@ -256,6 +256,12 @@ TEST(parses_initial_mission_command_language) {
     ASSERT_EQ_INT(MISSION_CMD_WAIT_ANIMATION, commands[4].type);
     ASSERT_EQ_INT(MISSION_CMD_CLOAK, commands[5].type);
     Mission_FreeCommands(commands);
+    /* A placed Angle, as seen in the original: 0 faces away, 90 west,
+     * 180 the camera, 270 east. */
+    ASSERT(Mission_AngleToHeading(0) == 0.0f);
+    ASSERT(Mission_AngleToHeading(270) > 1.57f && Mission_AngleToHeading(270) < 1.58f);
+    ASSERT(Mission_AngleToHeading(180) > 3.14f && Mission_AngleToHeading(180) < 3.15f);
+    ASSERT(Mission_AngleToHeading(90) > 4.71f && Mission_AngleToHeading(90) < 4.72f);
 }
 
 TEST(campaign_corpus_placements_parse) {
