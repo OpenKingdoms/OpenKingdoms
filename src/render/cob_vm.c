@@ -105,6 +105,9 @@
 static int g_trace = 0;
 void Cob_SetTrace(int on) { g_trace = on; }
 
+static uint32_t g_cob_tick;
+void Cob_SetTick(uint32_t tick) { g_cob_tick = tick; }
+
 static Cob_ExplodeHookFn g_explode_hook = NULL;
 void Cob_SetExplodeHook(Cob_ExplodeHookFn hook) { g_explode_hook = hook; }
 
@@ -712,13 +715,16 @@ static void run_thread(CobEngine *e, int slot, int budget) {
         } break;
 
         case OP_SLEEP: {
-            /* Pop sleep duration in milliseconds; convert to ticks via
-             * engine-rate constant (60 Hz): ticks = (60 * ms) / 1000.
-             * Then yield. Decomp the legacy reference ~306522. */
+            /* Milliseconds counted in the original's 30 Hz frames,
+             * rounded down and at least one, two ticks a frame
+             * (legacy:306522). Then yield. */
             int32_t ms;
             pop_stack(t, &ms);
             if (ms < 0) ms = 0;
-            t->sleep_remaining = (60 * ms) / 1000;
+            int32_t frames = (int32_t)(((int64_t)30 * ms) / 1000);
+            t->sleep_remaining = 2 * (frames > 0 ? frames : 1);
+            /* Begun before this tick's pass, which counts it at once. */
+            if (!e->in_pass && e->pass_tick != g_cob_tick) t->sleep_remaining++;
             if (g_trace) fprintf(stderr, "  ms=%d -> %d ticks\n",
                                   ms, t->sleep_remaining);
             return;  /* yield */
@@ -1373,15 +1379,14 @@ int Cob_RunScriptSync(CobEngine *e, const char *name,
 
 void Cob_RunAllThreads(CobEngine *e) {
     if (!e || !e->script) return;
+    e->in_pass = 1;
+    e->pass_tick = g_cob_tick;
     for (int i = 0; i < COB_THREADS_PER_UNIT; i++) {
         CobThread *t = &e->threads[i];
         if (!t->alive) continue;
-        /* Sleep wins over wait. Decrement sleep first; if still
-         * sleeping, skip dispatch. */
-        if (t->sleep_remaining > 0) {
-            t->sleep_remaining--;
-            continue;
-        }
+        /* Sleep wins over wait. A sleep of n ticks resumes on the n-th
+         * tick after it, not the one after that. */
+        if (t->sleep_remaining > 0 && --t->sleep_remaining > 0) continue;
         /* If waiting on a turn/move, check whether the target is
          * reached. If yes, clear wait state and proceed. */
         if (t->wait_kind != COB_WAIT_NONE) {
@@ -1390,6 +1395,7 @@ void Cob_RunAllThreads(CobEngine *e) {
         }
         run_thread(e, i, COB_OPS_PER_TICK_LIMIT);
     }
+    e->in_pass = 0;
 }
 
 void Cob_RunReadyThreads(CobEngine *e) {

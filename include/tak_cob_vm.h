@@ -139,7 +139,9 @@ typedef struct CobEngine {
     int32_t            *static_vars;     /* owned, num_static_vars long */
     int                 piece_count;     /* node_count from the bound mesh */
     uint16_t            active_thread_count;
-    uint16_t            _pad;
+    uint8_t             in_pass;         /* inside Cob_RunAllThreads */
+    uint8_t             _pad;
+    uint32_t            pass_tick;       /* Cob_SetTick's tick at the last pass */
     /* Host callbacks; NULL = use stub (returns 0 / 1). */
     void               *host_user;
     Cob_GetUnitValueFn  host_get_unit_value;
@@ -238,6 +240,11 @@ void Cob_RunAllThreads(CobEngine *e);
 /* Run every thread that is ready now, with no time passing: sleeps are
  * not counted down (legacy:306234 with a delta of 0). */
 void Cob_RunReadyThreads(CobEngine *e);
+
+/* The sim tick whose pass comes next or is running. A sleep begun
+ * outside Cob_RunAllThreads before that tick's pass gets one tick more,
+ * which the pass then takes. */
+void Cob_SetTick(uint32_t tick);
 
 /* Animate piece state: per piece per axis, advance current toward
  * target by the per-tick delta (already pre-divided when the
