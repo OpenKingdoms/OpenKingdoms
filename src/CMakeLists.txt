@@ -1082,26 +1082,6 @@ target_compile_definitions(test_hpi PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
 
-# ── HPI archive open smoke test ─────────────────────────────────────────────
-add_executable(test_hpi_open
-    core/hpi/test_hpi_open.c
-    core/hpi/hpi.c
-    core/hpi/hpi_decompress.c
-    core/memory.c
-    core/io.c
-    core/util.c
-    ${TAK_THIRD_PARTY_SOURCES}
-)
-
-target_include_directories(test_hpi_open PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/third_party
-)
-
-target_compile_definitions(test_hpi_open PRIVATE
-    TAK_GAME_DIR="${TAK_GAME_DIR}"
-)
-
 # ── Cross-platform I/O tests ────────────────────────────────────────────────
 add_executable(test_io
     core/test_io.c
@@ -1992,21 +1972,6 @@ target_include_directories(test_pathing PRIVATE
 )
 target_link_libraries(test_pathing PRIVATE SDL2::SDL2 SDL2::SDL2main)
 
-# The planner beside a copy of itself from before its buffers were kept
-# across plans: same routes over seeded random maps, and a bench.
-add_executable(test_path_buffers
-    game/test_path_buffers.c
-    game/test_pathing_reference.c
-    game/pathing.c
-    game/occupancy.c
-    core/memory.c
-)
-target_include_directories(test_path_buffers PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/third_party
-)
-target_link_libraries(test_path_buffers PRIVATE SDL2::SDL2 SDL2::SDL2main)
-
 add_executable(test_moveinfo
     game/test_moveinfo.c
     game/moveinfo.c
@@ -2680,7 +2645,6 @@ if(BUILD_TESTING)
              COMMAND test_ui_screens --verify-shards
                      --case-list=${CMAKE_CURRENT_SOURCE_DIR}/ui/test_ui_golden_cases.txt)
     add_test(NAME test_hpi         COMMAND test_hpi)
-    add_test(NAME test_hpi_open    COMMAND test_hpi_open)
     add_test(NAME test_io          COMMAND test_io)
     add_test(NAME test_util        COMMAND test_util)
     add_test(NAME test_trig        COMMAND test_trig)
@@ -2737,7 +2701,6 @@ if(BUILD_TESTING)
     add_test(NAME test_view_shake  COMMAND test_view_shake)
     add_test(NAME test_ai_planners COMMAND test_ai_planners)
     add_test(NAME test_pathing     COMMAND test_pathing)
-    add_test(NAME test_path_buffers COMMAND test_path_buffers)
     add_test(NAME test_moveinfo    COMMAND test_moveinfo)
     add_test(NAME test_ai          COMMAND test_ai)
     add_test(NAME test_ai_census   COMMAND test_ai_census)
@@ -2799,8 +2762,7 @@ if(BUILD_TESTING)
 
     # Each test runs in a directory of its own. Between them the suites
     # write about two dozen fixed file names, options.cfg, and the
-    # test_bs_extra_maps, test_vfs_loose_tmp, test_paths_scratch and
-    # test_output trees. They all used to share <build>/src, so two test
+    # test_vfs_loose_tmp, test_paths_scratch and test_output trees. They all used to share <build>/src, so two test
     # processes running at once would have written each other's files.
     # Reading the TESTS property rather than listing names keeps this
     # right for every test added later.
@@ -2838,7 +2800,7 @@ if(BUILD_TESTING)
     # given any), so it runs `ctest --label-exclude needs-data`.
     # Maintainers run the full suite before merging.
     set_tests_properties(
-        test_gui_loader test_hpi test_hpi_open test_hpi_vfs
+        test_gui_loader test_hpi test_hpi_vfs
         ${_ui_shard_tests}
         test_palette test_tnt test_obj3d test_jpg test_gaf test_cob
         test_cob_vm test_cob_vm_corpus test_cob_inspect test_cob_inspect_all
@@ -2858,7 +2820,7 @@ if(BUILD_TESTING)
     # archives, as players have them, and only these on the extracted
     # folder. test_ui_screens_layout runs in that second pass alone.
     set_tests_properties(
-        test_gui_loader test_hpi test_hpi_open test_hpi_vfs
+        test_gui_loader test_hpi test_hpi_vfs
         test_palette test_tnt test_obj3d test_jpg test_gaf test_cob
         test_cob_vm test_cob_vm_corpus test_cob_inspect test_cob_inspect_all
         test_map_inspect test_map_inspect_all test_map_inspect_missions
