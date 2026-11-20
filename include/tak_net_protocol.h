@@ -200,8 +200,10 @@
  * its turret is on the target, a landing flyer keeps its pose, and a unit's
  * step tests its whole body. 77: a Sea Fort on tight water launches its
  * queue, ships caught bow to bow get past each other, a unit turns onto its
- * work at its own rate, and a Repair Skiff mends a ship hull to hull. */
-#define TAK_ENGINE_BUILD_ID           77
+ * work at its own rate, and a Repair Skiff mends a ship hull to hull. 78: a
+ * unit script's sleep lasts the original's frames and ends on the tick it
+ * runs out. */
+#define TAK_ENGINE_BUILD_ID           78
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
