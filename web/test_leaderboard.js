@@ -73,41 +73,44 @@ test('the relay is asked for exactly the filters set', function () {
   assert.strictEqual(B.filtered({ map: 'x' }), true);
 });
 
-test('two players who go by one name are told apart', function () {
-  var labels = B.nameLabels([
-    { id: 'aaaaaaaaaaaa1111', name: 'Zach' },
-    { id: 'bbbbbbbbbbbb2222', name: 'zach' },
-    { id: 'cccccccccccc3333', name: 'Lokken' },
-    { id: 'aaaaaaaaaaaa1111', name: 'Zach' },
+test('the devices that go by one name are one player', function () {
+  var rows = B.mergeRows([
+    { id: 'aaaaaaaaaaaa1111', name: 'Zach', games: 11, wins: 9, losses: 2, score: 100, units_built: 10,
+      kills: 5, units_lost: 4, time_ticks: 600, first_played_ms: 5, last_played_ms: 50 },
+    { id: 'cccccccccccc3333', name: 'Player', games: 1, wins: 1, last_played_ms: 7 },
+    { id: 'bbbbbbbbbbbb2222', name: 'ZACH', games: 1, wins: 1, losses: 0, score: 7, units_built: 2,
+      kills: 1, units_lost: 1, time_ticks: 60, first_played_ms: 60, last_played_ms: 60 },
+    { id: 'dddddddddddd4444', name: 'Player', games: 2, losses: 2, last_played_ms: 8 },
+    { id: 'aaaaaaaaaaaa1111', name: 'Zach', games: 11 },
     null
   ]);
-  assert.strictEqual(labels.aaaaaaaaaaaa1111, 'Zach ·1111');
-  assert.strictEqual(labels.bbbbbbbbbbbb2222, 'zach ·2222');
-  assert.strictEqual(labels.cccccccccccc3333, 'Lokken');
+  assert.deepStrictEqual(rows[0], { id: 'bbbbbbbbbbbb2222', ids: ['aaaaaaaaaaaa1111', 'bbbbbbbbbbbb2222'],
+    name: 'ZACH', first_played_ms: 5, last_played_ms: 60, games: 12, wins: 10, losses: 2, score: 107,
+    units_built: 12, kills: 6, units_lost: 5, time_ticks: 660 });
+  /* Everyone who never typed a name is a player of their own. */
+  assert.deepStrictEqual(rows.slice(1).map(function (r) { return r.id; }), ['cccccccccccc3333', 'dddddddddddd4444']);
+  /* Their games, newest first, until a device with more to send could
+     have one between. */
+  var v = B.mergeGames([
+    { games: [{ id: 9, ended_ms: 90 }, { id: 4, ended_ms: 40 }], offset: 2, total: 2 },
+    { games: [{ id: 8, ended_ms: 80 }, { id: 9, ended_ms: 90 }, { id: 6, ended_ms: 60 }], offset: 3, total: 5 }
+  ]);
+  assert.deepStrictEqual(v.games.map(function (g) { return g.id; }), [9, 8, 6]);
+  assert.strictEqual(v.more, true);
 });
 
 test('a player named __proto__ or constructor is only a name', function () {
-  var labels = B.nameLabels([
-    { id: 'aaaaaaaaaaaa1111', name: '__proto__' },
-    { id: 'bbbbbbbbbbbb2222', name: 'constructor' },
-    { id: 'cccccccccccc3333', name: '__PROTO__' },
-    { id: 'dddddddddddd4444', name: 'hasOwnProperty' }
+  var rows = B.mergeRows([
+    { id: 'aaaaaaaaaaaa1111', name: '__proto__', games: 1 },
+    { id: 'bbbbbbbbbbbb2222', name: 'constructor', games: 1 },
+    { id: 'cccccccccccc3333', name: '__PROTO__', games: 2 },
+    { id: 'dddddddddddd4444', name: 'hasOwnProperty', games: 1 }
   ]);
-  assert.strictEqual(labels.aaaaaaaaaaaa1111, '__proto__ \u00b71111');
-  assert.strictEqual(labels.cccccccccccc3333, '__PROTO__ \u00b73333');
-  assert.strictEqual(labels.bbbbbbbbbbbb2222, 'constructor');
-  assert.strictEqual(labels.dddddddddddd4444, 'hasOwnProperty');
+  assert.deepStrictEqual(rows.map(function (r) { return r.name + ' ' + r.games; }),
+    ['__proto__ 3', 'constructor 1', 'hasOwnProperty 1']);
   /* Nothing reached a prototype every other object on the page shares. */
-  assert.strictEqual(Object.prototype.aaaaaaaaaaaa1111, undefined);
-  assert.strictEqual({}.aaaaaaaaaaaa1111, undefined);
-  assert.strictEqual(Object.aaaaaaaaaaaa1111, undefined);
-  /* The order the board draws in: the table, then the recent games. */
-  B.seatLabels([{ kind: 'human', name: '__proto__', player: 'aaaaaaaaaaaa1111' }]);
-  assert.deepStrictEqual(B.seatLabels([{ kind: 'human', name: 'x', player: 'aaaaaaaaaaaa1111' }]), ['x']);
-  assert.deepStrictEqual(B.seatLabels([
-    { name: 'constructor', player: 'bbbbbbbbbbbb2222' },
-    { name: 'toString', player: '__proto__' }
-  ]), ['constructor', 'toString']);
+  assert.strictEqual(Object.prototype.games, undefined);
+  assert.strictEqual({}.ids, undefined);
   /* An address can name any filter, and only the four real ones count. */
   assert.deepStrictEqual(B.parseRoute('#/games?__proto__=x&constructor=y&map=two'),
     { view: 'games', filters: { map: 'two' } });
@@ -117,15 +120,6 @@ test('a player named __proto__ or constructor is only a name', function () {
 test('a seat says the name its player goes by now', function () {
   assert.strictEqual(B.seatName({ name: 'Zach' }), 'Zach');
   assert.strictEqual(B.seatName({ name: 'Zach', current: 'Zed' }), 'Zach (now Zed)');
-});
-
-test('two seats in one game who go by one name are told apart', function () {
-  assert.deepStrictEqual(B.seatLabels([
-    { name: 'Zed', player: '000000000000aaaa' },
-    { name: 'Zach', current: 'Zed', player: '000000000000bbbb' },
-    { name: 'Lokken', player: '000000000000cccc' },
-    { name: 'Computer', player: null }
-  ]), ['Zed \u00b7aaaa', 'Zach (now Zed) \u00b7bbbb', 'Lokken', 'Computer']);
 });
 
 test('the live games split into open and being played', function () {
@@ -208,8 +202,8 @@ test('each table reads as its mod set, and two alike are told apart', function (
     default: 'vanilla-3f9a1c0e7a11d2b4'
   };
   assert.deepStrictEqual(B.tableChoices(d), [
-    { id: 'vanilla-3f9a1c0e7a11d2b4', label: 'Vanilla \u00b73f9a1c0e', games: 12 },
-    { id: 'vanilla-81c2d0f499bb0a17', label: 'Vanilla \u00b781c2d0f4', games: 1 },
+    { id: 'vanilla-3f9a1c0e7a11d2b4', label: 'Vanilla', games: 12 },
+    { id: 'vanilla-81c2d0f499bb0a17', label: 'Vanilla, other game files', games: 1 },
     { id: 'tak-enhanced-000000000000e4a1', label: 'TAK Enhanced 1.4', games: 3 },
     { id: 'unnamed-5d0e44a1abcdef12', label: 'Unnamed data 5d0e44a1', games: 2 },
     { id: 'earlier', label: 'Earlier games', games: 40 }

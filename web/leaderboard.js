@@ -1,7 +1,7 @@
 /*
  * leaderboard.js -- what the leaderboard page works out, apart from
  * drawing it: routes and their filters, the query the relay is asked,
- * names that need telling apart, and the live games.
+ * the devices that are one player, and the live games.
  *
  * No DOM in here, so web/test_leaderboard.js runs it in node.
  */
@@ -134,20 +134,24 @@
     return v ? name + ' ' + v : name;
   }
 
-  /* /api/tables as the picker's choices, in the relay's order. Two
-     tables that would read alike, vanilla on two releases say, are told
-     apart by the start of their fingerprints. */
+  /* /api/tables as the picker's choices, in the relay's order. Of two
+     tables that would read alike, vanilla on two copies of the game
+     say, the one played most keeps the plain label. */
   function tableChoices(d) {
     var tables = (d && d.tables) || [];
-    var counts = new Map();
+    var most = new Map(), others = new Map();
     tables.forEach(function (t) {
       var l = tableLabel(t).toLowerCase();
-      counts.set(l, (counts.get(l) || 0) + 1);
+      if (!most.has(l) || (t.games || 0) > (most.get(l).games || 0)) most.set(l, t);
     });
     return tables.map(function (t) {
       var label = tableLabel(t);
-      if (counts.get(label.toLowerCase()) > 1 && t.fingerprint)
-        label += ' \u00b7' + String(t.fingerprint).slice(0, 8);
+      var l = label.toLowerCase();
+      if (most.get(l) !== t) {
+        var k = (others.get(l) || 0) + 1;
+        others.set(l, k);
+        label += ', other game files' + (k > 1 ? ' ' + k : '');
+      }
       return { id: t.id, label: label, games: t.games || 0 };
     });
   }
@@ -170,47 +174,72 @@
     return v ? n + ' ' + v : n;
   }
 
-  /* A player's name, and when two players on the page go by the same
-     one, the end of their id after it, so the reader can tell them
-     apart. `people` is anything with id and name. */
-  function nameLabels(people) {
-    /* Names are whatever a player typed, __proto__ included, so they only
-       ever key a Map, and the answer is an object with no prototype. */
-    var ids = new Map(), byName = new Map();
-    people.forEach(function (p) {
-      if (!p || !p.id || ids.has(p.id)) return;
-      var name = String(p.name);
-      ids.set(p.id, name);
-      var k = name.toLowerCase();
-      if (!byName.has(k)) byName.set(k, new Set());
-      byName.get(k).add(p.id);
-    });
-    var out = Object.create(null);
-    ids.forEach(function (name, id) {
-      var shared = byName.get(name.toLowerCase()).size > 1;
-      out[id] = shared ? name + ' \u00b7' + String(id).slice(-4) : name;
+  /* A name folded so that the devices which go by it are one player.
+     '' for the name the game gives whoever typed none, since that is
+     many players and not one. */
+  function nameKey(name) {
+    var k = String(name == null ? '' : name).trim().toLowerCase();
+    return k === 'player' ? '' : k;
+  }
+
+  var SUMS = ['games', 'wins', 'losses', 'score', 'units_built', 'kills', 'units_lost', 'time_ticks'];
+
+  /* The relay's rows, one a device, as one row a name: the sums added,
+     the name and id of the device that played last, and every device's
+     id in ids. Names are whatever a player typed, __proto__ included,
+     so they only ever key a Map. */
+  function mergeRows(rows) {
+    var byName = new Map(), seen = new Set(), out = [];
+    (rows || []).forEach(function (r) {
+      if (!r || !r.id || seen.has(r.id)) return;
+      seen.add(r.id);
+      var k = nameKey(r.name);
+      var m = k ? byName.get(k) : null;
+      if (!m) {
+        m = { id: r.id, ids: [r.id], name: r.name,
+              first_played_ms: r.first_played_ms || 0, last_played_ms: r.last_played_ms || 0 };
+        SUMS.forEach(function (f) { m[f] = r[f] || 0; });
+        if (k) byName.set(k, m);
+        out.push(m);
+        return;
+      }
+      m.ids.push(r.id);
+      SUMS.forEach(function (f) { m[f] += r[f] || 0; });
+      if (r.first_played_ms && (!m.first_played_ms || r.first_played_ms < m.first_played_ms))
+        m.first_played_ms = r.first_played_ms;
+      if ((r.last_played_ms || 0) > m.last_played_ms) {
+        m.last_played_ms = r.last_played_ms;
+        m.name = r.name;
+        m.id = r.id;
+      }
     });
     return out;
+  }
+
+  /* One player's games from each of their devices, newest first, each
+     game once. A device with games still to fetch holds back anything
+     older than the last it sent, since its next page may come between.
+     `sources` are { games, offset, total }. */
+  function mergeGames(sources) {
+    var seen = new Set(), all = [], floor = 0, more = false;
+    (sources || []).forEach(function (s) {
+      s.games.forEach(function (g) {
+        if (!seen.has(g.id)) { seen.add(g.id); all.push(g); }
+      });
+      if (s.offset < s.total) {
+        more = true;
+        var last = s.games.length ? s.games[s.games.length - 1].ended_ms : Infinity;
+        if (last > floor) floor = last;
+      }
+    });
+    all.sort(function (a, b) { return b.ended_ms - a.ended_ms || b.id - a.id; });
+    return { games: all.filter(function (g) { return g.ended_ms >= floor; }), more: more };
   }
 
   /* A seat as the page shows it: the name it played under, and the
      name its player goes by now when that is different. */
   function seatName(seat) {
     return seat.current ? seat.name + ' (now ' + seat.current + ')' : seat.name;
-  }
-
-  /* Every seat of one game, labelled, with two players who go by one
-     name told apart the way the table tells them apart. */
-  function seatLabels(seats) {
-    var labels = nameLabels(seats.filter(function (s) { return s.player; })
-      .map(function (s) { return { id: s.player, name: s.current || s.name }; }));
-    return seats.map(function (s) {
-      var text = seatName(s);
-      if (!s.player) return text;
-      var shown = String(s.current || s.name);
-      var label = labels[s.player];
-      return typeof label === 'string' ? text + label.slice(shown.length) : text;
-    });
   }
 
   function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
@@ -278,9 +307,10 @@
     modLabel: modLabel,
     dayStart: dayStart,
     dayEnd: dayEnd,
-    nameLabels: nameLabels,
+    nameKey: nameKey,
+    mergeRows: mergeRows,
+    mergeGames: mergeGames,
     seatName: seatName,
-    seatLabels: seatLabels,
     liveGames: liveGames,
     playingFor: playingFor,
     joinHref: joinHref,
