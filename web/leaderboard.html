@@ -435,7 +435,6 @@
 
   function playerTable(rows) {
     var table;
-    var labels = B.nameLabels(rows);
     var head = el('tr', null, [el('th', { 'class': 'rank', text: '#' })].concat(COLS.map(function (c) {
       var th = el('th', { 'class': 'sort' + (c.txt ? ' txt' : '') + (sort.key === c.key ? ' on' + (sort.asc ? ' asc' : '') : ''), text: c.label });
       th.addEventListener('click', function () {
@@ -448,7 +447,7 @@
     var body = el('tbody');
     sorted(rows).forEach(function (r, i) {
       var tr = el('tr', { 'class': 'row link' }, [el('td', { 'class': 'rank', text: String(i + 1) })].concat(COLS.map(function (c) {
-        var v = c.fmt ? c.fmt(r[c.key]) : (c.txt ? labels[r.id] || r[c.key] : n(r[c.key]));
+        var v = c.fmt ? c.fmt(r[c.key]) : (c.txt ? r[c.key] : n(r[c.key]));
         return el('td', { 'class': c.txt ? 'txt' : '' }, [c.txt ? link(playerHash(r.id), v) : v]);
       })));
       tr.addEventListener('click', function (ev) { if (ev.target.tagName !== 'A') location.hash = playerHash(r.id); });
@@ -469,7 +468,7 @@
     ]);
     var body = el('tbody');
     games.forEach(function (g) {
-      var mine = me ? g.seats.filter(function (s) { return s.player === me; })[0] : null;
+      var mine = me ? g.seats.filter(function (s) { return me.indexOf(s.player) >= 0; })[0] : null;
       var others = g.seats.filter(function (s) { return !mine || s.seat !== mine.seat; });
       var winners = g.seats.filter(function (s) { return s.result === 'won'; });
       var cells = [
@@ -504,10 +503,9 @@
   }
   function seatNames(seats) {
     var span = el('span');
-    var labels = B.seatLabels(seats);
     seats.forEach(function (s, i) {
       if (i) span.appendChild(document.createTextNode(', '));
-      span.appendChild(s.player ? link(playerHash(s.player), labels[i]) : el('i', { text: s.name }));
+      span.appendChild(s.player ? link(playerHash(s.player), B.seatName(s)) : el('i', { text: s.name }));
     });
     if (!seats.length) span.textContent = 'nobody';
     return span;
@@ -530,12 +528,10 @@
       var board = res[0], recent = res[1];
       var boardRows = board.players;
       var searching = B.filtered(f);
+      var sum = el('small');
       var card = el('div', { 'class': 'card' }, [
-        el('h2', null, ['Players', el('small', { text: searching
-          ? board.total + ' player' + (board.total === 1 ? '' : 's') + ' named like “' + f.q + '”'
-          : board.total + ' player' + (board.total === 1 ? '' : 's') + ', ' + board.games + ' game' + (board.games === 1 ? '' : 's') +
-            (board.disputed ? ', ' + board.disputed + ' disputed and left out of the sums' : '') })]),
-        el('p', { 'class': 'lede', text: 'Every multiplayer battle that reached its verdict. Each mod set keeps a table of its own, and vanilla games count only on vanilla\u2019s. A player is the device they play on, shown by the name they last played under. Click a column to sort by it and a player to see their games.' }),
+        el('h2', null, ['Players', sum]),
+        el('p', { 'class': 'lede', text: 'Every multiplayer battle that reached its verdict. Each mod set keeps a table of its own, and vanilla games count only on vanilla\u2019s. A player is the name they play under, on any device, and everyone who never typed a name shows as Player. Click a column to sort by it and a player to see their games.' }),
         tablePicker(route, picked, false),
         filterForm(route, ['q'], { q: 'Find a player' })
       ]);
@@ -543,14 +539,22 @@
       var moreBtn = el('button', { 'class': 'btn', text: 'Show more players' });
       var more = el('div', { 'class': 'more' }, [moreBtn]);
       function paint() {
+        var rows = B.mergeRows(boardRows);
+        /* The relay counts devices, and each one merged into a name is
+           one player fewer. */
+        var total = board.total - (boardRows.length - rows.length);
+        sum.textContent = searching
+          ? total + ' player' + (total === 1 ? '' : 's') + ' named like “' + f.q + '”'
+          : total + ' player' + (total === 1 ? '' : 's') + ', ' + board.games + ' game' + (board.games === 1 ? '' : 's') +
+            (board.disputed ? ', ' + board.disputed + ' disputed and left out of the sums' : '');
         holder.textContent = '';
-        if (!boardRows.length) {
+        if (!rows.length) {
           holder.appendChild(el('div', { 'class': 'empty', text: searching
             ? 'Nobody plays under a name like that.'
             : 'No games have been recorded yet. Play a multiplayer battle to its end and it appears here.' }));
         } else {
-          holder.appendChild(playerTable(boardRows));
-          if (board.total > boardRows.length) holder.appendChild(el('p', { 'class': 'fine', text: 'Showing ' + boardRows.length + ' of ' + board.total + ' players, sorted among those shown.' }));
+          holder.appendChild(playerTable(rows));
+          if (board.total > boardRows.length) holder.appendChild(el('p', { 'class': 'fine', text: 'Showing ' + rows.length + ' of ' + total + ' players, sorted among those shown.' }));
         }
         more.hidden = boardRows.length >= board.total;
       }
@@ -609,10 +613,34 @@
     return page().then(function () { show(el('div', null, [liveCard(), card]), token); });
   }
 
+  /* Every device that goes by a player's name, theirs first. A name the
+     game gave is that device's alone. */
+  function devicesOf(p) {
+    var key = B.nameKey(p.name);
+    if (!key) return Promise.resolve([p.id]);
+    return get('/leaderboard?q=' + encodeURIComponent(p.name) + '&limit=200').then(function (d) {
+      var ids = [p.id];
+      ((d && d.players) || []).forEach(function (r) {
+        if (B.nameKey(r.name) === key && ids.indexOf(r.id) < 0) ids.push(r.id);
+      });
+      return ids;
+    });
+  }
+
   function playerView(route, token) {
     var id = route.id, f = route.filters;
-    var offset = 0, limit = 25, rows = [];
+    var limit = 25, sources = [];
     var picked = null;
+    /* The next page of one device's games. */
+    function page(src) {
+      return get(withQuery('/players/' + encodeURIComponent(src.id) + '?offset=' + src.offset + '&limit=' + limit, f)).then(function (r) {
+        if (!r) { src.total = src.offset; return null; }
+        src.games = src.games.concat(r.games);
+        src.offset += r.games.length;
+        src.total = r.total;
+        return r;
+      });
+    }
     return tableList().then(function (d) {
       picked = { data: d, id: f.table && B.pickTable(d, f.table) === f.table ? f.table : '' };
       if (!picked.id) delete f.table;
@@ -627,9 +655,16 @@
         ]), token);
         return;
       }
-      var p = r.player;
-      rows = r.games;
-      offset = rows.length;
+      sources = [{ id: id, games: r.games, offset: r.games.length, total: r.total }];
+      return devicesOf(r.player).then(function (ids) {
+        var others = ids.slice(1).map(function (x) { return { id: x, games: [], offset: 0, total: 1 }; });
+        sources = sources.concat(others);
+        return Promise.all(others.map(page));
+      }).then(function (pages) {
+        drawPlayer(B.mergeRows([r.player].concat(pages.filter(Boolean).map(function (x) { return x.player; })))[0]);
+      });
+    });
+    function drawPlayer(p) {
       var card = el('div', { 'class': 'card' }, [
         el('div', { 'class': 'crumbs' }, [link(boardHash(), 'Players'), ' / ' + p.name]),
         el('h2', null, [p.name, el('small', { text: p.first_played_ms ? 'first seen ' + when(p.first_played_ms) : '' })]),
@@ -645,17 +680,15 @@
       var moreBtn = el('button', { 'class': 'btn', text: 'Show more' });
       var more = el('div', { 'class': 'more' }, [moreBtn]);
       function paint() {
+        var v = B.mergeGames(sources);
         holder.textContent = '';
-        holder.appendChild(rows.length ? gamesTable(rows, p.id)
+        holder.appendChild(v.games.length ? gamesTable(v.games, p.ids)
           : el('div', { 'class': 'empty', text: 'None of their games match those filters.' }));
-        more.hidden = offset >= r.total;
+        more.hidden = !v.more;
       }
       moreBtn.addEventListener('click', function () {
         moreBtn.disabled = true;
-        get(withQuery('/players/' + encodeURIComponent(id) + '?offset=' + offset + '&limit=' + limit, f)).then(function (r2) {
-          rows = rows.concat(r2.games);
-          offset += r2.games.length;
-          r.total = r2.total;
+        Promise.all(sources.filter(function (s) { return s.offset < s.total; }).map(page)).then(function () {
           paint();
           moreBtn.disabled = false;
         }).catch(failed);
@@ -666,7 +699,7 @@
       card.appendChild(more);
       paint();
       show(card, token);
-    });
+    }
   }
   function stat(v, label) { return el('div', null, [el('b', { text: String(v) }), el('span', { text: label })]); }
 
@@ -688,11 +721,10 @@
         el('th', { text: 'Time' }), el('th', { text: 'Score' }), el('th', { 'class': 'txt', text: 'Result' })
       ]);
       var body = el('tbody');
-      var labels = B.seatLabels(seats);
-      seats.forEach(function (s, i) {
+      seats.forEach(function (s) {
         body.appendChild(el('tr', { 'class': 'row' }, [
           el('td', { text: String(s.place) }),
-          el('td', { 'class': 'txt' }, [s.player ? link(playerHash(s.player), labels[i]) : el('i', { text: s.name })]),
+          el('td', { 'class': 'txt' }, [s.player ? link(playerHash(s.player), B.seatName(s)) : el('i', { text: s.name })]),
           el('td', { 'class': 'txt', text: SIDES[s.side] || ('Side ' + s.side) }),
           el('td', { text: s.team ? String(s.team) : '' }),
           el('td', { text: n(s.units_built) }), el('td', { text: n(s.kills) }), el('td', { text: n(s.losses) }),
