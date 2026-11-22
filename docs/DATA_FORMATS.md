@@ -563,8 +563,8 @@ meteor, and earthen wave spells, plus mana costs, nimbus effects, etc.)
 |-------|------|-------------|
 | shadowgaf | string | GAF file containing shadow sprites |
 | shadowart | string | Specific shadow sprite name |
-| soundcategory | string | Sound category for voice/effects |
-| soundclass | string | Sound class for voice responses |
+| soundcategory | string | Not read by the game |
+| soundclass | string | Sound class for voice responses, `unit_default` when absent |
 | corpse | string | Feature name for dead unit (reference to features TDF) |
 | stone | string | Feature name when turned to stone |
 | bloodcolor1/2/3 | 3x int | RGB blood particle colors |

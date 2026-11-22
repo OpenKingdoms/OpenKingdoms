@@ -60,8 +60,10 @@ interface volume option scaled by 1024. At start the mixer plays
 
 `gamedata/soundclasses/*.tdf` hold the unit classes
 (legacy:221344-221483). Each outer section is a class, such as
-`ARAKNIGH`, named by the FBI key `soundcategory` (the FBI also carries
-`soundclass` with the same value). Its inner sections are actions
+`ARAKNIGH`, named by the FBI key `soundclass`, or `unit_default` when
+the key is absent (legacy:162820). The game never reads
+`soundcategory`, which eight variants set to a class that does not
+exist. Its inner sections are actions
 (`select`, `move`, `attack`, `guard`, `patrol`, `default`), and each
 key in one is a wav name. The section key `prioritized`
 (legacy:221394) sets what the values mean. With `prioritized = 1` a

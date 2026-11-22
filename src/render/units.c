@@ -9066,8 +9066,9 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
                  TDF_ReadString(tdf, "category", ""));
     copy_bounded(out->damage_category, sizeof(out->damage_category),
                  TDF_ReadString(tdf, "damagecategory", ""));
-    copy_bounded(out->soundcategory, sizeof(out->soundcategory),
-                 TDF_ReadString(tdf, "soundcategory", ""));
+    /* The voice is soundclass, not soundcategory (legacy:162820). */
+    copy_bounded(out->soundclass, sizeof(out->soundclass),
+                 TDF_ReadString(tdf, "soundclass", "unit_default"));
     copy_bounded(out->bodytype, sizeof(out->bodytype),
                  TDF_ReadString(tdf, "bodytype", "default"));
     out->unitnumber     = TDF_ReadInt(tdf, "unitnumber", 0);
