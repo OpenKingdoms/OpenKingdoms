@@ -8,7 +8,7 @@
  * two platforms means those operations agree bit for bit.
  *
  * Not wired to a build: it is run by hand on each platform and the
- * numbers compared. docs/notes/2026-09-14-float-determinism.md holds
+ * numbers compared. docs/notes/2026-09-04-multiplayer-hapinet.md holds
  * what they were when this was written.
  *
  *   cl /O2 tools/float_probe.c && float_probe.exe

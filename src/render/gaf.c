@@ -166,6 +166,28 @@ int GAF_GetFrameInfo(GAFFile *gaf, uint32_t entry_offset, int frame_index, Frame
     return 0;
 }
 
+int GAF_FrameHold(const GAFFile *gaf, uint32_t entry_offset, int frame_index) {
+    if (!gaf || frame_index < 0) return 0;
+    const uint64_t at = (uint64_t)entry_offset + 40u + (uint64_t)frame_index * 8u + 4u;
+    if (at + 4u > gaf->data_size) return 0;
+    uint32_t hold;
+    memcpy(&hold, gaf->data + at, 4);
+    return hold > 0xffffu ? 0xffff : (int)hold;
+}
+
+int GAF_LoopPicture(const uint16_t *hold, int count, uint32_t frame) {
+    if (!hold || count <= 1) return 0;
+    uint32_t loop = 0;
+    for (int k = 0; k < count; k++) loop += hold[k] > 1 ? hold[k] : 1u;
+    frame %= loop;
+    for (int k = 0; k < count; k++) {
+        const uint32_t h = hold[k] > 1 ? hold[k] : 1u;
+        if (frame < h) return k;
+        frame -= h;
+    }
+    return count - 1;
+}
+
 /*
  * GAF_DecodeFrame -- Decode a frame's RLE data into palette indices.
  *

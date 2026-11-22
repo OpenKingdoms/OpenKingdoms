@@ -1435,7 +1435,7 @@
       var cb = el('input'); cb.type = 'checkbox'; cb.checked = V.lit;
       cb.onchange = function () { V.lit = cb.checked; reloadModelColour(e); };
       lit.appendChild(cb);
-      lit.appendChild(document.createTextNode('Textures darkened as a battle draws them (light level 15)'));
+      lit.appendChild(document.createTextNode('Textures through shade row 15, the level of a face edge on to the light or with DONT-SHADE'));
       wrap.appendChild(lit);
       var col = el('div', 'pal-row');
       col.appendChild(el('span', 'fine', 'Team colour'));

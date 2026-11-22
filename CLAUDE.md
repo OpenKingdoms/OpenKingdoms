@@ -38,13 +38,11 @@ welcome and are recorded in docs/MANUAL_DEVIATIONS.md.
   rejects implicit declarations that MSVC accepts. Declare before use.
 - `scripts/web-smoke.js` drives a browser through the whole
   bring-your-own-files flow, including a skirmish, against a real install.
-- No new end to end case per feature or fix. Prove a fix with an existing
-  test, a cheap unit test beside the code, or a repro in the PR. The screen
-  suite (`test_ui_screens`, real battles) takes new cases only for
-  determinism and the state hash, lockstep and the protocol, saves and
-  loads, golden frames, cheap crash repeats, and parity with the original
-  where it already went wrong once. Tests live next to the code as
-  `test_*.c`, registered in src/CMakeLists.txt.
+- Every change runs the golden set, `ctest -L golden`, listed in
+  docs/testing-tiers.md. Before adding a test or a markdown file, read
+  CONTRIBUTING.md: "What gets a new test", "Markdown" and "Code style".
+  Tests live next to the code as `test_*.c`, registered in
+  src/CMakeLists.txt.
 
 ## Conventions
 
@@ -54,8 +52,8 @@ welcome and are recorded in docs/MANUAL_DEVIATIONS.md.
 - Simulation code must be deterministic: no floats in simulation state, one
   seeded RNG, no wall-clock reads, no iteration-order dependence. Lockstep
   multiplayer desyncs on any of these.
-- Comments are brief: one or two lines stating a constraint or citing a
-  reference anchor. No paragraphs, no restating the next line.
+- Comments follow "Code style" in CONTRIBUTING.md: one to three lines, a
+  constraint or a reference anchor, the story in the commit.
 - Prose in docs: plain sentences, no em dashes, no semicolons, no filler.
 - Commit messages: present tense, say why. No tool attribution trailers.
 - Keep MSVC, gcc, clang and Emscripten all clean; CI builds all four.

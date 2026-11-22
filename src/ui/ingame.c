@@ -18,12 +18,14 @@
 #include "tak_ai.h"
 #include "tak_terrain.h"
 #include "tak_unit.h"
+#include "tak_tex_atlas.h"
 #include "tak_minimap.h"
 #include "tak_message_box.h"
 #include "tak_camera.h"
 #include "tak_ui.h"
 #include "tak_debug_panel.h"
 #include "tak_hud.h"
+#include "tak_hud_cursor.h"
 #include "tak_click_map.h"
 #include "tak_command_emit.h"
 #include "tak_command_queue.h"
@@ -32,6 +34,7 @@
 #include "tak_net_match.h"
 #include "tak_replay_session.h"
 #include "tak_fog.h"
+#include "tak_features.h"
 #include "tak_font.h"
 #include "tak_hud_text.h"
 #include "tak_game_sound.h"
@@ -50,6 +53,7 @@
 #include "tak_briefing.h"
 #include "tak_music.h"
 #include "tak_order_overlay.h"
+#include "tak_build_line.h"
 #include "tak_story.h"
 #include <SDL.h>
 #include <stdio.h>
@@ -904,6 +908,7 @@ int InGame_Init(TAK_Platform *platform) {
     Units_SetHealthBarsOn(Settings_GetInt("DisplayDamageBars", 0));
     /* Visual Options: Shadows (legacy:197182), on unless turned off. */
     Units_SetShadowsOn(Settings_GetInt("DrawShadows", 1));
+    View_ClassicSetMist(Settings_GetInt(TAK_SETTING_FOG_MIST, 1));
     ConsoleCmd_ApplySettings();
 
     GameWorld *world = World_Get();
@@ -1024,12 +1029,16 @@ int InGame_Init(TAK_Platform *platform) {
     return 0;
 }
 
+static int ig_build_line_shown(void);
+
 /* Marquee rectangle. Legacy draws a plain white outline box (four
  * quads off the solid-white texture, caller alpha — the legacy reference
  * :125401-125540); one SDL outline rect matches that look. */
 static void InGame_DrawMarquee(TAK_Platform *platform,
                                const GameWorld *world) {
     if (!ig.drag_active || !platform || !platform->renderer || !world) return;
+    /* A line of buildings shows its ghosts in place of the box. */
+    if (ig_build_line_shown()) return;
     int mx = 0, my = 0;
     SDL_GetMouseState(&mx, &my);
     int ax = (int)(ig.drag_world_x - world->cam_x);
@@ -1113,6 +1122,96 @@ static void InGame_DrawView3DNotice(TAK_Platform *platform) {
     HUD_DrawMessageLine(platform, g_view3d_notice_text);
 }
 
+/* ── A line of buildings: a Shift drag with one armed lays copies end
+ * to end. */
+
+/* The armed building a drag lays in a line, or -1. */
+static int ig_build_line_def(int shift_held) {
+    return shift_held ? HUD_GetBuildPlacementDefIdx() : -1;
+}
+
+/* The build centres a drag from (x0, y0) to (x1, y1) lays at the default
+ * facing, on the ground under each end and snapped as a click's site is. */
+static int ig_build_line_spots(int bdef, int32_t x0, int32_t y0,
+                               int32_t x1, int32_t y1, BuildLineCell *out) {
+    int fx = 0, fz = 0;
+    Units_BuildSiteCells(bdef, 0, &fx, &fz);
+    if (fx <= 0 || fz <= 0) return 0;
+    Units_GroundUnderPoint(x0, y0, &x0, &y0);
+    Units_GroundUnderPoint(x1, y1, &x1, &y1);
+    Units_SnapBuildSiteFacing(bdef, 0, &x0, &y0);
+    Units_SnapBuildSiteFacing(bdef, 0, &x1, &y1);
+    /* A summons without end lays the press end alone, as a Shift click
+     * does, since nothing queues behind it (legacy:39208-39219). */
+    int max = HUD_BuildPlacementRepeats() ? 1 : BUILD_LINE_MAX;
+    /* The snap puts a centre at cell * 16 + footprint * 8. */
+    int n = BuildLine_Cells((x0 - fx * 8) / 16, (y0 - fz * 8) / 16,
+                            (x1 - fx * 8) / 16, (y1 - fz * 8) / 16,
+                            fx, fz, out, max);
+    for (int i = 0; i < n; i++) {
+        out[i].x = out[i].x * 16 + fx * 8;
+        out[i].y = out[i].y * 16 + fz * 8;
+    }
+    return n;
+}
+
+/* Each spot the cursor's test passes is sent in order from the press, a
+ * blocked one passed over, and with Ctrl too each goes in front, so the
+ * release end is built first. 0 when the drag lays no line. */
+static int ig_build_line_drag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                              int mods) {
+    int bdef = ig_build_line_def((mods & IG_CLICK_SHIFT) != 0);
+    if (bdef < 0) return 0;
+    int repeat = HUD_BuildPlacementRepeats();
+    int front = (mods & IG_CLICK_CTRL) != 0;
+    BuildLineCell spots[BUILD_LINE_MAX];
+    int n = ig_build_line_spots(bdef, x0, y0, x1, y1, spots);
+    int placed = 0;
+    for (int i = 0; i < n; i++) {
+        if (!Units_IsBuildSiteClearSeen(bdef, spots[i].x, spots[i].y, 0, Fog_Viewer()))
+            continue;
+        if (TAK_Cmd_EmitSelection(TAK_CMD_BUILD, spots[i].x, spots[i].y, -1,
+                                  (uint16_t)bdef, BuildLine_OrderArg(front, repeat)) != 0)
+            break;
+        placed++;
+    }
+    GameSound_PlayUI(placed > 0 ? "oktobuild" : "notoktobuild");
+    fprintf(stderr, "Build line: def=%d, %d of %d spots ordered\n", bdef, placed, n);
+    /* As after a Shift click: armed while Shift is down, and a summons
+     * without end is placed once (legacy:242531-242540). */
+    if (repeat) HUD_ClearCommandMode();
+    else ig.shift_hold = 1;
+    return 1;
+}
+
+/* A drag in hand that lays a line of buildings on its release. */
+static int ig_build_line_shown(void) {
+    const Uint8 *ks = SDL_GetKeyboardState(NULL);
+    int shift = ks[SDL_SCANCODE_LSHIFT] || ks[SDL_SCANCODE_RSHIFT];
+    return ig.drag_active && ig_build_line_def(shift) >= 0;
+}
+
+/* The line's ghosts in the classic view, from the press to the pointer at
+ * (x1, y1), snapped where they will be placed and judged as the cursor's. */
+static void ig_draw_build_line(TAK_Platform *platform, const GameWorld *world,
+                               int32_t x1, int32_t y1) {
+    if (ig.view3d || !ig_build_line_shown()) return;
+    int bdef = HUD_GetBuildPlacementDefIdx();
+    BuildLineCell spots[BUILD_LINE_MAX];
+    int n = ig_build_line_spots(bdef, ig.drag_world_x, ig.drag_world_y, x1, y1, spots);
+    /* The builder's colours, as the cursor's ghost takes them. */
+    int color_idx = 0, n_sel = 0;
+    const int *sel = Units_GetSelection(&n_sel);
+    const Unit *active = Units_GetActive(NULL);
+    if (sel && n_sel > 0 && active) color_idx = active[sel[0]].team_color_idx;
+    for (int i = 0; i < n; i++) {
+        int valid = Units_IsBuildSiteClearSeen(bdef, spots[i].x, spots[i].y, 0,
+                                               Fog_Viewer());
+        Units_RenderBuildGhostFacing(platform, world, bdef, color_idx,
+                                     spots[i].x, spots[i].y, 140, valid, 0);
+    }
+}
+
 /* A released drag box: with Load armed and one transport selected, a
  * pickup of every unit in it (legacy:238654-238692), else a box select. */
 void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
@@ -1120,6 +1219,8 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     int shift_held = (mods & IG_CLICK_SHIFT) != 0;
     GameWorld *world = World_Get();
     if (!world || !world->loaded) return;
+    /* With a building armed a Shift drag lays a line of it. */
+    if (ig_build_line_drag(x0, y0, x1, y1, mods)) return;
     if (HUD_GetCommandMode() == HUD_CMD_LOAD &&
         TAK_Cmd_EmitLoadInRect(x0, y0, x1, y1, shift_held) >= 0) {
         if (shift_held) ig.shift_hold = 1;
@@ -1135,7 +1236,9 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
         int hw = (abs(bx - ax) / 2 + 15) / 16, hh = (abs(by - ay) / 2 + 15) / 16;
         if (hw > 255) hw = 255;
         if (hh > 255) hh = 255;
-        uint16_t q = shift_held ? (uint16_t)TAK_CMD_ARG_QUEUE : 0;
+        uint16_t q = !shift_held ? 0
+                   : (mods & IG_CLICK_CTRL) ? (uint16_t)TAK_CMD_ARG_FRONT
+                   : (uint16_t)TAK_CMD_ARG_QUEUE;
         if (TAK_Cmd_EmitSelection(TAK_CMD_RECLAIM_FEATURE, (ax + bx) / 2,
                                   (ay + by) / 2, -1,
                                   (uint16_t)(hw << 8 | hh),
@@ -1156,48 +1259,58 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     fprintf(stderr, "Marquee select: %d units\n", n);
 }
 
-/* An enemy under the pointer, for the selection: the best any one unit
- * answers (legacy:238791-238838). Attack when a weapon in hand can take
- * it, too far when the armed ones all cannot, and with nobody armed the
- * click is on the ground there (legacy:186135-186330). */
-static int ig_enemy_cursor(int hover) {
-    int armed = 0;
-    if (Units_SelectionCanAttack(hover, &armed) > 0) return HUD_CMD_ATTACK;
-    return armed > 0 ? HUD_CUR_TOOFAR : -1;
+/* Whether a unit of the player's own in the selection can move. */
+static int ig_selection_walks(void) {
+    int n = 0, count = 0;
+    const int *sel = Units_GetSelection(&n);
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; sel && units && i < n; i++)
+        if (sel[i] >= 0 && sel[i] < count &&
+            units[sel[i]].alive == UNIT_ALIVE_ACTIVE &&
+            g_units_get_player(sel[i]) == Units_LocalPlayer() &&
+            Units_CanWalk(sel[i]))
+            return 1;
+    return 0;
 }
 
-/* The cursor the world shows under a point with no command armed
- * (legacy manual §IV.2): heal over your own frame or a damaged unit at
- * peace with you that the selection can mend (legacy:186541-186545),
- * attack over an enemy one of your selected units can hit, the select
- * hand over any other unit, then revive over a body the selection can
- * raise, sweep over a feature it can clear (legacy:186587-186599), and
- * the pointer otherwise. */
-int InGame_HoverCursorOn(int hover, int32_t world_x, int32_t world_y) {
-    if (hover >= 0) {
-        if (Units_SelectionCanRepair(hover)) return HUD_CMD_HEAL;
-        /* Only an enemy is something to attack. An ally's unit takes
-         * no order from us, and the sword over it said otherwise. */
-        int enemy = Units_PlayersAreEnemies(Units_LocalPlayer(),
-                                            g_units_get_player(hover));
-        /* A frame is never selected, so one nobody can help is the
-         * ground under it, as its click is (legacy:186553, 186603). */
-        if (!enemy && !Units_IsSelectable(hover)) {
-            hover = -1;
-        } else {
-            if (!enemy || Units_SelectionOwnedCount() == 0) return HUD_CUR_SELECT;
-            int cur = ig_enemy_cursor(hover);
-            if (cur >= 0) return cur;
+/* What the cursor pick reads: the selection, the unit under the pointer
+ * and the ground under it. An armed order reads only what it needs. */
+static void ig_cursor_facts(int mode, int hit, int32_t world_x, int32_t world_y,
+                            HUDCursorFacts *f) {
+    memset(f, 0, sizeof *f);
+    f->armed = mode;
+    f->own_selected = Units_SelectionOwnedCount() > 0;
+    f->own_walker = mode == HUD_CMD_NONE && f->own_selected && ig_selection_walks();
+    f->unit = hit >= 0;
+    if (f->unit) {
+        f->selectable = Units_IsSelectable(hit);
+        f->enemy = Units_PlayersAreEnemies(Units_LocalPlayer(),
+                                           g_units_get_player(hit));
+        if (mode == HUD_CMD_NONE) f->mend = Units_SelectionCanRepair(hit);
+        /* The best any one unit answers (legacy:238791-238838). */
+        if (f->enemy && f->own_selected &&
+            (mode == HUD_CMD_NONE || mode == HUD_CMD_ATTACK))
+            f->weapons_take = Units_SelectionCanAttack(hit, &f->weapons);
+        if (mode == HUD_CMD_LOAD) {
+            int carrier = Units_SelectedTransport();
+            f->load_refused = carrier >= 0 && !Units_CanCarry(carrier, hit);
         }
     }
+    if (mode != HUD_CMD_NONE && mode != HUD_CMD_CLEAR) return;
     /* Bodies are looked up on the ground under the pointer, which the
      * terrain lift puts further down the map than the flat reading. */
     int32_t gx = world_x, gy = world_y;
     Units_GroundUnderPoint(world_x, world_y, &gx, &gy);
-    if (Units_SelectionRaiseModeAt(gx, gy) >= 0)
-        return HUD_CUR_REVIVE;
-    if (Units_SelectionCanReclaimAt(gx, gy)) return HUD_CMD_CLEAR;
-    return HUD_CUR_NORMAL;
+    f->raise = Units_SelectionRaiseModeAt(gx, gy) >= 0;
+    if (mode == HUD_CMD_NONE) f->sweep = Units_SelectionCanReclaimAt(gx, gy);
+}
+
+/* The cursor the world shows under a point with no command armed: the
+ * order a click there gives (HUD_PickCursor). */
+int InGame_HoverCursorOn(int hover, int32_t world_x, int32_t world_y) {
+    HUDCursorFacts f;
+    ig_cursor_facts(HUD_CMD_NONE, hover, world_x, world_y, &f);
+    return HUD_PickCursor(&f);
 }
 
 int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
@@ -1205,24 +1318,22 @@ int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
                                 world_x, world_y);
 }
 
-/* The cursor an armed command shows: the sweep cursor turns to revive
- * over a body the selection would raise instead of sweep. */
+/* The cursor an armed command shows over a point. */
 int InGame_CommandCursorAt(int mode, int32_t world_x, int32_t world_y) {
     return InGame_CommandCursorOn(mode, Units_PickAt(world_x, world_y, 0),
                                   world_x, world_y);
 }
 
 int InGame_CommandCursorOn(int mode, int hit, int32_t world_x, int32_t world_y) {
-    int32_t gx = world_x, gy = world_y;
-    Units_GroundUnderPoint(world_x, world_y, &gx, &gy);
-    if (mode == HUD_CMD_CLEAR && Units_SelectionRaiseModeAt(gx, gy) >= 0)
-        return HUD_CUR_REVIVE;
-    /* An armed attack on an enemy no weapon in hand can take. */
-    if (mode == HUD_CMD_ATTACK && hit >= 0 &&
-        Units_PlayersAreEnemies(Units_LocalPlayer(), g_units_get_player(hit)) &&
-        ig_enemy_cursor(hit) == HUD_CUR_TOOFAR)
-        return HUD_CUR_TOOFAR;
-    return mode;
+    HUDCursorFacts f;
+    ig_cursor_facts(mode, hit, world_x, world_y, &f);
+    return HUD_PickCursor(&f);
+}
+
+int InGame_MapCursorOn(int mode, int hit, int32_t map_x, int32_t map_y) {
+    HUDCursorFacts f;
+    ig_cursor_facts(mode, hit, map_x, map_y, &f);
+    return HUD_PickMapCursor(&f);
 }
 
 /* One left click on the game world, in world coordinates. The tick
@@ -1556,10 +1667,13 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
     if (!world || !world->loaded) return;
     int cmd = HUD_GetCommandMode();
     int shift_held = (mods & IG_CLICK_SHIFT) != 0;
-    /* Shift puts the order behind the ones the units hold, and Ctrl
-     * changes the one in hand and keeps those (manual section IV). */
-    const uint16_t q = shift_held ? (uint16_t)TAK_CMD_ARG_QUEUE
-                     : (mods & IG_CLICK_CTRL) ? (uint16_t)TAK_CMD_ARG_KEEP : 0;
+    /* Shift puts the order behind the ones the units hold, Ctrl changes
+     * the one in hand and keeps those (manual section IV), and Ctrl+Shift
+     * puts it ahead of them all (legacy:181685-181689). */
+    int ctrl_held = (mods & IG_CLICK_CTRL) != 0;
+    const uint16_t q = shift_held && ctrl_held ? (uint16_t)TAK_CMD_ARG_FRONT
+                     : shift_held ? (uint16_t)TAK_CMD_ARG_QUEUE
+                     : ctrl_held ? (uint16_t)TAK_CMD_ARG_KEEP : 0;
     int repeat = cmd == HUD_CMD_PLACE_BUILD && HUD_BuildPlacementRepeats();
     /* Every order on the ground takes the cell under the pointer, the
      * one that projects there (legacy:212277). Units draw lifted by
@@ -2077,6 +2191,32 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
 #undef IG_PRESSED
 }
 
+/* The unit, else the shown feature, under the pointer over the world,
+ * for the info panel. A feature on ground never seen is not named. */
+static void ig_info_pointer(TAK_Platform *platform, GameWorld *world) {
+    int unit = -1, feature = -1, mx = 0, my = 0;
+    int32_t x = 0, y = 0;
+    if (platform->has_focus) SDL_GetMouseState(&mx, &my);
+    if (g_dbg_mouse_on) { mx = g_dbg_mouse_x; my = g_dbg_mouse_y; }
+    if (platform->has_focus && !Minimap_IsLarge() && !InGameMenu_IsOpen() &&
+        !Briefing_IsOpen() && !ig.sd_ask && !HUD_HitTest(mx, my, platform) &&
+        ig_view()->pointer_to_world(world, platform, mx, my, &x, &y)) {
+        unit = ig_view()->pointer_to_unit(world, platform, mx, my);
+        /* A wall under the pointer is passed over (reported from play). */
+        int n = 0;
+        const Unit *units = Units_GetActive(&n);
+        const UnitDef *d = (unit >= 0 && unit < n) ? Units_GetDef(units[unit].def_idx) : NULL;
+        if (d && d->is_feature) unit = -1;
+        if (unit < 0) {
+            int32_t gx = x, gy = y;
+            Units_GroundUnderPoint(x, y, &gx, &gy);
+            if (Fog_StateAt(world, gx, gy) != TAK_FOG_UNEXPLORED)
+                feature = Features_InfoAt(world, gx, gy);
+        }
+    }
+    HUD_SetPointerInfo(unit, feature);
+}
+
 int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     {
         static unsigned s_ticks;
@@ -2250,11 +2390,15 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     ViewShake_Step(&shake_x, &shake_y);
     world->cam_x += shake_x;
     world->cam_y += shake_y;
+    /* Model textures play by the game clock, in the original's 30 Hz
+     * frames, so every display rate shows the same picture. */
+    TexAtlas_Animate(Units_ViewFrame());
     ig_view()->render(world, platform, have_clip ? &world_clip : NULL);
     world->cam_x -= shake_x;
     world->cam_y -= shake_y;
     if (have_clip) SDL_RenderSetClipRect(platform->renderer, NULL);
 
+    ig_info_pointer(platform, world);
     HUD_Draw(platform, world);
     Minimap_Draw(platform);
     InGame_DrawMarquee(platform, world);
@@ -2373,11 +2517,20 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             if (cid != mode)
                 drew_cursor = HUD_DrawCursorById(platform, cid, mx, my);
             if (!drew_cursor) {
+                ig_draw_build_line(platform, world, hover_x, hover_y);
                 HUD_DrawCommandCursor(platform, mx, my, hover_x, hover_y);
                 drew_cursor = 1;
             }
         } else if (over_world) {
             int cur_id = InGame_HoverCursorOn(hover_unit, hover_x, hover_y);
+            drew_cursor = HUD_DrawCursorById(platform, cur_id, mx, my);
+        } else if (platform->has_focus &&
+                   Minimap_PointToWorld(platform, mx, my, 0, &hover_x, &hover_y)) {
+            /* The minimap and the Tab map show what a press there gives,
+             * on the blip ig_minimap hands that press. */
+            int cur_id = InGame_MapCursorOn(HUD_GetCommandMode(),
+                                            Minimap_UnitAt(platform, mx, my),
+                                            hover_x, hover_y);
             drew_cursor = HUD_DrawCursorById(platform, cur_id, mx, my);
         }
         SDL_ShowCursor(drew_cursor ? SDL_DISABLE : SDL_ENABLE);
@@ -2524,6 +2677,8 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             InGame_WorldDrag(ig.drag_world_x, ig.drag_world_y,
                              world_click_x, world_click_y,
                              (shift_held ? IG_CLICK_SHIFT : 0) |
+                             ((keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL])
+                                  ? IG_CLICK_CTRL : 0) |
                              (ig.drag_no_monarch ? IG_DRAG_NO_MONARCH : 0));
             ig.drag_tracking = 0;
             ig.drag_active   = 0;
@@ -2585,7 +2740,8 @@ void InGame_Shutdown(void) {
     Ambient_Reset();
     /* Back to the interface's own music (legacy:241870). */
     TAK_Music_UseInterfaceList();
-    /* The 3D view's GPU resources go while the renderer is still up. */
+    /* The views' GPU resources go while the renderer is still up. */
+    View_Classic()->shutdown(ig.platform);
     if (View3D_IsReady()) View_3D()->shutdown(ig.platform);
     /* The 3D view's ghost hook goes with it, or the next battle, which
      * starts in 2D, would hand its ghost to a view that is not up. */

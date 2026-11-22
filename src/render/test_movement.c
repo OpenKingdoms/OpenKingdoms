@@ -43,7 +43,8 @@ enum { MV_DEF_WALKER = 0, MV_DEF_KNIGHT, MV_DEF_BUILDER, MV_DEF_HUT,
        MV_DEF_HORSE, MV_DEF_HORSE3, MV_DEF_COUNT };
 /* A sea world has ships and a shipyard as well. */
 enum { MV_DEF_GALLEY = MV_DEF_COUNT, MV_DEF_IRONCLAD, MV_DEF_TREB,
-       MV_DEF_SKIFF, MV_DEF_MANOWAR, MV_DEF_YARD, MV_DEF_SEA_COUNT };
+       MV_DEF_SKIFF, MV_DEF_MANOWAR, MV_DEF_YARD, MV_DEF_FLAGSHIP,
+       MV_DEF_SEA_COUNT };
 #define MV_SEABED  20       /* a sea world's floor, deep under its water */
 #define MV_WATER   80
 
@@ -189,7 +190,7 @@ static GameWorld *mv_world_with(int sea) {
     }
     /* The ships' FBI numbers and the hulls their 3DOs measure: the War
      * Galley, the Iron Clad, the Trebuchet Ship, the Skiff and the Man
-     * of War (docs/notes/2026-10-02-ship-hulls.md). */
+     * of War (docs/notes/pathing.md, Ship hulls). */
     UnitDef sea_defs[MV_DEF_SEA_COUNT];
     memcpy(sea_defs, defs, sizeof(defs));
     mv_fill_ship(&sea_defs[MV_DEF_GALLEY], "TESTGALLEY", "TESTWATER4",
@@ -200,6 +201,10 @@ static GameWorld *mv_world_with(int sea) {
                  1.8f, 0.18f, 0.036f, 108.0f, 70, 75, 79);
     mv_fill_ship(&sea_defs[MV_DEF_SKIFF], "TESTSKIFF", "TESTWATER3",
                  4.0f, 0.4f, 0.08f, 240.0f, 51, 62, 41);
+    /* The Repair Skiff's mending aura (unitscb/verscout.fbi). */
+    sea_defs[MV_DEF_SKIFF].auras[UNIT_AURA_JOY].adjustment = 45.0f;
+    sea_defs[MV_DEF_SKIFF].auras[UNIT_AURA_JOY].radius = 150;
+    sea_defs[MV_DEF_SKIFF].auras[UNIT_AURA_JOY].edge = 1.0f;
     mv_fill_ship(&sea_defs[MV_DEF_MANOWAR], "TESTMOW", "TESTWATER4",
                  3.1f, 0.31f, 0.062f, 186.0f, 100, 76, 34);
     /* A shipyard that builds in the middle of its own footprint, as one
@@ -212,6 +217,12 @@ static GameWorld *mv_world_with(int sea) {
     sea_defs[MV_DEF_YARD].footprint_z = 6;
     sea_defs[MV_DEF_YARD].min_water_depth = 0;
     sea_defs[MV_DEF_YARD].max_water_depth = 255;
+    /* The Flagship, a builder with no turninplacerate (verflag.fbi). */
+    mv_fill_ship(&sea_defs[MV_DEF_FLAGSHIP], "TESTFLAG", "TESTWATER4",
+                 3.3f, 0.33f, 0.066f, 198.0f, 71, 79, 31);
+    sea_defs[MV_DEF_FLAGSHIP].cap_flags |= UNIT_CAP_BUILDER;
+    sea_defs[MV_DEF_FLAGSHIP].worker_time = 10.0f;
+    sea_defs[MV_DEF_FLAGSHIP].build_distance = 300;
     for (int i = MV_DEF_GALLEY; i <= MV_DEF_MANOWAR; i++) {
         sea_defs[i].build_cost = 100;
         sea_defs[i].buildtime = 100.0f;
@@ -265,6 +276,53 @@ TEST(a_walker_crosses_open_ground) {
         if (mv_dist2(mv_unit(h), 1600, 800) <= 96 * 96) arrived = 1;
     }
     ASSERT(arrived);
+    mv_end();
+}
+
+static int mv_walk_threads(const Unit *u) {
+    int n = 0;
+    for (int s = 0; s < COB_THREADS_PER_UNIT; s++)
+        n += Cob_ThreadRunsScript(u->cob, s, "walk");
+    return n;
+}
+
+/* A script whose watcher calls its own walk is left to it, so one walk
+ * runs and the cycle never plays twice. */
+TEST(a_script_that_walks_itself_runs_the_only_walk) {
+    ASSERT_NOT_NULL(mv_world());
+    /* An operand that looks like a start of walk is not one. */
+    static const uint32_t trap[] = {
+        0x10065000u,                                   /* walk: return */
+        0x10063000u, 0x10061000u, 0u, 0x10065000u,     /* Create: host args */
+    };
+    static const char *const trap_names[] = { "walk", "Create" };
+    static const uint32_t trap_offsets[] = { 0, 1 };
+    ASSERT_EQ_INT(0, Units_DebugSetDefScript(MV_DEF_WALKER, trap, 5, trap_names,
+                                             trap_offsets, 2));
+    ASSERT_EQ_INT(0, Units_GetDef(MV_DEF_WALKER)->script_walks);
+    static const uint32_t code[] = {
+        0x10021001u, 100u, 0x10013000u, 0x10065000u,   /* walk: sleep, return */
+        0x10061000u, 2u, 0u, 0x10065000u,              /* Create: start Watch */
+        0x10062000u, 0u, 0u, 0x10064000u, 8u,          /* Watch: call walk, loop */
+    };
+    static const char *const names[] = { "walk", "Create", "Watch" };
+    static const uint32_t offsets[] = { 0, 4, 8 };
+    ASSERT_EQ_INT(0, Units_DebugSetDefScript(MV_DEF_WALKER, code, 13, names, offsets, 3));
+    ASSERT_EQ_INT(1, Units_GetDef(MV_DEF_WALKER)->script_walks);
+    int h = Units_Spawn(MV_DEF_WALKER, 1, 0, 800, 800);
+    ASSERT(h >= 0);
+    Units_CommandMoveUnit(h, 1600, 800);
+    int moving = 0, worst = 0;
+    for (int t = 0; t < 300; t++) {
+        Units_TickEngines();
+        const Unit *u = mv_unit(h);
+        if (u->anim_state != UNIT_ANIM_MOVING) continue;
+        moving++;
+        ASSERT_EQ_INT(-1, (int)u->walk_thread_slot);
+        if (mv_walk_threads(u) > worst) worst = mv_walk_threads(u);
+    }
+    ASSERT(moving > 100);
+    ASSERT_EQ_INT(1, worst);
     mv_end();
 }
 
@@ -1346,6 +1404,60 @@ TEST(ships_sent_to_one_place_keep_their_hulls_apart) {
     mv_end();
 }
 
+/* A ship mending another holds its heading, as one with no
+ * turninplacerate does in the original, and the work goes on. */
+TEST(a_ship_mending_another_does_not_swing_round) {
+    ASSERT_NOT_NULL(mv_sea());
+    int f = Units_Spawn(MV_DEF_FLAGSHIP, 1, 0, 1200, 1500);
+    int m = Units_Spawn(MV_DEF_MANOWAR, 1, 0, 1400, 1500);
+    ASSERT(f >= 0 && m >= 0);
+    Units_DebugSetAggro(f, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetAggro(m, UNIT_AGGRO_PASSIVE);
+    Unit *mu = (Unit *)mv_unit(m);   /* test-only wound */
+    mu->health = mu->max_health / 2;
+    int hp0 = mu->health;
+    float h0 = mv_unit(f)->heading;
+    ASSERT(Units_OrderRepair(f, m));
+    float worst = 0.0f;
+    for (int t = 0; t < 600; t++) {
+        float was = mv_unit(f)->heading;
+        Units_TickEngines();
+        float d = fabsf(mv_unit(f)->heading - was);
+        if (d > 3.14159265f) d = 6.2831853f - d;
+        if (d > worst) worst = d;
+    }
+    printf("(turned %.2f rad, most in a tick %.3f rad, mended %d hp) ",
+           (double)fabsf(mv_unit(f)->heading - h0), (double)worst,
+           mv_unit(m)->health - hp0);
+    ASSERT(mv_unit(m)->health > hp0);
+    ASSERT(fabsf(mv_unit(f)->heading - h0) < 0.001f);
+    mv_end();
+}
+
+/* A Repair Skiff against a Man of War's bow mends it, though their
+ * hulls hold their centres further apart than its reach. */
+TEST(a_skiff_bow_to_bow_with_a_ship_mends_it) {
+    ASSERT_NOT_NULL(mv_sea());
+    int m = Units_Spawn(MV_DEF_MANOWAR, 1, 0, 1500, 1500);
+    int k = Units_Spawn(MV_DEF_SKIFF, 1, 0, 1500, 1500 + 155);
+    ASSERT(m >= 0 && k >= 0);
+    Units_DebugSetAggro(m, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetAggro(k, UNIT_AGGRO_PASSIVE);
+    Unit *ku = (Unit *)mv_unit(k);   /* test-only: turned to face the bow */
+    ku->heading = 0.0f;
+    Unit *mu = (Unit *)mv_unit(m);   /* test-only wound */
+    ASSERT(mu->heading > 3.0f);
+    mu->health = mu->max_health / 4;
+    int hp0 = mu->health;
+    mv_run(130);
+    printf("(%d px apart, mended %d hp, overlap %.1f px) ",
+           mv_unit(k)->world_y - mv_unit(m)->world_y, mv_unit(m)->health - hp0,
+           (double)Units_DebugHullOverlap(k, m));
+    ASSERT(mv_unit(k)->world_y - mv_unit(m)->world_y > 150);
+    ASSERT(mv_unit(m)->health > hp0);
+    mv_end();
+}
+
 /* A yard builds each ship in the middle of its footprint. All three
  * sail clear of the yard and of one another. */
 TEST(a_shipyard_launches_ship_after_ship) {
@@ -1492,6 +1604,64 @@ TEST(a_loaded_world_sees_the_ships_a_running_one_does) {
     printf("(second hull after %d ticks, %d hulls played on, %d loaded, %08x and %08x) ",
            t, played_hulls, mv_hulls(), (unsigned)played, (unsigned)loaded);
     ASSERT(played == loaded);
+    mv_end();
+}
+
+/* Two ships caught bow to bow, each ordered across the other, do not
+ * stand there for good (M-012). */
+TEST(two_ships_caught_bow_to_bow_get_past_each_other) {
+    ASSERT_NOT_NULL(mv_sea());
+    int32_t x = 1536, y = 1536;
+    int a = Units_Spawn(MV_DEF_MANOWAR, 1, 0, x, y);
+    int b = Units_Spawn(MV_DEF_SKIFF, 1, 0, x + 113, y - 78);
+    ASSERT(a >= 0 && b >= 0);
+    Units_DebugSetAggro(a, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetAggro(b, UNIT_AGGRO_PASSIVE);
+    ((Unit *)mv_unit(a))->heading = 1.39f;
+    ((Unit *)mv_unit(b))->heading = -2.66f;
+    int32_t ax = x + 157, ay = y - 693, bx = x - 57, by = y - 257;
+    Units_OrderMove(a, ax, ay);
+    Units_OrderMove(b, bx, by);
+    int t = 0;
+    for (; t < 1800; t++) {
+        Units_TickEngines();
+        if (mv_dist2(mv_unit(a), ax, ay) < 300 * 300 &&
+            mv_dist2(mv_unit(b), bx, by) < 300 * 300) break;
+    }
+    printf("(on their way after %d ticks, at %d,%d and %d,%d) ", t,
+           mv_unit(a)->world_x - x, mv_unit(a)->world_y - y,
+           mv_unit(b)->world_x - x, mv_unit(b)->world_y - y);
+    ASSERT(t < 1800);
+    mv_end();
+}
+
+/* A yard in a corner of the sea, with no rally point, launches its whole
+ * queue and is never held long on its pad (M-012). */
+TEST(a_shipyard_in_a_corner_launches_its_whole_queue) {
+    ASSERT_NOT_NULL(mv_sea());
+    int32_t yx = 160, yy = 160;
+    int yard = Units_Spawn(MV_DEF_YARD, 1, 0, yx, yy);
+    ASSERT(yard >= 0);
+    #define MV_CORNER_N 16
+    static const int kinds[4] = { MV_DEF_MANOWAR, MV_DEF_SKIFF, MV_DEF_TREB,
+                                  MV_DEF_GALLEY };
+    for (int k = 0; k < MV_CORNER_N; k++)
+        ASSERT_EQ_INT(0, Units_FactoryAdd(yard, kinds[k % 4], 1, 0));
+    int t = 0, last = 0, longest = 0, built = 0;
+    for (; t < 36000 && built < MV_CORNER_N; t++) {
+        Units_TickEngines();
+        int now = mv_yard_built(yard, -1);
+        if (now != built) {
+            if (t - last > longest) longest = t - last;
+            last = t;
+            built = now;
+        }
+    }
+    printf("(%d of %d in %d ticks, longest between launches %d) ", built,
+           MV_CORNER_N, t, longest);
+    ASSERT_EQ_INT(MV_CORNER_N, built);
+    ASSERT(longest < 1200);
+    #undef MV_CORNER_N
     mv_end();
 }
 
@@ -2980,6 +3150,7 @@ int main(int argc, char **argv) {
     RUN(a_click_sends_the_unit_to_the_ground_under_the_pointer);
     RUN(a_marquee_takes_the_units_it_is_drawn_over);
     RUN(a_walker_crosses_open_ground);
+    RUN(a_script_that_walks_itself_runs_the_only_walk);
     RUN(unit_walks_around_a_wall_of_friendly_units);
     RUN(units_do_not_stack_on_one_another);
     RUN(two_units_walking_into_each_other_give_way);
@@ -3001,6 +3172,10 @@ int main(int argc, char **argv) {
     RUN(a_shipyard_builds_past_an_idle_ship_on_its_pad);
     RUN(a_shipyard_leaves_a_ship_parked_by_its_rally_point_alone);
     RUN(a_loaded_world_sees_the_ships_a_running_one_does);
+    RUN(two_ships_caught_bow_to_bow_get_past_each_other);
+    RUN(a_shipyard_in_a_corner_launches_its_whole_queue);
+    RUN(a_ship_mending_another_does_not_swing_round);
+    RUN(a_skiff_bow_to_bow_with_a_ship_mends_it);
     RUN(a_fleet_sails_a_narrow_strait);
     RUN(a_ground_crowd_packs_as_it_did);
     TEST_SUITE("Flyers");

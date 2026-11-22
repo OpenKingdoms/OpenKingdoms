@@ -40,8 +40,8 @@ what the original does. In roughly descending order of strength:
 1. A behaviour note in [`notes/`](notes/). These are our own written
    descriptions of how each subsystem behaves, covering targeting, the
    economy, the animation VM, the AI's build scoring, fog, pathing and so
-   on, with the numbers. Citations of the form `:NNNNN` inside them are
-   internal reference anchors used by maintainers, and contributors can
+   on, with the numbers. Citations of the form `legacy:NNNNN` inside them
+   are internal reference anchors used by maintainers, and contributors can
    ignore them.
 2. The game manual, for documented rules.
 3. A reproducible observation in the original game. Say what you did and

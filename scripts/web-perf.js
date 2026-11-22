@@ -7,7 +7,7 @@
  *   perf-probe <name> done key=value ...   whole-run frame figures
  * The run fails when no probe line prints or when a line breaks one of
  * the limits below. docs/notes/2026-09-11-perf-probes.md explains the
- * fields and records the baseline.
+ * fields.
  *
  *   node scripts/web-perf.js [url] [gameDir] [scenario ...]
  *     url       default http://localhost:8081/tak-re.html

@@ -24,20 +24,90 @@ lock. About a minute and a half on Linux.
 
 Tests labelled `on-demand` are measurements and soaks: the issue #60 stall
 soak (`test_unit_stall_soak`) and, inside the screen suite, the perf probes
-(`TAK_PERF_PROBE=1`) and the render probe picture (`TAK_RENDER_PROBE=1`).
+(`TAK_PERF_PROBE=1`), the render probe picture (`TAK_RENDER_PROBE=1`), and the
+soaks and sweeps over every seat, flyer or structure (`TAK_SOAK=1`).
 Neither the gate nor CI runs them. Run them when the change is about what
 they measure, with `ctest -L on-demand` or the variable set.
 
-## What gets a new test
+## The golden set
 
-No new end to end case for every feature or fix. A fix is proved by an
-existing test that now catches it, by a cheap unit test beside the code, or
-by a repro written into the pull request. The screen suite gains a case only
-for the things it exists to hold: simulation determinism and the state hash,
-lockstep and the net protocol, saves and loads, golden frames, a crash that
-is cheap to repeat, and parity with the original where it already went wrong
-once. A case that boots a battle to check one function belongs in a unit
-test with a synthetic world, as `test_movement` and `test_line_of_fire` do.
+The tests labelled `golden` guard what would hurt players or break the
+project if it regressed. Every change runs them, and they stay through any
+trimming. Adding or removing one is a change of its own, with the reason in
+the pull request. What a change may add as a test is in CONTRIBUTING.md.
+
+```
+ctest --test-dir <build tree> -C Release -L golden --output-on-failure
+```
+
+CI runs the ones that need no game files, and the gate runs all of them.
+The screen cases among them are listed in `src/ui/test_ui_golden_cases.txt`
+and run as `test_ui_screens_golden`. The gate leaves that entry out, since
+the shards run the same cases.
+
+### Determinism and the pinned hashes
+
+- `test_sim_probe`: a fixed battle reaches the pinned hash on every platform.
+- `test_sim_hash`: every piece of simulation state is in the hash.
+- `test_trig`: the simulation's trigonometry gives the same bits everywhere.
+- `test_float_guard`: no floating point in the simulation's sources.
+- `test_libm_guard`: the simulation uses only its own trigonometry.
+- `test_game_speed`: the game speed never reaches the simulation.
+
+### Lockstep, the net protocol and rejoin
+
+- `test_protocol`: every message round trips and every malformed one is refused.
+- `fuzz_protocol`: the relay's frame parser takes any bytes without harm.
+- `test_commands`: the wire form of every order.
+- `test_turnclock`: turns close on the relay's clock and wait for nobody.
+- `test_client`: the client half of a session, refusals and late snapshots included.
+- `test_relay_loopback`: eight clients and a relay play whole matches in one process.
+- `test_command_pipeline`: a click reaches its unit through the queue and the seat split.
+- `test_replay`: a replay reads back as written, and a damaged one is refused.
+- `test_map_fingerprint`: two installs agree on whether they have the same map.
+- `test_ws`: WebSocket framing against RFC 6455's own vectors.
+- `a_match_world_rebuilt_from_a_snapshot_plays_on_alike`: a rejoin snapshot plays on in step.
+- `a_beaten_seat_looking_around_keeps_the_battles_hash`: a beaten seat that watches leaves the hash alone.
+
+### Saves and loads
+
+- `test_savefile`: the save container round trips and refuses a damaged byte anywhere.
+- `test_savegame`, `test_savegame_no_data`: the battle inside a save, older versions included.
+- `test_savestate`: a saved skirmish plays on tick for tick as it would have.
+- `loading_a_save_reaches_a_running_battle`: a save loads into a battle that runs.
+- `a_load_brings_back_one_army_not_two`: a load replaces the battle rather than adding to it.
+- `a_mission_loaded_from_the_skirmish_screen_plays_on_as_saved`: a mission and its script play on as saved.
+- `a_ferry_under_way_plays_on_the_same_after_a_load`: a loaded transport carries on with its riders.
+
+### File formats
+
+- `test_tdf_parser`: the TDF reader, which also reads FBI files, on synthetic text.
+- `test_hpi`: archive chunk decompression on synthetic chunks and a worked example.
+- `test_gaf`: the GAF and TAF sprite reader on shipped art.
+- `test_obj3d`: the 3DO reader on each monarch's model.
+- `test_cob`: the COB reader on every shipped script.
+- `test_cob_vm_selftest`: the script machine on hand built bytecode.
+- `test_tnt`: the TNT map reader on a shipped map.
+
+### The classic view
+
+- `render_probe_models`: model scale, faces and draw order.
+- `render_probe_lodestone_covers_pad`: a lodestone covers its pad.
+- `render_probe_unit_shadows`: unit shadows.
+- `render_probe_projectile_shadow`: a projectile's shadow.
+- `render_probe_projectile_art`: projectile art.
+- `render_probe_death_flash`: the death flash.
+- `test_view3d`: drawing the 3D view leaves the classic view's frame alone.
+
+### Crashes and parity
+
+- `test_render_cache`: a cached texture never reaches a renderer that did not make it.
+- `test_movement`: the mover's rules on a synthetic world.
+- `test_line_of_fire`: shots and targeting on a synthetic world.
+- `test_orders`: build queues, rally points and queued orders on a synthetic world.
+- `test_pathing`: the route planner on generated maps.
+- `test_framework_self`: the harness itself, so a skip never reads as a pass.
+- `test_ui_screens_golden_list`: every name on the golden case list is a case.
 
 No test touches your own options. Every test binary is a test build that
 never asks the platform where `options.cfg` lives, and ctest gives every test

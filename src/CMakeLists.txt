@@ -57,6 +57,7 @@ set(TAK_HPI_SOURCES
 # active view, so every binary that compiles ui/ingame.c needs these.
 set(TAK_VIEW_SOURCES
     ui/view_classic.c
+    render/fog_mist.c
     ui/order_overlay.c
     render/camera3d.c
     render/gl3d.c
@@ -140,10 +141,12 @@ set(TAK_UI_SOURCES
     ui/ingame.c
     ui/click_map.c
     ui/hud_layout.c
+    ui/hud_info.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
     ui/capture.c
     ui/save_browser.c
+    ui/build_line.c
     ui/message_box.c
     ui/briefing.c
     ui/game_info.c
@@ -153,6 +156,7 @@ set(TAK_UI_SOURCES
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
+    ui/hud_cursor.c
     ui/hud_text.c
     ui/replay_session.c
     ui/web_stats.c
@@ -437,10 +441,12 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/ingame.c
     ui/click_map.c
     ui/hud_layout.c
+    ui/hud_info.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
     ui/capture.c
     ui/save_browser.c
+    ui/build_line.c
     ui/replay_session.c
     ui/web_stats.c
     ui/message_box.c
@@ -458,6 +464,7 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
+    ui/hud_cursor.c
     ui/hud_text.c
     core/hpi/hpi.c
     core/hpi/hpi_vfs.c
@@ -727,10 +734,12 @@ add_executable(test_unit_stall
     ui/ingame.c
     ui/click_map.c
     ui/hud_layout.c
+    ui/hud_info.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
     ui/capture.c
     ui/save_browser.c
+    ui/build_line.c
     ui/replay_session.c
     ui/web_stats.c
     ui/message_box.c
@@ -749,6 +758,7 @@ add_executable(test_unit_stall
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
+    ui/hud_cursor.c
     ui/hud_text.c
     core/hpi/hpi.c
     core/hpi/hpi_vfs.c
@@ -1069,26 +1079,6 @@ target_include_directories(test_hpi PRIVATE
 )
 
 target_compile_definitions(test_hpi PRIVATE
-    TAK_GAME_DIR="${TAK_GAME_DIR}"
-)
-
-# ── HPI archive open smoke test ─────────────────────────────────────────────
-add_executable(test_hpi_open
-    core/hpi/test_hpi_open.c
-    core/hpi/hpi.c
-    core/hpi/hpi_decompress.c
-    core/memory.c
-    core/io.c
-    core/util.c
-    ${TAK_THIRD_PARTY_SOURCES}
-)
-
-target_include_directories(test_hpi_open PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/third_party
-)
-
-target_compile_definitions(test_hpi_open PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
 
@@ -1982,21 +1972,6 @@ target_include_directories(test_pathing PRIVATE
 )
 target_link_libraries(test_pathing PRIVATE SDL2::SDL2 SDL2::SDL2main)
 
-# The planner beside a copy of itself from before its buffers were kept
-# across plans: same routes over seeded random maps, and a bench.
-add_executable(test_path_buffers
-    game/test_path_buffers.c
-    game/test_pathing_reference.c
-    game/pathing.c
-    game/occupancy.c
-    core/memory.c
-)
-target_include_directories(test_path_buffers PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/third_party
-)
-target_link_libraries(test_path_buffers PRIVATE SDL2::SDL2 SDL2::SDL2main)
-
 add_executable(test_moveinfo
     game/test_moveinfo.c
     game/moveinfo.c
@@ -2660,8 +2635,16 @@ if(BUILD_TESTING)
     add_test(NAME test_ui_screens_layout
              COMMAND test_ui_screens
                      --case-list=${CMAKE_CURRENT_SOURCE_DIR}/ui/test_ui_layout_cases.txt)
+    # The golden screen cases, for ctest -L golden. The shards already run
+    # them, so the gate leaves this entry out.
+    add_test(NAME test_ui_screens_golden
+             COMMAND test_ui_screens
+                     --case-list=${CMAKE_CURRENT_SOURCE_DIR}/ui/test_ui_golden_cases.txt)
+    # Every name on the golden list is a case. No game data, so CI runs it.
+    add_test(NAME test_ui_screens_golden_list
+             COMMAND test_ui_screens --verify-shards
+                     --case-list=${CMAKE_CURRENT_SOURCE_DIR}/ui/test_ui_golden_cases.txt)
     add_test(NAME test_hpi         COMMAND test_hpi)
-    add_test(NAME test_hpi_open    COMMAND test_hpi_open)
     add_test(NAME test_io          COMMAND test_io)
     add_test(NAME test_util        COMMAND test_util)
     add_test(NAME test_trig        COMMAND test_trig)
@@ -2718,7 +2701,6 @@ if(BUILD_TESTING)
     add_test(NAME test_view_shake  COMMAND test_view_shake)
     add_test(NAME test_ai_planners COMMAND test_ai_planners)
     add_test(NAME test_pathing     COMMAND test_pathing)
-    add_test(NAME test_path_buffers COMMAND test_path_buffers)
     add_test(NAME test_moveinfo    COMMAND test_moveinfo)
     add_test(NAME test_ai          COMMAND test_ai)
     add_test(NAME test_ai_census   COMMAND test_ai_census)
@@ -2780,8 +2762,7 @@ if(BUILD_TESTING)
 
     # Each test runs in a directory of its own. Between them the suites
     # write about two dozen fixed file names, options.cfg, and the
-    # test_bs_extra_maps, test_vfs_loose_tmp, test_paths_scratch and
-    # test_output trees. They all used to share <build>/src, so two test
+    # test_vfs_loose_tmp, test_paths_scratch and test_output trees. They all used to share <build>/src, so two test
     # processes running at once would have written each other's files.
     # Reading the TESTS property rather than listing names keeps this
     # right for every test added later.
@@ -2819,7 +2800,7 @@ if(BUILD_TESTING)
     # given any), so it runs `ctest --label-exclude needs-data`.
     # Maintainers run the full suite before merging.
     set_tests_properties(
-        test_gui_loader test_hpi test_hpi_open test_hpi_vfs
+        test_gui_loader test_hpi test_hpi_vfs
         ${_ui_shard_tests}
         test_palette test_tnt test_obj3d test_jpg test_gaf test_cob
         test_cob_vm test_cob_vm_corpus test_cob_inspect test_cob_inspect_all
@@ -2839,7 +2820,7 @@ if(BUILD_TESTING)
     # archives, as players have them, and only these on the extracted
     # folder. test_ui_screens_layout runs in that second pass alone.
     set_tests_properties(
-        test_gui_loader test_hpi test_hpi_open test_hpi_vfs
+        test_gui_loader test_hpi test_hpi_vfs
         test_palette test_tnt test_obj3d test_jpg test_gaf test_cob
         test_cob_vm test_cob_vm_corpus test_cob_inspect test_cob_inspect_all
         test_map_inspect test_map_inspect_all test_map_inspect_missions
@@ -2850,6 +2831,23 @@ if(BUILD_TESTING)
         PROPERTIES LABELS "needs-data;layout")
     set_tests_properties(test_ui_screens_layout
         PROPERTIES LABELS "needs-data;layout;layout-only" TIMEOUT 600)
+    # The golden set, what every change runs. docs/testing-tiers.md says
+    # what each one guards.
+    set_property(TEST
+        test_sim_probe test_sim_hash test_trig test_float_guard test_libm_guard
+        test_game_speed
+        test_protocol fuzz_protocol test_commands test_turnclock test_client
+        test_relay_loopback test_command_pipeline test_replay
+        test_map_fingerprint test_ws
+        test_savefile test_savegame test_savegame_no_data test_savestate
+        test_tdf_parser test_hpi test_gaf test_obj3d test_cob
+        test_cob_vm_selftest test_tnt
+        test_view3d test_render_cache
+        test_movement test_line_of_fire test_orders test_pathing
+        test_framework_self test_ui_screens_golden_list
+        APPEND PROPERTY LABELS golden)
+    set_tests_properties(test_ui_screens_golden
+        PROPERTIES LABELS "needs-data;golden;golden-only" TIMEOUT 600)
 endif()
 
 # A test run used to rewrite the player's own options.cfg: a new

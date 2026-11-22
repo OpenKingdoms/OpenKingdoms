@@ -735,6 +735,7 @@ static void loading_advance_step(TAK_Platform *platform) {
         Units_LoadDefsFor(world ? world->cfg.crusades_balance : 0);
         uint64_t t_build = SDL_GetPerformanceCounter();
         Units_LoadAllBuildables();
+        Units_PlanShadeBands();
         uint64_t t_bake = SDL_GetPerformanceCounter();
         Units_ClearInstances();
         /* M6: pre-bake the canonical monarch meshes so the LS_FINALIZE
@@ -856,12 +857,7 @@ static void loading_advance_step(TAK_Platform *platform) {
                 int handle = Units_Spawn(def, p->player, color, p->x * 16, p->z * 16);
                 if (handle >= 0) {
                     if (handles) handles[i] = handle;
-                    /* Authored angles are in the legacy frame, where 0
-                     * faces south (the projector sends the model's -z
-                     * front down-screen, legacy:197689). Ours puts 0 at
-                     * north, so shift by half a turn. */
-                    float heading = (float)p->angle * 6.2831853f / 65536.0f
-                                  + 3.14159265f;
+                    float heading = Mission_AngleToHeading(p->angle);
                     const UnitDef *d = Units_GetDef(def);
                     Units_SetHeading(handle, heading);
                     Units_SetHealthPercent(handle, p->health_percent);

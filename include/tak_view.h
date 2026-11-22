@@ -44,5 +44,11 @@ typedef struct TAK_View {
 } TAK_View;
 
 const TAK_View *View_Classic(void);
+/* The classic view's fog: the mist (D-053) when on and the renderer is
+ * not software, else the original's overlay. */
+void View_ClassicSetMist(int on);
+/* Move the mist by the sim tick instead of render time, for a capture
+ * that must draw the same frame every run. */
+void View_ClassicSetSimClock(int on);
 
 #endif /* TAK_VIEW_H */

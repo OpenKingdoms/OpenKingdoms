@@ -82,6 +82,8 @@ static void sd_read_side(TDFFile *tdf, TakSideInfo *s) {
             TDF_ReadString(tdf, "buildpalette", ""));
     /* Its models are drawn in this palette (legacy:164721-164729). */
     sd_copy(s->palette, sizeof(s->palette), TDF_ReadString(tdf, "palette", ""));
+    /* A nimbus weapon's cast plays this sheet (legacy:164740-164817). */
+    sd_copy(s->nimbus, sizeof(s->nimbus), TDF_ReadString(tdf, "nimbus", ""));
     if (TDF_ReadString(tdf, "stonegaf", "")[0])
         sd_copy(s->stoneanim, sizeof(s->stoneanim),
                 TDF_ReadString(tdf, "stoneanim", ""));
@@ -90,6 +92,12 @@ static void sd_read_side(TDFFile *tdf, TakSideInfo *s) {
                 TDF_ReadString(tdf, "frozenanim", ""));
     s->music_track_count = sd_read_tracks(TDF_ReadString(tdf, "musictracks", ""),
                                           s->music_tracks, 16);
+    int rgb[3] = { 255, 255, 255 };
+    if (sscanf(TDF_ReadString(tdf, "FogColor", ""), "%d %d %d",
+               &rgb[0], &rgb[1], &rgb[2]) != 3)
+        rgb[0] = rgb[1] = rgb[2] = 255;
+    for (int k = 0; k < 3; k++)
+        s->fog_rgb[k] = (unsigned char)(rgb[k] < 0 ? 0 : rgb[k] > 255 ? 255 : rgb[k]);
 }
 
 static void sd_load(void) {

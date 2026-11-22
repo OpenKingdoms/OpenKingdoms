@@ -443,7 +443,7 @@ way and pull two machines apart over a match. Two gates in CI keep it that
 way, and a build old enough to predate them is still refused rather than
 desynced, listed greyed with the reason. The measurement and what was done
 about it are in
-[docs/notes/2026-09-14-float-determinism.md](docs/notes/2026-09-14-float-determinism.md).
+[docs/notes/2026-09-04-multiplayer-hapinet.md](docs/notes/2026-09-04-multiplayer-hapinet.md#which-builds-may-share-a-room).
 
 Everyone in a room has to be on the same version of the game. A room
 started on a different version is greyed in the list with the reason. The
@@ -496,7 +496,7 @@ in the [all-contributors](https://allcontributors.org) way.
     </td>
     <td align="center" valign="top" width="20%">
       <a href="https://github.com/Danvern"><img src="https://github.com/Danvern.png?size=100" width="100" alt="Artificer-111" style="border-radius: 50%"/><br /><sub><b>Artificer-111</b></sub></a><br />
-      <sub>pathing, tower aim and flyer landing</sub>
+      <sub>pathing, tower aim, flyer landing, keys and the classic view</sub>
     </td>
   </tr>
 </table>

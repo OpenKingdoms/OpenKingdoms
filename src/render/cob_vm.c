@@ -105,6 +105,9 @@
 static int g_trace = 0;
 void Cob_SetTrace(int on) { g_trace = on; }
 
+static uint32_t g_cob_tick;
+void Cob_SetTick(uint32_t tick) { g_cob_tick = tick; }
+
 static Cob_ExplodeHookFn g_explode_hook = NULL;
 void Cob_SetExplodeHook(Cob_ExplodeHookFn hook) { g_explode_hook = hook; }
 
@@ -438,6 +441,20 @@ int Cob_IsThreadAlive(const CobEngine *e, int slot) {
     return e->threads[slot].alive ? 1 : 0;
 }
 
+int Cob_ThreadRunsScript(const CobEngine *e, int slot, const char *name) {
+    if (!Cob_IsThreadAlive(e, slot) || !e->script) return 0;
+    const CobScript *s = e->script;
+    int idx = Cob_FindScript(s, name);
+    if (idx < 0) return 0;
+    uint32_t pc = e->threads[slot].pc, at = 0;
+    int found = 0;
+    for (uint16_t i = 0; i < s->num_scripts; i++) {
+        uint32_t o = s->script_offsets[i];
+        if (o <= pc && (!found || o > at)) { at = o; found = 1; }
+    }
+    return found && at == s->script_offsets[idx];
+}
+
 int Cob_GetThreadReturn(const CobEngine *e, int slot, int32_t *out_value) {
     if (!e || !out_value) return 0;
     if (slot < 0 || slot >= COB_THREADS_PER_UNIT) return 0;
@@ -620,6 +637,33 @@ static const char *opcode_name(uint32_t op) {
  * inline bits zero. */
 #define COB_OPCODE_MASK 0x100ff000u
 
+int Cob_OperandWords(uint32_t raw) {
+    switch (raw & COB_OPCODE_MASK) {
+    case OP_MOVE: case OP_TURN: case OP_SPIN: case OP_STOP_SPIN:
+    case OP_MOVE_NOW: case OP_TURN_NOW: case OP_WAIT_FOR_TURN: case OP_WAIT_FOR_MOVE:
+    case OP_START_SCRIPT: case OP_CALL_SCRIPT: case OP_HOST_ARGS_63:
+    case OP_SOUND_CMD_74: case OP_MISSION_COMMAND:
+        return 2;
+    case OP_SHOW: case OP_HIDE: case OP_CACHE_PIECE: case OP_DONT_CACHE_PIECE:
+    case OP_SHADOW: case OP_DONT_SHADOW: case OP_SHADE: case OP_DONT_SHADE:
+    case OP_EMIT_SFX: case OP_EXPLODE: case OP_PUSH_CONSTANT: case OP_POP_VAR:
+    case OP_JUMP: case OP_JUMP_IF_FALSE: case OP_HOST_MARK_75: case OP_PLAY_SOUND:
+        return 1;
+    case OP_SLEEP: case OP_ALLOC_LOCAL: case OP_POP_STACK:
+    case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_AND_BIT:
+    case OP_OR_BIT: case OP_XOR_BIT: case OP_NOT_BIT: case OP_SHL: case OP_SHR:
+    case OP_MOD: case OP_RAND: case OP_GET_UNIT_VALUE: case OP_GET_WITH_ARGS:
+    case OP_GET_HOST_QUERY: case OP_GET_HOST_QUERY0: case OP_LT: case OP_LE:
+    case OP_GT: case OP_GE: case OP_EQ: case OP_NE: case OP_LAND: case OP_LOR:
+    case OP_LXOR: case OP_LNOT: case OP_RETURN: case OP_SIGNAL:
+    case OP_SET_SIGNAL_MASK: case OP_SET_UNIT_VALUE: case OP_ATTACH_UNIT:
+    case OP_DROP_UNIT:
+        return 0;
+    default:
+        return -1;
+    }
+}
+
 static void run_thread(CobEngine *e, int slot, int budget) {
     CobThread *t = &e->threads[slot];
     const CobScript *s = e->script;
@@ -671,13 +715,16 @@ static void run_thread(CobEngine *e, int slot, int budget) {
         } break;
 
         case OP_SLEEP: {
-            /* Pop sleep duration in milliseconds; convert to ticks via
-             * engine-rate constant (60 Hz): ticks = (60 * ms) / 1000.
-             * Then yield. Decomp the legacy reference ~306522. */
+            /* Milliseconds counted in the original's 30 Hz frames,
+             * rounded down and at least one, two ticks a frame
+             * (legacy:306522). Then yield. */
             int32_t ms;
             pop_stack(t, &ms);
             if (ms < 0) ms = 0;
-            t->sleep_remaining = (60 * ms) / 1000;
+            int32_t frames = (int32_t)(((int64_t)30 * ms) / 1000);
+            t->sleep_remaining = 2 * (frames > 0 ? frames : 1);
+            /* Begun before this tick's pass, which counts it at once. */
+            if (!e->in_pass && e->pass_tick != g_cob_tick) t->sleep_remaining++;
             if (g_trace) fprintf(stderr, "  ms=%d -> %d ticks\n",
                                   ms, t->sleep_remaining);
             return;  /* yield */
@@ -1332,15 +1379,14 @@ int Cob_RunScriptSync(CobEngine *e, const char *name,
 
 void Cob_RunAllThreads(CobEngine *e) {
     if (!e || !e->script) return;
+    e->in_pass = 1;
+    e->pass_tick = g_cob_tick;
     for (int i = 0; i < COB_THREADS_PER_UNIT; i++) {
         CobThread *t = &e->threads[i];
         if (!t->alive) continue;
-        /* Sleep wins over wait. Decrement sleep first; if still
-         * sleeping, skip dispatch. */
-        if (t->sleep_remaining > 0) {
-            t->sleep_remaining--;
-            continue;
-        }
+        /* Sleep wins over wait. A sleep of n ticks resumes on the n-th
+         * tick after it, not the one after that. */
+        if (t->sleep_remaining > 0 && --t->sleep_remaining > 0) continue;
         /* If waiting on a turn/move, check whether the target is
          * reached. If yes, clear wait state and proceed. */
         if (t->wait_kind != COB_WAIT_NONE) {
@@ -1349,6 +1395,7 @@ void Cob_RunAllThreads(CobEngine *e) {
         }
         run_thread(e, i, COB_OPS_PER_TICK_LIMIT);
     }
+    e->in_pass = 0;
 }
 
 void Cob_RunReadyThreads(CobEngine *e) {

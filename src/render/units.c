@@ -30,6 +30,7 @@
 #include "tak_sim_hash.h"
 #include "tak_trig.h"
 #include "tak_obj3d.h"
+#include "tak_model_store.h"
 #include "tak_tdf.h"
 #include "tak_hpi.h"
 #include "tak_features.h"
@@ -53,6 +54,7 @@
 #include "tak_palette.h"
 #include "tak_ui.h"
 #include "tak_view_shake.h"
+#include "tak_gl3d.h"
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -93,6 +95,15 @@ static float   g_proj_shake_sec[TAK_MAX_PROJECTILES];
  * the store like the shake, so neither saved nor hashed. */
 static int16_t g_proj_def[TAK_MAX_PROJECTILES];
 static int8_t  g_proj_wslot[TAK_MAX_PROJECTILES];
+/* A breath's caster by stable id, 0 when not known, and where its body
+ * stood at the last flame. Drawing only, neither saved nor hashed. */
+static uint32_t g_proj_sid[TAK_MAX_PROJECTILES];
+static int32_t  g_proj_piece[TAK_MAX_PROJECTILES];   /* its firing piece, or < 0 */
+static int32_t  g_flame_body[TAK_MAX_PROJECTILES][2];
+static uint8_t  g_flame_body_set[TAK_MAX_PROJECTILES];
+/* Where a breath's walk met what it struck, before the strike point is
+ * set on the target's middle: the flames run out there. */
+static int32_t  g_flame_stop[TAK_MAX_PROJECTILES][3];   /* x, y and height */
 static UnitsBlastHook g_blast_hook = NULL;
 
 static int slot_of_projectile(const Projectile *p) {
@@ -419,6 +430,9 @@ static void unit_half_extent(const Unit *u, const UnitDef *d, int dflt,
 static int unit_factory_build_spot(Unit *f, int32_t *out_x, int32_t *out_y);
 static int unit_weapon_muzzle(Unit *u, int slot, float *out_dx,
                               float *out_dy, float *out_up);
+static int unit_weapon_piece(Unit *u, int slot, int32_t *out_piece);
+static int unit_piece_offset(Unit *u, int32_t piece, float *out_dx,
+                             float *out_dy, float *out_up);
 static int unit_sweet_spot_up(Unit *u, float *out_up);
 static void def_body_span(int def_idx, int *lo, int *hi);
 static const UnitDef *def_hull(int def_idx);
@@ -435,8 +449,8 @@ static int ship_hulls_apart(const UnitDef *d, int32_t x, int32_t y,
                             float heading, const UnitDef *e, int32_t ex,
                             int32_t ey, float eheading, float margin);
 static void ships_rebuild(void);
-static void ship_clear_pad(const Unit *f, int32_t pad_x, int32_t pad_y,
-                           const UnitDef *pd);
+static int ship_clear_pad(const Unit *f, int32_t pad_x, int32_t pad_y,
+                          const UnitDef *pd);
 static int ship_lane_clear(const UnitDef *d, int self, int32_t x0, int32_t y0,
                            float h0, int32_t x1, int32_t y1);
 static int unit_start_script(Unit *u, const char *name,
@@ -696,6 +710,16 @@ static int projectile_visible_to_local_player(const GameWorld *world,
     if (!p) return 0;
     if (!world) return 1;
     if (p->player_id == g_local_player) return 1;
+    if (p->is_beam) {
+        /* Ours (D-053): a beam goes with its shooter or either end. The far
+         * end is unverified against the original. */
+        if (p->shooter >= 0 && p->shooter < g_unit_count) {
+            const Unit *s = &g_units[p->shooter];
+            if (s->alive == UNIT_ALIVE_ACTIVE && s->player_id == p->player_id &&
+                unit_visible_to_local_player(world, s)) return 1;
+        }
+        if (Fog_ShowsAt(world, p->src_x, p->src_y)) return 1;
+    }
     return Fog_ShowsAt(world, p->world_x, p->world_y);
 }
 
@@ -961,7 +985,7 @@ static int unit_side_sees(int player_id, const Unit *t) {
     if (t->cloaked) return 0;
     const GameWorld *w = World_Get();
     /* With Line of Sight off the side's sight map is full
-     * (legacy:167211-167219). See docs/notes/2026-09-15-line-of-sight-off.md
+     * (legacy:167211-167219). See docs/notes/fog.md, Line of Sight off,
      * for the explored map read this leaves out. */
     if (!w || !w->cfg.line_of_sight) return 1;
     return unit_seat_sees(w, player_id, t);
@@ -1025,12 +1049,22 @@ typedef struct ProjSpriteArt {
     int           cell_w, cell_h;
     int          *fw, *fh, *ox, *oy;
     uint32_t     *pixels;       /* decoded strip, kept for re-upload */
-    SDL_Texture  *strip;        /* GPU copy, one upload per renderer */
+    GPU_Texture  *strip;        /* GPU copy, one upload per renderer */
     SDL_Renderer *owner;        /* renderer that owns `strip`        */
     uint32_t      owner_gen;    /* which renderer that was           */
     uint32_t      epoch;        /* art epoch `strip` was made in     */
     uint8_t       tried;        /* 1 once a decode was attempted     */
     uint8_t       fx_palette;   /* paletted art takes fx.pcx         */
+    uint8_t       fx_light;     /* that art is fire or magic         */
+    uint8_t       alpha;        /* constant alpha it is drawn at     */
+    uint8_t       add;          /* drawn added rather than blended   */
+    uint8_t       sparkle;      /* a side's build or raise sparkles  */
+    /* A sparkle's star and halo, baked added into one picture a frame:
+     * each picture's place in the strip and its hot spot within it. */
+    GPU_Texture  *glow;
+    uint8_t       glow_failed;  /* its halo would not upload on this renderer */
+    SDL_Rect     *gsrc;
+    int          *gox, *goy;
     int           probe_frames; /* header frame count, -1 for none   */
     /* What a wandering shot's timing reads: the sequence's picture
      * count and the frames each picture holds, from the file. */
@@ -1052,6 +1086,9 @@ static uint32_t g_proj_art_epoch = 1;
 static uint32_t g_live_renderer_gen;
 static ProjSpriteArt g_proj_sprites[TAK_PROJ_SPRITE_MAX];
 static int           g_proj_sprite_count = 0;
+/* Paletted effect sheets carry no alpha. Black smoke, the one that is not
+ * light, lies over faint, as in the original. Picked by eye, not measured. */
+#define FX_PALETTED_ALPHA 80
 
 /* Impact effects, sparkles and every unit's flames and puffs. Units keep
  * theirs within their own counts, so the pool holds about forty burning
@@ -1059,6 +1096,11 @@ static int           g_proj_sprite_count = 0;
 #define TAK_MAX_PROJ_EFFECTS 2048
 static ProjectileEffect g_proj_effects[TAK_MAX_PROJ_EFFECTS];
 static int              g_proj_effect_count = 0;
+/* Lightning bolts as drawn: a copy of the beam at fire with its own age,
+ * so the picture can outlive the sim's hold. Neither saved nor hashed. */
+#define TAK_BOLTS_MAX 128
+static struct { Projectile p; int16_t age, life; } g_bolts[TAK_BOLTS_MAX];
+static int              g_bolt_count = 0;
 
 /* explosions.tdf: each class lists numbered variants, each naming a GAF
  * plus the sequence inside it (legacy binds the class to the weapon at
@@ -1069,10 +1111,15 @@ typedef struct ExplosionClassDef {
     char    name[40];
     int     variant_count;
     int16_t sprite[TAK_EXPL_VARIANT_MAX];
+    uint8_t light;   /* fire or magic rather than smoke, dust, blood or water */
 } ExplosionClassDef;
 static ExplosionClassDef g_expl_classes[TAK_EXPL_CLASS_MAX];
 static int               g_expl_class_count = 0;
 static int               g_expl_loaded = 0;
+/* The scripts' EXPLODE names the file's first nine classes by number, its
+ * bit 256 << k the k-th (explosions.tdf's own header). -1 has no picture. */
+#define TAK_EXPL_NUMBERED 9
+static int16_t           g_expl_numbered[TAK_EXPL_NUMBERED];
 static int g_damage_flames_loaded;
 /* Each flame size's anims, from every file in gamedata/damageflames. */
 #define DAMAGE_FLAME_ANIMS_MAX 32
@@ -1094,9 +1141,12 @@ static int fx_rand(int n) {
     return (int)(r * n / 0x8000);
 }
 
+static int sheet_picture(int sprite, int age);
+
 int Units_EffectPicture(const ProjectileEffect *e) {
     if (!e) return 0;
     if (e->puff_owner_id) return e->pic;
+    if (e->sheet_timed) return sheet_picture(e->sprite_idx, e->age_ticks);
     return e->age_ticks / (e->ticks_per_frame ? e->ticks_per_frame : 2);
 }
 
@@ -1156,12 +1206,35 @@ static int proj_sprite_index(const char *file, const char *seq) {
     return g_proj_sprite_count++;
 }
 
+/* Fire for a burst's order and bloom: every class but these, whose art is
+ * smoke, dust, blood or water. The blend is the sheet's own. */
+static uint8_t explosion_class_light(const char *name) {
+    static const char *const matter[] = {
+        "blood explosion", "small smoke explosion", "medium smoke explosion",
+        "large smoke explosion", "xlarge smoke explosion",
+        "small water explosion", "medium water explosion",
+        "large water explosion", "water splash", "small dust puff",
+        "medium dust puff", "large dust puff"
+    };
+    for (size_t k = 0; k < sizeof(matter) / sizeof(matter[0]); k++)
+        if (tak_stricmp(name, matter[k]) == 0) return 0;
+    return 1;
+}
+
+/* An engine effect sheet, paletted in fx.pcx. `light` for fire and magic. */
+static void fx_sheet(int si, int light) {
+    if (si < 0) return;
+    g_proj_sprites[si].fx_palette = 1;
+    g_proj_sprites[si].fx_light = (uint8_t)light;
+}
+
 /* Parse gamedata/explosions/explosions.tdf once. Each [class] holds
  * numbered subsections with `gaf` + `anim`; legacy picks one variant
  * per impact. */
 static void load_explosion_classes(void) {
     if (g_expl_loaded) return;
     g_expl_loaded = 1;
+    for (int k = 0; k < TAK_EXPL_NUMBERED; k++) g_expl_numbered[k] = -1;
     TDFFile *tdf = TDF_Open("gamedata/explosions/explosions.tdf");
     if (!tdf || TDF_Load(tdf) != 0) {
         if (tdf) TDF_Close(tdf);
@@ -1198,12 +1271,44 @@ static void load_explosion_classes(void) {
             }
             TDF_PopSection(tdf);
         }
+        ec->light = explosion_class_light(ec->name);
+        if (ni < TAK_EXPL_NUMBERED && ec->variant_count > 0)
+            g_expl_numbered[ni] = (int16_t)g_expl_class_count;
         if (ec->variant_count > 0) g_expl_class_count++;
         TDF_PopSection(tdf);
     }
     TDF_Close(tdf);
     fprintf(stderr, "Projectiles: %d explosion classes loaded\n",
             g_expl_class_count);
+}
+
+/* 1 when a beam's effects.tdf system says `translucent`, as every shipped
+ * one does: their ramps start at black, which only fades out added. */
+#define HWEFFECT_MAX 32
+static int g_hweffect_count = -1;   /* -1 until read, again with new defs */
+static uint8_t hweffect_translucent(const char *name) {
+    static char names[HWEFFECT_MAX][40];
+    static uint8_t translucent[HWEFFECT_MAX];
+    int count = g_hweffect_count;
+    if (count < 0) {
+        count = 0;
+        TDFFile *tdf = TDF_Open("gamedata/effects/effects.tdf");
+        if (tdf && TDF_Load(tdf) == 0) {
+            for (const char *sec = TDF_GetFirstSection(tdf);
+                 sec && count < HWEFFECT_MAX; sec = TDF_GetNextSection(tdf))
+                snprintf(names[count++], sizeof(names[0]), "%s", sec);
+            for (int k = 0; k < count; k++) {
+                if (TDF_PushSectionAt(tdf, k) != 0) continue;
+                translucent[k] = TDF_ReadInt(tdf, "translucent", 0) ? 1 : 0;
+                TDF_PopSection(tdf);
+            }
+        }
+        if (tdf) TDF_Close(tdf);
+        g_hweffect_count = count;
+    }
+    for (int k = 0; name && k < count; k++)
+        if (tak_stricmp(names[k], name) == 0) return translucent[k];
+    return 0;
 }
 
 static int explosion_class_index(const char *name) {
@@ -1254,11 +1359,9 @@ static int proj_sprite_pics(int idx) {
             uint32_t off = (uint32_t)seq_off;
             int nf = off + 2u <= gaf->data_size
                    ? *(const uint16_t *)(gaf->data + off) : 0;
-            for (int k = 0; k < nf && k < 64; k++) {
-                uint32_t at = off + 40u + (uint32_t)k * 8u + 4u;
-                ps->hold[k] = at + 2u <= gaf->data_size
-                            ? *(const uint16_t *)(gaf->data + at) : 2;
-            }
+            if (nf > 64) nf = 64;
+            for (int k = 0; k < nf; k++)
+                ps->hold[k] = (uint16_t)GAF_FrameHold(gaf, off, k);
             ps->seq_pics = nf;
             GAF_Close(gaf);
         }
@@ -1268,7 +1371,86 @@ static int proj_sprite_pics(int idx) {
 
 static int proj_sprite_hold(int idx, int pic) {
     if (proj_sprite_pics(idx) <= 0 || pic < 0) return 0xffff;
-    return g_proj_sprites[idx].hold[pic < 64 ? pic : 63];
+    return g_proj_sprites[idx].hold[pic < g_proj_sprites[idx].seq_pics ? pic
+                                    : g_proj_sprites[idx].seq_pics - 1];
+}
+
+/* A drop's head from its first picture's origin: half its width up from the
+ * lowest opaque row, at that row's middle (D-054). A GAF takes its box. */
+static void proj_sprite_drop_head(int idx, int *out_x, int *out_y) {
+    *out_x = *out_y = 0;
+    if (idx < 0 || idx >= g_proj_sprite_count) return;
+    GAFFile *gaf = NULL;
+    int is_taf = 0;
+    int seq_off = proj_sprite_open(&g_proj_sprites[idx], &gaf, &is_taf);
+    if (seq_off < 0) return;
+    FrameHeader *fh = NULL;
+    if (GAF_GetFrameInfo(gaf, (uint32_t)seq_off, 0, &fh) == 0 && fh) {
+        int w = fh->width, bottom = fh->height - 1, sum = 0, n = 0;
+        uint32_t *px = is_taf ? TAF_DecodeFrameRGBA(gaf, fh) : NULL;
+        if (px) {
+            for (; bottom >= 0; bottom--) {
+                int x = 0;
+                while (x < w && (px[bottom * w + x] >> 24) < 0x40u) x++;
+                if (x < w) break;
+            }
+            for (int y = bottom - w / 2; y <= bottom; y++)
+                for (int x = 0; y >= 0 && x < w; x++)
+                    if ((px[y * w + x] >> 24) >= 0x40u) { sum += x; n++; }
+            tak_free(px);
+        }
+        int head = bottom - fh->offset_y - w / 2;
+        *out_y = head > 0 ? head : 0;
+        *out_x = (n ? (2 * sum + n) / (2 * n) : w / 2) - fh->offset_x;
+    }
+    GAF_Close(gaf);
+}
+
+/* Across from its origin, the middle of a burst's first eight pictures,
+ * as it is struck (D-054). */
+static int proj_sprite_burst_mid_x(int idx) {
+    if (idx < 0 || idx >= g_proj_sprite_count) return 0;
+    GAFFile *gaf = NULL;
+    int is_taf = 0;
+    int seq_off = proj_sprite_open(&g_proj_sprites[idx], &gaf, &is_taf);
+    if (seq_off < 0) return 0;
+    int nf = *(const uint16_t *)(gaf->data + seq_off), sum = 0, n = 0;
+    for (int k = 0; k < nf && k < 8; k++) {
+        FrameHeader *fh = NULL;
+        if (GAF_GetFrameInfo(gaf, (uint32_t)seq_off, k, &fh) != 0 || !fh) continue;
+        sum += fh->width - 2 * fh->offset_x;
+        n++;
+    }
+    GAF_Close(gaf);
+    return n ? (sum + n) / (2 * n) : 0;
+}
+
+/* Our ticks to one original frame: the simulation runs at 60 Hz. */
+#define FX_TICKS_PER_ORIG_FRAME 2
+
+/* Ticks a sheet's picture holds, at least one. */
+static int sheet_hold_ticks(int sprite, int pic) {
+    int hold = proj_sprite_hold(sprite, pic);
+    return (hold > 0 ? hold : 1) * FX_TICKS_PER_ORIG_FRAME;
+}
+
+static int sheet_ticks(int sprite);
+
+/* The picture a sheet shows `age` ticks in, each held for its own
+ * frames (legacy:255756-255795). The picture count once played out. */
+static int sheet_picture(int sprite, int age) {
+    int n = proj_sprite_pics(sprite);
+    if (age < 0) return 0;
+    if (age >= sheet_ticks(sprite)) return n;
+    return GAF_LoopPicture(g_proj_sprites[sprite].hold, n,
+                           (uint32_t)age / FX_TICKS_PER_ORIG_FRAME);
+}
+
+/* Ticks a sheet takes to play once. */
+static int sheet_ticks(int sprite) {
+    int n = proj_sprite_pics(sprite), total = 0;
+    for (int k = 0; k < n; k++) total += sheet_hold_ticks(sprite, k);
+    return total;
 }
 
 /* Units' own flames and puffs leave the last slots to impacts and
@@ -1322,27 +1504,216 @@ static void spawn_unit_fx(int sprite, int32_t x, int32_t y, int32_t height) {
 }
 
 static void flame_particle(const Projectile *p, int idx);
+
+static void bolt_note(const Projectile *b, const UnitWeapon *wp) {
+    if (g_bolt_count >= TAK_BOLTS_MAX) return;
+    g_bolts[g_bolt_count].p = *b;
+    g_bolts[g_bolt_count].age = 0;
+    g_bolts[g_bolt_count].life = wp->bolt_ticks;
+    g_bolt_count++;
+}
+
+static void bolts_tick(void) {
+    int n = 0;
+    for (int i = 0; i < g_bolt_count; i++)
+        if (++g_bolts[i].age < g_bolts[i].life) g_bolts[n++] = g_bolts[i];
+    g_bolt_count = n;
+}
 static void spell_effects_at(const UnitWeapon *wp, int shot, int32_t x, int32_t y,
                              uint32_t seed);
 
-/* Queue the weapon's explosionclass sprite at the impact point. */
-static void spawn_impact_effect(int explosion_idx, int32_t x, int32_t y,
-                                int32_t height, uint32_t seed) {
-    if (explosion_idx < 0 || explosion_idx >= g_expl_class_count) return;
-    const ExplosionClassDef *ec = &g_expl_classes[explosion_idx];
-    if (ec->variant_count <= 0) return;
-    uint32_t n = unit_deterministic_noise((uint32_t)x, (uint32_t)y, seed);
-    int16_t sprite = ec->sprite[n % (uint32_t)ec->variant_count];
+/* One picture of an explosion class where it stands, played once by its
+ * sheet's holds. */
+static ProjectileEffect *spawn_class_picture(int16_t sprite, int32_t x, int32_t y,
+                                             int32_t height) {
+    int ticks = sheet_ticks(sprite);
+    if (ticks <= 0) return NULL;
     ProjectileEffect *e = proj_effect_slot();
-    if (!e) return;
+    if (!e) return NULL;
     e->world_x    = x;
     e->world_y    = y;
     e->height     = height;
     e->sprite_idx = sprite;
     e->age_ticks  = 0;
-    e->life_ticks = 60;
-    e->ticks_per_frame = 2;
+    e->life_ticks = (uint16_t)(ticks < 0xffff ? ticks : 0xffff);
+    e->sheet_timed = 1;
     e->alive      = 1;
+    return e;
+}
+
+/* The explosionclass picture at the impact point. The variant goes by where
+ * and when it lands, so shots on one spot differ as the original's do. */
+static void spawn_impact_effect(int explosion_idx, int32_t x, int32_t y,
+                                int32_t height) {
+    if (explosion_idx < 0 || explosion_idx >= g_expl_class_count) return;
+    const ExplosionClassDef *ec = &g_expl_classes[explosion_idx];
+    if (ec->variant_count <= 0) return;
+    uint32_t n = unit_deterministic_noise((uint32_t)x, (uint32_t)y, g_sim_tick);
+    (void)spawn_class_picture(ec->sprite[n % (uint32_t)ec->variant_count], x, y, height);
+}
+
+/* Provisional: the white flash of a Wisp's strike and some deaths, fitted to
+ * a capture of the original's Wisp flash, in the original's frames. */
+#define FX_GLOW_PEAK      182   /* halo lift at its middle, frame 1 */
+#define FX_GLOW_FIRST     152   /* the same on frame 0 */
+#define FX_GLOW_PEAK_LAST 124   /* the same on FX_GLOW_HOLD_F */
+#define FX_GLOW_HOLD_F    14    /* frames it falls slowly over */
+#define FX_GLOW_END_F     24    /* the frame it is gone, assumed */
+#define FX_GLOW_DRAW_X256 10    /* its 10% reach across draws in, 256ths a frame */
+#define FX_GLOW_DRAW_Y256 8     /* and down */
+#define FX_GLOW_CORE      9.6f  /* the white core's radius at the Wisp's size, px */
+#define FX_GLOW_CORE_F    8     /* the frame the core starts to shrink */
+#define FX_GLOW_MARGIN    0     /* how far a body's bloom reaches past it, px */
+#define FX_GLOW_TICKS     (FX_GLOW_END_F * 2)
+#define FX_GLOW_ASPECT16  13    /* the Wisp's reach down over across */
+#define FX_GLOW_REACH_X   52    /* the Wisp's 10% reach across, px */
+/* Sizes in 16ths of the Wisp's, by lightmap and by EXPLODE fire class.
+ * Measured at 16 (Wisp) and 28 (VERPILL), the rest provisional. */
+static const uint8_t k_glow_lightmap16[4] = { 0, 12, 16, 28 };
+static const uint8_t k_glow_class16[4] = { 12, 16, 21, 28 };
+/* The halo's tint, its lift (51, 43, 53) scaled up. */
+static const uint8_t k_glow_tint[3] = { 243, 205, 252 };
+
+/* A body's bloom: FX_BLOOM_RISE px over its outline's middle, to the outline
+ * up to VERPILL's size, wider and flatter past it as ARACASTL's (captures). */
+#define FX_BLOOM_RISE      22
+#define FX_BLOOM_FIT_W     40
+#define FX_BLOOM_FIT_H     41
+#define FX_BLOOM_WIDEN16   26
+#define FX_BLOOM_TALLEN16  6
+/* No larger than ARACASTL's, the largest body measured. */
+#define FX_BLOOM_MAX_W     117
+#define FX_BLOOM_MAX_H     101
+
+static int32_t unit_fx_height(const GameWorld *w, int32_t x, int32_t y, float alt);
+
+static int lightmap_glow(const char *v) {
+    if (!v) return UNIT_GLOW_NONE;
+    if (tak_stricmp(v, "small") == 0) return UNIT_GLOW_SMALL;
+    if (tak_stricmp(v, "medium") == 0) return UNIT_GLOW_MEDIUM;
+    if (tak_stricmp(v, "large") == 0) return UNIT_GLOW_LARGE;
+    return UNIT_GLOW_NONE;
+}
+
+/* The halo's middle lift `age` ticks in, brighter by the root of the size,
+ * `root16` sixteenths, as VERPILL's against the Wisp's. */
+static int glow_alpha(int age, int root16) {
+    const int f = age / 2;
+    if (age < 0 || f >= FX_GLOW_END_F) return 0;
+    int lift;
+    if (f == 0) lift = FX_GLOW_FIRST;
+    else if (f <= FX_GLOW_HOLD_F)
+        lift = FX_GLOW_PEAK - (FX_GLOW_PEAK - FX_GLOW_PEAK_LAST) * (f - 1) / (FX_GLOW_HOLD_F - 1);
+    else lift = FX_GLOW_PEAK_LAST * (FX_GLOW_END_F - f) / (FX_GLOW_END_F - FX_GLOW_HOLD_F);
+    return lift * root16 / 16;
+}
+
+/* Its 10% reach `age` ticks in, 256ths of frame 1's, across (axis 0) or
+ * down: wider on frame 0, then drawing in, across faster, as the Wisp's. */
+static int glow_reach256(int age, int axis) {
+    const int f = age / 2;
+    if (f == 0) return axis ? 268 : 276;
+    const int k = 256 - (f > 0 ? f - 1 : 0) * (axis ? FX_GLOW_DRAW_Y256 : FX_GLOW_DRAW_X256);
+    return k > 80 ? k : 80;
+}
+
+/* The core's radius in 256ths of its first: whole to FX_GLOW_CORE_F, then
+ * shrinking to nothing over 13 frames more. */
+static int glow_core256(int age) {
+    const int f = age / 2;
+    if (f == 0) return 170;
+    if (f <= FX_GLOW_CORE_F) return 256;
+    const int k = 256 - (f - FX_GLOW_CORE_F) * 256 / 13;
+    return k > 0 ? k : 0;
+}
+
+/* The halo's falloff: a bell, e to the -2.3026 r2, 0.1 at r = 1, the 10%
+ * reach. A short series of a 16th of it, raised to the 16th, so no libm. */
+static float glow_falloff(float r2) {
+    const float y = 2.3026f * r2 / 16.0f;
+    float v = 1.0f - y + y * y * 0.5f - y * y * y / 6.0f;
+    if (!(v > 0.0f)) return 0.0f;
+    v *= v; v *= v; v *= v; v *= v;
+    return v;
+}
+
+/* A flash with a 10% reach of half_w by half_h px and a size of size16
+ * sixteenths of the Wisp's. */
+static void spawn_glow(int half_w, int half_h, int size16, int flat, int32_t x,
+                       int32_t y, int32_t height) {
+    if (half_w <= 0 || half_h <= 0 || size16 <= 0) return;
+    ProjectileEffect *e = proj_effect_slot();
+    if (!e) return;
+    e->world_x = x;
+    e->world_y = y;
+    e->height = height;
+    e->sprite_idx = -1;
+    e->life_ticks = FX_GLOW_TICKS;
+    e->glow_w = (uint8_t)(half_w < 255 ? half_w : 255);
+    e->glow_h = (uint8_t)(half_h < 255 ? half_h : 255);
+    e->glow_root16 = (uint8_t)(4.0f * sqrtf((float)size16) + 0.5f);
+    e->glow_flat = (uint8_t)flat;
+    e->alive = 1;
+}
+
+/* A flash of size16 at its own reach. */
+static void spawn_sized_glow(int size16, int32_t x, int32_t y, int32_t height) {
+    const int w = FX_GLOW_REACH_X * size16 / 16;
+    spawn_glow(w, w * FX_GLOW_ASPECT16 / 16, size16, 0, x, y, height);
+}
+
+/* A lit weapon's flash, on the ground or the sea where it lands. */
+static void spawn_lightmap_glow(int size, int32_t x, int32_t y) {
+    if (size <= UNIT_GLOW_NONE || size > UNIT_GLOW_LARGE) return;
+    spawn_sized_glow(k_glow_lightmap16[size], x, y, unit_fx_height(World_Get(), x, y, 0.0f));
+}
+
+/* Fitted to captures of the original's TARHEL casting: added at full
+ * strength, the sheet's own size. */
+#define NIMBUS_SCALE16 16   /* the sheet's own size */
+#define NIMBUS_ADD     1    /* light, drawn added */
+#define NIMBUS_ALPHA   255
+
+/* A nimbus weapon's cast plays the caster's side sheet once, by its
+ * holds, lying on the ground by its hot spot under the caster. */
+static void spawn_nimbus(const Unit *u, const UnitWeapon *wp) {
+    if (!u || !wp || !wp->nimbus) return;
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    const TakSideInfo *side = d ? Sides_Get(Sides_FindByPrefix(d->side)) : NULL;
+    if (!side || !side->nimbus[0]) return;
+    int sprite = proj_sprite_index(side->nimbus, side->nimbus);
+    int ticks = sprite >= 0 ? sheet_ticks(sprite) : 0;
+    if (ticks <= 0) return;
+    ProjectileEffect *e = proj_effect_slot();
+    if (!e) return;
+    e->world_x = u->world_x;
+    e->world_y = u->world_y;
+    e->height = unit_fx_height(World_Get(), u->world_x, u->world_y, 0.0f);
+    e->sprite_idx = (int16_t)sprite;
+    e->life_ticks = (uint16_t)(ticks < 0xffff ? ticks : 0xffff);
+    e->sheet_timed = 1;
+    e->ground = 1;
+    e->owner = (int16_t)(u - g_units);
+    e->follow_id = u->stable_id;
+    e->alive = 1;
+}
+
+/* The circle follows its caster's ground point, as in the original. A
+ * caster gone or dying leaves it where it last stood (inferred). */
+static void nimbus_follow(ProjectileEffect *e) {
+    const Unit *u = e->owner >= 0 && e->owner < g_unit_count ? &g_units[e->owner] : NULL;
+    if (!u || u->stable_id != e->follow_id || u->alive != UNIT_ALIVE_ACTIVE) {
+        e->follow_id = 0;
+        return;
+    }
+    e->world_x = u->world_x;
+    e->world_y = u->world_y;
+    e->height = unit_fx_height(World_Get(), u->world_x, u->world_y, 0.0f);
+}
+
+/* The core's radius in px `age` ticks in, for root16 as glow_alpha's. */
+static int glow_core_px(int age, int root16) {
+    return (int)(FX_GLOW_CORE * (float)root16 / 16.0f * (float)glow_core256(age) / 256.0f);
 }
 
 /* Engine gravity is 0x1fdb in 16.16 per legacy tick (legacy:224904);
@@ -1517,6 +1888,8 @@ static void proj_note_source(int slot, const Unit *shooter, const UnitWeapon *wp
     const UnitDef *d = shooter ? Units_GetDef(shooter->def_idx) : NULL;
     g_proj_def[slot] = (int16_t)(d ? shooter->def_idx : -1);
     g_proj_wslot[slot] = -1;
+    g_proj_sid[slot] = shooter ? shooter->stable_id : 0;
+    g_flame_body_set[slot] = 0;
     for (int k = 0; d && wp && k < 3; k++)
         if (wp == &d->weapons[k]) g_proj_wslot[slot] = (int8_t)k;
 }
@@ -1639,6 +2012,7 @@ static int spawn_projectile(int32_t x, int32_t y,
     p->height = (float)p->src_height + MUZZLE_H;
     Unit *shooter = (shooter_handle >= 0 && shooter_handle < g_unit_count)
                   ? &g_units[shooter_handle] : NULL;
+    g_proj_piece[slot] = -1;
     /* A shot leaves the QueryWeapon piece, a ballistic shell's arc is
      * solved from there (legacy:246594-246598, :249230-249245) and a
      * straight shot's line runs from there (legacy:246868-246881). A
@@ -1649,8 +2023,11 @@ static int spawn_projectile(int32_t x, int32_t y,
                      source_weapon < sd->weapons + sd->num_weapons)
                   ? (int)(source_weapon - sd->weapons) : 0;
         float mdx = 0.0f, mdy = 0.0f, mup = 0.0f;
-        if (unit_weapon_muzzle(shooter, wslot, &mdx, &mdy, &mup)) {
+        int32_t pc = -1;
+        if (unit_weapon_piece(shooter, wslot, &pc) &&
+            unit_piece_offset(shooter, pc, &mdx, &mdy, &mup)) {
             p->from_piece = 1;
+            g_proj_piece[slot] = pc;
             float base = (float)p->src_height;
             if (sd && (def_rides_sea(sd) || sd->can_fly) &&
                 lw->water_height > p->src_height)
@@ -2635,8 +3012,7 @@ void Units_SetBlastHook(UnitsBlastHook hook) { g_blast_hook = hook; }
 /* Impact: play the hit sound for the unit struck (NULL for ground)
  * and the weapon's explosionclass sprite where legacy spawns it
  * (legacy:245025). */
-static void projectile_impact_fx(const Projectile *p, const Unit *victim,
-                                 uint32_t seed) {
+static void projectile_impact_fx(const Projectile *p, const Unit *victim) {
     if (g_shot_tally.on && p->shooter == g_shot_tally.shooter)
         g_shot_tally.landed = 1;
     projectile_note_blast(p, victim);
@@ -2646,14 +3022,18 @@ static void projectile_impact_fx(const Projectile *p, const Unit *victim,
      * with nothing when that names none (legacy:244984-245012). */
     int expl = p->explosion_idx;
     const GameWorld *iw = World_Get();
-    if (!victim && impact_in_water(iw, p->world_x, p->world_y)) {
-        int slot = slot_of_projectile(p);
-        const UnitDef *sd = Units_GetDef(g_proj_def[slot]);
-        int ws = g_proj_wslot[slot];
-        expl = sd && ws >= 0 && ws < sd->num_weapons
-             ? sd->weapons[ws].water_explosion_idx : -1;
-    }
-    spawn_impact_effect(expl, p->world_x, p->world_y, (int32_t)p->height, seed);
+    const int slot = slot_of_projectile(p);
+    const UnitDef *sd = slot >= 0 && slot < TAK_MAX_PROJECTILES
+                      ? Units_GetDef(g_proj_def[slot]) : NULL;
+    const int ws = sd ? g_proj_wslot[slot] : -1;
+    const UnitWeapon *wp = ws >= 0 && ws < sd->num_weapons ? &sd->weapons[ws] : NULL;
+    if (!victim && impact_in_water(iw, p->world_x, p->world_y))
+        expl = wp ? wp->water_explosion_idx : -1;
+    /* A storm's bursts are its drops', none without a drop. */
+    if (p->hidden && wp && wp->remote_kind == 2) expl = -1;
+    spawn_impact_effect(expl, p->world_x, p->world_y, (int32_t)p->height);
+    /* Provisional: a weapon that names a lightmap flashes where it lands. */
+    if (wp) spawn_lightmap_glow(wp->lightmap, p->world_x, p->world_y);
 }
 
 static int projectile_height_inside_flyer(const Unit *v, float height);
@@ -2697,7 +3077,7 @@ static void projectile_detonate_at(Projectile *p, int idx) {
             break;
         }
     }
-    projectile_impact_fx(p, struck >= 0 ? &g_units[struck] : NULL, (uint32_t)idx);
+    projectile_impact_fx(p, struck >= 0 ? &g_units[struck] : NULL);
     if (p->area_of_effect >= BLAST_DIRECT_BELOW || struck < 0) {
         apply_projectile_area_damage(p);
     } else if (p->mind_control) {
@@ -2773,8 +3153,8 @@ static void unit_death_blast(Unit *u, int handle) {
     note_blast(&b, NULL, u->def_idx, UNITS_BLAST_SLOT_DEATH, handle);
     play_projectile_hit_sound(&b, NULL);
     blast_shake_at(b.world_x, b.world_y, wp->shake_magnitude, wp->shake_duration);
-    spawn_impact_effect(b.explosion_idx, b.world_x, b.world_y, (int32_t)b.height,
-                        (uint32_t)handle);
+    spawn_impact_effect(b.explosion_idx, b.world_x, b.world_y, (int32_t)b.height);
+    spawn_lightmap_glow(wp->lightmap, b.world_x, b.world_y);
     apply_projectile_area_damage(&b);
     blast_scenery(&b, -1);
 }
@@ -3003,7 +3383,7 @@ static int shot_body_air(void *user, int32_t x, int32_t y, int h, int owner) {
  * (D-024). Leaves the shot alive: the caller ends it. */
 static void shot_strike_unit(Projectile *p, int idx, int vi) {
     Unit *v = &g_units[vi];
-    projectile_impact_fx(p, v, (uint32_t)idx);
+    projectile_impact_fx(p, v);
     if (p->area_of_effect >= BLAST_DIRECT_BELOW) {
         apply_projectile_area_damage(p);
         blast_scenery(p, vi);
@@ -3042,7 +3422,7 @@ static void shot_burst(Projectile *p, int idx) {
         projectile_detonate_at(p, idx);
         return;
     }
-    projectile_impact_fx(p, NULL, (uint32_t)idx);
+    projectile_impact_fx(p, NULL);
     if (p->area_of_effect > 0) apply_projectile_area_damage(p);
     blast_scenery(p, -1);
 }
@@ -3771,6 +4151,7 @@ static void wander_launch(int slot, const UnitWeapon *wp, const Unit *u,
 
 /* Per-tick: advance projectiles, hit-test against target, apply damage. */
 static void tick_projectiles(void) {
+    bolts_tick();
     /* Effects are visuals only. One with a life ends at that age, a
      * sparkle ends by height, checked before it moves, and its pictures
      * loop (legacy:201340-201351). */
@@ -3778,6 +4159,7 @@ static void tick_projectiles(void) {
         ProjectileEffect *e = &g_proj_effects[i];
         if (!e->alive) continue;
         if (e->delay_ticks) { e->delay_ticks--; continue; }
+        if (e->follow_id) nimbus_follow(e);
         if (e->wake_owner_id) {
             tick_wake(e);
             continue;
@@ -3796,7 +4178,7 @@ static void tick_projectiles(void) {
             if (done && !e->life_ticks) {
                 if (e->land_explosion >= 0)
                     spawn_impact_effect(e->land_explosion, e->world_x, e->world_y,
-                                        e->stop_fp >> 16, (uint32_t)i);
+                                        e->stop_fp >> 16);
                 e->alive = 0;
                 continue;
             }
@@ -3914,7 +4296,7 @@ static void tick_projectiles(void) {
                                                       old_x, old_y,
                                                       p->world_x, p->world_y);
                 if (d2 <= (int64_t)24*24) {
-                    projectile_impact_fx(p, t, (uint32_t)i);
+                    projectile_impact_fx(p, t);
                     if (p->area_of_effect >= BLAST_DIRECT_BELOW) {
                         apply_projectile_area_damage(p);
                         blast_scenery(p, p->target);
@@ -4040,20 +4422,6 @@ static void unit_alarm_on_damage(const Unit *victim, int shooter_handle) {
     unit_alarm_on_damage_impl(victim, shooter_handle);
 }
 
-const char *Units_GetSelectedName(void) {
-    if (g_selection_count == 0) return NULL;
-    int h = g_selection[0];
-    if (h < 0 || h >= g_unit_count || g_units[h].alive < 1) return NULL;
-    const UnitDef *d = Units_GetDef(g_units[h].def_idx);
-    if (!d) return NULL;
-    /* FBI's `name` field is the character's display name ("Elsin",
-     * "Lokken", "Kirenna", "Thirsha" for monarchs). Fall through
-     * to description (faction tag) then unitname as a last resort. */
-    if (d->display_name[0]) return d->display_name;
-    if (d->description[0])  return d->description;
-    return d->unitname;
-}
-
 /* A unit's mission: the key the original shows it by, from
  * english/translate/unitmissions.tdf, and that file's English text for
  * when the table is missing. The order is the original's reading of a
@@ -4147,13 +4515,6 @@ uint32_t Units_PlayersWithUnits(void) {
     return mask;
 }
 
-int Units_GetSelectedKills(void) {
-    if (g_selection_count == 0) return 0;
-    int h = g_selection[0];
-    if (h < 0 || h >= g_unit_count || g_units[h].alive < 1) return 0;
-    return g_units[h].kills;
-}
-
 int Units_GetSelectedCargoCount(void) {
     if (g_selection_count == 0) return 0;
     int h = g_selection[0];
@@ -4195,11 +4556,6 @@ void Units_DebugSetVeteranLevel(int handle, int level) {
     if (!d || d->kill_xp_value <= 0) return;
     if (level < 0) level = 0;
     u->experience_pts = level * d->kill_xp_value;
-}
-
-int Units_GetSelectedVeteranLevel(void) {
-    if (g_selection_count <= 0) return 0;
-    return Units_GetVeteranLevel(g_selection[0]);
 }
 
 static int unit_terrain_walkable(const GameWorld *w, const UnitDef *def,
@@ -4680,15 +5036,28 @@ const int *Units_GetSelection(int *out_count) {
     return g_selection;
 }
 
+/* A unit whose script runs its own walk is left to it. The engine's walk
+ * thread beside the script's ran the same cycle out of step. */
+static int unit_script_walks(const Unit *u) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    return d && d->script_walks;
+}
+
+/* The engine's walk thread still runs walk. A finished walk frees its
+ * slot, and the script may have reused it for another thread. */
+static int unit_walk_running(const Unit *u) {
+    return u->cob && Cob_ThreadRunsScript(u->cob, u->walk_thread_slot, "walk");
+}
+
 /* Start the walk cycle unless one is already running. Orders arrive in
  * bursts and each one used to stack another thread on the sixteen-slot
  * engine. Legacy never starts walk at all, its own watcher threads do
  * (docs/notes/2026-09-09-cob-entry-points.md). */
 static void unit_kick_walk(Unit *u) {
     if (!u->cob) return;
+    if (unit_script_walks(u)) return;
     if (u->under_construction) return;   /* the MOVE tick kicks it later */
-    if (u->walk_thread_slot >= 0 &&
-        Cob_IsThreadAlive(u->cob, u->walk_thread_slot)) return;
+    if (unit_walk_running(u)) return;
     u->walk_thread_slot = (int8_t)unit_start_script(u, "walk", NULL, 0);
 }
 
@@ -4971,6 +5340,60 @@ int Units_OrderMove(int handle, int32_t world_x, int32_t world_y) {
     return 1;
 }
 
+/* The order in hand as a leg that waits at the head of the queue. 0 for
+ * none, or one with no leg to wait as: a patrol, a load, a boarding. */
+static int hand_as_leg(const Unit *u, UnitMoveLeg *leg) {
+    memset(leg, 0, sizeof *leg);
+    leg->x = u->cmd_x;
+    leg->y = u->cmd_y;
+    int t = u->target;
+    uint32_t tid = t >= 0 && t < g_unit_count ? g_units[t].stable_id : 0u;
+    switch (u->cmd_kind) {
+        case UNIT_CMD_MOVE:
+            leg->kind = UNIT_LEG_MOVE;
+            leg->group = u->move_group;
+            leg->paced = u->move_paced ? 1 : 0;
+            leg->face = u->face_mode == UNIT_FACE_ARRIVE;
+            leg->heading = leg->face ? u->face_heading : 0;
+            return 1;
+        case UNIT_CMD_ATTACK:
+            if (!u->attack_explicit || !tid) return 0;
+            leg->kind = UNIT_LEG_ATTACK;
+            break;
+        case UNIT_CMD_ATTACK_GROUND: leg->kind = UNIT_LEG_ATTACK_GROUND; return 1;
+        case UNIT_CMD_GUARD:         leg->kind = UNIT_LEG_GUARD; break;
+        case UNIT_CMD_REPAIR:        leg->kind = UNIT_LEG_REPAIR; break;
+        case UNIT_CMD_RECLAIM:
+            leg->kind = tid ? UNIT_LEG_RECLAIM : UNIT_LEG_SWEEP;
+            leg->target = tid;
+            return 1;
+        case UNIT_CMD_RESURRECT:     leg->kind = UNIT_LEG_RAISE; return 1;
+        case UNIT_CMD_UNLOAD:        leg->kind = UNIT_LEG_UNLOAD; return 1;
+        case UNIT_CMD_BUILD: {
+            /* A frame already up is finished when its turn comes. A
+             * summons without end resumes on its spot, frame and all. */
+            int b = u->build_target;
+            if (!u->build_endless && b >= 0 && b < g_unit_count &&
+                g_units[b].alive == UNIT_ALIVE_ACTIVE &&
+                g_units[b].under_construction) {
+                leg->kind = UNIT_LEG_REPAIR;
+                leg->target = g_units[b].stable_id;
+                return 1;
+            }
+            if (!u->build_held && !u->build_endless) return 0;
+            leg->kind = UNIT_LEG_BUILD;
+            leg->def = u->build_def;
+            leg->facing = (uint8_t)(u->build_facing & 3u);
+            leg->endless = u->build_endless ? 1 : 0;
+            return 1;
+        }
+        default:
+            return 0;
+    }
+    leg->target = tid;
+    return tid != 0;
+}
+
 int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
     Unit *u = order_unit(handle);
     if (!u || !leg || leg->kind >= UNIT_LEG_KINDS) return 0;
@@ -4978,15 +5401,17 @@ int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
     const UnitDef *ud = Units_GetDef(u->def_idx);
     if (unit_def_is_factory(ud)) {
         if (leg->kind != UNIT_LEG_MOVE && leg->kind != UNIT_LEG_PATROL) return 0;
-        return factory_standing_order(u, leg->kind, leg->x, leg->y, queued);
+        /* Its standing orders take a front one behind, as Shift does. */
+        return factory_standing_order(u, leg->kind, leg->x, leg->y,
+                                      queued == UNIT_ORDER_FRONT ? 1 : queued);
     }
     /* A fight the unit picked for itself is no order to wait behind. */
     int busy = u->cmd_kind != UNIT_CMD_NONE &&
                !(u->cmd_kind == UNIT_CMD_ATTACK && !u->attack_explicit);
-    /* A building queued with Shift never goes behind a summons without
-     * end, which would never come to it (legacy:39208-39219). */
-    if (queued == 1 && leg->kind == UNIT_LEG_BUILD &&
-        builder_summons_of(u) >= 0)
+    /* Nothing queued with Shift goes behind a summons without end, which
+     * would never come to it: a building (legacy:39208-39219) or any other
+     * order (legacy:238562-238574). */
+    if (queued == 1 && builder_summons_of(u) >= 0)
         return 0;
     if (queued == 1 && (busy || u->leg_count > 0)) {
         if (u->leg_count >= UNIT_MOVE_LEGS_MAX) return 0;
@@ -5000,6 +5425,24 @@ int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
             l->def = 0;
             l->facing = 0;
             l->endless = 0;
+        }
+        return 1;
+    }
+    if (queued == UNIT_ORDER_FRONT) {
+        UnitMoveLeg hand;
+        int waits = hand_as_leg(u, &hand);
+        int before = u->leg_count;
+        /* A dragged sweep keeps its box as a leg ahead, so it needs room
+         * for that too, or the order in hand would be lost. */
+        int own = leg->kind == UNIT_LEG_SWEEP_AREA;
+        if (waits && before + own >= UNIT_MOVE_LEGS_MAX) return 0;
+        if (!unit_take_leg(handle, leg)) return 0;
+        int at = u->leg_count > before ? u->leg_count - before : 0;
+        if (waits && u->leg_count < UNIT_MOVE_LEGS_MAX) {
+            memmove(&u->legs[at + 1], &u->legs[at],
+                    sizeof u->legs[0] * (size_t)(u->leg_count - at));
+            u->legs[at] = hand;
+            u->leg_count++;
         }
         return 1;
     }
@@ -5591,6 +6034,9 @@ int Units_OrderSetAggro(int handle, int aggro_mode) {
     if (aggro_mode < UNIT_AGGRO_PASSIVE || aggro_mode > UNIT_AGGRO_OFFENSIVE)
         return 0;
     Unit *u = order_unit(handle);
+    /* A rider takes one too, as a mission list sets its `o` when given. */
+    if (!u && handle >= 0 && handle < g_unit_count &&
+        g_units[handle].alive == UNIT_ALIVE_TRANSPORTED) u = &g_units[handle];
     if (!u) return 0;
     u->aggro_mode = (uint8_t)aggro_mode;
     /* Passive units must drop any in-flight auto-target. */
@@ -5885,10 +6331,7 @@ static void issue_feature_order(Unit *u, const GameWorld *w, int fi,
     u->raise_mode = (uint8_t)mode;
     u->raise_left = 0;
     unit_clear_path(u);
-    if (u->cob) {
-        int slot = Cob_StartThreadByName(u->cob, "walk", NULL, 0);
-        u->walk_thread_slot = (int8_t)slot;
-    }
+    unit_kick_walk(u);
 }
 
 /* What the broom may take once the cell holds nothing: a building of
@@ -6098,22 +6541,70 @@ static int raise_sparkle_sprite(const UnitDef *d) {
     if (d && strncmp(d->side, "TAR", 3) == 0) k = 1;
     else if (d && strncmp(d->side, "VER", 3) == 0) k = 2;
     else if (d && strncmp(d->side, "ZON", 3) == 0) k = 3;
-    if (cache[k] == -2) cache[k] = proj_sprite_index(files[k], files[k]);
+    if (cache[k] == -2) {
+        cache[k] = proj_sprite_index(files[k], files[k]);
+        if (cache[k] >= 0) g_proj_sprites[cache[k]].sparkle = 1;
+    }
     return cache[k];
 }
 
-/* The ring from the model box: radius half the diagonal in px, count
- * the radius, a quarter for bmcode 1, height the box's
- * (legacy:198540-198576). The footprint stands in with no mesh baked. */
+static void compose_node_xforms(const UnitMesh *m, const CobPiece *pieces,
+                                UnitNodeXform *out);
+
+/* The model's box at rest in model units, the pieces lying flat on its
+ * ground plane left out, as a building's pad. 0 when nothing is left. */
+static int sparkle_box(const UnitMesh *m, float lo[3], float hi[3]) {
+    static UnitNodeXform xf[UNIT_MESH_MAX_NODES];
+    static uint8_t flat[UNIT_MESH_MAX_NODES];
+    if (m->node_count > UNIT_MESH_MAX_NODES) return 0;
+    ModelStore_FlatNodes(m, flat);
+    compose_node_xforms(m, NULL, xf);
+    int any = 0;
+    for (int v = 0; v < m->vert_count; v++) {
+        const int k = m->vert_node_idx[v];
+        if (xf[k].hidden || flat[k]) continue;
+        const UnitNodeXform *x = &xf[k];
+        const float *p = &m->positions[3 * v];
+        for (int i = 0; i < 3; i++) {
+            const float c = x->rot[3 * i] * p[0] + x->rot[3 * i + 1] * p[1] +
+                            x->rot[3 * i + 2] * p[2] + x->trans[i];
+            if (!any || c < lo[i]) lo[i] = c;
+            if (!any || c > hi[i]) hi[i] = c;
+        }
+        any = 1;
+    }
+    return any;
+}
+
+/* Each model's ring box, worked out once a battle. */
+#define SPARKLE_RINGS_MAX 64
+static struct { const UnitMesh *mesh; float half[3]; } g_sparkle_rings[SPARKLE_RINGS_MAX];
+static int g_sparkle_ring_count;
+
+/* The ring from the model box less its flat pad (legacy:198540-198576, and a
+ * capture of a keep going up), or the footprint with no mesh. */
 static void sparkle_ring(const UnitDef *d, int *out_radius, int *out_count,
                          int *out_height) {
     const UnitMesh *m = NULL;
     for (int c = 0; c < 12 && !m; c++) m = d->mesh_per_color[c];
     float hx, hz, hy;
     if (m) {
-        hx = (m->aabb_max[0] - m->aabb_min[0]) * 0.5f * UNIT_MODEL_TO_WORLD;
-        hz = (m->aabb_max[2] - m->aabb_min[2]) * 0.5f * UNIT_MODEL_TO_WORLD;
-        hy = (m->aabb_max[1] - m->aabb_min[1]) * UNIT_MODEL_TO_WORLD;
+        int k = 0;
+        while (k < g_sparkle_ring_count && g_sparkle_rings[k].mesh != m) k++;
+        if (k == g_sparkle_ring_count) {
+            float lo[3], hi[3];
+            if (!sparkle_box(m, lo, hi))
+                for (int i = 0; i < 3; i++) { lo[i] = m->aabb_min[i]; hi[i] = m->aabb_max[i]; }
+            if (k == SPARKLE_RINGS_MAX) k = g_sparkle_ring_count = 0;
+            g_sparkle_rings[k].mesh = m;
+            g_sparkle_rings[k].half[0] = (hi[0] - lo[0]) * 0.5f * UNIT_MODEL_TO_WORLD;
+            g_sparkle_rings[k].half[1] = (hi[1] - lo[1]) * UNIT_MODEL_TO_WORLD;
+            g_sparkle_rings[k].half[2] = (hi[2] - lo[2]) * 0.5f * UNIT_MODEL_TO_WORLD;
+            g_sparkle_ring_count++;
+        }
+        hx = g_sparkle_rings[k].half[0];
+        hy = g_sparkle_rings[k].half[1];
+        hz = g_sparkle_rings[k].half[2];
     } else {
         hx = (float)((d->footprint_x > 0 ? d->footprint_x : 1) * 8);
         hz = (float)((d->footprint_z > 0 ? d->footprint_z : 1) * 8);
@@ -6137,16 +6628,17 @@ static int build_sparkles_live(int handle) {
     return n;
 }
 
-/* One sparkle: a random angle, its own speed of 2 to 4 px an original
- * frame, falling from the ring's top or rising to the unit's height plus
- * the ring's (legacy:201441-201455, 201355-201374, see the note). */
+/* One sparkle at a random angle and speed (legacy:201441-201455), a uniform
+ * share of the radius out, so the ring fills as the original's. */
 static ProjectileEffect *spawn_ring_sparkle(int sprite, int32_t cx, int32_t cy,
                                             int32_t ground, int radius,
                                             int height, int rising,
                                             uint32_t n) {
     float a = (float)(n & 0xffffu) * (6.2831853f / 65536.0f);
-    int32_t x = cx + (int32_t)((float)radius * tak_sinf(a));
-    int32_t y = cy - (int32_t)((float)radius * tak_cosf(a));
+    uint32_t out = unit_deterministic_noise(n, 0x5a7eu, (uint32_t)radius) & 0xffffu;
+    float r = (float)radius * (float)out / 65536.0f;
+    int32_t x = cx + (int32_t)(r * tak_sinf(a));
+    int32_t y = cy - (int32_t)(r * tak_cosf(a));
     int32_t speed = 0x10000 + (int32_t)((n >> 16) & 0x7fffu) * 2;
     ProjectileEffect *e = spawn_unit_fx_moving(
         sprite, x, y, rising ? ground : ground + height,
@@ -6155,6 +6647,7 @@ static ProjectileEffect *spawn_ring_sparkle(int sprite, int32_t cx, int32_t cy,
     e->life_ticks = 0;
     e->loops = 1;
     e->stop_fp = (rising ? ground + ground + height : ground) * 65536;
+    e->behind = y < cy;
     return e;
 }
 
@@ -6197,31 +6690,44 @@ static int build_sparkle_sprite(const UnitDef *d) {
         int s = proj_sprite_index(side->buildsparkle,
                                   side->buildsparkle_anim[0] ? side->buildsparkle_anim
                                                              : side->buildsparkle);
-        if (s >= 0) return s;
+        if (s >= 0) {
+            g_proj_sprites[s].sparkle = 1;
+            return s;
+        }
     }
     return raise_sparkle_sprite(d);
 }
 
-/* Two a 30 Hz work frame, a faller then a riser, none while the ring
- * is full (legacy:12253-12257, 198995-198999, 201434-201436). One a
- * tick here, the two kinds in turn. The ring is the target's size and
- * the art magic_def's, the healer's when it mends another side's unit. */
+/* The worker's ring holds this many sixteenths of its count, fitted to
+ * a capture of the original's keep going up. */
+#define BUILD_WORKER_SHARE16 8
+
+/* A faller on the worker's ring and a riser on the target's in turn, none
+ * while a ring is full (legacy:12253-12257, 198995-198999, a capture). */
 static void build_sparkles(Unit *bt, int bt_idx, const UnitDef *btd,
-                           const UnitDef *magic_def) {
+                           const UnitDef *magic_def, Unit *worker,
+                           int worker_idx, const UnitDef *worker_def) {
     if (!g_build_sparkles_on) return;
     int sprite = build_sparkle_sprite(magic_def);
     if (sprite < 0) return;
-    int radius, count, height;
-    sparkle_ring(btd, &radius, &count, &height);
     uint32_t seq = bt->build_fx_seq++;
-    if (build_sparkles_live(bt_idx) >= count) return;
+    if (!worker_def) worker = NULL;
+    /* Each worker keeps its own turn, so two on one site both get fallers. */
+    int rising = (int)((worker ? worker->build_fx_seq++ : seq) & 1u);
+    const Unit *on = rising || !worker ? bt : worker;
+    int on_idx = on == bt ? bt_idx : worker_idx;
+    int radius, count, height;
+    sparkle_ring(on == bt ? btd : worker_def, &radius, &count, &height);
+    if (on != bt) count = count * BUILD_WORKER_SHARE16 / 16 > 0
+                        ? count * BUILD_WORKER_SHARE16 / 16 : 1;
+    if (build_sparkles_live(on_idx) >= count) return;
     const GameWorld *w = World_Get();
     uint32_t n = unit_deterministic_noise(bt->stable_id, seq, 0xb1d5u);
     ProjectileEffect *e = spawn_ring_sparkle(
-        sprite, bt->world_x, bt->world_y,
-        unit_fx_height(w, bt->world_x, bt->world_y, 0.0f),
-        radius, height, (int)(seq & 1u), n);
-    if (e) e->owner = (int16_t)bt_idx;
+        sprite, on->world_x, on->world_y,
+        unit_fx_height(w, on->world_x, on->world_y, on == bt ? 0.0f : on->flight_alt),
+        radius, height, rising, n);
+    if (e) e->owner = (int16_t)on_idx;
 }
 
 /* The purple flash a raised unit appears in: PurpleDeath from
@@ -6231,7 +6737,7 @@ static void raise_flash(const GameWorld *w, int32_t x, int32_t y) {
     static int sprite = -2;
     if (sprite == -2) {
         sprite = proj_sprite_index("deathmagic", "PurpleDeath");
-        if (sprite >= 0) g_proj_sprites[sprite].fx_palette = 1;
+        fx_sheet(sprite, 1);
     }
     if (sprite >= 0)
         spawn_unit_fx(sprite, x, y, unit_fx_height(w, x, y, 0.0f));
@@ -6242,7 +6748,7 @@ static void cleanup_flash(const GameWorld *w, int32_t x, int32_t y) {
     static int sprite = -2;
     if (sprite == -2) {
         sprite = proj_sprite_index("deathmagic", "Death01");
-        if (sprite >= 0) g_proj_sprites[sprite].fx_palette = 1;
+        fx_sheet(sprite, 1);
     }
     if (sprite >= 0)
         spawn_unit_fx(sprite, x, y, unit_fx_height(w, x, y, 0.0f));
@@ -6644,6 +7150,14 @@ static void build_site_cells(const UnitDef *d, int facing, int *fx, int *fz) {
     *fx = d->footprint_x > 0 ? d->footprint_x : 2;
     *fz = d->footprint_z > 0 ? d->footprint_z : 2;
     if (facing & 1) { int t = *fx; *fx = *fz; *fz = t; }
+}
+
+void Units_BuildSiteCells(int def_idx, int facing, int *out_fx, int *out_fz) {
+    const UnitDef *d = Units_GetDef(def_idx);
+    int fx = 0, fz = 0;
+    if (d) build_site_cells(d, Units_DefFacing(def_idx, facing), &fx, &fz);
+    if (out_fx) *out_fx = fx;
+    if (out_fz) *out_fz = fz;
 }
 
 void Units_SnapBuildSiteFacing(int def_idx, int facing,
@@ -7074,13 +7588,17 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
                                           build_heading_for_def(bd), world_x,
                                           world_y, 0, 0.0f, 0, 0) : 0;
         if (held) {
-            ship_clear_pad(u, world_x, world_y, hd);
-            return -1;
+            /* Where it waits, for the ships that read it (ship_holds_up_yard). */
+            if (u->cmd_kind == UNIT_CMD_NONE) {
+                u->cmd_x = world_x;
+                u->cmd_y = world_y;
+            }
+            if (ship_clear_pad(u, world_x, world_y, hd)) return -1;
         }
         /* Nor does one go up on a unit standing on the pad: the
          * placement test at the spot counts units, and the factory looks
          * again shortly (legacy:9363-9382, legacy:219134-219147). */
-        if (!hd && factory_pad_held(builder_handle, bd, world_x, world_y))
+        if ((!hd || held) && factory_pad_held(builder_handle, bd, world_x, world_y))
             return -1;
     } else if (!Units_IsBuildSiteFreeFacing(building_def_idx, world_x, world_y,
                                             facing)) {
@@ -7363,13 +7881,95 @@ static int ship_in_yard_way(const ShipYardWay *yw, const UnitDef *d, int self,
     return 0;
 }
 
+/* Whether another ship leaving the yard is bound for where ship d would
+ * stand at (x, y). */
+static int ship_spot_spoken_for(const ShipYardWay *yw, const UnitDef *d, int self,
+                                int32_t x, int32_t y, float heading) {
+    for (int i = 0; i < yw->n_movers; i++) {
+        const Unit *m = &g_units[yw->movers[i]];
+        const UnitDef *md = def_hull(m->def_idx);
+        if (yw->movers[i] == self || !md) continue;
+        float there = tak_atan2f((float)(m->cmd_x - m->world_x),
+                                 (float)(m->world_y - m->cmd_y));
+        if (!ship_hulls_apart(d, x, y, heading, md, m->cmd_x, m->cmd_y, there,
+                              SHIP_LAUNCH_SLACK))
+            return 1;
+    }
+    return 0;
+}
+
+/* Cells the searches of one tick may open before the rest wait for the
+ * next. A search that cannot reach its goal opens 8192, and sixteen of
+ * them in one tick was a 35 ms tick. Counted, so every machine agrees. */
+#define UNIT_PATH_TICK_WORK (3 * 8192)
+static int g_path_work_this_tick;
+static int occ_step_blocked(const GameWorld *w, const Unit *u, int handle,
+                            int32_t x, int32_t y);
+
+/* Whether the first of the way straight to (x1, y1), which ship u sails while
+ * it has no route, has water under it and nothing built on it. */
+static int ship_water_lane(const GameWorld *w, const Unit *u, const UnitDef *d,
+                           int32_t x1, int32_t y1) {
+    int self = (int)(u - g_units);
+    int on_yard = occ_step_blocked(w, u, self, u->world_x, u->world_y) == 2;
+    float dx = (float)(x1 - u->world_x), dy = (float)(y1 - u->world_y);
+    float len = sqrtf(dx * dx + dy * dy);
+    for (float s = 16.0f; s < len && s <= 256.0f; s += 16.0f) {
+        int32_t x = u->world_x + (int32_t)(dx * s / len);
+        int32_t y = u->world_y + (int32_t)(dy * s / len);
+        if (!unit_water_depth_ok(w, d, x, y)) return 0;
+        if (!on_yard && occ_step_blocked(w, u, self, x, y) == 2) return 0;
+    }
+    return 1;
+}
+
+static int unit_step_refused(const GameWorld *w, const UnitDef *def,
+                             const MoveClassDef *mc,
+                             const Unit *u, int self_h,
+                             int escaping, int occ_escape,
+                             int32_t nx, int32_t ny);
+static int unit_body_bad_mc(const GameWorld *w, const Unit *u,
+                            const UnitDef *def, const MoveClassDef *mc,
+                            int32_t x, int32_t y);
+
+/* Whether ship u has a route to (x, y) it can take the first steps of. */
+static int ship_route_starts(const GameWorld *w, const Unit *u, const UnitDef *d,
+                             int32_t x, int32_t y) {
+    if (g_path_work_this_tick >= UNIT_PATH_TICK_WORK) return 0;
+    int self = (int)(u - g_units);
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.move_class = unit_move_class(w, d);
+    q.fallback_max_slope = d->max_slope;
+    q.player_id = u->player_id;
+    q.self_plus1 = self + 1;
+    unit_occ_fp(u, &q.footprint_x, &q.footprint_z);
+    q.compress = 1;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(w, u->world_x, u->world_y, x, y, &q, &path);
+    g_path_work_this_tick += TAK_PathLastWork();
+    if (n <= 0) return 0;
+    int escaping = unit_body_bad_mc(w, u, d, q.move_class, u->world_x, u->world_y);
+    int occ_escape = occ_step_blocked(w, u, self, u->world_x, u->world_y);
+    float dx = (float)(path.x[0] - u->world_x), dy = (float)(path.y[0] - u->world_y);
+    float len = sqrtf(dx * dx + dy * dy);
+    for (float s = 2.0f; s < len && s <= 32.0f; s += 2.0f)
+        if (unit_step_refused(w, d, q.move_class, u, self, escaping, occ_escape,
+                              u->world_x + (int32_t)(dx * s / len),
+                              u->world_y + (int32_t)(dy * s / len)))
+            return 0;
+    return 1;
+}
+
 /* Where a ship leaves its yard for, clear of the yard, the hulls and the
  * yard's way, a spot ahead with a clear way there first, or 0 (M-012).
  * One it must turn or push to reach can stop it short in the yard. */
-static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
+static int ship_spot_search(const GameWorld *w, const Unit *f, int fx, int fz, Unit *bt,
                             const UnitDef *btd, const UnitDef *hd,
                             const ShipYardWay *yw) {
-    const GameWorld *w = World_Get();
+    const MoveClassDef *mc = unit_move_class(w, btd);
+    int cfx = 1, cfz = 1;
+    unit_mobile_footprint(w, btd, &cfx, &cfz);
     int self = (int)(bt - g_units);
     int fore = hd->hull_fore_px, aft = hd->hull_aft_px;
     int reach = (int)ceilf(hull_reach(hd));
@@ -7377,38 +7977,50 @@ static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
     int along = fore + aft + 8;
     int abeam = 2 * hd->hull_half_beam_px + 8;
     static const int lateral[5] = { 0, 1, -1, 2, -2 };
-    static const int ways[4][2] = { { 0, 1 }, { 1, 0 }, { -1, 0 }, { 0, -1 } };
+    static const float ways[8][2] = { { 0.0f, 1.0f }, { 1.0f, 0.0f }, { -1.0f, 0.0f },
+                                      { 0.0f, -1.0f }, { 0.7071f, 0.7071f },
+                                      { -0.7071f, 0.7071f }, { 0.7071f, -0.7071f },
+                                      { -0.7071f, -0.7071f } };
     float px = (float)(bt->world_x - f->world_x);
     float py = (float)(bt->world_y - f->world_y);
     float plen = sqrtf(px * px + py * py);
     float hx = tak_sinf(bt->heading), hy = -tak_cosf(bt->heading);
-    for (int pass = 0; pass < 2; pass++)
-    for (int way = -1; way < 4; way++) {
+    for (int pass = 0; pass < 3; pass++)
+    for (int way = -1; way < 8; way++) {
         float dx, dy;
         if (way < 0) {
             if (plen < 1.0f) continue;
             dx = px / plen;
             dy = py / plen;
         } else {
-            dx = (float)ways[way][0];
-            dy = (float)ways[way][1];
+            dx = ways[way][0];
+            dy = ways[way][1];
         }
         float heading = tak_atan2f(dx, -dy);
-        for (int k = 0; k < 6; k++) {
+        int asked = 0;
+        for (int k = 0; k < 12; k++) {
             for (int j = 0; j < 5; j++) {
-                float dist = (float)(base + k * along);
+                float dist = (float)base + (float)(k * along) * 0.5f;
                 float side = (float)(lateral[j] * abeam);
                 int32_t cx = f->world_x + (int32_t)(dx * dist - dy * side);
                 int32_t cy = f->world_y + (int32_t)(dy * dist + dx * side);
-                if (!w || cx < reach || cy < reach ||
+                if (cx < reach || cy < reach ||
                     cx >= w->map_pixels_w - reach ||
                     cy >= w->map_pixels_h - reach) continue;
                 if (!unit_terrain_walkable(w, btd, cx, cy)) continue;
+                /* A spot its class can stand on and reach. */
+                if (TAK_PathClearanceAt(w, mc, btd->max_slope,
+                                        Occ_TileOf(cx - cfx * 8),
+                                        Occ_TileOf(cy - cfz * 8)) < cfx ||
+                    !TAK_PathGroundConnected(w, mc, btd->max_slope, bt->world_x,
+                                             bt->world_y, cx, cy))
+                    continue;
                 if (ship_hull_blocked(hd, self, UNIT_HULL_MARGIN, heading,
                                       cx, cy, 0, 0.0f, 0, 0))
                     continue;
                 if (ship_in_yard_way(yw, hd, self, cx, cy, heading,
-                                     SHIP_PAD_CLEAR + SHIP_LAUNCH_SLACK))
+                                     SHIP_PAD_CLEAR + SHIP_LAUNCH_SLACK) ||
+                    ship_spot_spoken_for(yw, hd, self, cx, cy, heading))
                     continue;
                 if (pass == 0 &&
                     (hx * (float)(cx - bt->world_x) +
@@ -7416,6 +8028,13 @@ static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
                      !ship_lane_clear(hd, self, bt->world_x, bt->world_y,
                                       bt->heading, cx, cy)))
                     continue;
+                /* Last, one route asked for each way, for a ship wedged where
+                 * no straight line leaves. */
+                if (pass < 2 ? !ship_water_lane(w, bt, btd, cx, cy)
+                             : (asked || !ship_route_starts(w, bt, btd, cx, cy))) {
+                    asked = pass == 2;
+                    continue;
+                }
                 bt->cmd_kind = UNIT_CMD_MOVE;
                 bt->cmd_x = cx;
                 bt->cmd_y = cy;
@@ -7427,27 +8046,83 @@ static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
     return 0;
 }
 
-/* A yard waiting on its pad at (pad_x, pad_y), where a ship of def pd is
- * to go up, sends the side's own idle ships in its way off (M-012). */
-static void ship_clear_pad(const Unit *f, int32_t pad_x, int32_t pad_y,
-                           const UnitDef *pd) {
+/* A look tests many spots, so the features round the yard are laid out once. */
+static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
+                            const UnitDef *btd, const UnitDef *hd,
+                            const ShipYardWay *yw) {
+    const GameWorld *w = World_Get();
+    if (!w) return 0;
+    Terrain_BlockingBegin(w, f->world_x - SHIP_LAUNCH_REACH, f->world_y - SHIP_LAUNCH_REACH,
+                          f->world_x + SHIP_LAUNCH_REACH, f->world_y + SHIP_LAUNCH_REACH);
+    int found = ship_spot_search(w, f, fx, fz, bt, btd, hd, yw);
+    Terrain_BlockingEnd();
+    return found;
+}
+
+/* Whether ship u stands on the water of a pad a hull holds, at a yard of its
+ * side with a ship to begin, and so must not settle there (M-012). */
+static int ship_holds_up_yard(const Unit *u, const UnitDef *hd) {
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *f = &g_units[i];
+        if (f->prod_queue_len == 0 || f->alive != UNIT_ALIVE_ACTIVE ||
+            f->player_id != u->player_id || f->cmd_kind != UNIT_CMD_NONE ||
+            factory_in_hand(f) >= 0)
+            continue;
+        const UnitDef *pd = def_hull(f->prod_queue[0]);
+        if (!pd) continue;
+        float ph = build_heading_for_def(Units_GetDef(f->prod_queue[0]));
+        if (!ship_hulls_apart(hd, u->world_x, u->world_y, u->heading, pd, f->cmd_x,
+                              f->cmd_y, ph, SHIP_PAD_CLEAR) &&
+            ship_hull_blocked(pd, -1, UNIT_HULL_MARGIN, ph, f->cmd_x, f->cmd_y, 0,
+                              0.0f, 0, 0))
+            return 1;
+    }
+    return 0;
+}
+
+/* Whether ship o has gathered at yard f's rally point, within the two
+ * of its lengths a fleet packs in there (M-012). */
+static int ship_by_rally(const Unit *f, const Unit *o, const UnitDef *ohd) {
+    if (!f->rally_set) return 0;
+    int64_t reach = 2 * (ohd->hull_fore_px + ohd->hull_aft_px);
+    int64_t dx = o->world_x - f->rally_x, dy = o->world_y - f->rally_y;
+    return dx * dx + dy * dy <= reach * reach;
+}
+
+/* A yard waiting on its pad sends the side's own idle ships in its way off,
+ * but leaves those gathered at its rally point unless they are on the pad
+ * (M-012). 0 when a hull stands on the pad that this will not move, and the
+ * yard then takes the original's test of the pad's cells. */
+static int ship_clear_pad(const Unit *f, int32_t pad_x, int32_t pad_y,
+                          const UnitDef *pd) {
     const UnitDef *fd = Units_GetDef(f->def_idx);
-    if (!fd || !pd) return;
+    if (!fd || !pd) return 0;
     int fx = fd->footprint_x > 0 ? fd->footprint_x : 2;
     int fz = fd->footprint_z > 0 ? fd->footprint_z : 2;
     ShipYardWay yw;
     ship_yard_way(f, pad_x, pad_y, pd, &yw);
+    int clears = 1;
     for (int k = 0; k < g_ship_count; k++) {
         Unit *o = &g_units[g_ships[k]];
         const UnitDef *ohd = def_hull(o->def_idx);
-        if (!ohd || o->alive != UNIT_ALIVE_ACTIVE || o->carried_by >= 0 ||
-            o->player_id != f->player_id || o->under_construction ||
-            o->cmd_kind != UNIT_CMD_NONE)
+        if (!ohd || o->alive != UNIT_ALIVE_ACTIVE || o->carried_by >= 0) continue;
+        if (o->player_id == f->player_id && !o->under_construction &&
+            o->cmd_kind == UNIT_CMD_NONE &&
+            ship_in_yard_way(&yw, ohd, g_ships[k], o->world_x, o->world_y, o->heading,
+                             SHIP_PAD_CLEAR) &&
+            (!ship_by_rally(f, o, ohd) ||
+             !ship_hulls_apart(ohd, o->world_x, o->world_y, o->heading, pd, pad_x,
+                               pad_y, yw.pad_heading, SHIP_PAD_CLEAR)) &&
+            ship_launch_spot(f, fx, fz, o, Units_GetDef(o->def_idx), ohd, &yw)) {
+            if (yw.n_movers < 32) yw.movers[yw.n_movers++] = g_ships[k];
             continue;
-        if (ship_in_yard_way(&yw, ohd, g_ships[k], o->world_x, o->world_y,
-                             o->heading, SHIP_PAD_CLEAR))
-            ship_launch_spot(f, fx, fz, o, Units_GetDef(o->def_idx), ohd, &yw);
+        }
+        if (o->cmd_kind != UNIT_CMD_MOVE && o->cur_speed_ppt <= 0.0f &&
+            !ship_hulls_apart(ohd, o->world_x, o->world_y, o->heading, pd, pad_x,
+                              pad_y, yw.pad_heading, UNIT_HULL_MARGIN))
+            clears = 0;
     }
+    return clears;
 }
 
 /* Whether a unit other than skip is walking to a point within reach px
@@ -8208,6 +8883,13 @@ static uint8_t  *g_scratch_wet   = NULL;
  * quantity the legacy rasteriser interpolates and depth-tests
  * (legacy:197697). Base offset dropped, only the order matters. */
 static float    *g_scratch_hkey  = NULL;
+/* One mesh's lit vertex colours and band offsets in v, by mesh vertex. */
+static uint32_t *g_lit_color     = NULL;
+static float    *g_lit_dv        = NULL;
+static float    *g_lit_du        = NULL;   /* a time-played texture's picture */
+/* The .shd row a face's level takes, by mesh vertex and by scratch vertex. */
+static uint8_t  *g_lit_row       = NULL;
+static uint8_t  *g_scratch_row   = NULL;
 static int       g_scratch_vcap  = 0;
 static uint16_t *g_scratch_idx   = NULL;
 static int       g_scratch_icap  = 0;
@@ -8621,6 +9303,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
                      TDF_ReadString(tdf, "explosionclass", ""));
         copy_bounded(w->water_explosion_class, sizeof(w->water_explosion_class),
                      TDF_ReadString(tdf, "waterexplosionclass", ""));
+        w->lightmap = (uint8_t)lightmap_glow(TDF_ReadString(tdf, "lightmap", ""));
+        w->nimbus = TDF_ReadInt(tdf, "nimbus", 0) != 0;
         copy_bounded(w->weapon_art, sizeof(w->weapon_art),
                      TDF_ReadString(tdf, "weaponart", ""));
         copy_bounded(w->model, sizeof(w->model),
@@ -8685,6 +9369,12 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
             ? TDF_ReadInt(tdf, "emittime", 30) * 2
             : 20;
         if (w->emit_ticks < 2) w->emit_ticks = 2;
+        /* Captures of the original: a bolt lives emittime x 2/3 ticks, 14 with none. */
+        {
+            int et = TDF_ReadInt(tdf, "emittime", -1);
+            w->bolt_ticks = (int16_t)(et > 0 ? et * 2 / 3 : 14);
+            if (w->bolt_ticks < 2) w->bolt_ticks = 2;
+        }
         {
             static const uint8_t defc[3][3] = {
                 { 255, 255, 255 }, { 200, 230, 255 }, { 180, 200, 255 }
@@ -8702,6 +9392,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
                 dst[c][2] = (uint8_t)(b < 0 ? 0 : b > 255 ? 255 : b);
             }
         }
+        if (w->is_los)
+            w->beam_add = hweffect_translucent(TDF_ReadString(tdf, "hweffect", ""));
         /* Spin terms and the ballistic tuning keys (legacy:250016,
          * legacy:246477). gravityadjustment defaults to 1.0. */
         w->spin_pitch     = TDF_ReadInt(tdf, "spinpitch", 0);
@@ -8772,6 +9464,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         /* A Remote Effect spell draws itself from its own keys. */
         w->remote_kind = 0;
         w->rain_sprite = -1;
+        w->rain_head = 0;
+        w->rain_head_dx = 0;
         for (int k = 0; k < 3; k++) w->radius_sprite[k] = -1;
         if (ascii_contains_ci(w->type, "remote")) {
             static const char *ra[3] = { "radiusart0", "radiusart1", "radiusart2" };
@@ -8792,6 +9486,12 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
             if (ascii_contains_ci(w->subtype, "hailstorm") && w->weapon_art[0]) {
                 w->remote_kind = 2;
                 w->rain_sprite = (int16_t)proj_sprite_index(w->weapon_art, w->weapon_art);
+                int hx = 0, hy = 0, mid = 0;
+                proj_sprite_drop_head(w->rain_sprite, &hx, &hy);
+                if (w->explosion_idx >= 0 && g_expl_classes[w->explosion_idx].variant_count > 0)
+                    mid = proj_sprite_burst_mid_x(g_expl_classes[w->explosion_idx].sprite[0]);
+                w->rain_head = (int16_t)hy;
+                w->rain_head_dx = (int16_t)(mid - hx);
             } else if (w->radius_sprite[0] >= 0) {
                 w->remote_kind = 1;
             }
@@ -8908,11 +9608,9 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
 /* Recursive prim probe (debug diagnostic). Prints every prim with its
  * resolved atlas pointer and UV rect. Used to figure out what specific
  * geometry corresponds to visual artifacts. */
-/* The colours a model's untextured faces take: those of its side's
- * palette, the one its textures are drawn in (legacy:164721-164729), not
- * the map's. A model with no side takes the first side's, which every
- * shipped side shares. The map's is the last resort. */
-static const uint32_t *flat_palette(const char *side_prefix) {
+/* Untextured face colours through every level, from the side's palette
+ * (legacy:164721-164729), the first side's for none. NULL: unlit. */
+static const uint32_t *flat_ramp(const char *side_prefix) {
     /* Without game files or a canvas format a palette would be cached
      * empty, and the textures decoded from it later too. */
     int ready = VFS_IsInitialized() && UI_RGBAFormat();
@@ -8923,11 +9621,9 @@ static const uint32_t *flat_palette(const char *side_prefix) {
         snprintf(pcx, sizeof(pcx), "%s", si->palette);
         char *dot = strrchr(pcx, '.');
         if (dot && strlen(dot) == 4) memcpy(dot, ".pcx", 4);
-        const uint32_t *pal = TexAtlas_Palette(pcx);
-        if (pal) return pal;
+        return TexAtlas_ShadeRamp(pcx);
     }
-    const GameWorld *w = World_Get();
-    return w ? w->terrain_rgba : NULL;
+    return NULL;
 }
 
 static void zon_probe(const Obj3DNode *n, int depth, int color_idx) {
@@ -8966,8 +9662,11 @@ typedef struct BakeState {
     int          first_index[UNIT_MESH_MAX_BATCHES];
     int          v_writer[UNIT_MESH_MAX_BATCHES];
     int          i_writer[UNIT_MESH_MAX_BATCHES];
+    float        inset_v[UNIT_MESH_MAX_BATCHES];  /* half a texel of the atlas height */
     int          batch_count;
-    const uint32_t *palette;     /* flat_palette, color_idx -> RGBA */
+    const uint32_t *palette;     /* color_idx -> RGBA at the identity level */
+    UnitMeshFace *faces;
+    int          face_count;
     int          team_color_idx; /* 0..11; selects atlas variant */
     /* A statue's paint: every face takes this texture (legacy:197875-197886). */
     const char  *paint;
@@ -8984,6 +9683,9 @@ static int batch_find_or_add(BakeState *bs, GPU_Texture *atlas, const SDL_FRect 
     if (bs->batch_count >= UNIT_MESH_MAX_BATCHES) return -1;
     int idx = bs->batch_count++;
     bs->atlas[idx] = atlas;
+    int aw = 0, ah = 0;
+    bs->inset_v[idx] = (atlas && GPU_TextureSize(atlas, &aw, &ah) == 0 && ah > 0)
+                     ? 0.5f / (float)ah : 0.0f;
     if (uv) bs->uv_rect[idx] = *uv;
     else    { bs->uv_rect[idx].x = 0; bs->uv_rect[idx].y = 0;
               bs->uv_rect[idx].w = 0; bs->uv_rect[idx].h = 0; }
@@ -9023,6 +9725,7 @@ static void bake_discover(const Obj3DNode *n, BakeState *bs) {
         if (b < 0) continue;
         bs->vert_count_batch[b] += nv;
         bs->tri_count_batch[b]  += (nv - 2);
+        bs->face_count++;
     }
     for (Obj3DNode *c = n->first_child; c; c = c->next_sibling) {
         bake_discover(c, bs);
@@ -9039,8 +9742,7 @@ static void bake_discover(const Obj3DNode *n, BakeState *bs) {
  *     not -1, the first primitive of the node is the selection mesh
  *     and is skipped at render time. Per-NODE, not just root.
  *
- * Step A applies per-prim flat shading. Step B (next) replaces the
- * runtime tc_flag-based team color with per-player atlas variants. */
+ * Each prim is recorded as a face for the per-frame light. */
 static void bake_emit(const Obj3DNode *n,
                       float ax, float ay, float az,
                       int parent_node_idx,
@@ -9104,55 +9806,45 @@ static void bake_emit(const Obj3DNode *n,
         int b = batch_find_or_add(bs, atlas, &uv_rect);
         if (b < 0) continue;
 
-        /* Per-primitive flat shading. Compute the prim's face normal
-         * from the first three vertices (consistent with the decomp's
-         * 197710-197791 normal pass), dot with a fixed key-light, map
-         * to a subtle brightness range. All verts of this prim get the
-         * SAME color — flat shading per the original engine. */
-        float light_intensity = 1.0f;
-        if (nv >= 3) {
-            int vi0 = prim->vert_indices[0];
-            int vi1 = prim->vert_indices[1];
-            int vi2 = prim->vert_indices[2];
+        /* The face's outward normal from its first three vertices, lit
+         * each frame in world space (legacy:197710-197791). */
+        UnitMeshFace *face = bs->faces ? &bs->faces[bs->face_count++] : NULL;
+        if (face) {
+            memset(face, 0, sizeof(*face));
+            face->first_vert = (uint16_t)bs->v_writer[b];
+            face->vert_count = (uint16_t)nv;
+            face->node = (uint16_t)((this_node_idx >= 0) ? this_node_idx : 0);
+            face->batch = (uint8_t)b;
+            face->flat_idx = (uint8_t)prim->color_idx;
+            face->anim = (uint16_t)(tex[0] ? TexAtlas_AnimOf(tex) : 0);
+            const int vi0 = prim->vert_indices[0];
+            const int vi1 = prim->vert_indices[1];
+            const int vi2 = prim->vert_indices[2];
             if (vi0 >= 0 && vi0 < n->num_vertices &&
                 vi1 >= 0 && vi1 < n->num_vertices &&
-                vi2 >= 0 && vi2 < n->num_vertices)
-            {
-                float ex = n->vertices[vi1].x - n->vertices[vi0].x;
-                float ey = n->vertices[vi1].y - n->vertices[vi0].y;
-                float ez = n->vertices[vi1].z - n->vertices[vi0].z;
-                float fx = n->vertices[vi2].x - n->vertices[vi0].x;
-                float fy = n->vertices[vi2].y - n->vertices[vi0].y;
-                float fz = n->vertices[vi2].z - n->vertices[vi0].z;
-                float nrx = ey * fz - ez * fy;
-                float nry = ez * fx - ex * fz;
-                float nrz = ex * fy - ey * fx;
-                float len = sqrtf(nrx*nrx + nry*nry + nrz*nrz);
-                if (len > 1.0f) {
-                    nrx /= len; nry /= len; nrz /= len;
-                    /* Light from upper-front-left, modest contrast. */
-                    const float Lx = 0.4f, Ly = -0.85f, Lz = -0.3f;
-                    float dot = nrx * Lx + nry * Ly + nrz * Lz;
-                    light_intensity = 0.85f + 0.15f * dot;
-                    if (light_intensity < 0.70f) light_intensity = 0.70f;
-                    if (light_intensity > 1.0f)  light_intensity = 1.0f;
+                vi2 >= 0 && vi2 < n->num_vertices) {
+                const float ex = n->vertices[vi1].x - n->vertices[vi0].x;
+                const float ey = n->vertices[vi1].y - n->vertices[vi0].y;
+                const float ez = n->vertices[vi1].z - n->vertices[vi0].z;
+                const float fx = n->vertices[vi2].x - n->vertices[vi0].x;
+                const float fy = n->vertices[vi2].y - n->vertices[vi0].y;
+                const float fz = n->vertices[vi2].z - n->vertices[vi0].z;
+                const float nrx = ey * fz - ez * fy;
+                const float nry = ez * fx - ex * fz;
+                const float nrz = ex * fy - ey * fx;
+                const float len = sqrtf(nrx*nrx + nry*nry + nrz*nrz);
+                if (len > 0.0f) {
+                    face->normal[0] = nrx / len;
+                    face->normal[1] = nry / len;
+                    face->normal[2] = nrz / len;
                 }
             }
         }
 
-        /* Build the per-prim color. For textured prims this is a
-         * grey-scale modulator applied to the texture sample. For
-         * FLAT_COLOR prims it's the artist's palette[color_idx]. */
-        uint32_t prim_color;
-        if (atlas == NULL && bs->palette) {
-            prim_color = bs->palette[prim->color_idx & 0xFF];
-            /* Don't dim the artist's chosen flat color via lighting —
-             * keep it full intensity so banners and decals stay punchy. */
-        } else {
-            uint32_t L = (uint32_t)(light_intensity * 255.0f);
-            if (L > 255) L = 255;
-            prim_color = L | (L << 8) | (L << 16) | (0xFFu << 24);
-        }
+        /* Unlit colour: white under a texture, the artist's palette
+         * colour on a FLAT_COLOR face. */
+        uint32_t prim_color = 0xFFFFFFFFu;
+        if (atlas == NULL && bs->palette) prim_color = bs->palette[prim->color_idx & 0xFF];
 
         int base = bs->v_writer[b];   /* batch-local vertex base */
         for (int k = 0; k < nv; k++) {
@@ -9195,10 +9887,11 @@ static void bake_emit(const Obj3DNode *n,
                  * the model up: at 1.5 texels a lodestone lost the
                  * bottom of its card and stopped covering its pad. */
                 const float INSET = 0.5f / 1024.0f;
+                const float INSET_V = bs->inset_v[b];
                 float u0 = uv_rect.x + INSET;
-                float v0 = uv_rect.y + INSET;
+                float v0 = uv_rect.y + INSET_V;
                 float uw = uv_rect.w - 2.0f * INSET;
-                float vh = uv_rect.h - 2.0f * INSET;
+                float vh = uv_rect.h - 2.0f * INSET_V;
                 if (uw < 0.0f) uw = 0.0f;
                 if (vh < 0.0f) vh = 0.0f;
                 uvs[2 * slot + 0] = u0 + lu * uw;
@@ -9238,14 +9931,15 @@ static void bake_emit(const Obj3DNode *n,
     }
 }
 
-static UnitMesh *Mesh_BakePainted(const Obj3DFile *obj, const uint32_t *palette,
+static UnitMesh *Mesh_BakePainted(const Obj3DFile *obj, const uint32_t *ramp,
                                    int color_idx, const char *paint)
 {
     if (!obj || !obj->root) return NULL;
 
     BakeState bs;
     memset(&bs, 0, sizeof(bs));
-    bs.palette = palette;
+    const GameWorld *w = World_Get();
+    bs.palette = ramp ? ramp + TEX_SHADE_IDENTITY * 256 : (w ? w->terrain_rgba : NULL);
     bs.team_color_idx = color_idx;
     bs.paint = (paint && paint[0]) ? paint : NULL;
 
@@ -9279,6 +9973,10 @@ static UnitMesh *Mesh_BakePainted(const Obj3DFile *obj, const uint32_t *palette,
     m->indices       = (uint16_t *)tak_malloc(sizeof(uint16_t)     * (size_t)total_i);
     m->vert_node_idx = (uint16_t *)tak_malloc(sizeof(uint16_t)     * (size_t)total_v);
     m->tri_seq       = (uint32_t *)tak_malloc(sizeof(uint32_t) * ((size_t)total_i / 3));
+    /* Optional: without it the mesh keeps its unlit colours, so a failed
+     * allocation never costs a unit its script. */
+    m->faces = bs.face_count > 0
+             ? (UnitMeshFace *)tak_malloc(sizeof(UnitMeshFace) * (size_t)bs.face_count) : NULL;
     if (!m->positions || !m->uvs || !m->colors || !m->indices ||
         !m->vert_node_idx || !m->tri_seq) {
         if (m->positions)     tak_free(m->positions);
@@ -9287,10 +9985,14 @@ static UnitMesh *Mesh_BakePainted(const Obj3DFile *obj, const uint32_t *palette,
         if (m->indices)       tak_free(m->indices);
         if (m->vert_node_idx) tak_free(m->vert_node_idx);
         if (m->tri_seq)       tak_free(m->tri_seq);
+        if (m->faces)         tak_free(m->faces);
         tak_free(m);
         return NULL;
     }
     bs.tri_seq = m->tri_seq;
+    bs.faces = m->faces;
+    bs.face_count = 0;
+    m->flat_ramp = ramp;
     bs.seq_counter = 0;
 
     m->aabb_min[0] = m->aabb_min[1] = m->aabb_min[2] = +1e30f;
@@ -9306,18 +10008,20 @@ static UnitMesh *Mesh_BakePainted(const Obj3DFile *obj, const uint32_t *palette,
 
     m->vert_count  = total_v;
     m->tri_count   = total_i / 3;
+    m->face_count  = bs.face_count;
     m->batch_count = bs.batch_count;
     for (int b = 0; b < bs.batch_count; b++) {
         m->batches[b].atlas_tex   = bs.atlas[b];
         m->batches[b].first_index = bs.first_index[b];
         m->batches[b].index_count = bs.tri_count_batch[b] * 3;
+        (void)TexAtlas_ShadeMap(bs.atlas[b], &m->batches[b].shade);
     }
     return m;
 }
 
-static UnitMesh *Mesh_Bake(const Obj3DFile *obj, const uint32_t *palette,
+static UnitMesh *Mesh_Bake(const Obj3DFile *obj, const uint32_t *ramp,
                             int color_idx) {
-    return Mesh_BakePainted(obj, palette, color_idx, NULL);
+    return Mesh_BakePainted(obj, ramp, color_idx, NULL);
 }
 
 static void Mesh_Free(UnitMesh *m) {
@@ -9330,6 +10034,7 @@ static void Mesh_Free(UnitMesh *m) {
     if (m->indices)       tak_free(m->indices);
     if (m->vert_node_idx) tak_free(m->vert_node_idx);
     if (m->tri_seq)       tak_free(m->tri_seq);
+    if (m->faces)         tak_free(m->faces);
     tak_free(m);
 }
 
@@ -9355,7 +10060,7 @@ static int ensure_mesh_baked(UnitDef *def, int color_idx) {
         return -1;
     }
 
-    const uint32_t *palette = flat_palette(def->side);
+    const uint32_t *ramp = flat_ramp(def->side);
 
     /* Diagnostic prim probe: set TAK_PRIM_PROBE=<unitname> to dump a
      * unit's full prim/texture/color resolution at bake time. */
@@ -9367,7 +10072,7 @@ static int ensure_mesh_baked(UnitDef *def, int color_idx) {
         fprintf(stderr, "----- end %s probe -----\n", def->unitname);
     }
 
-    UnitMesh *m = Mesh_Bake(obj, palette, color_idx);
+    UnitMesh *m = Mesh_Bake(obj, ramp, color_idx);
     Obj3D_Close(obj);                        /* tree no longer needed */
 
     if (!m) {
@@ -9394,13 +10099,23 @@ static int ensure_scratch(int need_verts, int need_idx) {
         float    *wy = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
         float    *hk = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
         uint8_t  *wt = (uint8_t *)tak_malloc((size_t)new_cap);
-        if (!xy || !cl || !uv || !wy || !hk || !wt) {
+        uint32_t *lc = (uint32_t *)tak_malloc(sizeof(uint32_t) * (size_t)new_cap);
+        float    *ld = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
+        float    *lu = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
+        uint8_t  *lr = (uint8_t *)tak_malloc((size_t)new_cap);
+        uint8_t  *sr = (uint8_t *)tak_malloc((size_t)new_cap);
+        if (!xy || !cl || !uv || !wy || !hk || !wt || !lc || !ld || !lu || !lr || !sr) {
+            tak_free(lr);
+            tak_free(sr);
             if (xy) tak_free(xy);
             if (cl) tak_free(cl);
             if (uv) tak_free(uv);
             if (wy) tak_free(wy);
             if (hk) tak_free(hk);
             if (wt) tak_free(wt);
+            if (lc) tak_free(lc);
+            if (ld) tak_free(ld);
+            if (lu) tak_free(lu);
             return -1;
         }
         if (g_scratch_xy)    tak_free(g_scratch_xy);
@@ -9409,8 +10124,14 @@ static int ensure_scratch(int need_verts, int need_idx) {
         if (g_scratch_wy)    tak_free(g_scratch_wy);
         if (g_scratch_hkey)  tak_free(g_scratch_hkey);
         if (g_scratch_wet)   tak_free(g_scratch_wet);
+        if (g_lit_color)     tak_free(g_lit_color);
+        if (g_lit_dv)        tak_free(g_lit_dv);
+        if (g_lit_du)        tak_free(g_lit_du);
+        tak_free(g_lit_row);
+        tak_free(g_scratch_row);
         g_scratch_xy = xy; g_scratch_color = cl; g_scratch_uv = uv; g_scratch_wy = wy;
-        g_scratch_hkey = hk; g_scratch_wet = wt;
+        g_scratch_hkey = hk; g_scratch_wet = wt; g_lit_color = lc; g_lit_dv = ld;
+        g_lit_du = lu; g_lit_row = lr; g_scratch_row = sr;
         g_scratch_vcap = new_cap;
     }
     /* Node xform scratch — sized to the largest mesh seen. */
@@ -9446,7 +10167,10 @@ static void overlap_order_free(void);
 static void run_orders_free(void);
 static void cmp_free(void);
 
+static void depth_free(void);
+
 static void scratch_free(void) {
+    depth_free();
     tall_features_free();
     overlap_order_free();
     run_orders_free();
@@ -9457,6 +10181,12 @@ static void scratch_free(void) {
     if (g_scratch_wy)    { tak_free(g_scratch_wy);    g_scratch_wy    = NULL; }
     if (g_scratch_wet)   { tak_free(g_scratch_wet);   g_scratch_wet   = NULL; }
     if (g_scratch_hkey)  { tak_free(g_scratch_hkey);  g_scratch_hkey  = NULL; }
+    if (g_lit_color)     { tak_free(g_lit_color);     g_lit_color     = NULL; }
+    if (g_lit_dv)        { tak_free(g_lit_dv);        g_lit_dv        = NULL; }
+    if (g_lit_du)        { tak_free(g_lit_du);        g_lit_du        = NULL; }
+    tak_free(g_lit_row);
+    tak_free(g_scratch_row);
+    g_lit_row = g_scratch_row = NULL;
     if (g_scratch_idx)        { tak_free(g_scratch_idx);        g_scratch_idx        = NULL; }
     if (g_scratch_tri)        { tak_free(g_scratch_tri);        g_scratch_tri        = NULL; }
     if (g_scratch_node_xform) { tak_free(g_scratch_node_xform); g_scratch_node_xform = NULL; }
@@ -9595,6 +10325,33 @@ static int cob_sets_launch_port(const CobScript *cs) {
     return 0;
 }
 
+/* 1 when the script calls or starts its own `walk`: a watcher thread
+ * or MoveRate drives the cycle, as the original has it
+ * (docs/notes/2026-09-09-cob-entry-points.md). */
+static int cob_walks_itself(const CobScript *cs) {
+    if (!cs || !cs->code) return 0;
+    int walk = Cob_FindScript(cs, "walk");
+    if (walk < 0) return 0;
+    /* Decode each body by instruction, so an operand never reads as an opcode. */
+    for (uint16_t s = 0; s < cs->num_scripts; s++) {
+        uint32_t pc = cs->script_offsets[s], end = cs->num_code_words;
+        for (uint16_t k = 0; k < cs->num_scripts; k++) {
+            uint32_t o = cs->script_offsets[k];
+            if (o > pc && o < end) end = o;
+        }
+        while (pc < end) {
+            uint32_t op = cs->code[pc] & 0x100ff000u;
+            int n = Cob_OperandWords(cs->code[pc]);
+            if (n < 0) break;
+            if ((op == 0x10061000u || op == 0x10062000u) &&
+                pc + 1 < end && cs->code[pc + 1] == (uint32_t)walk)
+                return 1;
+            pc += 1u + (uint32_t)n;
+        }
+    }
+    return 0;
+}
+
 int Units_LoadDefs(void) {
     return Units_LoadDefsFor(0);
 }
@@ -9651,6 +10408,7 @@ int Units_LoadDefsFor(int crusades_balance) {
         d.cob_script = NULL;
         Cob_Load(&d.cob_script, cob_path);   /* NULL on miss — that's OK */
         d.script_launches = (uint8_t)cob_sets_launch_port(d.cob_script);
+        d.script_walks = (uint8_t)cob_walks_itself(d.cob_script);
         if (d.script_launches) launchers++;
         if (src) src[g_def_count] = paths[i];
         g_defs[g_def_count++] = d;
@@ -9696,6 +10454,10 @@ void Units_FreeDefs(void) {
     g_def_count = 0;
     g_def_cap   = 0;
     g_def_gen++;
+    /* A mod change brings its own effects.tdf and explosions.tdf. */
+    g_hweffect_count = -1;
+    g_expl_loaded = 0;
+    g_expl_class_count = 0;
     /* Projectile model meshes reference the same texture atlases. */
     proj_model_drop_meshes();
     /* So do corpse meshes. The next world rebuilds them against its
@@ -10017,7 +10779,13 @@ int Units_TrySetYardOpen(int handle, int open) {
  * the state hash or a save. */
 static uint32_t g_frames_lost[TAK_MAX_PLAYERS + 1];
 
+/* The unit and tick a body last bloomed, so a batch of bursts lights one.
+ * Drawing only, so neither saved nor hashed. */
+static struct { uint32_t id, tick; } g_bloomed[TAK_MAX_UNITS];
+
 void Units_ClearInstances(void) {
+    /* A new battle or a loaded save starts with no burst on record. */
+    memset(g_bloomed, 0, sizeof(g_bloomed));
     g_radar_built = 0;
     g_damage_flames_loaded = 0;
     g_smoke_loaded = 0;
@@ -10044,7 +10812,9 @@ void Units_ClearInstances(void) {
     g_unit_count = 0;
     g_projectile_count = 0;
     g_proj_effect_count = 0;
+    g_bolt_count = 0;
     g_fx_crand = 1;
+    g_sparkle_ring_count = 0;
     ugrid_rebuild();
     g_shot_flyer_count = 0;
     g_ship_count = 0;
@@ -10054,6 +10824,7 @@ void Units_ClearInstances(void) {
     g_next_stable_unit_id = 1;
     g_transport_sounds[0] = g_transport_sounds[1] = 0;
     g_sim_tick = 0;
+    Cob_SetTick(1u);
     g_sound_tick = 0;
     g_alarm_next_tick = 0;
     g_alarm_mon_next_tick = 0;
@@ -10063,6 +10834,7 @@ void Units_ClearInstances(void) {
 
 /* Forward decls for COB host callbacks; bodies are below. */
 static void cob_host_emit_sfx(void *user, int node, int32_t type);
+static void cob_host_explode(void *user, int node, int32_t how);
 static int32_t cob_host_get_unit_value(void *user, int param);
 static void    cob_host_set_unit_value(void *user, int port, int32_t value);
 static int32_t cob_host_play_sound(void *user, const char *sound_name,
@@ -10153,6 +10925,8 @@ static void unit_forget_slot(int slot) {
         }
         if (p->shooter == slot) p->shooter = -1;
     }
+    for (int i = 0; i < g_bolt_count; i++)
+        if (g_bolts[i].p.shooter == slot) g_bolts[i].p.shooter = -1;
     g_selection_count = slot_list_drop(g_selection, g_selection_count, slot);
     for (int g = 0; g < 10; g++) {
         g_ctrl_group_count[g] =
@@ -10165,7 +10939,8 @@ static void unit_forget_slot(int slot) {
 
 uint32_t Units_NextStableId(void) { return g_next_stable_unit_id; }
 uint32_t Units_SimTick(void) { return g_sim_tick; }
-void Units_SetSimTick(uint32_t tick) { g_sim_tick = tick; }
+uint32_t Units_ViewFrame(void) { return g_sim_tick / FX_TICKS_PER_ORIG_FRAME; }
+void Units_SetSimTick(uint32_t tick) { g_sim_tick = tick; Cob_SetTick(tick + 1u); }
 
 /* Where a unit's sight is stamped from. The original re-stamps as
  * soon as the unit enters a new fog cell (legacy:167450-167454), so
@@ -10224,6 +10999,7 @@ int Units_LoadAttachScript(int slot) {
     Cob_EngineSetHostSetter(u->cob, cob_host_set_unit_value);
     Cob_EngineSetHostPlaySound(u->cob, cob_host_play_sound);
     Cob_EngineSetHostEmitSfx(u->cob, cob_host_emit_sfx);
+    Cob_SetExplodeHook(cob_host_explode);
     Cob_EngineSetHostRand(u->cob, World_ScriptRand);
     /* No Create thread: the file carries the threads mid execution,
      * and Create writes the COB ports and plays sounds through the
@@ -10248,6 +11024,11 @@ Projectile *Units_LoadProjectiles(int count) {
     /* A shot from a save has no record of whose it was. */
     memset(g_proj_def, 0xff, sizeof(g_proj_def));
     memset(g_proj_wslot, 0xff, sizeof(g_proj_wslot));
+    memset(g_flame_body_set, 0, sizeof(g_flame_body_set));
+    memset(g_flame_stop, 0, sizeof(g_flame_stop));
+    memset(g_proj_sid, 0, sizeof(g_proj_sid));
+    memset(g_proj_piece, 0xff, sizeof(g_proj_piece));
+    g_bolt_count = 0;
     g_projectile_count = count;
     return g_projectiles;
 }
@@ -10471,11 +11252,12 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
                 Cob_EngineSetHostSetter(u->cob, cob_host_set_unit_value);
                 Cob_EngineSetHostPlaySound(u->cob, cob_host_play_sound);
                 Cob_EngineSetHostEmitSfx(u->cob, cob_host_emit_sfx);
+                Cob_SetExplodeHook(cob_host_explode);
                 Cob_EngineSetHostRand(u->cob, World_ScriptRand);
                 /* Run Create immediately so initial pose (HIDE/TURN-PIECE
                  * etc.) is set before the first frame renders. */
                 Cob_StartThreadByName(u->cob, "Create", NULL, 0);
-                Cob_RunAllThreads(u->cob);
+                Cob_RunReadyThreads(u->cob);
                 /* The script hears its longest reload in ms, how long a
                  * pose holds after an aim (legacy:245659-245687). */
                 int reload_frames = 0;
@@ -11410,7 +12192,8 @@ static int unit_start_script(Unit *u, const char *name,
 }
 
 /* Ensure a thread is running for the given script; if the previous
- * slot has died, start a fresh thread and update the slot pointer.
+ * slot no longer runs the script, start a fresh thread and update the
+ * slot pointer.
  * Only for scripts the engine is entitled to keep alive. See the
  * entry-point table before adding a caller. */
 static int ensure_thread(Unit *u, const char *script_name,
@@ -11418,8 +12201,10 @@ static int ensure_thread(Unit *u, const char *script_name,
                           const int32_t *args, int n_args)
 {
     if (!u->cob) return -1;
-    if (*slot_ref >= 0 && Cob_IsThreadAlive(u->cob, *slot_ref)) {
-        return *slot_ref;
+    if (Cob_ThreadRunsScript(u->cob, *slot_ref, script_name)) return *slot_ref;
+    if (slot_ref == &u->walk_thread_slot && unit_script_walks(u)) {
+        *slot_ref = -1;
+        return -1;
     }
     int slot = unit_start_script(u, script_name, args, n_args);
     *slot_ref = (int8_t)slot;
@@ -11482,8 +12267,7 @@ static void enter_state(Unit *u, UnitAnimState new_state) {
         /* We started this walk thread, so we end it. Legacy never has
          * to: its walk loops end themselves on the signal MoveRate(0)
          * raises (legacy:184448). Left running it walks in place. */
-        if (u->cob && u->walk_thread_slot >= 0)
-            Cob_StopThread(u->cob, u->walk_thread_slot);
+        if (unit_walk_running(u)) Cob_StopThread(u->cob, u->walk_thread_slot);
         u->walk_thread_slot = -1;
     }
     if (u->anim_state == UNIT_ANIM_ATTACKING && new_state != UNIT_ANIM_ATTACKING &&
@@ -11687,6 +12471,105 @@ static void unit_place_body(const Unit *u, const UnitDef *d, int fidx) {
     const FeatureDef *fd = Features_GetByIndex(fidx);
     fprintf(stderr, "Corpse: %s left %s at cell %d,%d\n",
             d->unitname, fd ? fd->name : "?", cell_x, cell_z);
+}
+
+static const UnitMesh *damage_flame_pose(const Unit *u, NodeXform *xf);
+
+/* The numbered classes an EXPLODE type word bursts, bit k for class k. */
+static unsigned explode_classes(int32_t how) {
+    return ((uint32_t)how >> 8) & ((1u << TAK_EXPL_NUMBERED) - 1u);
+}
+
+/* A posed piece's offset from its unit, turned by the heading, and its
+ * height over the unit's base, in world px. */
+static void piece_offset(const NodeXform *x, float heading, int32_t out[3]) {
+    const float ch = tak_cosf(heading), sh = tak_sinf(heading);
+    const float *p = x->trans;
+    out[0] = -(int32_t)((ch * p[0] + sh * p[2]) * UNIT_MODEL_TO_WORLD);
+    out[1] = -(int32_t)((sh * p[0] - ch * p[2]) * UNIT_MODEL_TO_WORLD);
+    out[2] = (int32_t)(p[1] * UNIT_MODEL_TO_WORLD);
+}
+
+/* A bloom's reach on one axis for an outline half `outline` px, see
+ * FX_BLOOM_RISE. */
+static int bloom_reach(int flash, int outline, int fit, int grow16, int most) {
+    const int r = outline <= fit ? (outline > flash ? outline : flash)
+                                 : flash + grow16 * (outline - fit) / 16;
+    return r < most ? r : most;
+}
+
+/* A body's bloom: the middle of its posed outline on screen, as offsets
+ * from the unit at its base height, and half its size plus the margin. */
+static void body_bloom(const UnitMesh *m, const NodeXform *xf, float heading,
+                       float tilt, int32_t out[4]) {
+    const float ch = tak_cosf(heading), sh = tak_sinf(heading);
+    float lo[2] = { 0.0f, 0.0f }, hi[2] = { 0.0f, 0.0f };
+    int any = 0;
+    for (int v = 0; m && v < m->vert_count; v++) {
+        const NodeXform *x = &xf[m->vert_node_idx[v]];
+        if (x->hidden) continue;
+        const float *p = &m->positions[3 * v];
+        const float mx = x->rot[0] * p[0] + x->rot[1] * p[1] + x->rot[2] * p[2] + x->trans[0];
+        const float my = x->rot[3] * p[0] + x->rot[4] * p[1] + x->rot[5] * p[2] + x->trans[1];
+        const float mz = x->rot[6] * p[0] + x->rot[7] * p[1] + x->rot[8] * p[2] + x->trans[2];
+        const float s[2] = { -(ch * mx + sh * mz) * UNIT_MODEL_TO_WORLD,
+                             -(sh * mx - ch * mz) * UNIT_MODEL_TO_WORLD - my * UNIT_MODEL_TO_WORLD * tilt };
+        for (int i = 0; i < 2; i++) {
+            if (!any || s[i] < lo[i]) lo[i] = s[i];
+            if (!any || s[i] > hi[i]) hi[i] = s[i];
+        }
+        any = 1;
+    }
+    out[0] = (int32_t)(0.5f * (lo[0] + hi[0]));
+    out[1] = (int32_t)(0.5f * (lo[1] + hi[1]));
+    out[2] = (int32_t)(0.5f * (hi[0] - lo[0])) + FX_GLOW_MARGIN;
+    out[3] = (int32_t)(0.5f * (hi[1] - lo[1])) + FX_GLOW_MARGIN * FX_GLOW_ASPECT16 / 16;
+}
+
+/* EXPLODE's burst: a picture of each class it names at the piece, for a
+ * seen unit (legacy:306894-306899). Thrown pieces are not drawn yet. */
+static void cob_host_explode(void *user, int node, int32_t how) {
+    const Unit *u = (const Unit *)user;
+    if (u < g_units || u >= g_units + TAK_MAX_UNITS || node < 0 ||
+        node >= UNIT_MESH_MAX_NODES) return;
+    const unsigned classes = explode_classes(how);
+    if (!classes) return;
+    const GameWorld *w = World_Get();
+    if (!w || !unit_visible_to_local_player(w, u)) return;
+    NodeXform xf[UNIT_MESH_MAX_NODES];
+    const UnitMesh *m = damage_flame_pose(u, xf);
+    if (!m || node >= m->node_count) return;
+    int32_t at[3];
+    piece_offset(&xf[node], u->heading, at);
+    const int32_t base = (int32_t)unit_base_height(w, u);
+    load_explosion_classes();
+    g_fx_unit_emit = 1;
+    int size16 = 0;
+    for (int k = 0; k < TAK_EXPL_NUMBERED; k++) {
+        if (!(classes >> k & 1u) || g_expl_numbered[k] < 0) continue;
+        const ExplosionClassDef *ec = &g_expl_classes[g_expl_numbered[k]];
+        ProjectileEffect *e = spawn_class_picture(ec->sprite[fx_rand(ec->variant_count)],
+                                                  u->world_x + at[0], u->world_y + at[1],
+                                                  base + at[2]);
+        /* A fire burst blends as its sheet does and goes under its dust. */
+        if (e && ec->light) e->under = 1;
+        if (e && ec->light && k < 4 && k_glow_class16[k] > size16) size16 = k_glow_class16[k];
+    }
+    /* Provisional: a body that bursts fire blooms once, all over. */
+    const int i = (int)(u - g_units);
+    if (size16 && (g_bloomed[i].id != u->stable_id || g_bloomed[i].tick != g_sim_tick)) {
+        g_bloomed[i].id = u->stable_id;
+        g_bloomed[i].tick = g_sim_tick;
+        int32_t b[4];
+        body_bloom(m, xf, u->heading, g_tan_tilt, b);
+        const int gw = FX_GLOW_REACH_X * size16 / 16, gh = gw * FX_GLOW_ASPECT16 / 16;
+        spawn_glow(bloom_reach(gw, b[2], FX_BLOOM_FIT_W, FX_BLOOM_WIDEN16, FX_BLOOM_MAX_W),
+                   bloom_reach(gh, b[3], FX_BLOOM_FIT_H, FX_BLOOM_TALLEN16, FX_BLOOM_MAX_H),
+                   size16,
+                   b[2] > FX_BLOOM_FIT_W,
+                   u->world_x + b[0], u->world_y + b[1] - FX_BLOOM_RISE, base);
+    }
+    g_fx_unit_emit = 0;
 }
 
 static void unit_leave_corpse(const Unit *u) {
@@ -12256,6 +13139,37 @@ static void ships_rebuild(void) {
     }
 }
 
+/* Rungs of the ladder, 8 s closing no ground, before a ship may go through
+ * another by the cells alone (M-012). */
+#define SHIP_STALL_PASS 2
+
+/* Whether stalled ship u may go through ship o: o stands with no move order
+ * and u holds up a yard or is on a hull, or o has stalled as long pressing
+ * on u. One behind a ship that is getting on waits. */
+static int ship_gives_way(const Unit *u, const UnitDef *d, int self, const Unit *o,
+                          const UnitDef *od, const ShipHull *me) {
+    if (o->cmd_kind != UNIT_CMD_MOVE && o->cur_speed_ppt <= 0.0f)
+        return ship_holds_up_yard(u, d) ||
+               ship_hull_blocked(d, self, -UNIT_HULL_TURN_SLACK, u->heading,
+                                 u->world_x, u->world_y, 0, 0.0f, 0, 0);
+    if (o->stall_esc < SHIP_STALL_PASS) return 0;
+    ShipHull now, ahead;
+    ship_hull_at(od, o->world_x, o->world_y, o->heading, &now);
+    ship_hull_at(od, o->world_x + (int32_t)(tak_sinf(o->heading) * 8.0f),
+                 o->world_y - (int32_t)(tak_cosf(o->heading) * 8.0f),
+                 o->heading, &ahead);
+    float dn = sqrtf(ship_hull_d2(&now, me)), da = sqrtf(ship_hull_d2(&ahead, me));
+    return da < ahead.r + me->r + UNIT_HULL_MARGIN && dn - da >= 2.0f;
+}
+
+/* A stalled ship going through a hull keeps its rung until it is clear. */
+static int ship_still_passing(const Unit *u) {
+    if (u->stall_esc < SHIP_STALL_PASS) return 0;
+    const UnitDef *d = def_hull(u->def_idx);
+    return d && ship_hull_blocked(d, (int)(u - g_units), -UNIT_HULL_TURN_SLACK,
+                                  u->heading, u->world_x, u->world_y, 0, 0.0f, 0, 0);
+}
+
 /* The first ship (handle + 1) whose hull ship d at (x, y) would come
  * within margin of, or 0. With a pose it comes from, only one it would
  * come closer to counts, so ships pressed together can always part. */
@@ -12288,7 +13202,11 @@ static int ship_hull_blocked(const UnitDef *d, int self, float margin,
             have_from = 1;
         }
         /* A quarter px squared absorbs rounding between touching hulls. */
-        if (dn2 + 0.25f < ship_hull_d2(&hc, &ho)) return j + 1;
+        if (dn2 + 0.25f >= ship_hull_d2(&hc, &ho)) continue;
+        if (self >= 0 && g_units[self].stall_esc >= SHIP_STALL_PASS &&
+            ship_gives_way(&g_units[self], d, self, o, od, &hc))
+            continue;
+        return j + 1;
     }
     return 0;
 }
@@ -12382,11 +13300,6 @@ extern double g_path_plan_calls;
 extern double g_path_prof_ms;
 static double eng_now_ms(void);
 static int g_path_budget_this_tick = 8;
-/* Cells the searches of one tick may open before the rest wait for the
- * next. A search that cannot reach its goal opens 8192, and sixteen of
- * them in one tick was a 35 ms tick. Counted, so every machine agrees. */
-#define UNIT_PATH_TICK_WORK (3 * 8192)
-static int g_path_work_this_tick;
 
 /* Ticks without closing on the current target before the route is
  * dropped and planned again from here. The original replans after a
@@ -12789,7 +13702,7 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
         }
         if (improved) {
             u->stall_ticks = 0;
-            u->stall_esc = 0;
+            if (!ship_still_passing(u)) u->stall_esc = 0;
         } else if (u->stall_ticks < 0x7fff) {
             u->stall_ticks++;
         }
@@ -13318,6 +14231,22 @@ static void unit_face_toward(Unit *u, const UnitDef *def,
     unit_face_bearing(u, def, (float)dx, (float)dy);
 }
 
+/* A mobile at its work turns onto it at its turninplacerate, scaled by
+ * its ground, when that comes to min_rate. A ship has none and holds its
+ * heading (legacy:12172-12186, legacy:13407-13421, legacy:14642-14676).
+ * A flyer still turns at once. */
+static void unit_face_work(Unit *u, const UnitDef *def, int64_t dx, int64_t dy,
+                           float min_rate) {
+    if ((dx == 0 && dy == 0) || !def || def->max_velocity <= 0.0f) return;
+    float want = tak_atan2f((float)dx, -(float)dy);
+    if (def->can_fly) {
+        u->heading = want;
+        return;
+    }
+    float rate = def->turn_in_place_rate * unit_ground_scale(World_Get(), u, def);
+    if (rate >= min_rate) unit_turn_at(u, rate, want);
+}
+
 /* Onto a unit, from where both truly are: a walker's drift is then the
  * small turn it is, not a whole pixel's worth every other tick. */
 static void unit_face_unit(Unit *u, const UnitDef *def, const Unit *t) {
@@ -13620,7 +14549,8 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
                 if (settle && (occ_escape ||
                                ship_hull_blocked(hd, self_h, 0.0f, u->heading,
                                                  u->world_x, u->world_y, 0,
-                                                 0.0f, 0, 0)))
+                                                 0.0f, 0, 0) ||
+                               ship_holds_up_yard(u, hd)))
                     settle = 0;
             }
             if (settle) return 1;
@@ -14091,6 +15021,7 @@ static void fire_weapon_shot_now(Unit *u, int shooter_idx, int slot,
 
     const GameWorld *sw = World_Get();
     play_weapon_start_sound(u, wp);
+    spawn_nimbus(u, wp);
 
     /* Line-of-Sight: instant ray — damage lands now, the pool entry
      * only holds the beam visual for emittime (legacy :249725). */
@@ -14159,9 +15090,16 @@ static void fire_weapon_shot_now(Unit *u, int shooter_idx, int slot,
             if (kind == TAK_SHOT_FLY) { kind = TAK_SHOT_UNIT; struck = target_handle; }
             shot_note_end(shooter_idx, target_handle, kind, struck, bx, by,
                           t->world_x, t->world_y, ex, ey);
+            g_flame_stop[bslot][0] = ex;
+            g_flame_stop[bslot][1] = ey;
+            g_flame_stop[bslot][2] = (int32_t)eh;
             if (kind == TAK_SHOT_UNIT && struck == target_handle) {
                 ex = t->world_x; ey = t->world_y; eh = aim;
             }
+        } else {
+            g_flame_stop[bslot][0] = ex;
+            g_flame_stop[bslot][1] = ey;
+            g_flame_stop[bslot][2] = (int32_t)eh;
         }
         b->src_x     = bx;
         b->src_y     = by;
@@ -14175,6 +15113,8 @@ static void fire_weapon_shot_now(Unit *u, int shooter_idx, int slot,
         memcpy(b->beam_rgb[0], wp->beam_inner,  3);
         memcpy(b->beam_rgb[1], wp->beam_middle, 3);
         memcpy(b->beam_rgb[2], wp->beam_outer,  3);
+        b->beam_add = wp->beam_add;
+        if (wp->los_kind == 1) bolt_note(b, wp);
         if (kind != TAK_SHOT_UNIT || struck != target_handle) {
             if (kind == TAK_SHOT_UNIT) shot_strike_unit(b, bslot, struck);
             else if (kind != TAK_SHOT_OFFMAP) shot_burst(b, bslot);
@@ -14182,7 +15122,7 @@ static void fire_weapon_shot_now(Unit *u, int shooter_idx, int slot,
         }
         /* LOS hits still play the weapon's explosionclass at the
          * strike point (legacy:245025). */
-        projectile_impact_fx(b, t, (uint32_t)bslot);
+        projectile_impact_fx(b, t);
         if (b->area_of_effect >= BLAST_DIRECT_BELOW) {
             apply_projectile_area_damage(b);
             blast_scenery(b, target_handle);
@@ -14251,11 +15191,82 @@ static void fire_weapon_shot_now(Unit *u, int shooter_idx, int slot,
 
 /* Ground shot: projectile flies to (cmd_x, cmd_y) with no unit target
  * — splash there damages everything (friendly fire, legacy). */
-/* A spell's own picture, laid where it lands: rings of the weapon's
- * radiusart sprites spreading to areaofeffect over ringduration, one
- * ring every ringdelay after builduptime; or a rain of its weaponart
- * for duration at particlespersecond, each drop bursting with the
- * explosionclass. The sim's shot still flies and lands, unseen. */
+/* A storm's drop falls this far, drifting from the east and south by these
+ * px in 1000 of it, as a capture of the original's Fire Storm shows. */
+#define FX_RAIN_FALL_PX  1000
+#define FX_RAIN_DRIFT_E  50
+#define FX_RAIN_DRIFT_S  34
+/* A drop's puffs (D-055): 3 or 4 bigsmoke added, a frame of fall apart,
+ * from picture 4 on by the sheet's holds. */
+#define RAIN_PUFFS_MIN    3
+#define RAIN_PUFFS_MAX    4
+#define RAIN_PUFF_FIRST   4
+
+/* Where a storm's drop j comes down: a point of the blast's reach, half
+ * the areaofeffect, from the cast's integer noise. */
+static void rain_drop_point(const UnitWeapon *wp, int32_t x, int32_t y, uint32_t seed,
+                            int j, int32_t *out_x, int32_t *out_y) {
+    const int32_t r = wp->area_of_effect / 2;
+    *out_x = x;
+    *out_y = y;
+    if (r <= 0) return;
+    for (uint32_t k = 0; k < 64; k++) {
+        uint32_t n = unit_deterministic_noise((uint32_t)x, (uint32_t)y,
+                                              seed * 31u + (uint32_t)j * 64u + k);
+        int32_t dx = (int32_t)((n & 0xffffu) % (uint32_t)(2 * r + 1)) - r;
+        int32_t dy = (int32_t)((n >> 16) % (uint32_t)(2 * r + 1)) - r;
+        if (dx * dx + dy * dy > r * r) continue;
+        *out_x = x + dx;
+        *out_y = y + dy;
+        return;
+    }
+}
+
+/* A storm rains particlespersecond drops a second for its duration,
+ * each falling FX_RAIN_FALL_PX at weaponvelocity. */
+static int rain_drop_count(const UnitWeapon *wp) {
+    int n = wp->rain_per_second * wp->rain_ticks / 60;
+    return n > 0 ? n : 1;
+}
+
+static int rain_fall_ticks(const UnitWeapon *wp) {
+    int32_t t = wp->velocity_pps > 0 ? FX_RAIN_FALL_PX * 60 / wp->velocity_pps : 36;
+    return t > 0 ? t : 1;
+}
+
+static int rain_drop_delay(const UnitWeapon *wp, int j) {
+    return wp->buildup_ticks + j * wp->rain_ticks / rain_drop_count(wp);
+}
+
+/* One puff where the drop is on each of its first frames of fall, playing
+ * from RAIN_PUFF_FIRST by the sheet's holds (D-055). */
+static void rain_puffs(const ProjectileEffect *drop, int32_t rise, int32_t vx, int32_t vy,
+                       int delay) {
+    static int s_puff = -2;
+    if (s_puff == -2) s_puff = proj_sprite_index("bigsmoke", "bigsmoke");
+    const int pics = proj_sprite_pics(s_puff);
+    if (pics <= RAIN_PUFF_FIRST) return;
+    int start = 0;
+    for (int k = 0; k < RAIN_PUFF_FIRST; k++) start += sheet_hold_ticks(s_puff, k);
+    const int lo = RAIN_PUFFS_MIN, hi = RAIN_PUFFS_MAX;
+    const int n = lo + fx_rand(hi - lo + 1);
+    for (int k = 0; k < n; k++) {
+        const int32_t t = 2 * k;   /* a frame is 2 ticks */
+        int32_t x = drop->world_x + (int32_t)(((int64_t)vx * t) >> 16);
+        int32_t y = drop->world_y + (int32_t)(((int64_t)vy * t) >> 16);
+        int32_t h = (int32_t)(((int64_t)drop->height_fp + (int64_t)rise * t) >> 16);
+        ProjectileEffect *p = spawn_unit_fx_moving(s_puff, x, y, h, 0);
+        if (!p) return;
+        p->delay_ticks = (uint16_t)(delay + t);
+        p->sheet_timed = 1;
+        p->age_ticks = (uint16_t)start;
+        p->life_ticks = (uint16_t)sheet_ticks(s_puff);
+        p->add = 1;
+    }
+}
+
+/* A spell's picture where it lands: its radiusart rings, or a rain of its
+ * weaponart over the blast's reach (D-054). The sim's shot flies unseen. */
 static void spell_effects_at(const UnitWeapon *wp, int shot, int32_t x, int32_t y,
                              uint32_t seed) {
     if (!wp || !wp->remote_kind) return;
@@ -14283,62 +15294,156 @@ static void spell_effects_at(const UnitWeapon *wp, int shot, int32_t x, int32_t 
         return;
     }
     if (wp->rain_sprite < 0) return;
-    int n = wp->rain_per_second * wp->rain_ticks / 60;
-    if (n <= 0) n = 1;
-    const int32_t fall_px = 400, fall_ticks = 36;
+    const int n = rain_drop_count(wp);
+    const int32_t fall_px = FX_RAIN_FALL_PX;
+    const int32_t fall_ticks = rain_fall_ticks(wp);
+    /* It reaches the ground on its last tick of fall and bursts on the
+     * next, having drifted on both. */
+    const int32_t rise = -((fall_px * 65536 + fall_ticks - 1) / fall_ticks);
+    const int32_t moves = fall_ticks + 1;
+    const int32_t vx = -(fall_px * FX_RAIN_DRIFT_E / 1000 * 65536) / moves;
+    const int32_t vy = -(fall_px * FX_RAIN_DRIFT_S / 1000 * 65536) / moves;
+    const int32_t ex = -(int32_t)(((int64_t)vx * moves) >> 16);
+    const int32_t ey = -(int32_t)(((int64_t)vy * moves) >> 16);
     for (int j = 0; j < n; j++) {
-        uint32_t na = unit_deterministic_noise((uint32_t)x, (uint32_t)y, seed * 31u + (uint32_t)j);
-        uint32_t nr = unit_deterministic_noise((uint32_t)y, (uint32_t)x, seed * 17u + (uint32_t)j);
-        float a = 6.2831853f * (float)(na & 0xffffu) / 65536.0f;
-        float r = (float)wp->area_of_effect * sqrtf((float)(nr & 0xffffu) / 65536.0f);
-        int32_t dx = x + (int32_t)(tak_cosf(a) * r), dy = y + (int32_t)(tak_sinf(a) * r);
+        int32_t dx = x, dy = y;
+        rain_drop_point(wp, x, y, seed, j, &dx, &dy);
         int32_t g = w ? Terrain_SampleHeight(w, dx, dy) : ground;
-        ProjectileEffect *e = spawn_unit_fx_moving(wp->rain_sprite, dx, dy, g + fall_px,
-                                                   -(fall_px * 65536) / fall_ticks);
+        ProjectileEffect *e = spawn_unit_fx_moving(wp->rain_sprite, dx + ex, dy + ey,
+                                                   g + fall_px, rise);
         if (!e) return;
+        e->vx_fp = vx;
+        e->vy_fp = vy;
+        e->pic_dx = wp->rain_head_dx;
+        e->pic_dy = wp->rain_head;
         e->stop_fp = g * 65536;
         e->life_ticks = 0;
-        e->delay_ticks = (uint16_t)(wp->buildup_ticks + j * wp->rain_ticks / n);
+        e->delay_ticks = (uint16_t)rain_drop_delay(wp, j);
         e->ticks_per_frame = 2;
         e->loops = 1;
         e->land_explosion = wp->explosion_idx;
+        rain_puffs(e, rise, vx, vy, rain_drop_delay(wp, j));
     }
 }
 
 /* Where a beam leaves, as drawn: its firing piece, never below the flat
  * clearance. A piece whose origin sits at the feet (TARMAGE's staff) and
  * a shot with no piece record, as one from a save, take the clearance. */
-float Units_BeamStartHeight(const Projectile *p) {
-    float clear = (float)p->src_height + 12.0f;
-    if (!p->from_piece && p->muzzle_height <= 0.0f) return clear;
-    return p->muzzle_height > clear ? p->muzzle_height : clear;
+static float beam_clearance(float h, int32_t ground) {
+    float clear = (float)ground + 12.0f;
+    return h > clear ? h : clear;
 }
 
-/* One flame particle a tick from the muzzle toward the strike point,
- * its velocity jittered a tenth either way (legacy:247444). */
+float Units_BeamStartHeight(const Projectile *p) {
+    if (!p->from_piece && p->muzzle_height <= 0.0f)
+        return (float)p->src_height + 12.0f;
+    return beam_clearance(p->muzzle_height, p->src_height);
+}
+
+/* The weapon a shot was fired from, NULL for a shot from a save. */
+static const UnitWeapon *shot_weapon(int idx) {
+    const UnitDef *d = Units_GetDef(g_proj_def[idx]);
+    int ws = g_proj_wslot[idx];
+    return d && ws >= 0 && ws < d->num_weapons ? &d->weapons[ws] : NULL;
+}
+
+/* Where a flame leaves: the firing piece, or the beam's start from a save.
+ * 0 once the caster is not alive, which ends the breath, as in the original. */
+static int flame_origin(const Projectile *p, int idx, const UnitWeapon *wp,
+                        float *x, float *y, float *h, float *vx, float *vy) {
+    *vx = *vy = 0.0f;
+    Unit *c = (p->shooter >= 0 && p->shooter < g_unit_count)
+            ? &g_units[p->shooter] : NULL;
+    uint8_t a = c ? c->alive : 0;
+    if (!c || (a != UNIT_ALIVE_ACTIVE && a != UNIT_ALIVE_TRANSPORTED) ||
+        (g_proj_sid[idx] && c->stable_id != g_proj_sid[idx]))
+        return 0;
+    if (!wp) {
+        *x = (float)p->src_x;
+        *y = (float)p->src_y;
+        *h = Units_BeamStartHeight(p);
+        return 1;
+    }
+    /* The piece the shot left from, posed now: no script runs. Placed as
+     * spawn_projectile places a shot's start. */
+    const GameWorld *w = World_Get();
+    const int32_t src = w ? Terrain_SampleHeight(w, c->world_x, c->world_y) : 0;
+    float fx = (float)c->world_x, fy = (float)c->world_y, fh = (float)src + 12.0f;
+    float mdx = 0.0f, mdy = 0.0f, mup = 0.0f;
+    int from_piece = 0;
+    if (w && (p->path_flags & UNIT_PROJ_PATH_TESTED) && g_proj_piece[idx] >= 0 &&
+        unit_piece_offset(c, g_proj_piece[idx], &mdx, &mdy, &mup)) {
+        const UnitDef *sd = Units_GetDef(c->def_idx);
+        float base = (float)src;
+        if (sd && (def_rides_sea(sd) || sd->can_fly) && w->water_height > src)
+            base = (float)w->water_height;
+        fx += mdx;
+        fy += mdy;
+        fh = base + mup;
+        from_piece = 1;
+    }
+    fh += from_piece ? c->flight_alt : unit_air_alt(w, c);
+    *x = fx;
+    *y = fy;
+    *h = beam_clearance(fh, w ? Terrain_SampleHeight(w, (int32_t)floorf(fx),
+                                                     (int32_t)floorf(fy)) : 0);
+    /* The caster's own motion over the 2 ticks since the last flame. */
+    if (g_flame_body_set[idx]) {
+        *vx = (float)(c->world_x - g_flame_body[idx][0]) * 0.5f;
+        *vy = (float)(c->world_y - g_flame_body[idx][1]) * 0.5f;
+    }
+    g_flame_body[idx][0] = c->world_x;
+    g_flame_body[idx][1] = c->world_y;
+    g_flame_body_set[idx] = 1;
+    return 1;
+}
+
+/* One flame a frame from the mouth to the strike point, jittered a tenth
+ * (legacy:247444), at weaponvelocity plus the caster's motion. */
 static void flame_particle(const Projectile *p, int idx) {
     static int s_flame = -2;
     if (s_flame == -2) s_flame = proj_sprite_index("flame", "flame");
     if (s_flame < 0) return;
-    float dx = (float)(p->world_x - p->src_x), dy = (float)(p->world_y - p->src_y);
+    /* emit_ticks is even, so the first tick after the shot sheds one. */
+    if (!(p->ttl_ticks & 1)) return;
+    float ox = 0.0f, oy = 0.0f, h0 = 0.0f, cvx = 0.0f, cvy = 0.0f;
+    const UnitWeapon *wp = shot_weapon(idx);
+    if (!flame_origin(p, idx, wp, &ox, &oy, &h0, &cvx, &cvy)) return;
+    /* It runs out where the walk met what it struck, short of a target's
+     * middle, as the original's spout and wagon flames do. */
+    int32_t tx = g_flame_stop[idx][0], ty = g_flame_stop[idx][1];
+    float th = (float)g_flame_stop[idx][2];
+    if (!tx && !ty) { tx = p->world_x; ty = p->world_y; th = p->height; }
+    float dx = (float)tx - ox, dy = (float)ty - oy;
     float len = sqrtf(dx * dx + dy * dy);
     if (len < 1.0f) return;
-    const float speed = 8.0f;
+    dx /= len;
+    dy /= len;
+    /* 8 px a tick where the weapon is not known, as from a save. */
+    float speed = wp && wp->velocity_pps > 0 ? (float)wp->velocity_pps / 60.0f : 8.0f;
     uint32_t n = unit_deterministic_noise((uint32_t)idx, (uint32_t)p->ttl_ticks, 7u);
     float jx = 1.0f + ((float)(n & 0xffu) / 255.0f - 0.5f) * 0.2f;
     float jy = 1.0f + ((float)((n >> 8) & 0xffu) / 255.0f - 0.5f) * 0.2f;
-    float h0 = Units_BeamStartHeight(p);
-    uint16_t life = (uint16_t)(len / speed + 1.0f);
+    /* Its sheet plays once over its flight to the strike point, as in the
+     * original: a short flight slows to the sheet's time. */
+    int pics = proj_sprite_pics(s_flame);
+    float sheet = (float)(pics > 0 ? pics * FX_TICKS_PER_ORIG_FRAME : 1);
+    float flight = len / speed > sheet ? len / speed : sheet;
+    if (flight > 65535.0f) flight = 65535.0f;
+    float pace = len / flight;
+    uint16_t life = (uint16_t)ceilf(flight);
+    int tpf = pics > 0 ? (life + pics - 1) / pics : FX_TICKS_PER_ORIG_FRAME;
+    if (tpf < FX_TICKS_PER_ORIG_FRAME) tpf = FX_TICKS_PER_ORIG_FRAME;
     /* It falls or climbs to where the ray stopped as it gets there. */
-    ProjectileEffect *e = spawn_unit_fx_moving(s_flame, p->src_x, p->src_y,
-                                               (int32_t)h0,
-                                               (int32_t)((p->height - h0) / (float)life * 65536.0f));
+    ProjectileEffect *e = spawn_unit_fx_moving(s_flame, (int32_t)floorf(ox),
+                                               (int32_t)floorf(oy), (int32_t)h0,
+                                               (int32_t)((th - h0) / flight * 65536.0f));
     if (!e) return;
-    e->vx_fp = (int32_t)(dx / len * speed * jx * 65536.0f);
-    e->vy_fp = (int32_t)(dy / len * speed * jy * 65536.0f);
+    e->vx_fp = (int32_t)((dx * pace * jx + cvx) * 65536.0f);
+    e->vy_fp = (int32_t)((dy * pace * jy + cvy) * 65536.0f);
     e->life_ticks = life;
-    e->ticks_per_frame = 2;
-    e->loops = 1;
+    e->ticks_per_frame = (uint8_t)(tpf < 255 ? tpf : 255);
+    e->add = p->beam_add;
 }
 
 static void fire_ground_shot_now(Unit *u, int shooter_idx, int slot,
@@ -14349,6 +15454,7 @@ static void fire_ground_shot_now(Unit *u, int shooter_idx, int slot,
     if (run_fire_script) start_fire_script(u, slot);
     const GameWorld *sw = World_Get();
     play_weapon_start_sound(u, wp);
+    spawn_nimbus(u, wp);
     float speed = (float)wp->velocity_pps;
     if (speed <= 0.0f) speed = 720.0f;
     int slot_idx = spawn_projectile(u->world_x, u->world_y,
@@ -14377,6 +15483,9 @@ static void fire_ground_shot_now(Unit *u, int shooter_idx, int slot,
         kind = shot_walk(b, bx, by, bh, u->cmd_x, u->cmd_y, aim, -1, 0,
                          &ex, &ey, &eh, &struck);
     }
+    g_flame_stop[slot_idx][0] = ex;
+    g_flame_stop[slot_idx][1] = ey;
+    g_flame_stop[slot_idx][2] = (int32_t)eh;
     b->src_x     = bx;
     b->src_y     = by;
     b->world_x   = ex;
@@ -14389,6 +15498,8 @@ static void fire_ground_shot_now(Unit *u, int shooter_idx, int slot,
     memcpy(b->beam_rgb[0], wp->beam_inner,  3);
     memcpy(b->beam_rgb[1], wp->beam_middle, 3);
     memcpy(b->beam_rgb[2], wp->beam_outer,  3);
+    b->beam_add = wp->beam_add;
+    if (wp->los_kind == 1) bolt_note(b, wp);
     if (kind == TAK_SHOT_OFFMAP) return;
     if (kind == TAK_SHOT_UNIT) {
         shot_strike_unit(b, slot_idx, struck);
@@ -14398,8 +15509,7 @@ static void fire_ground_shot_now(Unit *u, int shooter_idx, int slot,
      * the unit it finds picks the impact sound (legacy:247590-247594,
      * legacy:246981-246985). The damage stays the splash. */
     struck = projectile_struck_unit(b);
-    projectile_impact_fx(b, struck >= 0 ? &g_units[struck] : NULL,
-                         (uint32_t)slot_idx);
+    projectile_impact_fx(b, struck >= 0 ? &g_units[struck] : NULL);
     if (b->area_of_effect > 0) apply_projectile_area_damage(b);
     blast_scenery(b, -1);
 }
@@ -15903,7 +17013,7 @@ static void transport_xfer_fx(const Unit *carrier, int32_t x, int32_t y,
     if (spin == -2) spin = proj_sprite_index("mindspin", "mindspin");
     if (swirl == -2) {
         swirl = proj_sprite_index("transportfx", "transswirl");
-        if (swirl >= 0) g_proj_sprites[swirl].fx_palette = 1;
+        fx_sheet(swirl, 1);
     }
     g_transport_sounds[unload ? 1 : 0]++;
     play_transport_sound(unload ? "UNLOAD" : "LOAD", x, y);
@@ -16733,10 +17843,11 @@ static void Units_TickCombat(void) {
             /* Immobile units never swing their base — legacy aims the
              * turret/bowmen PIECES via the COB AimWeapon script while
              * the structure itself stays put. A walker faces its target
-             * once there: on the way the walker owns the heading. */
-            if (desired != UNIT_ANIM_MOVING && (dx != 0 || dy != 0) &&
-                def->max_velocity > 0.0f)
-                u->heading = tak_atan2f((float)dx, -(float)dy);
+             * once there: on the way the walker owns the heading. A
+             * guard turns only at a turninplacerate over 999
+             * (legacy:14270-14283). */
+            if (desired != UNIT_ANIM_MOVING)
+                unit_face_work(u, def, dx, dy, 1000.0f);
         } else if ((u->cmd_kind == UNIT_CMD_RECLAIM ||
                     u->cmd_kind == UNIT_CMD_RESURRECT) &&
                    u->target < 0 && u->reclaim_tile_x >= 0) {
@@ -16780,9 +17891,8 @@ static void Units_TickCombat(void) {
                 } else {
                     desired = UNIT_ANIM_BUILDING;
                 }
-                if (desired != UNIT_ANIM_MOVING && (dx != 0 || dy != 0) &&
-                    def->max_velocity > 0.0f)
-                    u->heading = tak_atan2f((float)dx, -(float)dy);
+                if (desired != UNIT_ANIM_MOVING)
+                    unit_face_work(u, def, dx, dy, 1.0f);
             }
         } else if (u->cmd_kind == UNIT_CMD_LOAD && u->target >= 0 &&
                    (def->cap_flags & UNIT_CAP_TRANSPORT)) {
@@ -16835,9 +17945,8 @@ static void Units_TickCombat(void) {
              * turret/bowmen PIECES via the COB AimWeapon script while
              * the structure itself stays put. A walker faces its target
              * once there: on the way the walker owns the heading. */
-            if (desired != UNIT_ANIM_MOVING && (dx != 0 || dy != 0) &&
-                def->max_velocity > 0.0f)
-                u->heading = tak_atan2f((float)dx, -(float)dy);
+            if (desired != UNIT_ANIM_MOVING)
+                unit_face_work(u, def, dx, dy, 1.0f);
         } else if (u->target >= 0 &&
                    hover_attacks(u, def, &g_units[u->target])) {
             const Unit *t = &g_units[u->target];
@@ -17034,9 +18143,7 @@ static void Units_TickCombat(void) {
                 /* Face the building so the build animation plays
                  * facing the work, not whatever heading we approached
                  * from. Immobile builders stay put. */
-                if ((vx != 0 || vy != 0) && def->max_velocity > 0.0f) {
-                    u->heading = tak_atan2f((float)vx, -(float)vy);
-                }
+                unit_face_work(u, def, vx, vy, 1.0f);
             }
             if (arrived_at_site && target_alive_inprog) {
                 desired = UNIT_ANIM_BUILDING;
@@ -17298,7 +18405,7 @@ static void Units_TickCombat(void) {
                         rt->build_hp_accum += hp_per_tick_f;
                         /* A mend sparkles in the healer's art (legacy:32675-32676). */
                         if (rtd && rt->health < hp_max)
-                            build_sparkles(rt, u->target, rtd, def);
+                            build_sparkles(rt, u->target, rtd, def, u, (int)(u - g_units), def);
                         cloak_hold(u, def, CLOAK_WORK_TICKS);
                         int hp_per_tick = (int)floorf(rt->build_hp_accum);
                         if (hp_per_tick > 0) {
@@ -17394,7 +18501,8 @@ static void Units_TickCombat(void) {
                 bt->build_hp_accum += hp_per_tick_f;
                 cloak_hold(u, def, CLOAK_WORK_TICKS);
                 if (btd && bt->under_construction)
-                    build_sparkles(bt, (int)(bt - g_units), btd, btd);
+                    build_sparkles(bt, (int)(bt - g_units), btd, btd, u,
+                                   (int)(u - g_units), def);
                 int hp_per_tick = (int)floorf(bt->build_hp_accum);
                 if (hp_per_tick > 0) {
                     bt->build_hp_accum -= (float)hp_per_tick;
@@ -17764,6 +18872,21 @@ static int aura_takes(const Unit *s, const UnitAura *a, const Unit *t, int64_t *
         return 0;
     int64_t dx = (int64_t)t->world_x - s->world_x, dy = (int64_t)t->world_y - s->world_y;
     int64_t d2 = dx * dx + dy * dy;
+    /* Hulls hold two ships end on a hull's length apart where the
+     * original's cells let them close, so between ships it reaches from
+     * hull line to hull line (M-012). */
+    const UnitDef *sh = s->alive == UNIT_ALIVE_ACTIVE ? def_hull(s->def_idx) : NULL;
+    const UnitDef *th = sh && t->alive == UNIT_ALIVE_ACTIVE ? def_hull(t->def_idx) : NULL;
+    if (th) {
+        float lim = (float)a->radius + hull_reach(sh) + hull_reach(th);
+        if ((float)d2 < lim * lim) {
+            ShipHull hs, ht;
+            ship_hull_at(sh, s->world_x, s->world_y, s->heading, &hs);
+            ship_hull_at(th, t->world_x, t->world_y, t->heading, &ht);
+            int64_t l2 = (int64_t)ship_hull_d2(&hs, &ht);
+            if (l2 < d2) d2 = l2;
+        }
+    }
     if (d2 > (int64_t)a->radius * a->radius) return 0;
     int allied = !unit_players_are_enemies(s->player_id, t->player_id);
     if (allied == (a->affects_enemy != 0)) return 0;
@@ -17818,6 +18941,7 @@ static void tick_auras(void) {
 
 void Units_TickEngines(void) {
     g_sim_tick++;
+    Cob_SetTick(g_sim_tick);
     g_sound_tick++;
     /* Sprint 1: per-tick simulation step.
      *   1. Combat: auto-target + damage + movement.
@@ -17928,6 +19052,9 @@ void Units_TickEngines(void) {
     /* The ships again as the tick leaves them: the next tick's orders run
      * before its own gather, and a world loaded from here reads these. */
     ships_rebuild();
+    /* What runs before the next pass, a mission's events among it, is
+     * in the next tick. */
+    Cob_SetTick(g_sim_tick + 1u);
     double e4 = eng_now_ms();
     g_eng_prof_ms[2] += e4 - e3;
     g_eng_prof_ms[3] += e3 - e2;
@@ -17951,21 +19078,6 @@ void Units_WarmPathCaches(const GameWorld *w) {
         unit_mobile_footprint(w, d, &fx, &fz);
         TAK_PathCacheWarm(w, mc, d->max_slope, fx, fz);
         TAK_PathCacheWarm(w, mc, d->max_slope, 0, 0);
-    }
-}
-
-void Units_DropAllMeshCaches(void) {
-    overlap_order_free();   /* its memos name the meshes freed here */
-    proj_model_drop_meshes();
-    corpse_art_drop_meshes();
-    if (!g_defs) return;
-    for (int i = 0; i < g_def_count; i++) {
-        for (int c = 0; c < 12; c++) {
-            if (g_defs[i].mesh_per_color[c]) {
-                Mesh_Free(g_defs[i].mesh_per_color[c]);
-                g_defs[i].mesh_per_color[c] = NULL;
-            }
-        }
     }
 }
 
@@ -18042,6 +19154,7 @@ int Units_DebugSetDefScript(int def_idx, const uint32_t *code, int words,
     if (d->cob_script) Cob_Free(d->cob_script);
     d->cob_script = cs;
     d->script_launches = (uint8_t)cob_sets_launch_port(cs);
+    d->script_walks = (uint8_t)cob_walks_itself(cs);
     g_def_gen++;
     return 0;
 }
@@ -18283,7 +19396,8 @@ static void compose_node_xforms_ex(const UnitMesh *m,
      * uses right-handed Euler formulas and the model->world map has
      * det = -1, so rotations conjugate as R(A·n, -θ): negate the
      * angle scale or every TURN plays backwards (BOS oracle table in
-     * docs/digs). MOVE x and z flip as well, see the piece loop. */
+     * docs/notes/2026-09-09-cob-entry-points.md). MOVE x and z flip as
+     * well, see the piece loop. */
     const float ANGLE_TO_RAD = -6.28318530718f / 65536.0f;
     /* COB linear values share the raw 3DO fixed-point space of the
      * mesh offsets (move [-0.6] compiles to -98304; Hip y=1894644):
@@ -18448,8 +19562,7 @@ static int unit_piece_offset(Unit *u, int32_t piece, float *out_dx,
 
 /* Where a weapon fires from: the piece its QueryWeapon script names
  * (legacy:185941-185948). 0 when the unit has no such script or piece. */
-static int unit_weapon_muzzle(Unit *u, int slot, float *out_dx,
-                              float *out_dy, float *out_up) {
+static int unit_weapon_piece(Unit *u, int slot, int32_t *out_piece) {
     if (!u || !u->cob || !u->cob->script) return 0;
     char name[32];
     if (!resolve_weapon_script_name(u, "QueryWeapon", slot, name,
@@ -18458,7 +19571,15 @@ static int unit_weapon_muzzle(Unit *u, int slot, float *out_dx,
     /* Out-arg first, then the weapon index (legacy:185941-185948). */
     int32_t qa[2] = { 0, slot };
     if (Cob_RunScriptSync(u->cob, name, qa, 2) != 0) return 0;
-    return unit_piece_offset(u, qa[0], out_dx, out_dy, out_up);
+    *out_piece = qa[0];
+    return 1;
+}
+
+static int unit_weapon_muzzle(Unit *u, int slot, float *out_dx,
+                              float *out_dy, float *out_up) {
+    int32_t piece = 0;
+    if (!unit_weapon_piece(u, slot, &piece)) return 0;
+    return unit_piece_offset(u, piece, out_dx, out_dy, out_up);
 }
 
 /* How high on a unit a shot aims: its SweetSpot piece, or piece 0 when
@@ -18543,7 +19664,7 @@ static void load_damage_flames(void) {
                                            TDF_ReadString(tdf, "anim", ""));
                 TDF_PopSection(tdf);
                 if (si < 0 || proj_sprite_frames(si) <= 0) continue;
-                g_proj_sprites[si].fx_palette = 1;
+                fx_sheet(si, 1);
                 g_damage_flame_anims[size][g_damage_flame_anim_count[size]++] = si;
             }
         }
@@ -18591,7 +19712,7 @@ static void load_smoke_sprites(void) {
     g_smoke_sprites[0] = proj_sprite_index("bigsmoke", "bigsmoke");
     g_smoke_sprites[1] = proj_sprite_index("smoke", "Smoke01");
     g_smoke_sprites[2] = proj_sprite_index("steam", "steam");
-    if (g_smoke_sprites[1] >= 0) g_proj_sprites[g_smoke_sprites[1]].fx_palette = 1;
+    fx_sheet(g_smoke_sprites[1], 0);
 }
 
 /* A unit keeps at most 40 flames (legacy:215116) and 10 puffs
@@ -18610,6 +19731,10 @@ static int unit_effects_live(const Unit *u, int puffs) {
     return live;
 }
 
+/* A damage flame burns 30 ticks whatever its anim, as the original's do
+ * (captures, docs/notes/2026-09-04-rendering-visuals.md). */
+#define DAMAGE_FLAME_TICKS 30
+
 /* A new flame takes one of its size's anims at random
  * (legacy:202452-202461). */
 static void emit_damage_flame(const Unit *u, int node, int32_t type) {
@@ -18624,6 +19749,7 @@ static void emit_damage_flame(const Unit *u, int node, int32_t type) {
     ProjectileEffect *e = spawn_unit_fx_moving(g_damage_flame_anims[size][fx_rand(n)],
         attachment.world_x, attachment.world_y, attachment.height, 0);
     if (!e) return;
+    if (e->life_ticks > DAMAGE_FLAME_TICKS) e->life_ticks = DAMAGE_FLAME_TICKS;
     e->owner = (int16_t)(u - g_units);
     e->damage_owner_id = u->stable_id;
     e->damage_node = (int16_t)node;
@@ -18633,9 +19759,8 @@ static void emit_damage_flame(const Unit *u, int node, int32_t type) {
  * 16.16. */
 #define PUFF_RISE_FP  (0x1fdb * 2)
 
-/* A puff of smoke or steam where the piece stands, which holds its first
- * picture 8 frames and ends on one drawn at random from the third to the
- * second last (legacy:201928-201962). */
+/* A puff at the piece, its first picture held 8 frames, ending at random
+ * (legacy:201928-201962). White smoke adds, as a burning keep's (a capture). */
 static void emit_puff(const Unit *u, int node, int kind) {
     ProjectileEffect pos = {0};
     pos.damage_node = (int16_t)node;
@@ -18652,6 +19777,7 @@ static void emit_puff(const Unit *u, int node, int kind) {
     if (end > pics) end = pics;
     e->owner = (int16_t)(u - g_units);
     e->puff_owner_id = u->stable_id;
+    e->add = kind == 0;
     e->stop_fp = INT32_MAX;
     e->life_ticks = 0;
     e->pic = 0;
@@ -18775,7 +19901,7 @@ static void emit_one_shot(const Unit *u, int node, int32_t type) {
     static int purple = -2, pillar = -2;
     if (purple == -2) {
         purple = proj_sprite_index("deathmagic", "purpledeath");
-        if (purple >= 0) g_proj_sprites[purple].fx_palette = 1;
+        fx_sheet(purple, 1);
     }
     if (pillar == -2) pillar = proj_sprite_index("pillaroflight", "pillaroflight");
     ProjectileEffect pos = {0};
@@ -18804,9 +19930,8 @@ static void cob_host_emit_sfx(void *user, int node, int32_t type) {
     g_fx_unit_emit = 0;
 }
 
-/* A unit's flames, puffs and wakes go with it (legacy:236203-236218), a
- * flame following its animated piece until its anim ends. A batch lands
- * in neighbouring slots, so one pose serves a run of them. */
+/* A unit's flames, puffs and wakes go with it (legacy:236203-236218). A
+ * batch lands in neighbouring slots, so one pose serves a run of them. */
 static void tick_attached_flames(void) {
     NodeXform xf[UNIT_MESH_MAX_NODES];
     const UnitMesh *m = NULL;
@@ -18938,6 +20063,113 @@ static uint32_t underwater_colour(uint32_t c) {
     return (c & 0xFF000000u) | r | (g << 8) | (b << 16);
 }
 
+/* The light in a posed model's frame: the inverse of the draw's roll,
+ * pitch and mirrored heading applied to the light (tak_tex_atlas.h). */
+static void model_light_in_frame(float heading, float pitch, float roll, float out[3]) {
+    const float n = sqrtf(MODEL_LIGHT_X * MODEL_LIGHT_X + MODEL_LIGHT_Y * MODEL_LIGHT_Y +
+                          MODEL_LIGHT_Z * MODEL_LIGHT_Z);
+    const float lx = MODEL_LIGHT_X / n, ly = MODEL_LIGHT_Y / n, lz = MODEL_LIGHT_Z / n;
+    const float ch = tak_cosf(heading), sh = tak_sinf(heading);
+    const float cp = tak_cosf(pitch),   sp = tak_sinf(pitch);
+    const float cr = tak_cosf(roll),    sr = tak_sinf(roll);
+    const float tx = -ch * lx - sh * lz, ty = ly, tz = -sh * lx + ch * lz;
+    const float uy = cp * ty + sp * tz, uz = -sp * ty + cp * tz;
+    out[0] = cr * tx + sr * uy;
+    out[1] = -sr * tx + cr * uy;
+    out[2] = uz;
+}
+
+/* How a mesh takes the model light: `part` of the way from 15 to the
+ * level its `scale` and `ambient` give. */
+typedef struct FaceLight { float part; int scale, ambient; } FaceLight;
+
+/* All of the light for a building (bmcode 0), UNIT_LIGHT_FACTOR for a
+ * mobile unit, whose shading is painted in, as in the original. */
+static FaceLight face_light(int mobile, int statue) {
+    FaceLight fl = { mobile ? UNIT_LIGHT_FACTOR : 1.0f,
+                     statue ? STATUE_LIGHT_SCALE : MODEL_LIGHT_SCALE,
+                     statue ? STATUE_LIGHT_AMBIENT : MODEL_LIGHT_AMBIENT };
+    return fl;
+}
+
+static FaceLight model_def_light(const UnitDef *d) {
+    return face_light(d && d->bmcode != 0, 0);
+}
+
+/* A stone or ice statue takes the light at its own scale and ambient: the
+ * original's statues reach brighter rows than its buildings. */
+static FaceLight feature_light(const FeatureDef *fd) {
+    return face_light(0, fd && (fd->is_stone || fd->is_frozen));
+}
+
+/* A face's level: the scaled cosine rounded plus the ambient, 15 with
+ * DONT-SHADE (legacy:197710-197791), `part` of the way from 15. */
+static int model_face_level(const float n[3], const float l[3], int shade_off,
+                            const FaceLight *fl) {
+    if (shade_off) return TEX_SHADE_IDENTITY;
+    const float dot = n[0] * l[0] + n[1] * l[1] + n[2] * l[2];
+    int level = (int)floorf(dot * (float)fl->scale + 0.5f) + fl->ambient;
+    if (level < 0) level = 0;
+    if (level > TEX_SHADE_LEVELS - 1) level = TEX_SHADE_LEVELS - 1;
+    if (fl->part < 1.0f)
+        level = TEX_SHADE_IDENTITY +
+                (int)floorf(fl->part * (float)(level - TEX_SHADE_IDENTITY) + 0.5f);
+    return level;
+}
+
+/* Light each face of `m` posed by `xf` into g_lit_color and g_lit_dv, and a
+ * played texture's u shift into g_lit_du. No faces keeps the unlit colours. */
+static void light_mesh_faces(const UnitMesh *m, const NodeXform *xf,
+                             const CobPiece *pieces, int piece_count,
+                             float heading, float pitch, float roll, FaceLight fl) {
+    const int V = m->vert_count;
+    if (!m->faces) {
+        for (int v = 0; v < V; v++) {
+            g_lit_color[v] = m->colors[v];
+            g_lit_dv[v] = 0.0f;
+            g_lit_du[v] = 0.0f;
+            g_lit_row[v] = TEX_SHADE_IDENTITY;
+        }
+        return;
+    }
+    float l[3], node_l[UNIT_MESH_MAX_NODES][3];
+    model_light_in_frame(heading, pitch, roll, l);
+    /* Into each node's frame through its rotation's transpose. */
+    for (int i = 0; i < m->node_count; i++) {
+        const float *r = xf[i].rot;
+        node_l[i][0] = r[0] * l[0] + r[3] * l[1] + r[6] * l[2];
+        node_l[i][1] = r[1] * l[0] + r[4] * l[1] + r[7] * l[2];
+        node_l[i][2] = r[2] * l[0] + r[5] * l[1] + r[8] * l[2];
+    }
+    for (int f = 0; f < m->face_count; f++) {
+        const UnitMeshFace *fc = &m->faces[f];
+        const int shade_off = pieces && fc->node < piece_count && pieces[fc->node].shade_off;
+        const int level = model_face_level(fc->normal, node_l[fc->node], shade_off, &fl);
+        const UnitMeshBatch *b = &m->batches[fc->batch];
+        uint32_t rgb;
+        float dv = 0.0f;
+        int band = 0;
+        if (b->atlas_tex) {
+            const uint32_t g = b->shade.grey[level];
+            rgb = g | (g << 8) | (g << 16);
+            band = b->shade.band[level];
+            dv = TexAtlas_ShadeBandV(&b->shade, level);
+        } else if (m->flat_ramp) {
+            rgb = m->flat_ramp[level * 256 + fc->flat_idx] & 0x00FFFFFFu;
+        } else {
+            rgb = m->colors[fc->first_vert] & 0x00FFFFFFu;
+        }
+        const float du = TexAtlas_AnimU(fc->anim);
+        for (int k = 0; k < fc->vert_count; k++) {
+            const int v = fc->first_vert + k;
+            g_lit_color[v] = (m->colors[v] & 0xFF000000u) | rgb;
+            g_lit_dv[v] = dv;
+            g_lit_du[v] = du;
+            g_lit_row[v] = (uint8_t)(TEX_SHADE_IDENTITY + band);
+        }
+    }
+}
+
 /* Transform one unit's mesh into the scratch buffers at vertex offset
  * `v_off`: per-piece COB transform, heading rotation, projection, plus
  * the per-vertex height key the draw order needs. */
@@ -18960,14 +20192,7 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
 
     /* A body being built draws opaque or not at all (legacy:197474).
      * A ghost or a cloaked unit draws half see through. */
-    uint32_t alpha_mul = (uint32_t)Units_DrawnAlpha(u);
-    /* The whiteout: the model rasterised as one solid block of white
-     * (legacy:197033-197035) and blended out with the fade
-     * (legacy:211265-211295). */
-    const int whiteout = u->magic_death != 0;
-    if (whiteout) {
-        alpha_mul = alpha_mul * u->magic_death_fade / UNIT_MAGIC_DEATH_TICKS;
-    }
+    const uint32_t alpha_mul = (uint32_t)Units_DrawnAlpha(u);
 
     /* A unit standing below the sea is drawn through the underwater
      * remap wherever it lies under the surface (legacy:197018-197027). */
@@ -18978,6 +20203,9 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
     /* Per-piece transforms for THIS unit. Animation gives each unit its
      * own piece state, so this is recomputed per unit. */
     compose_node_xforms(m, u->cob ? u->cob->pieces : NULL, g_scratch_node_xform);
+    light_mesh_faces(m, g_scratch_node_xform, u->cob ? u->cob->pieces : NULL,
+                     u->cob ? u->cob->piece_count : 0, u->heading, u->pitch, u->roll,
+                     model_def_light(Units_GetDef(u->def_idx)));
 
     for (int v = 0; v < V; v++) {
         const NodeXform *x = &g_scratch_node_xform[m->vert_node_idx[v]];
@@ -19028,8 +20256,7 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
         g_scratch_hkey[i]       = model_height_key(my);
         g_scratch_wet[i]        = (uint8_t)(wet && wy <= sea);
         /* Colour is RGBA8888 little-endian (A in the high byte). */
-        uint32_t c = m->colors[v];
-        if (whiteout) c |= 0x00FFFFFFu;
+        uint32_t c = g_lit_color[v];
         if (alpha_mul != 255) {
             uint32_t a = (c >> 24) & 0xFFu;
             a = (a * alpha_mul) / 255u;
@@ -19037,8 +20264,9 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
         }
         if (g_scratch_wet[i]) c = underwater_colour(c);
         g_scratch_color[i] = c;
-        g_scratch_uv[2 * i + 0] = m->uvs[2 * v + 0];
-        g_scratch_uv[2 * i + 1] = m->uvs[2 * v + 1];
+        g_scratch_uv[2 * i + 0] = m->uvs[2 * v + 0] + g_lit_du[v];
+        g_scratch_uv[2 * i + 1] = m->uvs[2 * v + 1] + g_lit_dv[v];
+        g_scratch_row[i] = g_lit_row[v];
     }
 }
 
@@ -19163,10 +20391,12 @@ static int tri_overlap_centre(const TriSort *p, const TriSort *q, float *cx, flo
     return 1;
 }
 
-/* Where `p` lies at the middle of its overlap with `q`: -1 behind, 1 in
- * front, 2 no overlap. Level there: 0 if within OV_LEVEL all over the
- * overlap, else 3, crossing. */
+/* Where `p` lies against `q` where they overlap: -1 behind, 1 in front,
+ * at the middle or else at every corner, 2 no overlap. Neither: 0 if
+ * within OV_LEVEL all over the overlap, else 3, crossing. */
 #define OV_LEVEL 4.0f
+/* Past float noise, which reaches about 0.026 on coplanar steep faces. */
+#define OV_APART 0.05f
 static int tri_overlap_side(const TriSort *p, const TriSort *q) {
     float cx, cy, dp, dq, px[9], py[9];
     int pn = 0;
@@ -19174,11 +20404,18 @@ static int tri_overlap_side(const TriSort *p, const TriSort *q) {
     if (!tri_depth_at(p, cx, cy, &dp) || !tri_depth_at(q, cx, cy, &dq)) return 2;
     if (dp < dq - 0.5f) return -1;
     if (dp > dq + 0.5f) return 1;
+    /* One face above the other at every corner of the overlap is in front
+     * however close, as a per pixel key shows it: cards a fraction apart. */
+    float lo = dp - dq, hi = dp - dq;
     for (int i = 0; i < pn; i++) {
-        if (!tri_depth_at(p, px[i], py[i], &dp) || !tri_depth_at(q, px[i], py[i], &dq)) return 2;
-        if (fabsf(dp - dq) > OV_LEVEL) return 3;
+        float a, b;
+        if (!tri_depth_at(p, px[i], py[i], &a) || !tri_depth_at(q, px[i], py[i], &b)) return 2;
+        lo = fminf(lo, a - b);
+        hi = fmaxf(hi, a - b);
     }
-    return 0;
+    if (lo > OV_APART) return 1;
+    if (hi < -OV_APART) return -1;
+    return fmaxf(-lo, hi) > OV_LEVEL ? 3 : 0;
 }
 
 /* ── Overlap order ───────────────────────────────────────────────────
@@ -19187,11 +20424,11 @@ static int tri_overlap_side(const TriSort *p, const TriSort *q) {
  * their tallest key gets that wrong when a tall face stands behind a
  * short one: the Veruna bastion's inner fins painted over its front
  * walls. So for a building or a ship, wherever two of its triangles
- * overlap on screen, the one lower at the middle of the overlap goes
- * first, of two level there the one the original draws first stays on
- * top as its key test keeps it, and the rest is free to keep to one
- * texture. A unit keeps what it found and works out again only the
- * triangles that moved since, a waving flag or a turning turret.
+ * overlap on screen, the one lower all over the overlap, else at its
+ * middle, goes first, of two level there the one the original draws
+ * first stays on top as its key test keeps it, and the rest is free to
+ * keep to one texture. A unit keeps what it found and works out again
+ * only the triangles that moved since, a waving flag or a turning turret.
  * Walkers keep the key order: every step moves most of their faces. */
 /* A triangle's id is its second vertex: a 3DO face is a fan over
  * vertices of its own, so no two triangles share it. */
@@ -19250,16 +20487,17 @@ static TriSort *ov_tmp(int n) {
     return g_ov_tmp;
 }
 
+static void ov_memo_clear(OverlapMemo *o) {
+    if (o->rel) tak_free(o->rel);
+    if (o->seen) tak_free(o->seen);
+    if (o->edges) tak_free(o->edges);
+    if (o->order) tak_free(o->order);
+    memset(o, 0, sizeof(*o));
+    o->unit = -1;
+}
+
 static void overlap_order_free(void) {
-    for (int i = 0; i < OV_SLOTS; i++) {
-        OverlapMemo *o = &g_ov_memo[i];
-        if (o->rel) tak_free(o->rel);
-        if (o->seen) tak_free(o->seen);
-        if (o->edges) tak_free(o->edges);
-        if (o->order) tak_free(o->order);
-        memset(o, 0, sizeof(*o));
-        o->unit = -1;
-    }
+    for (int i = 0; i < OV_SLOTS; i++) ov_memo_clear(&g_ov_memo[i]);
     if (g_ov_box) tak_free(g_ov_box);
     if (g_ov_ints) tak_free(g_ov_ints);
     if (g_ov_pos) tak_free(g_ov_pos);
@@ -19627,12 +20865,11 @@ static int  tall_feature_before(int row);
 static int  unit_draw_row(const Unit *u);
 static void note_drawn_box(const UnitMesh *m, int v_off);
 
-/* Set for the run being emitted when its units are in the whiteout:
- * the triangles go out untextured, one block of the vertex white. */
-static int g_submit_solid_white = 0;
-
 static void submit_intangible_mass(TAK_Platform *plat, const UnitMesh *m,
                                    const Unit *u, const UnitDef *def, int n_verts);
+static void submit_whiteout(TAK_Platform *plat, const UnitMesh *m,
+                            const Unit *u, int n_verts);
+static void silhouette_close(TAK_Platform *plat);
 
 /* A new vertex `t` of the way from `a` to `b`, in colour `c`. */
 static int split_vert(int n, int a, int b, float t, uint32_t c) {
@@ -19640,6 +20877,8 @@ static int split_vert(int n, int a, int b, float t, uint32_t c) {
     g_scratch_xy[2 * n + 1] = g_scratch_xy[2 * a + 1] + t * (g_scratch_xy[2 * b + 1] - g_scratch_xy[2 * a + 1]);
     g_scratch_uv[2 * n + 0] = g_scratch_uv[2 * a + 0] + t * (g_scratch_uv[2 * b + 0] - g_scratch_uv[2 * a + 0]);
     g_scratch_uv[2 * n + 1] = g_scratch_uv[2 * a + 1] + t * (g_scratch_uv[2 * b + 1] - g_scratch_uv[2 * a + 1]);
+    g_scratch_wy[n] = g_scratch_wy[a] + t * (g_scratch_wy[b] - g_scratch_wy[a]);
+    g_scratch_row[n] = g_scratch_row[a];
     g_scratch_color[n] = c;
     return n;
 }
@@ -19698,7 +20937,10 @@ static void cmp_free(void) {
 /* Draws the `w` indices at g_scratch_idx over the first `nv` scratch
  * vertices, handing SDL only the ones they use, as it looks over every
  * vertex a draw is given. */
+static void depth_close(void);
+
 static void draw_used(TAK_Platform *plat, const GPU_Texture *tex, int nv, int w) {
+    depth_close();
     if (nv > g_cmp_vcap || w > g_cmp_icap) {
         const int vc = nv > g_cmp_vcap ? nv * 2 : g_cmp_vcap, ic = w > g_cmp_icap ? w * 2 : g_cmp_icap;
         cmp_free();
@@ -19771,8 +21013,7 @@ static void emit_height_ordered(TAK_Platform *plat, const UnitMesh *m,
             }
         }
         if (w > 0)
-            draw_used(plat, g_submit_solid_white ? NULL : m->batches[g_scratch_tri[s].batch].atlas_tex,
-                      nv, w);
+            draw_used(plat, m->batches[g_scratch_tri[s].batch].atlas_tex, nv, w);
         s = e;
     }
 }
@@ -19910,8 +21151,257 @@ static void emit_copy_orders(TAK_Platform *plat, const UnitMesh *m, int n_inst,
             }
         }
         if (w > 0)
-            draw_used(plat, g_submit_solid_white ? NULL : m->batches[best].atlas_tex, nv, w);
+            draw_used(plat, m->batches[best].atlas_tex, nv, w);
     }
+}
+
+/* ── Depth per model ──────────────────────────────────────────────────
+ * Each model is depth tested in its own slice, later slices nearer: a
+ * unit's own key buffer (legacy:265317), rows between units (legacy:210555). */
+
+/* Model heights one slice holds, in DEPTH_STEPS steps. Ours. */
+#define DEPTH_SPAN  640.0f
+#define DEPTH_STEPS 16384
+
+static float Units_DepthKey(int slot, int slots, float height, float base) {
+    /* Whole steps, so a key is exact in a float whatever the slice; the
+     * first step stays nearer than a cleared buffer. */
+    int k = 1 + (int)floorf((height - base) * ((float)DEPTH_STEPS / DEPTH_SPAN));
+    if (k < 1) k = 1;
+    if (k > DEPTH_STEPS - 1) k = DEPTH_STEPS - 1;
+    if (slots < 1) slots = 1;
+    return (float)(slot * DEPTH_STEPS + k) / (float)(slots * DEPTH_STEPS);
+}
+
+/* Slices of DEPTH_STEPS a buffer of `bits` holds, 0 under 16 bits. */
+static int Units_DepthSlots(int bits) {
+    if (bits < 16) return 0;
+    return 1 << (bits - 14 > 10 ? 10 : bits - 14);
+}
+
+/* Copies the next group of a run takes. A see-through copy goes alone,
+ * so its colour pass lands before the next copy writes depth over it. */
+static int Units_DepthGroupSize(int remaining, int free_slots, int translucent) {
+    int n = translucent ? 1 : remaining;
+    if (n > remaining) n = remaining;
+    if (n > free_slots) n = free_slots;
+    return n;
+}
+
+/* 1 when the GL helper has to be started (again): a cached yes holds only
+ * while the helper is up on this renderer, as the 3D view shuts it down. */
+static int Units_DepthNeedsInit(int state, int gl_ready, int same_renderer) {
+    if (state < 0) return 0;
+    return state == 0 || !gl_ready || !same_renderer;
+}
+
+static int       g_depth_state;     /* 0 untried, 1 on, -1 off for this renderer */
+static uint32_t  g_depth_gen;
+static int       g_depth_open;
+static int       g_depth_slot, g_depth_slots;
+static float    *g_dv;              /* GL3D_CLASSIC_FLOATS a vertex */
+static uint16_t *g_di;
+static uint32_t *g_dstamp;
+static uint16_t *g_dmap;
+static float    *g_dbase;           /* per copy: its lowest point */
+static int      *g_dsplit;          /* per copy: its first cut vertex */
+static int       g_dvcap, g_dicap, g_dccap;
+static uint32_t  g_dclock;
+
+static void depth_free(void) {
+    tak_free(g_dv); tak_free(g_di); tak_free(g_dstamp); tak_free(g_dmap);
+    tak_free(g_dbase); tak_free(g_dsplit);
+    g_dv = NULL; g_di = NULL; g_dstamp = NULL; g_dmap = NULL;
+    g_dbase = NULL; g_dsplit = NULL;
+    g_dvcap = g_dicap = g_dccap = 0;
+    g_dclock = 0;
+}
+
+/* 1 when this renderer draws through GL. TAK_MODEL_DEPTH=0 keeps the
+ * sort, to compare the two. */
+static int depth_ready(TAK_Platform *plat) {
+    if (g_depth_gen != plat->renderer_gen) {
+        g_depth_gen = plat->renderer_gen;
+        g_depth_state = 0;
+    }
+    if (!Units_DepthNeedsInit(g_depth_state, GL3D_Available(),
+                              GL3D_Renderer() == plat->renderer))
+        return g_depth_state > 0;
+    g_depth_state = -1;
+    const char *opt = getenv("TAK_MODEL_DEPTH");
+    if (opt && opt[0] == '0') return 0;
+    SDL_RendererInfo info;
+    if (SDL_GetRendererInfo(plat->renderer, &info) != 0 || !info.name ||
+        strncmp(info.name, "opengl", 6) != 0)
+        return 0;
+    if (GL3D_Init(plat->window, plat->renderer) != 0) return 0;
+    if (GL3D_Renderer() != plat->renderer) return 0;
+    g_depth_state = 1;
+    return 1;
+}
+
+int Units_ModelDepthReady(TAK_Platform *plat) {
+    return plat && plat->renderer && depth_ready(plat);
+}
+
+/* A session never outlives the call that opened it, but for Units_Submit's
+ * runs: an SDL draw or target switch inside one breaks SDL's GL state cache. */
+static void depth_close(void) {
+    if (!g_depth_open) return;
+    GL3D_ClassicEnd();
+    g_depth_open = 0;
+}
+
+/* Opens a session with a free slice, clearing the buffer when none is
+ * left or the frame has not cleared it yet. */
+static int depth_open(TAK_Platform *plat) {
+    if (g_depth_open && g_depth_slot < g_depth_slots) return 0;
+    depth_close();
+    if (!depth_ready(plat)) return -1;
+    const int clear = g_depth_slot == 0 || g_depth_slot >= g_depth_slots;
+    if (GL3D_ClassicBegin(plat->renderer, clear) != 0) {
+        const int bits = GL3D_ClassicDepthBits();
+        if (bits != 0 && bits < 16) g_depth_state = -1;
+        return -1;
+    }
+    g_depth_slots = Units_DepthSlots(GL3D_ClassicDepthBits());
+    if (clear) g_depth_slot = 0;
+    g_depth_open = 1;
+    return 0;
+}
+
+static int depth_grow(int nv, int w, int copies) {
+    if (nv > g_dvcap) {
+        const int cap = nv * 2;
+        float *v = (float *)tak_malloc(sizeof(float) * GL3D_CLASSIC_FLOATS * (size_t)cap);
+        uint32_t *st = (uint32_t *)tak_calloc((size_t)cap, sizeof(uint32_t));
+        uint16_t *mp = (uint16_t *)tak_malloc(sizeof(uint16_t) * (size_t)cap);
+        if (!v || !st || !mp) { tak_free(v); tak_free(st); tak_free(mp); return -1; }
+        tak_free(g_dv); tak_free(g_dstamp); tak_free(g_dmap);
+        g_dv = v; g_dstamp = st; g_dmap = mp;
+        g_dvcap = cap;
+        g_dclock = 0;
+    }
+    if (w > g_dicap) {
+        uint16_t *ix = (uint16_t *)tak_malloc(sizeof(uint16_t) * (size_t)w * 2);
+        if (!ix) return -1;
+        tak_free(g_di);
+        g_di = ix;
+        g_dicap = w * 2;
+    }
+    if (copies + 1 > g_dccap) {
+        float *b = (float *)tak_malloc(sizeof(float) * (size_t)(copies + 1));
+        int *sp = (int *)tak_malloc(sizeof(int) * (size_t)(copies + 1));
+        if (!b || !sp) { tak_free(b); tak_free(sp); return -1; }
+        tak_free(g_dbase); tak_free(g_dsplit);
+        g_dbase = b; g_dsplit = sp;
+        g_dccap = copies + 1;
+    }
+    return 0;
+}
+
+/* Hands GL the `w` indices at g_scratch_idx, each vertex keyed into the
+ * slice of its copy. Copies c0 on sit at vertex offsets c0 * V on; a
+ * cut vertex past `total` belongs to the copy g_dsplit places it in. */
+static void depth_draw(const GPU_Texture *tex, int nv, int w, int total, int V,
+                       int c0, int n, int slot0, GL3D_ClassicPass pass) {
+    if (depth_grow(nv, w, n) != 0) return;
+    if (++g_dclock == 0) {
+        memset(g_dstamp, 0, sizeof(uint32_t) * (size_t)g_dvcap);
+        g_dclock = 1;
+    }
+    int out = 0;
+    for (int i = 0; i < w; i++) {
+        const int v = g_scratch_idx[i];
+        if (g_dstamp[v] != g_dclock) {
+            int ci = 0;
+            if (v < total) ci = v / V - c0;
+            else while (ci + 1 < n && v >= g_dsplit[ci + 1]) ci++;
+            g_dstamp[v] = g_dclock;
+            g_dmap[v] = (uint16_t)out;
+            float *o = &g_dv[GL3D_CLASSIC_FLOATS * out];
+            o[0] = g_scratch_xy[2 * v];
+            o[1] = g_scratch_xy[2 * v + 1];
+            o[2] = Units_DepthKey(slot0 + ci, g_depth_slots, g_scratch_wy[v], g_dbase[ci]);
+            o[3] = g_scratch_uv[2 * v];
+            o[4] = g_scratch_uv[2 * v + 1];
+            const uint32_t c = g_scratch_color[v];
+            for (int q = 0; q < 4; q++) o[5 + q] = (float)((c >> (8 * q)) & 0xFFu) * (1.0f / 255.0f);
+            o[9] = (float)g_scratch_row[v];
+            out++;
+        }
+        g_di[i] = g_dmap[v];
+    }
+    const GL3D_Texture *index = NULL, *ramp = NULL;
+    if (tex) (void)TexAtlas_GpuShade(tex, &index, &ramp);
+    GL3D_ClassicDraw(tex ? GPU_TextureSDL(tex) : NULL, index, ramp, g_dv, out, g_di, w, pass);
+}
+
+/* Draws the copies at vertex offsets 0, V, 2V on, each in its own slice;
+ * a see-through one blends once after its depth. -1: nothing drawn. */
+static int emit_depth(TAK_Platform *plat, const UnitMesh *m, int n_inst,
+                      int total_verts, int translucent) {
+    const int V = m->vert_count;
+    for (int c0 = 0; c0 < n_inst;) {
+        if (depth_open(plat) != 0) return c0 == 0 ? -1 : 0;
+        const int n = Units_DepthGroupSize(n_inst - c0, g_depth_slots - g_depth_slot, translucent);
+        if (depth_grow(1, 1, n) != 0) return c0 == 0 ? -1 : 0;
+        for (int ci = 0; ci < n; ci++) {
+            float base = 1e30f;
+            const int off = (c0 + ci) * V;
+            for (int v = 0; v < V; v++)
+                if (g_scratch_color[off + v] && g_scratch_wy[off + v] < base) base = g_scratch_wy[off + v];
+            g_dbase[ci] = base < 1e29f ? base : 0.0f;
+        }
+        const int slot0 = g_depth_slot;
+        g_depth_slot += n;
+        GL3D_ClassicPass pass = translucent ? GL3D_CLASSIC_DEPTH : GL3D_CLASSIC_OPAQUE;
+        for (;;) {
+            for (int b = 0; b < m->batch_count; b++) {
+                const UnitMeshBatch *batch = &m->batches[b];
+                const uint16_t *src = m->indices + batch->first_index;
+                const uint32_t *seq = m->tri_seq ? m->tri_seq + batch->first_index / 3 : NULL;
+                int w = 0, nv = total_verts;
+                for (int ci = 0; ci < n; ci++) {
+                    const int off = (c0 + ci) * V;
+                    g_dsplit[ci] = nv;
+                    /* A tie keeps the first drawn: nodes last to first within
+                     * a batch, as the original walks (legacy:197658, :197944). */
+                    for (int end = batch->index_count / 3; end > 0;) {
+                        int start = 0;
+                        if (seq) {
+                            start = end - 1;
+                            while (start > 0 && (seq[start - 1] >> 12) == (seq[end - 1] >> 12)) start--;
+                        }
+                        for (int t = start; t < end; t++) {
+                            const int i0 = off + src[3 * t], i1 = off + src[3 * t + 1];
+                            const int i2 = off + src[3 * t + 2];
+                            if (!tri_faces_camera(i0, i1, i2)) continue;
+                            w = emit_tri(i0, i1, i2, w, &nv);
+                        }
+                        end = start;
+                    }
+                }
+                g_dsplit[n] = nv;
+                if (w > 0)
+                    depth_draw(batch->atlas_tex, nv, w,
+                               total_verts, V, c0, n, slot0, pass);
+            }
+            if (pass != GL3D_CLASSIC_DEPTH) break;
+            pass = GL3D_CLASSIC_COLOUR;
+        }
+        c0 += n;
+    }
+    return 0;
+}
+
+/* 1 when any unit of the run draws see through. */
+static int run_translucent(const int *units, int n) {
+    for (int i = 0; i < n; i++) {
+        const Unit *u = &g_units[units[i]];
+        if (u->magic_death || Units_DrawnAlpha(u) != 255) return 1;
+    }
+    return 0;
 }
 
 /* Submit a coalesced run: a contiguous slice of g_draw_order in which
@@ -19987,17 +21477,25 @@ static void submit_run(TAK_Platform *plat, const struct GameWorld *world,
          * door open or a turn sets apart, goes in its own overlap order
          * with its draws shared (emit_copy_orders). */
         const Unit *u0 = &g_units[unit_indices[chunk_start]];
-        const int own = unit_overlap_ordered(u0) && Units_NanoframeBodyShown(u0) &&
-                        find_copy_orders(world, m, unit_indices + chunk_start, chunk_n);
-        g_submit_solid_white = u0->magic_death != 0;
-        if (own)
-            emit_copy_orders(plat, m, chunk_n, total_verts);
-        else if (Units_NanoframeBodyShown(u0))
-            emit_height_ordered(plat, m, chunk_n, total_verts);
-        g_submit_solid_white = 0;
-        /* A frame is a run of one, so the scratch holds just its verts. */
-        if (u0->under_construction)
+        /* A whiteout or a frame is a run of one, so the scratch holds
+         * just its verts. A run drawn with depth skips the sort. */
+        if (Units_NanoframeBodyShown(u0)) {
+            if (u0->magic_death) {
+                depth_close();
+                submit_whiteout(plat, m, u0, total_verts);
+            } else if (emit_depth(plat, m, chunk_n, total_verts,
+                                  run_translucent(unit_indices + chunk_start, chunk_n)) != 0) {
+                if (unit_overlap_ordered(u0) &&
+                    find_copy_orders(world, m, unit_indices + chunk_start, chunk_n))
+                    emit_copy_orders(plat, m, chunk_n, total_verts);
+                else
+                    emit_height_ordered(plat, m, chunk_n, total_verts);
+            }
+        }
+        if (u0->under_construction) {
+            depth_close();
             submit_intangible_mass(plat, m, u0, def, total_verts);
+        }
     }
 }
 
@@ -20471,11 +21969,33 @@ void Units_RenderBuildGhost(TAK_Platform *plat,
                                  world_x, world_y, alpha255, valid, 0);
 }
 
+static void render_build_ghost(TAK_Platform *plat, const struct GameWorld *world,
+                               int def_idx, int color_idx,
+                               int32_t world_x, int32_t world_y,
+                               uint8_t alpha255, int valid, int facing, int snap);
+
 void Units_RenderBuildGhostFacing(TAK_Platform *plat,
                                   const struct GameWorld *world,
                                   int def_idx, int color_idx,
                                   int32_t world_x, int32_t world_y,
                                   uint8_t alpha255, int valid, int facing) {
+    render_build_ghost(plat, world, def_idx, color_idx, world_x, world_y,
+                       alpha255, valid, facing, 1);
+}
+
+void Units_RenderBuildGhostFree(TAK_Platform *plat,
+                                const struct GameWorld *world,
+                                int def_idx, int color_idx,
+                                int32_t world_x, int32_t world_y,
+                                uint8_t alpha255, int valid, int facing) {
+    render_build_ghost(plat, world, def_idx, color_idx, world_x, world_y,
+                       alpha255, valid, facing, 0);
+}
+
+static void render_build_ghost(TAK_Platform *plat, const struct GameWorld *world,
+                               int def_idx, int color_idx,
+                               int32_t world_x, int32_t world_y,
+                               uint8_t alpha255, int valid, int facing, int snap) {
     if (!plat || !plat->renderer || !world) return;
     g_live_renderer_gen = plat->renderer_gen;
     UnitDef *def = (UnitDef *)Units_GetDef(def_idx);
@@ -20490,11 +22010,10 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
     const int V = m->vert_count;
     if (ensure_scratch(V, m->tri_count * 3) != 0) return;
 
-    /* Draw the preview on the cell the build will occupy, with the
-     * terrain lift a live unit gets, so the ghost and the finished
-     * building sit on exactly the same pixels (legacy:184168). */
+    /* A placed or queued ghost sits on the cell the build will occupy
+     * (legacy:184168), the cursor's on the free pointer, as in the original. */
     facing = Units_DefFacing(def_idx, facing);
-    Units_SnapBuildSiteFacing(def_idx, facing, &world_x, &world_y);
+    if (snap) Units_SnapBuildSiteFacing(def_idx, facing, &world_x, &world_y);
     const float cam_x = (float)world->cam_x;
     const float cam_y = (float)world->cam_y;
     const float ta    = g_ta_scale;
@@ -20516,6 +22035,8 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
     if (deferred) return;
     const CobPiece *gpieces = gcob ? gcob->pieces : NULL;
     compose_node_xforms(m, gpieces, g_scratch_node_xform);
+    light_mesh_faces(m, g_scratch_node_xform, gpieces, gcob ? gcob->piece_count : 0,
+                     heading, 0.0f, 0.0f, model_def_light(def));
 
     /* Per-vertex tint: green-ish if valid, red-ish if blocked, none for
      * a queued building, plus the requested alpha. Multiply with each
@@ -20559,7 +22080,7 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
         g_scratch_hkey[v]       = model_height_key(my);
         /* Blend authored vertex colour with the tint and the ghost
          * alpha. RGB = mix(authored, tint, 0.5); A = authored.A * alpha255. */
-        uint32_t c = m->colors[v];
+        uint32_t c = g_lit_color[v];
         uint32_t cr = (c >>  0) & 0xFFu;
         uint32_t cg = (c >>  8) & 0xFFu;
         uint32_t cb = (c >> 16) & 0xFFu;
@@ -20571,18 +22092,44 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
         }
         ca = (ca * alpha255) / 255u;
         g_scratch_color[v] = cr | (cg << 8) | (cb << 16) | (ca << 24);
-        g_scratch_uv[2 * v + 0] = m->uvs[2 * v + 0];
-        g_scratch_uv[2 * v + 1] = m->uvs[2 * v + 1];
+        g_scratch_uv[2 * v + 0] = m->uvs[2 * v + 0] + g_lit_du[v];
+        g_scratch_uv[2 * v + 1] = m->uvs[2 * v + 1] + g_lit_dv[v];
+        g_scratch_row[v] = g_lit_row[v];
     }
 
-    /* One ordered pass over every triangle, the rule the live submit
-     * uses: back facing tris dropped (legacy:197804), the rest ordered
-     * by height key with the authored order breaking ties
-     * (legacy:265317, legacy:197658), then emitted as contiguous same
-     * batch stretches. Ordering whole batches instead put a tower's
-     * masonry over the crew standing in it. */
-    emit_height_ordered(plat, m, 1, V);
+    /* As a live unit: depth tested on GL, blended once; else by height key,
+     * authored order on ties (legacy:265317, :197658), back faces dropped (:197804). */
+    if (emit_depth(plat, m, 1, V, alpha255 != 255) != 0)
+        emit_height_ordered(plat, m, 1, V);
+    depth_close();
 }
+
+/* Units in this frame's draw order that own far ring particles, which
+ * draw just before them. */
+static uint8_t g_fx_behind_owner[TAK_MAX_UNITS];
+
+static void mark_behind_owners(int n) {
+    static uint8_t drawn[TAK_MAX_UNITS];
+    memset(drawn, 0, sizeof(drawn));
+    memset(g_fx_behind_owner, 0, sizeof(g_fx_behind_owner));
+    for (int k = 0; k < n; k++)
+        if (g_draw_order[k] >= 0 && g_draw_order[k] < TAK_MAX_UNITS)
+            drawn[g_draw_order[k]] = 1;
+    for (int i = 0; i < g_proj_effect_count; i++) {
+        const ProjectileEffect *e = &g_proj_effects[i];
+        if (e->alive && e->behind && e->owner >= 0 && e->owner < TAK_MAX_UNITS &&
+            drawn[e->owner])
+            g_fx_behind_owner[e->owner] = 1;
+    }
+}
+
+static void render_projectile_effects(const struct GameWorld *world,
+                                      TAK_Platform *plat, int owner);
+
+/* The unit draw lays a wall's shadow in its row. */
+static int  unit_shadow_in_row(const Unit *u, const UnitDef *d);
+static void render_unit_shadows(const struct GameWorld *world, TAK_Platform *plat,
+                                const int *order, int n, int in_row);
 
 /* Walk Y-sorted draw order, group consecutive units sharing
  * (def_idx, color_idx) into runs, submit each run as one coalesced
@@ -20600,18 +22147,30 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
     int run_start = 0;
     while (run_start < n) {
         const Unit *u0 = &g_units[g_draw_order[run_start]];
+        /* An open whiteout group goes down before anything else draws. */
+        if (!u0->magic_death || tall_feature_before(unit_draw_row(u0)))
+            silhouette_close(plat);
         flush_tall_features(plat, unit_draw_row(u0));
+        const int in_row = unit_shadow_in_row(u0, Units_GetDef(u0->def_idx));
+        if (in_row) {
+            /* A whiteout group must not stay bound under the shadow mask. */
+            silhouette_close(plat);
+            render_unit_shadows(world, plat, g_draw_order + run_start, 1, 1);
+        }
         int run_end = run_start + 1;
-        while (run_end < n) {
+        while (!in_row && run_end < n) {
             const Unit *uk = &g_units[g_draw_order[run_end]];
             /* A tall feature between the two rows goes down between them. */
             if (tall_feature_before(unit_draw_row(uk))) break;
             if (uk->def_idx        != u0->def_idx)        break;
             if (uk->team_color_idx != u0->team_color_idx) break;
-            /* A whiteout draws untextured, so it is its own run. */
-            if ((uk->magic_death != 0) != (u0->magic_death != 0)) break;
+            /* A whiteout fades on its own, so it is a run of one. */
+            if (uk->magic_death || u0->magic_death) break;
             /* A frame being built draws its own mass over its body. */
             if (uk->under_construction || u0->under_construction) break;
+            /* Far ring particles go down just before their unit. */
+            if (g_fx_behind_owner[g_draw_order[run_end]] ||
+                g_fx_behind_owner[g_draw_order[run_start]]) break;
             run_end++;
         }
         int run_len = run_end - run_start;
@@ -20620,11 +22179,18 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
             if (idx >= 0 && idx < TAK_MAX_UNITS)
                 g_debug_run_size[idx] = (uint8_t)(run_len > 255 ? 255 : run_len);
         }
+        if (g_fx_behind_owner[g_draw_order[run_start]]) {
+            silhouette_close(plat);
+            depth_close();
+            render_projectile_effects(world, plat, g_draw_order[run_start]);
+        }
         submit_run(plat, world, u0->def_idx, u0->team_color_idx,
                    g_draw_order + run_start, run_end - run_start);
         run_start = run_end;
     }
+    silhouette_close(plat);
     flush_tall_features(plat, INT_MAX);
+    depth_close();
 }
 
 /* How many units shared the coalesced run this one was drawn in on the
@@ -20691,52 +22257,92 @@ static void render_health_bars(const struct GameWorld *world, TAK_Platform *plat
     }
 }
 
-/* A selection ring at each selected unit's foot, in its team colour. */
+/* A ring's half axes over its quad's half extents, as captures of the
+ * original's rings measure them. */
+#define SELECT_RING_SCALE 1.2f
+
+/* Round the root's selection quad, or the footprint for a model that
+ * has none, buildings and flyers alike (captures of the original's rings). */
+int Units_SelectionRing(int handle, UnitSelectRing *out) {
+    if (!out || handle < 0 || handle >= g_unit_count) return 0;
+    const Unit *u = &g_units[handle];
+    if (u->alive != 1 || selection_find(handle) < 0) return 0;
+    if (!unit_visible_to_local_player(World_Get(), u)) return 0;
+    /* Loads the def's selection quad on first use. */
+    int lo, hi;
+    def_body_span(u->def_idx, &lo, &hi);
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d) return 0;
+    float x0, x1, z0, z1;
+    if (d->body_quad_set) {
+        x0 = z0 = 1e30f;
+        x1 = z1 = -1e30f;
+        for (int k = 0; k < 4; k++) {
+            float x = (float)d->body_quad[k][0] * UNIT_MODEL_TO_WORLD;
+            float z = (float)d->body_quad[k][1] * UNIT_MODEL_TO_WORLD;
+            x0 = fminf(x0, x);
+            x1 = fmaxf(x1, x);
+            z0 = fminf(z0, z);
+            z1 = fmaxf(z1, z);
+        }
+    } else {
+        x1 = (float)(d->footprint_x > 0 ? d->footprint_x : 1) * 8.0f;
+        z1 = (float)(d->footprint_z > 0 ? d->footprint_z : 1) * 8.0f;
+        x0 = -x1;
+        z0 = -z1;
+    }
+    out->cx = (x0 + x1) * 0.5f;
+    out->cz = (z0 + z1) * 0.5f;
+    out->hx = (x1 - x0) * 0.5f * SELECT_RING_SCALE;
+    out->hz = (z1 - z0) * 0.5f * SELECT_RING_SCALE;
+    /* The whole model's own tilt, no script piece's, as in the original. */
+    out->pitch = u->pitch;
+    out->roll = u->roll;
+    return 1;
+}
+
+/* Roll, pitch, then heading, as transform_unit_verts. Ground depth goes to
+ * the screen 1:1 and height by the tilt (legacy:197689). */
+void Units_SelectRingPoint(const UnitSelectRing *r, float heading, float t,
+                           float *dx, float *dy) {
+    float mx = r->cx + tak_cosf(t) * r->hx;
+    float mz = r->cz + tak_sinf(t) * r->hz;
+    float cr = tak_cosf(r->roll), sr = tak_sinf(r->roll);
+    float cp = tak_cosf(r->pitch), sp = tak_sinf(r->pitch);
+    float ax = cr * mx, ay = sr * mx;
+    float by = cp * ay - sp * mz;
+    float bz = sp * ay + cp * mz;
+    float ch = tak_cosf(heading), sh = tak_sinf(heading);
+    *dx = -(ch * ax + sh * bz);
+    *dy = -(sh * ax - ch * bz) - by * g_tan_tilt;
+}
+
+/* A selection ring at each selected unit's foot, coloured by health. */
 static void render_selection_rings(const struct GameWorld *world, TAK_Platform *plat) {
     if (g_selection_count == 0) return;
     SDL_Renderer *r = plat->renderer;
     if (!r) return;
 
-    const float tilt = g_tan_tilt;
     for (int s = 0; s < g_selection_count; s++) {
         int h = g_selection[s];
-        if (h < 0 || h >= g_unit_count || g_units[h].alive != 1) continue;
+        UnitSelectRing ring;
+        if (!Units_SelectionRing(h, &ring)) continue;
         const Unit *u = &g_units[h];
-        if (!unit_visible_to_local_player(world, u)) continue;
         const UnitDef *def = Units_GetDef(u->def_idx);
-        /* Tight ring just past the unit's footprint. Reference shots
-         * (image #77 etc) show the ring sitting close to the feet —
-         * roughly the unit's silhouette half-width plus a few pixels. */
-        float radius_x = 20.0f;
-        if (def) {
-            const UnitMesh *m = def->mesh_per_color[u->team_color_idx];
-            if (m) {
-                float ax = m->aabb_max[0] - m->aabb_min[0];
-                float az = m->aabb_max[2] - m->aabb_min[2];
-                float wider = ax > az ? ax : az;
-                radius_x = wider * 0.5f * g_ta_scale + 3.0f;
-            }
-        }
-        const float radius_y = radius_x * tilt;
 
-        /* Ring colour is tied to the unit's HEALTH percentage:
-         *   ≥50% → green, ≥25% → yellow, else red.
-         * Same convention as the floating per-unit health bar; gives
-         * the player at-a-glance status of every selected unit. */
+        /* Red to yellow below half health, yellow to pure green above
+         * (legacy:210961-210969, captures at full health). */
         int max_hp = u->max_health > 0 ? u->max_health : 1;
-        int pct    = u->health * 100 / max_hp;
-        if (pct >= 50) {
-            SDL_SetRenderDrawColor(r,  60, 220,  60, 255);   /* green */
-        } else if (pct >= 25) {
-            SDL_SetRenderDrawColor(r, 230, 200,  40, 255);   /* yellow */
-        } else {
-            SDL_SetRenderDrawColor(r, 230,  40,  30, 255);   /* red */
-        }
+        int ramp = (int)((int64_t)u->health * 510 / max_hp);
+        if (ramp < 0) ramp = 0;
+        if (ramp > 510) ramp = 510;
+        SDL_SetRenderDrawColor(r, (Uint8)(ramp < 255 ? 255 : 510 - ramp),
+                               (Uint8)(ramp < 255 ? ramp : 255), 0, 255);
 
         float fx = (float)(u->world_x - world->cam_x);
         float fy = (float)(u->world_y - world->cam_y)
                  - ((float)Terrain_SampleHeight(world, u->world_x, u->world_y)
-                    + Units_DrawnAlt(world, u)) * tilt;
+                    + Units_DrawnAlt(world, u)) * g_tan_tilt;
 
         /* Twelve chords in two sets of six that turn opposite ways, each
          * 0xccc long, from the unit's id and the clock, a turn in 4 s
@@ -20747,22 +22353,19 @@ static void render_selection_rings(const struct GameWorld *world, TAK_Platform *
         #define SEL_CHORD (3276.0f * 6.2831853f / 65536.0f)
         for (int i = 0; i < 6; i++) {
             float a = phase + (float)i * SEL_STEP;
-            SDL_RenderDrawLineF(r,
-                fx + tak_cosf(a) * radius_x,
-                fy + tak_sinf(a) * radius_y,
-                fx + tak_cosf(a - SEL_CHORD) * radius_x,
-                fy + tak_sinf(a - SEL_CHORD) * radius_y);
             float b = -phase - (float)i * SEL_STEP;
-            SDL_RenderDrawLineF(r,
-                fx + tak_cosf(b) * radius_x,
-                fy + tak_sinf(b) * radius_y,
-                fx + tak_cosf(b + SEL_CHORD) * radius_x,
-                fy + tak_sinf(b + SEL_CHORD) * radius_y);
+            float x0, y0, x1, y1;
+            Units_SelectRingPoint(&ring, u->heading, a, &x0, &y0);
+            Units_SelectRingPoint(&ring, u->heading, a - SEL_CHORD, &x1, &y1);
+            SDL_RenderDrawLineF(r, fx + x0, fy + y0, fx + x1, fy + y1);
+            Units_SelectRingPoint(&ring, u->heading, b, &x0, &y0);
+            Units_SelectRingPoint(&ring, u->heading, b + SEL_CHORD, &x1, &y1);
+            SDL_RenderDrawLineF(r, fx + x0, fy + y0, fx + x1, fy + y1);
         }
         #undef SEL_STEP
         #undef SEL_CHORD
         /* Your own cloaked unit shows how near an enemy may come
-         * (legacy:180534-180536). */
+         * (legacy:180534-180536). Drawn 1:1 as the ring is, inferred. */
         if (def && u->cloaked && u->player_id == g_local_player &&
             def->min_cloak_distance > 0) {
             SDL_FPoint pts[49];
@@ -20770,7 +22373,7 @@ static void render_selection_rings(const struct GameWorld *world, TAK_Platform *
             for (int k = 0; k <= 48; k++) {
                 float a = (float)k / 48.0f * 6.2831853f;
                 pts[k].x = fx + tak_cosf(a) * cr;
-                pts[k].y = fy + tak_sinf(a) * cr * tilt;
+                pts[k].y = fy + tak_sinf(a) * cr;
             }
             SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
             SDL_RenderDrawLinesF(r, pts, 49);
@@ -20817,7 +22420,7 @@ static const UnitMesh *proj_model_mesh(int model_idx, int color_idx) {
         fprintf(stderr, "Projectiles: no model %s\n", path);
         return NULL;
     }
-    UnitMesh *m = Mesh_Bake(obj, flat_palette(NULL), color_idx);
+    UnitMesh *m = Mesh_Bake(obj, flat_ramp(NULL), color_idx);
     Obj3D_Close(obj);
     if (!m) { pm->failed[color_idx] = 1; return NULL; }
     pm->mesh_per_color[color_idx] = m;
@@ -20851,7 +22454,7 @@ static void submit_static_mesh_run(TAK_Platform *plat,
                                    const struct GameWorld *world,
                                    const UnitMesh *m,
                                    const StaticMeshInstance *inst, int n,
-                                   int all_pieces)
+                                   int all_pieces, FaceLight fl)
 {
     if (!m || m->vert_count == 0 || n <= 0) return;
     const int V = m->vert_count;
@@ -20885,6 +22488,7 @@ static void submit_static_mesh_run(TAK_Platform *plat,
             const float cp = tak_cosf(p->pitch),   sp = tak_sinf(p->pitch);
             const float cr = tak_cosf(p->roll),    sr = tak_sinf(p->roll);
             const int v_off = ci * V;
+            light_mesh_faces(m, g_scratch_node_xform, NULL, 0, p->heading, p->pitch, p->roll, fl);
             for (int v = 0; v < V; v++) {
                 const uint16_t node = m->vert_node_idx[v];
                 const NodeXform *x  = &g_scratch_node_xform[node];
@@ -20923,14 +22527,18 @@ static void submit_static_mesh_run(TAK_Platform *plat,
                 g_scratch_wy[i]     = wy;
                 g_scratch_wet[i]    = 0;
                 g_scratch_hkey[i]   = model_height_key(by);
-                g_scratch_color[i]  = m->colors[v];
-                g_scratch_uv[2*i+0] = m->uvs[2*v+0];
-                g_scratch_uv[2*i+1] = m->uvs[2*v+1];
+                g_scratch_color[i]  = g_lit_color[v];
+                g_scratch_uv[2*i+0] = m->uvs[2*v+0] + g_lit_du[v];
+                g_scratch_uv[2*i+1] = m->uvs[2*v+1] + g_lit_dv[v];
+                g_scratch_row[i]    = g_lit_row[v];
             }
         }
 
-        emit_height_ordered(plat, m, cn, total_verts);
+        if (emit_depth(plat, m, cn, total_verts, 0) != 0)
+            emit_height_ordered(plat, m, cn, total_verts);
     }
+    /* Whatever SDL draws next must not land inside the session. */
+    depth_close();
 }
 
 /* Gathered placements for one run. Shared by the projectile and corpse
@@ -20954,7 +22562,7 @@ static void submit_projectile_run(TAK_Platform *plat,
         g_static_inst[i].pitch   = p->pitch;
         g_static_inst[i].roll    = p->roll;
     }
-    submit_static_mesh_run(plat, world, m, g_static_inst, n, 0);
+    submit_static_mesh_run(plat, world, m, g_static_inst, n, 0, model_def_light(NULL));
 }
 
 static void submit_projectile_models(TAK_Platform *plat,
@@ -21077,6 +22685,59 @@ const char *Units_FeaturePaint(const FeatureDef *fd) {
     return paint[0] ? paint : NULL;
 }
 
+/* The brightest level a mesh lit by `fl` reaches: a face square to the light. */
+static int face_light_top(FaceLight fl) {
+    const float n[3] = { 1.0f, 0.0f, 0.0f };
+    return model_face_level(n, n, 0, &fl);
+}
+
+static void note_node_tops(const Obj3DNode *nd, int top) {
+    for (; nd; nd = nd->next_sibling) {
+        for (int p = 0; p < nd->num_primitives; p++)
+            if (nd->primitives[p].texture_name[0])
+                TexAtlas_NoteShadeTop(nd->primitives[p].texture_name, top);
+        note_node_tops(nd->first_child, top);
+    }
+}
+
+static void note_model_tops(const char *object_name, int top) {
+    char obj_lc[TAK_UNITDEF_OBJ_MAX], path[TAK_UNITDEF_OBJ_MAX + 16];
+    lowercase_into(obj_lc, sizeof(obj_lc), object_name);
+    snprintf(path, sizeof(path), "objects3d/%s.3do", obj_lc);
+    Obj3DFile *obj = NULL;
+    if (Obj3D_Load(&obj, path) == 0 && obj) note_node_tops(obj->root, top);
+    Obj3D_Close(obj);
+}
+
+void Units_PlanShadeBands(void) {
+    if (!TexAtlas_ShadePlanWanted()) return;
+    const uint64_t t0 = SDL_GetPerformanceCounter();
+    const int shot_top = face_light_top(model_def_light(NULL));
+    for (int d = 0; d < g_def_count; d++) {
+        const UnitDef *def = &g_defs[d];
+        if (def->objectname[0])
+            note_model_tops(def->objectname, face_light_top(model_def_light(def)));
+        for (int w = 0; w < def->num_weapons + 2; w++) {
+            const int k = w - def->num_weapons;
+            const UnitWeapon *wp = k < 0 ? &def->weapons[w]
+                                 : (def->death_weapon_set >> k) & 1u ? &def->death_weapons[k] : NULL;
+            if (!wp || wp->art_kind != UNIT_WEAPON_ART_MODEL) continue;
+            note_model_tops(wp->art_name, shot_top);
+            if (wp->veteran_art_name[0]) note_model_tops(wp->veteran_art_name, shot_top);
+        }
+    }
+    for (int f = 0; f < Features_GetCount(); f++) {
+        const FeatureDef *fd = Features_GetByIndex(f);
+        if (!fd || !fd->object[0]) continue;
+        const char *paint = Units_FeaturePaint(fd);
+        if (paint) TexAtlas_NoteShadeTop(paint, face_light_top(feature_light(fd)));
+        else note_model_tops(fd->object, face_light_top(feature_light(fd)));
+    }
+    TexAtlas_PlanShades();
+    fprintf(stderr, "Units_PlanShadeBands: %.0f ms%c",
+            (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 / (double)SDL_GetPerformanceFrequency(), 10);
+}
+
 static const UnitMesh *corpse_model_mesh(int feat_idx, int color_idx) {
     const FeatureDef *fd = Features_GetByIndex(feat_idx);
     if (!fd || !fd->object[0]) return NULL;
@@ -21106,7 +22767,7 @@ static const UnitMesh *corpse_model_mesh(int feat_idx, int color_idx) {
         fprintf(stderr, "Corpses: no model %s\n", path);
         return NULL;
     }
-    UnitMesh *m = Mesh_BakePainted(obj, flat_palette(NULL), color_idx,
+    UnitMesh *m = Mesh_BakePainted(obj, flat_ramp(NULL), color_idx,
                                    Units_FeaturePaint(fd));
     Obj3D_Close(obj);
     if (!m) { ca->failed[color_idx] = 1; return NULL; }
@@ -21187,8 +22848,8 @@ static void submit_corpse_models(TAK_Platform *plat,
             si->roll    = angle16_to_heading(mf->roll);
         }
         if (m && run > 0)
-            submit_static_mesh_run(plat, world, m, g_static_inst, run,
-                                   CORPSE_ALL_PIECES);
+            submit_static_mesh_run(plat, world, m, g_static_inst, run, CORPSE_ALL_PIECES,
+                                   feature_light(Features_GetByIndex(key / 12)));
     }
 }
 
@@ -21247,7 +22908,6 @@ static const uint32_t *proj_sprite_palette(const ProjSpriteArt *ps,
     return world ? world->features_rgba : NULL;
 }
 
-/* Decodes the art once into its strip; 0 with the strip ready. */
 static int proj_sprite_decode(ProjSpriteArt *ps) {
     if (!ps->tried) {
         ps->tried = 1;
@@ -21270,7 +22930,7 @@ static int proj_sprite_decode(ProjSpriteArt *ps) {
             GAF_Close(gaf);
             return -1;
         }
-        int cw = 1, chh = 1;
+        int cw = 1, chh = 1, flag = -1;
         for (int f = 0; f < nf; f++) {
             FrameHeader *fh = NULL;
             pix[f] = NULL;
@@ -21279,6 +22939,8 @@ static int proj_sprite_decode(ProjSpriteArt *ps) {
                 continue;
             pix[f] = is_taf ? TAF_DecodeFrameRGBA(gaf, fh)
                             : GAF_DecodeFrameRGBA(gaf, fh, pal);
+            /* Byte 11 of a frame header, the high byte of its last word. */
+            if (flag < 0) flag = ((uint16_t)fh->subframes >> 8) & 0xff;
             ps->fw[f] = fh->width;
             ps->fh[f] = fh->height;
             ps->ox[f] = fh->offset_x;
@@ -21304,6 +22966,11 @@ static int proj_sprite_decode(ProjSpriteArt *ps) {
             ps->num_frames = nf;
             ps->cell_w     = cw;
             ps->cell_h     = chh;
+            /* A TAF sheet adds when header byte 11 is 0, as in the original.
+             * Paletted fire and magic add too. */
+            ps->add        = is_taf ? flag == 0 : ps->fx_palette && ps->fx_light;
+            ps->alpha      = (!is_taf && ps->fx_palette && !ps->fx_light)
+                           ? FX_PALETTED_ALPHA : 255;
         }
         for (int f = 0; f < nf; f++) if (pix[f]) tak_free(pix[f]);
         tak_free(pix);
@@ -21315,8 +22982,9 @@ static int proj_sprite_decode(ProjSpriteArt *ps) {
     return 0;
 }
 
-static int proj_sprite_ensure(SDL_Renderer *r, int sprite_idx) {
+static int proj_sprite_ensure(TAK_Platform *plat, int sprite_idx) {
     if (sprite_idx < 0 || sprite_idx >= g_proj_sprite_count) return -1;
+    SDL_Renderer *r = plat->renderer;
     ProjSpriteArt *ps = &g_proj_sprites[sprite_idx];
     /* A texture belongs to the renderer that made it and dies with it,
      * so on a renderer swap drop the handle and re-upload from the
@@ -21329,7 +22997,11 @@ static int proj_sprite_ensure(SDL_Renderer *r, int sprite_idx) {
     if (g_live_renderer_gen == 0) return -1;
     if (ps->strip && (ps->owner != r || ps->epoch != g_proj_art_epoch ||
                       ps->owner_gen != g_live_renderer_gen)) {
+        GPU_AbandonTexture(ps->strip);
+        GPU_AbandonTexture(ps->glow);
         ps->strip = NULL;
+        ps->glow = NULL;
+        ps->glow_failed = 0;
         ps->owner = NULL;
         ps->owner_gen = 0;
     }
@@ -21337,20 +23009,20 @@ static int proj_sprite_ensure(SDL_Renderer *r, int sprite_idx) {
 
     if (proj_sprite_decode(ps) != 0) return -1;
 
-    SDL_Texture *strip = SDL_CreateTexture(r, SDL_PIXELFORMAT_RGBA32,
-                                           SDL_TEXTUREACCESS_STATIC,
-                                           ps->cell_w * ps->num_frames,
-                                           ps->cell_h);
+    GPU_Texture *strip = GPU_UploadRGBA(plat, ps->pixels,
+                                        ps->cell_w * ps->num_frames, ps->cell_h);
     if (!strip) return -1;
-    SDL_SetTextureBlendMode(strip, SDL_BLENDMODE_BLEND);
-    SDL_UpdateTexture(strip, NULL, ps->pixels,
-                      ps->cell_w * ps->num_frames * 4);
+    GPU_SetTextureBlend(strip, GPU_BLEND_ALPHA);
     ps->strip = strip;
     ps->owner = r;
     ps->owner_gen = g_live_renderer_gen;
     ps->epoch = g_proj_art_epoch;
     return 0;
 }
+
+/* The provisional flash's pictures and the renderer they were made for. */
+static GPU_Texture *g_glow_tex[3];
+static uint32_t     g_glow_gen;
 
 /* Drop every cached strip texture and retire the epoch. Called from
  * Units_ClearInstances, which runs during world teardown with the
@@ -21361,16 +23033,27 @@ static void proj_art_release_textures(void) {
         ProjSpriteArt *ps = &g_proj_sprites[i];
         if (ps->strip && ps->epoch == g_proj_art_epoch &&
             ps->owner_gen == g_live_renderer_gen && g_live_renderer_gen != 0) {
-            SDL_DestroyTexture(ps->strip);
+            SDL_DestroyTexture(GPU_TextureSDL(ps->strip));
+            if (ps->glow) SDL_DestroyTexture(GPU_TextureSDL(ps->glow));
         }
+        GPU_AbandonTexture(ps->strip);
+        GPU_AbandonTexture(ps->glow);
         ps->strip = NULL;
+        ps->glow = NULL;
+        ps->glow_failed = 0;
         ps->owner = NULL;
         ps->owner_gen = 0;
+    }
+    for (int k = 0; k < 3; k++) {
+        if (g_glow_tex[k] && g_glow_gen == g_live_renderer_gen && g_live_renderer_gen != 0)
+            SDL_DestroyTexture(GPU_TextureSDL(g_glow_tex[k]));
+        GPU_AbandonTexture(g_glow_tex[k]);
+        g_glow_tex[k] = NULL;
     }
     g_proj_art_epoch++;
 }
 
-static void blit_proj_sprite(SDL_Renderer *r, int sprite_idx, int frame,
+static void blit_proj_sprite(TAK_Platform *plat, int sprite_idx, int frame,
                              int sx, int sy) {
     if (sprite_idx < 0 || sprite_idx >= g_proj_sprite_count) return;
     const ProjSpriteArt *ps = &g_proj_sprites[sprite_idx];
@@ -21380,7 +23063,24 @@ static void blit_proj_sprite(SDL_Renderer *r, int sprite_idx, int frame,
     SDL_Rect src = { frame * ps->cell_w, 0, ps->fw[frame], ps->fh[frame] };
     SDL_Rect dst = { sx - ps->ox[frame], sy - ps->oy[frame],
                      ps->fw[frame], ps->fh[frame] };
-    SDL_RenderCopy(r, ps->strip, &src, &dst);
+    GPU_DrawToWindow(plat, ps->strip, &src, &dst);
+}
+
+/* The same about its hot spot at scale16 sixteenths of its size. */
+static void blit_proj_sprite_scaled(TAK_Platform *plat, int sprite_idx, int frame,
+                                    int sx, int sy, int scale16) {
+    if (scale16 <= 0 || scale16 == 16) {
+        blit_proj_sprite(plat, sprite_idx, frame, sx, sy);
+        return;
+    }
+    if (sprite_idx < 0 || sprite_idx >= g_proj_sprite_count) return;
+    const ProjSpriteArt *ps = &g_proj_sprites[sprite_idx];
+    if (!ps->strip || frame < 0 || frame >= ps->num_frames) return;
+    if (ps->fw[frame] <= 0 || ps->fh[frame] <= 0) return;
+    SDL_Rect src = { frame * ps->cell_w, 0, ps->fw[frame], ps->fh[frame] };
+    SDL_Rect dst = { sx - ps->ox[frame] * scale16 / 16, sy - ps->oy[frame] * scale16 / 16,
+                     ps->fw[frame] * scale16 / 16, ps->fh[frame] * scale16 / 16 };
+    GPU_DrawToWindow(plat, ps->strip, &src, &dst);
 }
 
 /* weaponart projectiles. Legacy steps the sequence once per engine
@@ -21388,30 +23088,302 @@ static void blit_proj_sprite(SDL_Renderer *r, int sprite_idx, int frame,
 static void render_projectile_sprites(const struct GameWorld *world,
                                       TAK_Platform *plat) {
     if (!plat || !plat->renderer) return;
-    SDL_Renderer *r = plat->renderer;
     for (int i = 0; i < g_projectile_count; i++) {
         const Projectile *p = &g_projectiles[i];
         if (!p->alive || p->is_beam || p->hidden) continue;
         if (p->art_kind != UNIT_WEAPON_ART_SPRITE || p->art_idx < 0) continue;
         if (!projectile_visible_to_local_player(world, p)) continue;
-        if (proj_sprite_ensure(r, p->art_idx) != 0) continue;
+        if (proj_sprite_ensure(plat, p->art_idx) != 0) continue;
         const ProjSpriteArt *ps = &g_proj_sprites[p->art_idx];
         int frame = ps->num_frames > 1
             ? (int)((p->age_ticks / 2) % (uint16_t)ps->num_frames) : 0;
         int sx = p->world_x - world->cam_x;
         int sy = p->world_y - world->cam_y - (int)(p->height * g_tan_tilt);
-        blit_proj_sprite(r, p->art_idx, frame, sx, sy);
+        /* A shot draws as its sheet does. */
+        int add = ps->add;
+        if (add) GPU_SetTextureBlend(ps->strip, GPU_BLEND_ADD);
+        blit_proj_sprite(plat, p->art_idx, frame, sx, sy);
+        if (add) GPU_SetTextureBlend(ps->strip, GPU_BLEND_ALPHA);
     }
 }
 
-/* explosionclass impact sprites (legacy:245025). */
-static void render_projectile_effects(const struct GameWorld *world,
-                                      TAK_Platform *plat) {
+/* Build sparkles add over a wider faint halo, sizes in 16ths of the art,
+ * and SPARKLE_SHOWN16 16ths of a ring draw (R-009). */
+#define SPARKLE_SCALE16 16
+#define SPARKLE_HALO_SCALE16 28
+#define SPARKLE_HALO_ALPHA 20
+#define SPARKLE_SHOWN16 10
+
+/* Whether a sparkle is in the drawn share, fixed for its whole climb. */
+static int sparkle_shown(const ProjectileEffect *e) {
+    uint32_t h = (uint32_t)e->world_x * 0x9E3779B1u ^ (uint32_t)e->world_y * 0x85EBCA77u;
+    h ^= h >> 15;
+    h *= 0x2C1B3C6Du;
+    h ^= h >> 13;
+    return (int)(h & 15u) < SPARKLE_SHOWN16;
+}
+
+/* Frame f of the art at (x, y), premultiplied, between its texels. */
+static void sparkle_sample(const ProjSpriteArt *ps, int f, float x, float y,
+                           float out[3]) {
+    const float fx = floorf(x), fy = floorf(y);
+    const float ax = x - fx, ay = y - fy;
+    const size_t stride = (size_t)ps->cell_w * (size_t)ps->num_frames;
+    out[0] = out[1] = out[2] = 0.0f;
+    for (int j = 0; j < 2; j++) {
+        const int py = (int)fy + j;
+        if (py < 0 || py >= ps->fh[f]) continue;
+        for (int i = 0; i < 2; i++) {
+            const int px = (int)fx + i;
+            if (px < 0 || px >= ps->fw[f]) continue;
+            const uint32_t c = ps->pixels[(size_t)py * stride + (size_t)f * (size_t)ps->cell_w + (size_t)px];
+            const float w = (i ? ax : 1.0f - ax) * (j ? ay : 1.0f - ay) * (float)(c >> 24) / 255.0f;
+            out[0] += w * (float)(c & 0xFFu);
+            out[1] += w * (float)((c >> 8) & 0xFFu);
+            out[2] += w * (float)((c >> 16) & 0xFFu);
+        }
+    }
+}
+
+/* px from the hot spot to the edge at m sixteenths, rounded out. */
+static int sparkle_reach(int px, int m) {
+    return px > 0 ? (px * m + 15) / 16 + 1 : 1;
+}
+
+/* Bake every frame's star and halo into one strip drawn added at full
+ * alpha, each picture cut to what it lights, so a sparkle is one blit. */
+static int sparkle_glow_bake(TAK_Platform *plat, ProjSpriteArt *ps) {
+    const int nf = ps->num_frames, S = SPARKLE_SCALE16, H = SPARKLE_HALO_SCALE16;
+    const int M = S > H ? S : H;
+    if (!ps->gsrc) {
+        /* All three or none, so a later call never writes through a null. */
+        SDL_Rect *gsrc = (SDL_Rect *)tak_malloc(sizeof(SDL_Rect) * (size_t)nf);
+        int *gox = (int *)tak_malloc(sizeof(int) * (size_t)nf);
+        int *goy = (int *)tak_malloc(sizeof(int) * (size_t)nf);
+        if (!gsrc || !gox || !goy) {
+            if (gsrc) tak_free(gsrc);
+            if (gox) tak_free(gox);
+            if (goy) tak_free(goy);
+            return -1;
+        }
+        ps->gsrc = gsrc;
+        ps->gox = gox;
+        ps->goy = goy;
+    }
+    int cw = 1, ch = 1;
+    for (int f = 0; f < nf; f++) {
+        SDL_Rect *g = &ps->gsrc[f];
+        ps->gox[f] = sparkle_reach(ps->ox[f], M);
+        ps->goy[f] = sparkle_reach(ps->oy[f], M);
+        g->w = ps->fw[f] > 0 ? ps->gox[f] + sparkle_reach(ps->fw[f] - ps->ox[f], M) : 0;
+        g->h = ps->fh[f] > 0 ? ps->goy[f] + sparkle_reach(ps->fh[f] - ps->oy[f], M) : 0;
+        if (g->w > cw) cw = g->w;
+        if (g->h > ch) ch = g->h;
+    }
+    const size_t stride = (size_t)cw * (size_t)nf;
+    uint32_t *px = (uint32_t *)tak_malloc(sizeof(uint32_t) * stride * (size_t)ch);
+    if (!px) return -1;
+    memset(px, 0, sizeof(uint32_t) * stride * (size_t)ch);
+    const float halo = (float)SPARKLE_HALO_ALPHA / 255.0f;
+    for (int f = 0; f < nf; f++) {
+        SDL_Rect *g = &ps->gsrc[f];
+        int x0 = g->w, y0 = g->h, x1 = -1, y1 = -1;
+        for (int y = 0; y < g->h; y++) {
+            const float dy = (float)y + 0.5f - (float)ps->goy[f];
+            for (int x = 0; x < g->w; x++) {
+                const float dx = (float)x + 0.5f - (float)ps->gox[f];
+                float st[3], h[3];
+                sparkle_sample(ps, f, (float)ps->ox[f] + dx * 16.0f / (float)S - 0.5f,
+                               (float)ps->oy[f] + dy * 16.0f / (float)S - 0.5f, st);
+                sparkle_sample(ps, f, (float)ps->ox[f] + dx * 16.0f / (float)H - 0.5f,
+                               (float)ps->oy[f] + dy * 16.0f / (float)H - 0.5f, h);
+                uint32_t out = 0;
+                for (int k = 0; k < 3; k++) {
+                    float v = st[k] + h[k] * halo + 0.5f;
+                    if (v > 255.0f) v = 255.0f;
+                    out |= (uint32_t)v << (8 * k);
+                }
+                if (!out) continue;
+                px[(size_t)y * stride + (size_t)f * (size_t)cw + (size_t)x] = out | 0xFF000000u;
+                if (x < x0) x0 = x;
+                if (x > x1) x1 = x;
+                if (y < y0) y0 = y;
+                if (y > y1) y1 = y;
+            }
+        }
+        ps->gox[f] -= x0;
+        ps->goy[f] -= y0;
+        g->x = f * cw + x0;
+        g->y = y0;
+        g->w = x1 >= x0 ? x1 - x0 + 1 : 0;
+        g->h = y1 >= y0 ? y1 - y0 + 1 : 0;
+    }
+    GPU_Texture *tex = GPU_UploadRGBA(plat, px, cw * nf, ch);
+    tak_free(px);
+    if (!tex) return -1;
+    GPU_SetTextureBlend(tex, GPU_BLEND_ADD);
+    ps->glow = tex;
+    return 0;
+}
+
+static void blit_sparkle(TAK_Platform *plat, ProjSpriteArt *ps,
+                         const ProjectileEffect *e, int frame, int sx, int sy) {
+    if (!sparkle_shown(e)) return;
+    if (!ps->glow && !ps->glow_failed && sparkle_glow_bake(plat, ps) != 0) ps->glow_failed = 1;
+    if (!ps->glow) {
+        /* No halo: the star alone, added. */
+        GPU_SetTextureBlend(ps->strip, GPU_BLEND_ADD);
+        blit_proj_sprite(plat, e->sprite_idx, frame, sx, sy);
+        GPU_SetTextureBlend(ps->strip, GPU_BLEND_ALPHA);
+        return;
+    }
+    const SDL_Rect *g = &ps->gsrc[frame];
+    if (g->w <= 0 || g->h <= 0) return;
+    SDL_Rect dst = { sx - ps->gox[frame], sy - ps->goy[frame], g->w, g->h };
+    GPU_DrawToWindow(plat, ps->glow, g, &dst);
+}
+
+/* A damage flame lies over the ground at half strength, letting it
+ * through as the original's do, fitted on a burning ARAKEEP. */
+#define DAMAGE_FLAME_ALPHA 128
+
+/* The flash's white halo bell (0), core disc (1) and a body's flatter bloom
+ * (2), stretched to each. The halo's square is 1.25 of its 10% reach. */
+#define GLOW_TEX 64
+#define GLOW_TEX_REACH 1.25f
+
+static GPU_Texture *glow_texture(TAK_Platform *plat, int which) {
+    if (g_live_renderer_gen == 0) return NULL;
+    if (g_glow_gen != g_live_renderer_gen) {
+        for (int k = 0; k < 3; k++) {
+            GPU_AbandonTexture(g_glow_tex[k]);
+            g_glow_tex[k] = NULL;
+        }
+        g_glow_gen = g_live_renderer_gen;
+    }
+    if (g_glow_tex[which]) return g_glow_tex[which];
+    static uint32_t px[GLOW_TEX * GLOW_TEX];
+    for (int y = 0; y < GLOW_TEX; y++)
+        for (int x = 0; x < GLOW_TEX; x++) {
+            const float fx = ((float)x + 0.5f) / (GLOW_TEX / 2) - 1.0f;
+            const float fy = ((float)y + 0.5f) / (GLOW_TEX / 2) - 1.0f;
+            const float r = sqrtf(fx * fx + fy * fy);
+            float v = 0.0f;
+            const float rr = r * GLOW_TEX_REACH;
+            if (which == 0 && r < 1.0f) v = glow_falloff(rr * rr);
+            else if (which == 2 && r < 1.0f) v = glow_falloff(rr * rr * rr);
+            else if (which == 1) v = r < 0.85f ? 1.0f : r < 1.0f ? (1.0f - r) / 0.15f : 0.0f;
+            const uint32_t a = (uint32_t)(255.0f * v + 0.5f);
+            px[y * GLOW_TEX + x] = (a << 24) | 0x00FFFFFFu;
+        }
+    g_glow_tex[which] = GPU_UploadRGBA(plat, px, GLOW_TEX, GLOW_TEX);
+    if (!g_glow_tex[which]) return NULL;
+    GPU_SetTextureFilter(g_glow_tex[which], 1);
+    GPU_SetTextureBlend(g_glow_tex[which], GPU_BLEND_ADD);
+    return g_glow_tex[which];
+}
+
+static void blit_glow(TAK_Platform *plat, const struct GameWorld *world,
+                      const ProjectileEffect *e) {
+    const int lift = glow_alpha(e->age_ticks, e->glow_root16);
+    if (lift <= 0) return;
+    const int sx = e->world_x - world->cam_x;
+    const int sy = e->world_y - world->cam_y - (int)((float)e->height * g_tan_tilt);
+    GPU_Texture *halo = glow_texture(plat, e->glow_flat ? 2 : 0);
+    if (halo) {
+        const int w = (int)((float)e->glow_w * GLOW_TEX_REACH *
+                            (float)glow_reach256(e->age_ticks, 0) / 256.0f);
+        const int h = (int)((float)e->glow_h * GLOW_TEX_REACH *
+                            (float)glow_reach256(e->age_ticks, 1) / 256.0f);
+        /* The tint's mean is 233, so this alpha lifts the middle by `lift`. */
+        const int a = lift * 255 / 233;
+        SDL_Rect dst = { sx - w, sy - h, 2 * w, 2 * h };
+        GPU_SetTextureMod(halo, k_glow_tint[0], k_glow_tint[1], k_glow_tint[2],
+                          (uint8_t)(a > 255 ? 255 : a));
+        GPU_DrawToWindow(plat, halo, NULL, &dst);
+    }
+    GPU_Texture *core = glow_texture(plat, 1);
+    const int r = glow_core_px(e->age_ticks, e->glow_root16);
+    if (core && r > 0) {
+        SDL_Rect dst = { sx - r, sy - r, 2 * r, 2 * r };
+        GPU_SetTextureMod(core, 255, 255, 255, 255);
+        GPU_DrawToWindow(plat, core, NULL, &dst);
+    }
+}
+
+/* One effect's picture where it stands, blended or added as it asks. */
+static void blit_effect(TAK_Platform *plat, const struct GameWorld *world,
+                        const ProjectileEffect *e) {
+    if (proj_sprite_ensure(plat, e->sprite_idx) != 0) return;
+    const ProjSpriteArt *ps = &g_proj_sprites[e->sprite_idx];
+    int frame = Units_EffectPicture(e);
+    if (frame >= ps->num_frames) {
+        if (!e->loops || ps->num_frames <= 0) return;   /* played out */
+        frame %= ps->num_frames;
+    }
+    int sx = e->world_x - world->cam_x + e->pic_dx;
+    int sy = e->world_y - world->cam_y - (int)((float)e->height * g_tan_tilt) - e->pic_dy;
+    if (ps->sparkle) {
+        blit_sparkle(plat, &g_proj_sprites[e->sprite_idx], e, frame, sx, sy);
+        return;
+    }
+    const int flame = e->damage_owner_id != 0;
+    int add = !flame && (e->add || ps->add);
+    GPU_SetTextureBlend(ps->strip, add ? GPU_BLEND_ADD : GPU_BLEND_ALPHA);
+    GPU_SetTextureMod(ps->strip, 255, 255, 255,
+                      flame ? (uint8_t)DAMAGE_FLAME_ALPHA
+                      : ps->alpha);
+    blit_proj_sprite(plat, e->sprite_idx, frame, sx, sy);
+    GPU_SetTextureBlend(ps->strip, GPU_BLEND_ALPHA);
+    GPU_SetTextureMod(ps->strip, 255, 255, 255, 255);
+}
+
+/* An effect's pass: in front (owner -2), one unit's far ring particles
+ * (owner), or far ones whose unit is not drawn (owner -1). */
+static int effect_in_pass(const ProjectileEffect *e, int owner) {
+    if (e->ground) return 0;
+    if (owner == -2) return !e->behind;
+    if (!e->behind) return 0;
+    int placed = e->owner >= 0 && e->owner < TAK_MAX_UNITS &&
+                 g_fx_behind_owner[e->owner];
+    return owner < 0 ? !placed : placed && e->owner == owner;
+}
+
+/* A cast's nimbus, flat and untilted: ground depth goes to the screen
+ * 1:1, as the selection ring's does (legacy:197689). */
+static void render_ground_effects(const struct GameWorld *world,
+                                  TAK_Platform *plat) {
     if (!plat || !plat->renderer) return;
-    SDL_Renderer *r = plat->renderer;
     for (int i = 0; i < g_proj_effect_count; i++) {
         const ProjectileEffect *e = &g_proj_effects[i];
-        if (!e->alive || e->delay_ticks) continue;
+        if (!e->alive || !e->ground || !Units_EffectShows(world, e)) continue;
+        if (proj_sprite_ensure(plat, e->sprite_idx) != 0) continue;
+        const ProjSpriteArt *ps = &g_proj_sprites[e->sprite_idx];
+        int frame = Units_EffectPicture(e);
+        if (frame >= ps->num_frames) continue;
+        int sx = e->world_x - world->cam_x;
+        int sy = e->world_y - world->cam_y - (int)((float)e->height * g_tan_tilt);
+        GPU_SetTextureBlend(ps->strip, NIMBUS_ADD ? GPU_BLEND_ADD : GPU_BLEND_ALPHA);
+        GPU_SetTextureMod(ps->strip, 255, 255, 255, NIMBUS_ALPHA);
+        blit_proj_sprite_scaled(plat, e->sprite_idx, frame, sx, sy, NIMBUS_SCALE16);
+        GPU_SetTextureBlend(ps->strip, GPU_BLEND_ALPHA);
+        GPU_SetTextureMod(ps->strip, 255, 255, 255, 255);
+    }
+}
+
+/* explosionclass impact sprites (legacy:245025), and every other effect
+ * of one pass, see effect_in_pass. */
+static void render_projectile_effects(const struct GameWorld *world,
+                                      TAK_Platform *plat, int owner) {
+    if (!plat || !plat->renderer) return;
+    SDL_Renderer *r = plat->renderer;
+    /* A burst's fire first, so a dying building's dust hides it but for
+     * glints, as in captures of the original. */
+    for (int k = 0; k < 2 * g_proj_effect_count; k++) {
+        const int i = k % g_proj_effect_count;
+        const ProjectileEffect *e = &g_proj_effects[i];
+        if (!e->alive || e->delay_ticks || e->glow_w || !effect_in_pass(e, owner)) continue;
+        if ((e->under != 0) != (k < g_proj_effect_count)) continue;
         if (e->wake_owner_id) {
             /* One pixel of its colour, while its unit shows
              * (legacy:215190-215228, legacy:201715-201725). */
@@ -21425,23 +23397,89 @@ static void render_projectile_effects(const struct GameWorld *world,
         }
         /* The same gate again (legacy:215736-215749). */
         if (!Units_EffectShows(world, e)) continue;
-        if (proj_sprite_ensure(r, e->sprite_idx) != 0) continue;
-        const ProjSpriteArt *ps = &g_proj_sprites[e->sprite_idx];
-        int frame = Units_EffectPicture(e);
-        if (frame >= ps->num_frames) {
-            if (!e->loops || ps->num_frames <= 0) continue;   /* played out */
-            frame %= ps->num_frames;
-        }
-        int sx = e->world_x - world->cam_x;
-        int sy = e->world_y - world->cam_y
-               - (int)((float)e->height * g_tan_tilt);
-        blit_proj_sprite(r, e->sprite_idx, frame, sx, sy);
+        blit_effect(plat, world, e);
+    }
+    /* Blooms go over every picture of the pass, washing out the fire
+     * under them, as in the original. */
+    for (int i = 0; i < g_proj_effect_count; i++) {
+        const ProjectileEffect *e = &g_proj_effects[i];
+        if (!e->alive || e->delay_ticks || !e->glow_w || !effect_in_pass(e, owner) ||
+            !Units_EffectShows(world, e)) continue;
+        blit_glow(plat, world, e);
     }
 }
 
 /* Draw the projectiles that have no art of their own: beams, and the
  * fallback bright disc for weapons with neither `model` nor
  * `weaponart` (melee-adjacent and Remote Effect entries). */
+
+/* A bolt's inner colour laid over, a 1 px core at 0.88 and a soft band to
+ * 16 px either side, as captures of the original measure it. */
+static const uint8_t k_bolt_alpha[17] = {
+    217, 120, 89, 74, 65, 60, 52, 45, 39, 33, 29, 23, 18, 14, 11, 9, 6
+};
+
+/* A bolt holds, then fades over its last 3 frames. */
+int Units_BoltStrength(int age, int life) {
+    static const int fade[3] = { 84, 108, 169 };
+    int left = (life - age + 1) / 2;
+    return left >= 1 && left <= 3 ? fade[left - 1] : 256;
+}
+
+static void draw_bolt(const struct GameWorld *world, TAK_Platform *plat,
+                      SDL_Renderer *r, const Projectile *p, int seed,
+                      int age, int life) {
+    int sx = p->world_x - world->cam_x;
+    int sy = p->world_y - world->cam_y - (int)(p->height * g_tan_tilt);
+    /* From the firing piece, in the air for a hovering caster, to where
+     * it stopped (legacy:247277, :246220-246225), jitter reseeded a frame. */
+    int ax = p->src_x - world->cam_x;
+    int ay = p->src_y - world->cam_y - (int)(Units_BeamStartHeight(p) * g_tan_tilt);
+    float dx = (float)(sx - ax), dy = (float)(sy - ay);
+    float len = sqrtf(dx * dx + dy * dy);
+    float nx = len > 0.001f ? -dy / len : 0.0f;
+    float ny = len > 0.001f ?  dx / len : 0.0f;
+    enum { SEG = 10 };
+    int px[SEG + 1], py[SEG + 1];
+    for (int s = 0; s <= SEG; s++) {
+        float t = (float)s / (float)SEG;
+        float jit = 0.0f;
+        if (s > 0 && s < SEG) {
+            uint32_t n = unit_deterministic_noise((uint32_t)seed,
+                                                  (uint32_t)g_construct_anim_tick,
+                                                  (uint32_t)s);
+            jit = ((float)(n & 0xffffu) / 65535.0f) * 12.0f - 6.0f;
+        }
+        px[s] = ax + (int)(dx * t + nx * jit);
+        py[s] = ay + (int)(dy * t + ny * jit);
+    }
+    /* It holds, then fades over its last 3 frames, slower 1 to 3 px from
+     * the middle, and its band grows over its first 3. */
+    static const int fade_in[3] = { 146, 166, 207 };
+    static const int grow[3] = { 154, 205, 256 };
+    int left = (life - age + 1) / 2;
+    int fading = left >= 1 && left <= 3;
+    int band = grow[age / 2 < 2 ? age / 2 : 2];
+    /* Offsets step across the line on its minor axis, a pixel apiece. */
+    int across_y = fabsf(dx) >= fabsf(dy);
+    GPU_Blend was = GPU_SetDrawBlend(plat, GPU_BLEND_ALPHA);
+    for (int d = 16; d >= 0; d--) {
+        int whole = (fading && d >= 1 && d <= 3) ? fade_in[left - 1]
+                                                 : Units_BoltStrength(age, life);
+        int a = k_bolt_alpha[d] * whole / 256;
+        if (d >= 2) a = a * band / 256;
+        if (a <= 0) continue;
+        SDL_SetRenderDrawColor(r, p->beam_rgb[0][0], p->beam_rgb[0][1],
+                               p->beam_rgb[0][2], (uint8_t)a);
+        for (int side = d ? -1 : 1; side <= 1; side += 2) {
+            int ox = across_y ? 0 : side * d, oy = across_y ? side * d : 0;
+            for (int s = 0; s < SEG; s++)
+                SDL_RenderDrawLine(r, px[s] + ox, py[s] + oy,
+                                   px[s + 1] + ox, py[s + 1] + oy);
+        }
+    }
+    GPU_SetDrawBlend(plat, was);
+}
 
 static void render_projectiles(const struct GameWorld *world,
                                 TAK_Platform *plat) {
@@ -21462,50 +23500,7 @@ static void render_projectiles(const struct GameWorld *world,
         /* A beam ends where its ray stopped, a shot is where it flies. */
         int sx = p->world_x - world->cam_x;
         int sy = p->world_y - world->cam_y - (int)(p->height * g_tan_tilt);
-        if (p->is_beam) {
-            /* Jagged ray from the firing piece, in the air for a hovering
-             * caster, to where it stopped (legacy:247277, :246220-246225).
-             * Three passes outer to inner, jitter reseeded per frame. */
-            int ax = p->src_x - world->cam_x;
-            int ay = p->src_y - world->cam_y
-                   - (int)(Units_BeamStartHeight(p) * g_tan_tilt);
-            float dx = (float)(sx - ax), dy = (float)(sy - ay);
-            float len = sqrtf(dx * dx + dy * dy);
-            float nx = len > 0.001f ? -dy / len : 0.0f;
-            float ny = len > 0.001f ?  dx / len : 0.0f;
-            #define BEAM_SEG 10
-            int px[BEAM_SEG + 1], py[BEAM_SEG + 1];
-            const int SEG = BEAM_SEG;
-            for (int s = 0; s <= SEG; s++) {
-                float t = (float)s / (float)SEG;
-                float jit = 0.0f;
-                if (s > 0 && s < SEG) {
-                    uint32_t n = unit_deterministic_noise(
-                        (uint32_t)i, (uint32_t)g_construct_anim_tick,
-                        (uint32_t)s);
-                    jit = ((float)(n & 0xffffu) / 65535.0f) * 12.0f - 6.0f;
-                }
-                px[s] = ax + (int)(dx * t + nx * jit);
-                py[s] = ay + (int)(dy * t + ny * jit);
-            }
-            static const int pass_off[3] = { 2, 1, 0 };
-            static const int pass_alpha[3] = { 90, 170, 255 };
-            for (int pass = 0; pass < 3; pass++) {
-                int ci = 2 - pass;   /* outer, middle, inner */
-                SDL_SetRenderDrawColor(r, p->beam_rgb[ci][0],
-                                       p->beam_rgb[ci][1],
-                                       p->beam_rgb[ci][2],
-                                       (uint8_t)pass_alpha[pass]);
-                int off = pass_off[pass];
-                for (int o = -off; o <= off; o++) {
-                    for (int s = 0; s < SEG; s++) {
-                        SDL_RenderDrawLine(r, px[s] + o, py[s],
-                                           px[s + 1] + o, py[s + 1]);
-                    }
-                }
-            }
-            continue;
-        }
+        if (p->is_beam) continue;   /* drawn as bolts below */
         uint8_t hr = 255, hg = 220, hb = 90;
         uint8_t cr = 255, cg = 180, cb = 40;
         int halo_max = 14;
@@ -21543,6 +23538,13 @@ static void render_projectiles(const struct GameWorld *world,
         SDL_SetRenderDrawColor(r, 255, 240, 180, 255);
         SDL_Rect spark = { sx - 1, sy - 1, 2, 2 };
         SDL_RenderFillRect(r, &spark);
+    }
+    const int bolts = Units_GetBoltCount();
+    for (int i = 0; i < bolts; i++) {
+        int age = 0, life = 0;
+        const Projectile *p = Units_GetBolt(i, &age, &life);
+        if (!p || !projectile_visible_to_local_player(world, p)) continue;
+        draw_bolt(world, plat, r, p, p->src_x * 31 + p->world_y, age, life);
     }
     SDL_SetRenderDrawBlendMode(r, prev_blend);
 }
@@ -21668,8 +23670,8 @@ static void render_construction_effects(const struct GameWorld *world,
  * first sight we open the GAF, decode every frame of the named sequence
  * into RGBA buffers using the kingdom palette (world->terrain_rgba —
  * the same one Build_PaletteRGBATable produced for the active map's
- * kingdom). Animated features cycle frames on the same global tick the
- * construct effect uses; static ones (animating=0) just hold frame 0.
+ * kingdom). A sequence of more than one picture plays by the game
+ * clock (feature_frame_now).
  *
  * Cache key is (filename, seqname). Same filename, different seqname is
  * a separate entry — we open the GAF once but each sequence is its own
@@ -21685,6 +23687,7 @@ typedef struct FeatureSprite {
     int       *frame_h;
     int       *frame_off_x;
     int       *frame_off_y;
+    uint16_t  *hold;               /* original frames each picture shows */
     int        loaded_ok;          /* 1 if frames[*] valid; 0 = load failed, don't retry */
 } FeatureSprite;
 static FeatureSprite g_feat_sprites[256];
@@ -21733,12 +23736,14 @@ static FeatureSprite *load_feature_sprite(const char *filename,
     fs->frame_h      = (int *)tak_malloc(sizeof(int) * num_frames);
     fs->frame_off_x  = (int *)tak_malloc(sizeof(int) * num_frames);
     fs->frame_off_y  = (int *)tak_malloc(sizeof(int) * num_frames);
+    fs->hold         = (uint16_t *)tak_malloc(sizeof(uint16_t) * num_frames);
     if (!fs->frame_pixels || !fs->frame_w || !fs->frame_h ||
-        !fs->frame_off_x || !fs->frame_off_y) {
+        !fs->frame_off_x || !fs->frame_off_y || !fs->hold) {
         GAF_Close(gaf);
         return NULL;
     }
     for (int f = 0; f < num_frames; f++) {
+        fs->hold[f] = (uint16_t)GAF_FrameHold(gaf, (uint32_t)seq_off, f);
         FrameHeader *fh = NULL;
         if (GAF_GetFrameInfo(gaf, (uint32_t)seq_off, f, &fh) != 0 || !fh) {
             fs->frame_pixels[f] = NULL;
@@ -21897,8 +23902,10 @@ static int feature_screen_anchor(const struct GameWorld *world, int i,
     return 1;
 }
 
+/* A map feature plays its sequence by the game clock in the original's
+ * frames, each picture for its own count (legacy:255756-255795). */
 static int feature_frame_now(const FeatureSprite *fs) {
-    return fs->num_frames > 1 ? (int)((g_construct_anim_tick / 4) % fs->num_frames) : 0;
+    return GAF_LoopPicture(fs->hold, fs->num_frames, Units_ViewFrame());
 }
 
 static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
@@ -22103,6 +24110,8 @@ static void tall_tex_release(void) {
 /* Lays the tall features of every row before `row` over the walkers
  * drawn so far, clipped to each walker's box so nothing else moves. */
 static void flush_tall_features(TAK_Platform *plat, int row) {
+    if (!tall_feature_before(row)) return;
+    depth_close();
     SDL_Renderer *r = plat->renderer;
     SDL_Rect prev;
     const SDL_bool clipped = SDL_RenderIsClipEnabled(r);
@@ -22204,15 +24213,37 @@ static int shadow_ground_height(const struct GameWorld *world, const Unit *u) {
     return h;
 }
 
+/* Which pass lays a unit's ground shadow: none, the ground pass before any
+ * body, or its own row just before its body. */
+enum { UNITS_SHADOW_NONE = 0, UNITS_SHADOW_GROUND = 1, UNITS_SHADOW_IN_ROW = 2 };
+
+/* A wall (isfeature) casts its shadow as the feature it becomes, whatever its
+ * noshadow, just before its own body so it falls across the wall behind, as in
+ * the original. Every other shadow goes down before any body. */
+static int Units_ShadowPass(const UnitDef *d, int under_construction) {
+    if (!d || d->floater || under_construction) return UNITS_SHADOW_NONE;
+    if (d->no_shadow && !d->is_feature) return UNITS_SHADOW_NONE;
+    return d->is_feature ? UNITS_SHADOW_IN_ROW : UNITS_SHADOW_GROUND;
+}
+
 static int unit_casts_shadow(const Unit *u, const UnitDef *d) {
-    if (!d || d->no_shadow || d->floater) return 0;
-    if (u->under_construction) return 0;
-    return 1;
+    return Units_ShadowPass(d, u->under_construction) != UNITS_SHADOW_NONE;
+}
+
+static int unit_shadow_in_row(const Unit *u, const UnitDef *d) {
+    return Units_ShadowPass(d, u->under_construction) == UNITS_SHADOW_IN_ROW;
+}
+
+/* A model feature casts a silhouette unless its file says noshadow, as in
+ * the original. A sprite feature's shadow is its GAF's. */
+static int Units_FeatureCastsShadow(const struct FeatureDef *fd) {
+    return fd && fd->object[0] && !fd->no_shadow;
 }
 
 /* Point the renderer at a cleared shadow mask. Returns 0 and the
  * target to restore, or -1 when the mask cannot be made. */
 static int shadow_mask_begin(TAK_Platform *plat, SDL_Texture **prev) {
+    depth_close();   /* no depth session may span a target switch */
     SDL_Renderer *r = plat->renderer;
     int w = 0, h = 0;
     /* Same rule as the strip cache: with no generation to match, the
@@ -22302,22 +24333,36 @@ static void shadow_area_add(SDL_Rect *area, float x0, float y0,
  * blended once at an alpha that peaks at half built
  * (legacy:197480-197489, legacy:198241-198271). The silhouette goes
  * into an offscreen target first, so overlapping faces blend once.
+ * Before the turn the mass alone shows the ground through it, after it
+ * the opaque body shows through the fading mass.
  */
 
 #define MASS_NOISE_SIZE 256
 
+/* Percent built at which the body appears and the mass is strongest
+ * (legacy:197474-197476, legacy:197483). */
+#define MASS_TURN_PCT 50
+/* The mass's alpha at the turn. */
+#define MASS_PEAK_ALPHA 255
+/* The marble: how far the smooth table swings the palette index either
+ * way, and how many of its waves span the 256 px tile. */
+#define MASS_MARBLE_DEPTH 56
+#define MASS_MARBLE_WAVES 3
+
 int Units_IntangibleMassAlpha(const Unit *u) {
     if (!u || !u->under_construction || u->max_health <= 0) return 0;
-    int32_t hp = u->health, max = u->max_health;
+    int64_t hp = u->health, max = u->max_health;
     if (hp < 0) hp = 0;
     if (hp > max) hp = max;
-    const int32_t lo = hp < max - hp ? hp : max - hp;
-    return (int)((int64_t)lo * 510 / max);
+    /* Shares in hundredths of max keep the original's whole number steps. */
+    if (hp * 100 <= max * MASS_TURN_PCT)
+        return (int)(hp * 100 * MASS_PEAK_ALPHA / (max * MASS_TURN_PCT));
+    return (int)((max - hp) * 100 * MASS_PEAK_ALPHA / (max * (100 - MASS_TURN_PCT)));
 }
 
 int Units_NanoframeBodyShown(const Unit *u) {
     if (!u || !u->under_construction || u->max_health <= 0) return 1;
-    return (int64_t)u->health * 2 > (int64_t)u->max_health;
+    return (int64_t)u->health * 100 > (int64_t)u->max_health * MASS_TURN_PCT;
 }
 
 typedef struct MassPalette {
@@ -22360,35 +24405,30 @@ const uint32_t *Units_BuildPaletteRGBA(const char *side_prefix) {
     return p->rgba;
 }
 
-/* Our own fixed shuffle of 0..255 stands in for the hash's table. */
-static uint8_t g_mass_perm[256];
-static int     g_mass_perm_ready;
+/* The hash's table: one turn of a sine, depth either way. */
+static int g_mass_wave[256];
+static int g_mass_wave_depth = -1;
 
-static void mass_perm_init(void) {
-    if (g_mass_perm_ready) return;
-    for (int i = 0; i < 256; i++) g_mass_perm[i] = (uint8_t)i;
-    uint32_t x = 0x9E3779B9u;
-    for (int i = 255; i > 0; i--) {
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        const int j = (int)(x % (uint32_t)(i + 1));
-        const uint8_t t = g_mass_perm[i];
-        g_mass_perm[i] = g_mass_perm[j];
-        g_mass_perm[j] = t;
-    }
-    g_mass_perm_ready = 1;
+static void mass_wave_init(int depth) {
+    if (depth == g_mass_wave_depth) return;
+    for (int i = 0; i < 256; i++)
+        g_mass_wave[i] = (int)floorf((float)depth * tak_sinf((float)i * (6.2831853f / 256.0f)) + 0.5f);
+    g_mass_wave_depth = depth;
 }
+
+#define MASS_WAVE(i) g_mass_wave[(unsigned)(i) & 0xffu]
 
 /* Index 0x20 plus a hash of column, row and the 30 Hz game tick. */
 static void mass_noise_fill(uint32_t *px, const uint32_t *pal, uint32_t t) {
-    mass_perm_init();
+    mass_wave_init(MASS_MARBLE_DEPTH);
+    const int k = MASS_MARBLE_WAVES;
     for (int y = 0; y < MASS_NOISE_SIZE; y++) {
-        const int py = g_mass_perm[y & 0xff];
+        const int py = MASS_WAVE(k * y);
         for (int x = 0; x < MASS_NOISE_SIZE; x++) {
-            const int a = g_mass_perm[(g_mass_perm[((t + (uint32_t)x) >> 1) & 0xffu] + y) & 0xff];
-            const int b = g_mass_perm[(py + x) & 0xff];
-            px[y * MASS_NOISE_SIZE + x] = pal[(a + b + (int)(t >> 2)) & 0x7f];
+            /* Whole steps in x keep the term periodic in the tile. */
+            const int a = MASS_WAVE(MASS_WAVE(k * (int)((t >> 1) + (uint32_t)x)) + k * y);
+            const int b = MASS_WAVE(py + k * x);
+            px[y * MASS_NOISE_SIZE + x] = pal[(unsigned)(a + b + (int)(t >> 2)) & 0x7fu];
         }
     }
 }
@@ -22458,9 +24498,22 @@ static SDL_Texture *mass_noise_texture(SDL_Renderer *r, const uint32_t *pal,
     return n->tex;
 }
 
-/* Point the renderer at the mass target with `box` cleared. Returns 0
- * with the target to restore, or -1 when there is nothing to draw. */
-static int mass_target_begin(TAK_Platform *plat, SDL_Rect *box, SDL_Texture **prev) {
+/* The silhouette group open in the mass target. Consecutive whiteouts
+ * at one fade share a round trip, and a mass has its own. */
+static struct {
+    int             open;
+    int             alpha;
+    const uint32_t *pal;       /* build palette of a mass, NULL for white */
+    SDL_Rect        box;       /* what the group drew, clipped to the target */
+    SDL_Texture    *prev;
+    SDL_BlendMode   was;
+    Uint8           cr, cg, cb, ca;
+} g_sil;
+static SDL_Rect g_mass_dirty;  /* left white by the last group */
+
+/* Bind the mass target, clearing what the last group left. */
+static int silhouette_open(TAK_Platform *plat) {
+    depth_close();   /* no depth session may span a target switch */
     SDL_Renderer *r = plat->renderer;
     int w = 0, h = 0;
     if (plat->renderer_gen == 0) return -1;
@@ -22472,51 +24525,71 @@ static int mass_target_begin(TAK_Platform *plat, SDL_Rect *box, SDL_Texture **pr
             SDL_DestroyTexture(g_mass_target);
         g_mass_target = NULL;
     }
+    int fresh = 0;
     if (!g_mass_target) {
-        g_mass_target = SDL_CreateTexture(r, SDL_PIXELFORMAT_RGBA32,
+        /* The renderers' own byte order keeps the software copies fast. */
+        g_mass_target = SDL_CreateTexture(r, SDL_PIXELFORMAT_ARGB8888,
                                           SDL_TEXTUREACCESS_TARGET, w, h);
         if (!g_mass_target) return -1;
+        SDL_SetTextureBlendMode(g_mass_target, SDL_BLENDMODE_BLEND);
         g_mass_target_owner = r;
         g_mass_target_gen = plat->renderer_gen;
         g_mass_target_w = w;
         g_mass_target_h = h;
+        fresh = 1;
     }
-    if (box->x < 0) { box->w += box->x; box->x = 0; }
-    if (box->y < 0) { box->h += box->y; box->y = 0; }
-    if (box->x + box->w > w) box->w = w - box->x;
-    if (box->y + box->h > h) box->h = h - box->y;
-    if (box->w <= 0 || box->h <= 0) return -1;
-    *prev = SDL_GetRenderTarget(r);
+    SDL_GetRenderDrawBlendMode(r, &g_sil.was);
+    SDL_GetRenderDrawColor(r, &g_sil.cr, &g_sil.cg, &g_sil.cb, &g_sil.ca);
+    g_sil.prev = SDL_GetRenderTarget(r);
     if (SDL_SetRenderTarget(r, g_mass_target) != 0) return -1;
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
     SDL_SetRenderDrawColor(r, 0, 0, 0, 0);
-    SDL_RenderFillRect(r, box);
+    if (fresh) SDL_RenderClear(r);
+    else if (g_mass_dirty.w > 0 && g_mass_dirty.h > 0) SDL_RenderFillRect(r, &g_mass_dirty);
+    g_mass_dirty.w = g_mass_dirty.h = 0;
+    g_sil.open = 1;
+    g_sil.box.w = g_sil.box.h = 0;
     return 0;
 }
 
-static void submit_intangible_mass(TAK_Platform *plat, const UnitMesh *m,
-                                   const Unit *u, const UnitDef *def, int n_verts) {
-    const int alpha = Units_IntangibleMassAlpha(u);
-    if (alpha <= 0 || !plat || !plat->renderer || !def) return;
-    const uint32_t *pal = Units_BuildPaletteRGBA(def->side);
-    if (!pal) return;
+/* Force the group's covered pixels white, colour a mass with its build
+ * palette, and blend the group over the scene once. */
+static void silhouette_close(TAK_Platform *plat) {
+    if (!g_sil.open) return;
+    g_sil.open = 0;
     SDL_Renderer *r = plat->renderer;
-
-    int w = 0;
-    for (int b = 0; b < m->batch_count; b++) {
-        const UnitMeshBatch *batch = &m->batches[b];
-        const int n_tri = batch->index_count / 3;
-        const uint16_t *src = m->indices + batch->first_index;
-        for (int t = 0; t < n_tri; t++) {
-            if (!tri_faces_camera(src[3 * t], src[3 * t + 1], src[3 * t + 2])) continue;
-            g_scratch_idx[w++] = src[3 * t];
-            g_scratch_idx[w++] = src[3 * t + 1];
-            g_scratch_idx[w++] = src[3 * t + 2];
+    const SDL_Rect box = g_sil.box;
+    if (box.w > 0 && box.h > 0) {
+        /* Additive white saturates the colour and leaves the coverage alone. */
+        SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_ADD);
+        SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+        SDL_RenderFillRect(r, &box);
+        SDL_Texture *noise = g_sil.pal ? mass_noise_texture(r, g_sil.pal, g_sim_tick / 2u) : NULL;
+        for (int ty = 0; noise && ty < box.h; ty += MASS_NOISE_SIZE) {
+            for (int tx = 0; tx < box.w; tx += MASS_NOISE_SIZE) {
+                SDL_Rect s = { 0, 0, box.w - tx, box.h - ty };
+                if (s.w > MASS_NOISE_SIZE) s.w = MASS_NOISE_SIZE;
+                if (s.h > MASS_NOISE_SIZE) s.h = MASS_NOISE_SIZE;
+                SDL_Rect d = { box.x + tx, box.y + ty, s.w, s.h };
+                SDL_RenderCopy(r, noise, &s, &d);
+            }
         }
     }
+    SDL_SetRenderTarget(r, g_sil.prev);
+    SDL_SetRenderDrawBlendMode(r, g_sil.was);
+    SDL_SetRenderDrawColor(r, g_sil.cr, g_sil.cg, g_sil.cb, g_sil.ca);
+    if (box.w <= 0 || box.h <= 0) return;
+    SDL_SetTextureAlphaMod(g_mass_target, (Uint8)g_sil.alpha);
+    SDL_RenderCopy(r, g_mass_target, &box, &box);
+    g_mass_dirty = box;
+}
+
+/* The unit's screen box, and its vertex colours in white with their
+ * alpha kept. -1 when every piece is hidden. */
+static int silhouette_prepare(const UnitMesh *m, int n_verts, SDL_Rect *box) {
     float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
     for (int v = 0; v < n_verts; v++) {
-        g_scratch_color[v] = 0xFFFFFFFFu;
+        g_scratch_color[v] = m->colors[v] | 0x00FFFFFFu;
         if (g_scratch_node_xform[m->vert_node_idx[v]].hidden) continue;
         const float sx = g_scratch_xy[2 * v], sy = g_scratch_xy[2 * v + 1];
         if (sx < x0) x0 = sx;
@@ -22524,35 +24597,84 @@ static void submit_intangible_mass(TAK_Platform *plat, const UnitMesh *m,
         if (sy < y0) y0 = sy;
         if (sy > y1) y1 = sy;
     }
-    if (w == 0 || x1 < x0) return;
-    SDL_Rect box = { (int)floorf(x0) - 1, (int)floorf(y0) - 1, 0, 0 };
-    box.w = (int)ceilf(x1) + 2 - box.x;
-    box.h = (int)ceilf(y1) + 2 - box.y;
+    if (x1 < x0) return -1;
+    box->x = (int)floorf(x0) - 1;
+    box->y = (int)floorf(y0) - 1;
+    box->w = (int)ceilf(x1) + 2 - box->x;
+    box->h = (int)ceilf(y1) + 2 - box->y;
+    return 0;
+}
 
-    SDL_BlendMode was = SDL_BLENDMODE_BLEND;
-    SDL_GetRenderDrawBlendMode(r, &was);
-    SDL_Texture *prev = NULL;
-    if (mass_target_begin(plat, &box, &prev) != 0) {
-        SDL_SetRenderDrawBlendMode(r, was);
+/* The unit's front faces, batch by batch with its texture or with none.
+ * Textured, a keyed texel stays clear, as in the shadow pass. */
+static void silhouette_draw(TAK_Platform *plat, const UnitMesh *m, int n_verts,
+                            int textured) {
+    for (int b = 0; b < m->batch_count; b++) {
+        const UnitMeshBatch *batch = &m->batches[b];
+        const int n_tri = batch->index_count / 3;
+        const uint16_t *src = m->indices + batch->first_index;
+        int w = 0;
+        for (int t = 0; t < n_tri; t++) {
+            if (!tri_faces_camera(src[3 * t], src[3 * t + 1], src[3 * t + 2])) continue;
+            g_scratch_idx[w++] = src[3 * t];
+            g_scratch_idx[w++] = src[3 * t + 1];
+            g_scratch_idx[w++] = src[3 * t + 2];
+        }
+        if (w > 0) draw_used(plat, textured ? batch->atlas_tex : NULL, n_verts, w);
+    }
+}
+
+/* Add the unit's raster to the open group. Every pixel it covers is
+ * forced white at the close (legacy:211228-211323, legacy:198241-198271). */
+static void silhouette_add(TAK_Platform *plat, const UnitMesh *m, int n_verts,
+                           SDL_Rect box) {
+    const SDL_Rect all = { 0, 0, g_mass_target_w, g_mass_target_h };
+    if (!SDL_IntersectRect(&box, &all, &box)) return;
+    silhouette_draw(plat, m, n_verts, 1);
+    if (g_sil.box.w > 0 && g_sil.box.h > 0) SDL_UnionRect(&g_sil.box, &box, &g_sil.box);
+    else g_sil.box = box;
+}
+
+static void submit_intangible_mass(TAK_Platform *plat, const UnitMesh *m,
+                                   const Unit *u, const UnitDef *def, int n_verts) {
+    const int alpha = Units_IntangibleMassAlpha(u);
+    if (alpha <= 0 || !plat || !plat->renderer || !def) return;
+    const uint32_t *pal = Units_BuildPaletteRGBA(def->side);
+    SDL_Rect box;
+    if (!pal || silhouette_prepare(m, n_verts, &box) != 0) return;
+    silhouette_close(plat);
+    if (silhouette_open(plat) != 0) return;
+    g_sil.alpha = alpha;
+    g_sil.pal = pal;
+    silhouette_add(plat, m, n_verts, box);
+    silhouette_close(plat);
+}
+
+/* The whiteout: the silhouette in white, faded out (legacy:197033-197035,
+ * legacy:211228-211323). Units_Submit closes the group. */
+static void submit_whiteout(TAK_Platform *plat, const UnitMesh *m,
+                            const Unit *u, int n_verts) {
+    if (!plat || !plat->renderer) return;
+    const int alpha = Units_DrawnAlpha(u) * u->magic_death_fade / UNIT_MAGIC_DEATH_TICKS;
+    SDL_Rect box;
+    if (alpha <= 0 || silhouette_prepare(m, n_verts, &box) != 0) return;
+    if (g_sil.open && (g_sil.pal || g_sil.alpha != alpha)) silhouette_close(plat);
+    if (!g_sil.open && silhouette_open(plat) != 0) {
+        /* No offscreen target: white faces straight onto the scene. */
+        for (int v = 0; v < n_verts; v++) {
+            const uint32_t a = (g_scratch_color[v] >> 24) * (uint32_t)alpha / 255u;
+            g_scratch_color[v] = (a << 24) | 0x00FFFFFFu;
+        }
+        SDL_BlendMode was = SDL_BLENDMODE_BLEND;
+        SDL_GetRenderDrawBlendMode(plat->renderer, &was);
+        SDL_SetRenderDrawBlendMode(plat->renderer, SDL_BLENDMODE_BLEND);
+        silhouette_draw(plat, m, n_verts, 0);
+        SDL_SetRenderDrawBlendMode(plat->renderer, was);
         return;
     }
-    GPU_DrawGeometryRaw(plat, NULL, g_scratch_xy, g_scratch_color, g_scratch_uv,
-                        n_verts, g_scratch_idx, w);
-    SDL_Texture *noise = mass_noise_texture(r, pal, g_sim_tick / 2u);
-    for (int ty = 0; noise && ty < box.h; ty += MASS_NOISE_SIZE) {
-        for (int tx = 0; tx < box.w; tx += MASS_NOISE_SIZE) {
-            SDL_Rect s = { 0, 0, box.w - tx, box.h - ty };
-            if (s.w > MASS_NOISE_SIZE) s.w = MASS_NOISE_SIZE;
-            if (s.h > MASS_NOISE_SIZE) s.h = MASS_NOISE_SIZE;
-            SDL_Rect d = { box.x + tx, box.y + ty, s.w, s.h };
-            SDL_RenderCopy(r, noise, &s, &d);
-        }
-    }
-    SDL_SetRenderTarget(r, prev);
-    SDL_SetRenderDrawBlendMode(r, was);
-    SDL_SetTextureBlendMode(g_mass_target, SDL_BLENDMODE_BLEND);
-    SDL_SetTextureAlphaMod(g_mass_target, (Uint8)alpha);
-    SDL_RenderCopy(r, g_mass_target, &box, &box);
+    g_sil.alpha = alpha;
+    g_sil.pal = NULL;
+    silhouette_add(plat, m, n_verts, box);
 }
 
 /* Project one unit's pieces onto the ground, into the scratch buffers
@@ -22599,9 +24721,56 @@ static void transform_shadow_verts(const UnitMesh *m,
     }
 }
 
-/* One silhouette draw per mesh batch for a run of units that share a
- * mesh. Texels keep the body pass's alpha test, so a keyed texel casts
- * no shadow. */
+/* Draw the silhouettes of `chunk_n` copies of `m` already projected into
+ * the scratch buffers, keeping the body pass's alpha test, so a keyed
+ * texel casts no shadow. */
+static void submit_shadow_chunk(TAK_Platform *plat, const UnitMesh *m, int chunk_n,
+                                SDL_Rect *area)
+{
+    const int V = m->vert_count;
+    const int total_verts = chunk_n * V;
+    for (int b = 0; b < m->batch_count; b++) {
+        const UnitMeshBatch *batch = &m->batches[b];
+        if (batch->index_count == 0) continue;
+        const int n_tri = batch->index_count / 3;
+        const uint16_t *src_idx = m->indices + batch->first_index;
+        int w = 0;
+        for (int ci = 0; ci < chunk_n; ci++) {
+            const int v_off = ci * V;
+            for (int t = 0; t < n_tri; t++) {
+                const int i0 = v_off + src_idx[t * 3 + 0];
+                const int i1 = v_off + src_idx[t * 3 + 1];
+                const int i2 = v_off + src_idx[t * 3 + 2];
+                const float sx0 = g_scratch_xy[2*i0+0], sy0 = g_scratch_xy[2*i0+1];
+                const float sx1 = g_scratch_xy[2*i1+0], sy1 = g_scratch_xy[2*i1+1];
+                const float sx2 = g_scratch_xy[2*i2+0], sy2 = g_scratch_xy[2*i2+1];
+                if (g_backface_cull_on) {
+                    /* The body's rule, on the shadow's own
+                     * projection (legacy:198043). */
+                    const float cross = (sy0 - sy1) * (sx2 - sx1)
+                                      - (sy2 - sy1) * (sx0 - sx1);
+                    if (g_backface_cull_invert) { if (cross > 0.0f) continue; }
+                    else                        { if (cross < 0.0f) continue; }
+                }
+                g_scratch_idx[w++] = (uint16_t)i0;
+                g_scratch_idx[w++] = (uint16_t)i1;
+                g_scratch_idx[w++] = (uint16_t)i2;
+                float lo_x = sx0 < sx1 ? sx0 : sx1, hi_x = sx0 > sx1 ? sx0 : sx1;
+                float lo_y = sy0 < sy1 ? sy0 : sy1, hi_y = sy0 > sy1 ? sy0 : sy1;
+                if (sx2 < lo_x) lo_x = sx2;
+                if (sx2 > hi_x) hi_x = sx2;
+                if (sy2 < lo_y) lo_y = sy2;
+                if (sy2 > hi_y) hi_y = sy2;
+                shadow_area_add(area, lo_x, lo_y, hi_x, hi_y);
+            }
+        }
+        if (w == 0) continue;
+        GPU_DrawGeometryRaw(plat, batch->atlas_tex,
+            g_scratch_xy, g_scratch_color, g_scratch_uv,
+            total_verts, g_scratch_idx, w);
+    }
+}
+
 static void submit_shadow_run(TAK_Platform *plat, const struct GameWorld *world,
                               uint16_t def_idx, uint8_t color_idx,
                               const int *unit_indices, int n_units,
@@ -22633,69 +24802,109 @@ static void submit_shadow_run(TAK_Platform *plat, const struct GameWorld *world,
                                    y_scale, ci * V);
         }
 
-        for (int b = 0; b < m->batch_count; b++) {
-            const UnitMeshBatch *batch = &m->batches[b];
-            if (batch->index_count == 0) continue;
-            const int n_tri = batch->index_count / 3;
-            const uint16_t *src_idx = m->indices + batch->first_index;
-            int w = 0;
-            for (int ci = 0; ci < chunk_n; ci++) {
-                const int v_off = ci * V;
-                for (int t = 0; t < n_tri; t++) {
-                    const int i0 = v_off + src_idx[t * 3 + 0];
-                    const int i1 = v_off + src_idx[t * 3 + 1];
-                    const int i2 = v_off + src_idx[t * 3 + 2];
-                    const float sx0 = g_scratch_xy[2*i0+0], sy0 = g_scratch_xy[2*i0+1];
-                    const float sx1 = g_scratch_xy[2*i1+0], sy1 = g_scratch_xy[2*i1+1];
-                    const float sx2 = g_scratch_xy[2*i2+0], sy2 = g_scratch_xy[2*i2+1];
-                    if (g_backface_cull_on) {
-                        /* The body's rule, on the shadow's own
-                         * projection (legacy:198043). */
-                        const float cross = (sy0 - sy1) * (sx2 - sx1)
-                                          - (sy2 - sy1) * (sx0 - sx1);
-                        if (g_backface_cull_invert) { if (cross > 0.0f) continue; }
-                        else                        { if (cross < 0.0f) continue; }
-                    }
-                    g_scratch_idx[w++] = (uint16_t)i0;
-                    g_scratch_idx[w++] = (uint16_t)i1;
-                    g_scratch_idx[w++] = (uint16_t)i2;
-                    float lo_x = sx0 < sx1 ? sx0 : sx1, hi_x = sx0 > sx1 ? sx0 : sx1;
-                    float lo_y = sy0 < sy1 ? sy0 : sy1, hi_y = sy0 > sy1 ? sy0 : sy1;
-                    if (sx2 < lo_x) lo_x = sx2;
-                    if (sx2 > hi_x) hi_x = sx2;
-                    if (sy2 < lo_y) lo_y = sy2;
-                    if (sy2 > hi_y) hi_y = sy2;
-                    shadow_area_add(area, lo_x, lo_y, hi_x, hi_y);
-                }
-            }
-            if (w == 0) continue;
-            GPU_DrawGeometryRaw(plat, batch->atlas_tex,
-                g_scratch_xy, g_scratch_color, g_scratch_uv,
-                total_verts, g_scratch_idx, w);
-        }
+        submit_shadow_chunk(plat, m, chunk_n, area);
     }
 }
 
-/* A unit with a shadowgaf and a shadowart blits that sprite. The
- * legacy shadow animation steps only while the unit moves
- * (legacy:197225). */
-static void blit_unit_shadow_sprite(SDL_Renderer *r,
+/* A model feature's silhouette: its body's pose (submit_static_mesh_run),
+ * then the unit shadow's projection (transform_shadow_verts). */
+static void transform_feature_shadow_verts(const UnitMesh *m, const struct GameWorld *world,
+                                           const StaticMeshInstance *p, int ground)
+{
+    const float ta = g_ta_scale;
+    const float base_x = p->world_x - (float)world->cam_x + 5.0f;
+    const float base_y = p->world_y - (float)world->cam_y - (float)(ground >> 1);
+    const float ch = tak_cosf(p->heading), sh = tak_sinf(p->heading);
+    const float cp = tak_cosf(p->pitch),   sp = tak_sinf(p->pitch);
+    const float cr = tak_cosf(p->roll),    sr = tak_sinf(p->roll);
+    for (int v = 0; v < m->vert_count; v++) {
+        const NodeXform *x = &g_scratch_node_xform[m->vert_node_idx[v]];
+        if (x->hidden) {
+            g_scratch_xy[2 * v + 0] = g_scratch_xy[2 * v + 1] = 0.0f;
+            g_scratch_color[v] = 0;
+            g_scratch_uv[2 * v + 0] = g_scratch_uv[2 * v + 1] = 0.0f;
+            continue;
+        }
+        const float lx = m->positions[3 * v + 0];
+        const float ly = m->positions[3 * v + 1];
+        const float lz = m->positions[3 * v + 2];
+        const float mx = x->rot[0]*lx + x->rot[1]*ly + x->rot[2]*lz + x->trans[0];
+        const float my = x->rot[3]*lx + x->rot[4]*ly + x->rot[5]*lz + x->trans[1];
+        const float mz = x->rot[6]*lx + x->rot[7]*ly + x->rot[8]*lz + x->trans[2];
+        const float ax = cr*mx - sr*my, ay = sr*mx + cr*my;
+        const float by = cp*ay - sp*mz, bz = sp*ay + cp*mz;
+        const float rx = -(ch * ax + sh * bz);
+        const float rz = -(sh * ax - ch * bz);
+        const float lean = by * ta * 0.25f;
+        g_scratch_xy[2 * v + 0] = base_x + rx * ta + lean;
+        g_scratch_xy[2 * v + 1] = base_y + rz * ta - lean;
+        g_scratch_color[v] = 0xFF000000u;   /* opaque black coverage */
+        g_scratch_uv[2 * v + 0] = m->uvs[2 * v + 0];
+        g_scratch_uv[2 * v + 1] = m->uvs[2 * v + 1];
+    }
+}
+
+/* Model features without noshadow, statues and many corpses, cast a
+ * silhouette as a unit does, before the features' bodies. */
+static void render_feature_shadows(const struct GameWorld *world, TAK_Platform *plat)
+{
+    if (!g_shadows_on || !plat || !plat->renderer || !world || !world->features) return;
+    const int32_t margin = 256;
+    SDL_Texture *prev = NULL;
+    int open = 0;
+    SDL_Rect area = { 0, 0, 0, 0 };
+    for (int i = 0; i < world->feature_count; i++) {
+        const struct MapFeature *mf = &world->features[i];
+        const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+        if (!Units_FeatureCastsShadow(fd)) continue;
+        if (mf->world_x < world->cam_x - margin ||
+            mf->world_x > world->cam_x + world->viewport_w + margin) continue;
+        if (mf->world_y < world->cam_y - margin ||
+            mf->world_y > world->cam_y + world->viewport_h + margin) continue;
+        if (Fog_StateAt(world, mf->world_x, mf->world_y) == TAK_FOG_UNEXPLORED) continue;
+        const int c = (mf->color_idx >= 0 && mf->color_idx <= 11) ? mf->color_idx : 0;
+        const UnitMesh *m = corpse_model_mesh(mf->global_idx, c);
+        if (!m || m->vert_count == 0 || ensure_scratch(m->vert_count, m->tri_count * 3) != 0)
+            continue;
+        if (!open) {
+            if (shadow_mask_begin(plat, &prev) != 0) return;
+            open = 1;
+        }
+        StaticMeshInstance p;
+        p.world_x = (float)mf->world_x;
+        p.world_y = (float)mf->world_y;
+        p.height  = 0.0f;
+        p.heading = angle16_to_heading(mf->heading);
+        p.pitch   = angle16_to_heading(mf->pitch);
+        p.roll    = angle16_to_heading(mf->roll);
+        compose_node_xforms_ex(m, NULL, g_scratch_node_xform, !CORPSE_ALL_PIECES);
+        transform_feature_shadow_verts(m, world, &p, (int)corpse_ground_height(world, mf));
+        submit_shadow_chunk(plat, m, 1, &area);
+    }
+    if (open) shadow_mask_end(plat, prev, &area);
+}
+
+/* A shadowart sprite, stepping only while the unit moves (legacy:197225),
+ * each picture for its own frames of the game clock. */
+static void blit_unit_shadow_sprite(TAK_Platform *plat,
                                     const struct GameWorld *world,
                                     const Unit *u, const UnitDef *d,
                                     SDL_Rect *area)
 {
     int idx = proj_sprite_index(d->shadow_gaf, d->shadow_art);
-    if (idx < 0 || proj_sprite_ensure(r, idx) != 0) return;
+    if (idx < 0 || proj_sprite_ensure(plat, idx) != 0) return;
     const ProjSpriteArt *ps = &g_proj_sprites[idx];
     if (ps->num_frames <= 0 || !ps->strip) return;
-    int frame = (ps->num_frames > 1 && u->velocity != 0)
-        ? (int)((g_construct_anim_tick / 2) % (uint32_t)ps->num_frames) : 0;
+    const int loop = sheet_ticks(idx);
+    int frame = (ps->num_frames > 1 && u->velocity != 0 && loop > 0)
+        ? sheet_picture(idx, (int)(g_sim_tick % (uint32_t)loop)) : 0;
+    if (frame >= ps->num_frames) frame = 0;
     const int sx = u->world_x - world->cam_x + 5;
     const int sy = u->world_y - world->cam_y
                  - (shadow_ground_height(world, u) >> 1);
-    SDL_SetTextureColorMod(ps->strip, 0, 0, 0);
-    blit_proj_sprite(r, idx, frame, sx, sy);
-    SDL_SetTextureColorMod(ps->strip, 255, 255, 255);
+    GPU_SetTextureMod(ps->strip, 0, 0, 0, 255);
+    blit_proj_sprite(plat, idx, frame, sx, sy);
+    GPU_SetTextureMod(ps->strip, 255, 255, 255, 255);
     shadow_area_add(area,
                     (float)(sx - ps->ox[frame]), (float)(sy - ps->oy[frame]),
                     (float)(sx - ps->ox[frame] + ps->fw[frame]),
@@ -22713,14 +24922,14 @@ static int projectile_casts_shadow(const struct GameWorld *world,
 
 /* One blit per shot in flight, on the ground under the shot rather
  * than at the shot's own height (legacy:246738-246745). */
-static void blit_projectile_shadows(SDL_Renderer *r,
+static void blit_projectile_shadows(TAK_Platform *plat,
                                     const struct GameWorld *world,
                                     SDL_Rect *area)
 {
     for (int i = 0; i < g_projectile_count; i++) {
         const Projectile *p = &g_projectiles[i];
         if (!projectile_casts_shadow(world, p)) continue;
-        if (proj_sprite_ensure(r, p->shadow_idx) != 0) continue;
+        if (proj_sprite_ensure(plat, p->shadow_idx) != 0) continue;
         const ProjSpriteArt *ps = &g_proj_sprites[p->shadow_idx];
         if (ps->num_frames <= 0 || !ps->strip) continue;
         /* The sequence steps once per engine update, which is every
@@ -22734,9 +24943,9 @@ static void blit_projectile_shadows(SDL_Renderer *r,
         const int sy = p->world_y - world->cam_y
             - (int)((float)Terrain_SampleHeight(world, p->world_x,
                                                 p->world_y) * g_tan_tilt);
-        SDL_SetTextureColorMod(ps->strip, 0, 0, 0);
-        blit_proj_sprite(r, p->shadow_idx, frame, sx, sy);
-        SDL_SetTextureColorMod(ps->strip, 255, 255, 255);
+        GPU_SetTextureMod(ps->strip, 0, 0, 0, 255);
+        blit_proj_sprite(plat, p->shadow_idx, frame, sx, sy);
+        GPU_SetTextureMod(ps->strip, 255, 255, 255, 255);
         shadow_area_add(area,
                         (float)(sx - ps->ox[frame]), (float)(sy - ps->oy[frame]),
                         (float)(sx - ps->ox[frame] + ps->fw[frame]),
@@ -22744,18 +24953,20 @@ static void blit_projectile_shadows(SDL_Renderer *r,
     }
 }
 
-/* Every ground shadow of the frame, the units and the shots in flight,
- * drawn before any unit body. */
-static void render_ground_shadows(const struct GameWorld *world,
-                                  TAK_Platform *plat, int n)
+/* The shadows of the units `order` lists whose shadow goes in the row
+ * pass (`in_row`) or the ground pass, and the shots' with the ground
+ * pass, through one mask. */
+static void render_unit_shadows(const struct GameWorld *world, TAK_Platform *plat,
+                                const int *order, int n, int in_row)
 {
     if (!g_shadows_on || !plat || !plat->renderer) return;
     int any = 0;
     for (int i = 0; i < n && !any; i++) {
-        const Unit *u = &g_units[g_draw_order[i]];
-        if (unit_casts_shadow(u, Units_GetDef(u->def_idx))) any = 1;
+        const Unit *u = &g_units[order[i]];
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (unit_casts_shadow(u, d) && unit_shadow_in_row(u, d) == in_row) any = 1;
     }
-    for (int i = 0; i < g_projectile_count && !any; i++) {
+    for (int i = 0; i < g_projectile_count && !any && !in_row; i++) {
         if (projectile_casts_shadow(world, &g_projectiles[i])) any = 1;
     }
     if (!any) return;
@@ -22766,28 +24977,37 @@ static void render_ground_shadows(const struct GameWorld *world,
 
     int i = 0;
     while (i < n) {
-        const Unit *u0 = &g_units[g_draw_order[i]];
+        const Unit *u0 = &g_units[order[i]];
         const UnitDef *d0 = Units_GetDef(u0->def_idx);
-        if (!unit_casts_shadow(u0, d0)) { i++; continue; }
+        if (!unit_casts_shadow(u0, d0) || unit_shadow_in_row(u0, d0) != in_row) { i++; continue; }
         if (d0->shadow_gaf[0] && d0->shadow_art[0]) {
-            blit_unit_shadow_sprite(plat->renderer, world, u0, d0, &area);
+            blit_unit_shadow_sprite(plat, world, u0, d0, &area);
             i++;
             continue;
         }
         int j = i + 1;
         while (j < n) {
-            const Unit *uk = &g_units[g_draw_order[j]];
+            const Unit *uk = &g_units[order[j]];
+            const UnitDef *dk = Units_GetDef(uk->def_idx);
             if (uk->def_idx != u0->def_idx ||
                 uk->team_color_idx != u0->team_color_idx) break;
-            if (!unit_casts_shadow(uk, Units_GetDef(uk->def_idx))) break;
+            if (!unit_casts_shadow(uk, dk) || unit_shadow_in_row(uk, dk) != in_row) break;
             j++;
         }
         submit_shadow_run(plat, world, u0->def_idx, u0->team_color_idx,
-                          g_draw_order + i, j - i, &area);
+                          order + i, j - i, &area);
         i = j;
     }
-    blit_projectile_shadows(plat->renderer, world, &area);
+    if (!in_row) blit_projectile_shadows(plat, world, &area);
     shadow_mask_end(plat, prev, &area);
+}
+
+/* Every ground shadow of the frame but the walls', the units and the
+ * shots in flight, drawn before any unit body. */
+static void render_ground_shadows(const struct GameWorld *world,
+                                  TAK_Platform *plat, int n)
+{
+    render_unit_shadows(world, plat, g_draw_order, n, 0);
 }
 
 /* Map features (lodestones, rocks, trees) parsed from the TNT feature
@@ -22803,17 +25023,25 @@ void Units_RenderFeatures(const struct GameWorld *world, TAK_Platform *plat) {
 void Units_Render(const struct GameWorld *world, TAK_Platform *plat) {
     if (!world || !plat) return;
     g_live_renderer_gen = plat->renderer_gen;
+    /* A new frame clears the depth on its first model. */
+    g_depth_slot = 0;
     /* Selection ring goes UNDER unit meshes — they draw on top of
      * the ring where they overlap, so only the ground-visible part
      * of the ring shows around the unit's feet. */
     render_selection_rings(world, plat);
     /* Corpses lie on the ground under everything that walks over them,
-     * so their models go out before the units. */
+     * so their models go out before the units, their shadows first. */
+    render_feature_shadows(world, plat);
     submit_corpse_models(plat, world);
     /* Shadows go down before any unit body, the order the original
      * draws them in per unit (legacy:197243). */
     const int draw_n = build_draw_order(world);
     render_ground_shadows(world, plat, draw_n);
+    render_ground_effects(world, plat);
+    /* Ring particles behind their unit draw just before its model, the
+     * rest after it (legacy:201487-201543). */
+    mark_behind_owners(draw_n);
+    render_projectile_effects(world, plat, -1);
     Units_Submit(plat, world, draw_n);
     /* Projectile models ride the same batched geometry path as units
      * (legacy draws them through the model renderer, legacy:246780). */
@@ -22823,7 +25051,7 @@ void Units_Render(const struct GameWorld *world, TAK_Platform *plat) {
     }
     render_projectile_sprites(world, plat);
     render_projectiles(world, plat);
-    render_projectile_effects(world, plat);
+    render_projectile_effects(world, plat, -2);
     render_construction_effects(world, plat);
 }
 
@@ -22843,7 +25071,7 @@ UnitMesh *Units_BakeObjectMeshPainted(const char *object_name, int color_idx,
     snprintf(path, sizeof(path), "objects3d/%s.3do", obj_lc);
     Obj3DFile *obj = NULL;
     if (Obj3D_Load(&obj, path) != 0 || !obj) return NULL;
-    UnitMesh *m = Mesh_BakePainted(obj, flat_palette(NULL), color_idx, paint);
+    UnitMesh *m = Mesh_BakePainted(obj, flat_ramp(NULL), color_idx, paint);
     Obj3D_Close(obj);
     return m;
 }
@@ -22942,6 +25170,37 @@ int Units_SpriteArtSlot(const char *file) {
     char lc[40];
     lowercase_into(lc, sizeof(lc), file);
     return proj_sprite_index(lc, lc);
+}
+
+/* A lightning beam from a save has no record in g_bolts: it draws from
+ * the pool for its remaining hold. */
+static int restored_bolt(int i) {
+    return g_projectiles[i].alive && !g_projectiles[i].hidden && g_projectiles[i].is_beam &&
+           g_projectiles[i].visual_kind != UNIT_PROJECTILE_VIS_FLAME && g_proj_def[i] < 0;
+}
+
+int Units_GetBoltCount(void) {
+    int n = g_bolt_count;
+    for (int i = 0; i < g_projectile_count; i++) n += restored_bolt(i);
+    return n;
+}
+
+const Projectile *Units_GetBolt(int i, int *out_age, int *out_life) {
+    if (i < 0) return NULL;
+    if (i < g_bolt_count) {
+        if (out_age) *out_age = g_bolts[i].age;
+        if (out_life) *out_life = g_bolts[i].life;
+        return &g_bolts[i].p;
+    }
+    i -= g_bolt_count;
+    for (int k = 0; k < g_projectile_count; k++) {
+        if (!restored_bolt(k) || i-- > 0) continue;
+        const Projectile *p = &g_projectiles[k];
+        if (out_age) *out_age = p->age_ticks;
+        if (out_life) *out_life = p->age_ticks + p->ttl_ticks;
+        return p;
+    }
+    return NULL;
 }
 
 int Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y) {

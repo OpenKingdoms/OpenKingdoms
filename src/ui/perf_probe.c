@@ -741,7 +741,7 @@ int PerfProbe_BeginWorld(TAK_Platform *plat) {
     } else if (pp.kind == PP_BIG8) {
         /* Eight computer players on the largest eight-start map, one per
          * team, nobody human: the start of the 8v8 measurement
-         * (docs/notes/2026-09-27-sixteen-players.md). --perf-scale
+         * (docs/notes/2026-09-11-perf-probes.md). --perf-scale
          * repeats the map to see what a larger one costs. */
         map = "Ulasem Arena";
         kingdom = "aramon";

@@ -39,12 +39,26 @@ void GPU_DrawToWindow(TAK_Platform *plat, const GPU_Texture *tex, const SDL_Rect
  * scaled down (minimap, icons). */
 void GPU_SetTextureFilter(GPU_Texture *tex, int linear);
 
-/* Enable or disable alpha blending when the texture is drawn. Default
- * after upload is SDL_BLENDMODE_NONE — transparent pixels get written
- * as opaque black. Pass blend=1 for SDL_BLENDMODE_BLEND so alpha=0
- * pixels become see-through. Required for any atlas that has
- * colorkey-transparent pixels (unit textures, sprite GAFs). */
-void GPU_SetTextureBlend(GPU_Texture *tex, int blend);
+/* NONE overwrites, ALPHA is src * a + dst * (1 - a), ADD is src * a + dst.
+ * Every SDL renderer has all three, software and WebGL included. */
+typedef enum GPU_Blend {
+    GPU_BLEND_NONE = 0,
+    GPU_BLEND_ALPHA,
+    GPU_BLEND_ADD
+} GPU_Blend;
+
+/* The blend a texture draws with. Default after upload is NONE, so art
+ * with transparent pixels (unit atlases, sprite GAFs) wants ALPHA. */
+void GPU_SetTextureBlend(GPU_Texture *tex, GPU_Blend blend);
+
+/* A constant colour and alpha multiplied into every texel drawn from
+ * the texture. 255 everywhere draws it as it is. */
+void GPU_SetTextureMod(GPU_Texture *tex, uint8_t r, uint8_t g, uint8_t b,
+                       uint8_t a);
+
+/* The blend untextured draws (lines, points, flat geometry) use from
+ * now on. Returns the one it replaces, for the caller to put back. */
+GPU_Blend GPU_SetDrawBlend(TAK_Platform *plat, GPU_Blend blend);
 
 /* Triangle-list geometry submission (Phase C M4+). Wraps
  * SDL_RenderGeometryRaw so callers don't need to peek at GPU_Texture's

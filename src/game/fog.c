@@ -16,8 +16,8 @@
  *   206481-206492  the per-player sweep that drives that recheck.
  *   167179  LOS_UpdateAll rebuilds every entry from nothing.
  *   130167-130436  Fog_DrawOverlay — the legacy overlay algorithm the
- *                  renderer below reproduces (see docs/digs/
- *                  2026-09-04-rendering-visuals.md §Fog).
+ *                  renderer below reproduces (see docs/notes/
+ *                  2026-09-04-rendering-visuals.md, Fog of war overlay).
  * This module keeps the same model: line-of-sight is session-configured,
  * recomputed from live units, and consumed by world + minimap rendering.
  *
@@ -68,13 +68,13 @@ static const uint8_t *fog_layer_const(const GameWorld *world, int player_id) {
  * of Sight, so with it off explored ground stays clear (legacy:130175,
  * legacy:130295-130305). Off-map reads as unexplored, matching the
  * legacy edge handling. */
-static uint8_t fog_corner_alpha(const GameWorld *world,
-                                const uint8_t *layer, int cx, int cy) {
+static uint8_t fog_corner_alpha(const GameWorld *world, const uint8_t *layer,
+                                int cx, int cy, uint8_t dim) {
     if (cx < 0 || cy < 0 || cx >= world->fog_w || cy >= world->fog_h)
         return 0xFF;
     switch (layer[fog_idx(world, cx, cy)]) {
         case TAK_FOG_VISIBLE:  return 0x00;
-        case TAK_FOG_EXPLORED: return world->cfg.line_of_sight ? 0x78 : 0x00;
+        case TAK_FOG_EXPLORED: return world->cfg.line_of_sight ? dim : 0x00;
         default:               return 0xFF;
     }
 }
@@ -89,7 +89,7 @@ uint8_t Fog_OverlayAlphaAt(const GameWorld *world, int32_t world_x, int32_t worl
     const uint8_t *layer = world->fog_layers[Fog_Viewer()];
     if (!layer) return 0xFF;
     int cx = world_x / world->fog_cell_px, cy = world_y / world->fog_cell_px;
-    return fog_corner_alpha(world, layer, cx, cy);
+    return fog_corner_alpha(world, layer, cx, cy, 0x78);
 }
 
 int Fog_Init(GameWorld *world) {
@@ -415,7 +415,9 @@ static int overlay_room(int quads) {
     return 1;
 }
 
-void Fog_RenderOverlay(const GameWorld *world, TAK_Platform *plat) {
+/* dim is the alpha over explored ground out of sight: the original's
+ * 0x78, or 0 under the mist, which leaves the black alone. */
+static void overlay_draw(const GameWorld *world, TAK_Platform *plat, uint8_t dim) {
     const uint8_t *layer = fog_layer_const(world, Fog_Viewer());
     if (!world || !plat || !plat->renderer || !layer) return;
     SDL_Renderer *r = plat->renderer;
@@ -439,10 +441,10 @@ void Fog_RenderOverlay(const GameWorld *world, TAK_Platform *plat) {
 
     for (int cy = c0y; cy <= c1y; cy++) {
         for (int cx = c0x; cx <= c1x; cx++) {
-            uint8_t a00 = fog_corner_alpha(world, layer, cx,     cy);
-            uint8_t a10 = fog_corner_alpha(world, layer, cx + 1, cy);
-            uint8_t a11 = fog_corner_alpha(world, layer, cx + 1, cy + 1);
-            uint8_t a01 = fog_corner_alpha(world, layer, cx,     cy + 1);
+            uint8_t a00 = fog_corner_alpha(world, layer, cx,     cy,     dim);
+            uint8_t a10 = fog_corner_alpha(world, layer, cx + 1, cy,     dim);
+            uint8_t a11 = fog_corner_alpha(world, layer, cx + 1, cy + 1, dim);
+            uint8_t a01 = fog_corner_alpha(world, layer, cx,     cy + 1, dim);
             if ((a00 | a10 | a11 | a01) == 0) continue;   /* all clear */
 
             int sx = cx * cell + half - world->cam_x;
@@ -474,6 +476,14 @@ void Fog_RenderOverlay(const GameWorld *world, TAK_Platform *plat) {
         g_ov_draws++;
     }
     SDL_SetRenderDrawBlendMode(r, prev);
+}
+
+void Fog_RenderOverlay(const GameWorld *world, TAK_Platform *plat) {
+    overlay_draw(world, plat, 0x78);
+}
+
+void Fog_RenderShroud(const GameWorld *world, TAK_Platform *plat) {
+    overlay_draw(world, plat, 0);
 }
 
 /* Ours, for mods (D-045): whoever a sight jammer does not jam sees a haze

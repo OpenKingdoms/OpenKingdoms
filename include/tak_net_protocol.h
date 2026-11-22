@@ -198,8 +198,16 @@
  * aim, a flyer on patrol keeps its speed, and a shot waits for its aim. 76:
  * a unit wedged at a ridge or in a pocket is routed out, a tower fires once
  * its turret is on the target, a landing flyer keeps its pose, and a unit's
- * step tests its whole body. */
-#define TAK_ENGINE_BUILD_ID           76
+ * step tests its whole body. 77: a Sea Fort on tight water launches its
+ * queue, ships caught bow to bow get past each other, a unit turns onto its
+ * work at its own rate, and a Repair Skiff mends a ship hull to hull. 78: a
+ * unit script's sleep lasts the original's frames and ends on the tick it
+ * runs out. 79: a unit whose script runs its own walk gets no second walk
+ * from the engine. 80: a mission's order lists run patrols, attacks on a
+ * place, standing orders and placed angles as the original's do. 81: a Shift
+ * drag lays a line of buildings, and a summons without end refuses Shift
+ * orders. 82: Ctrl+Shift puts an order in front of the queue. */
+#define TAK_ENGINE_BUILD_ID           82
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
@@ -347,7 +355,7 @@ typedef enum TAK_NetHashGroup {
 /* A room's determinism class. Only clients of the same class share a
  * room, and every build that carries the engine's own trigonometry is
  * in one class, so Windows, macOS, Linux and the browser play together
- * (docs/notes/2026-09-14-float-determinism.md). */
+ * (docs/notes/2026-09-04-multiplayer-hapinet.md). */
 typedef enum TAK_NetClass {
     TAK_CLASS_UNKNOWN  = 0,
     TAK_CLASS_BROWSER  = 1,   /* retired, a browser build that used libm */

@@ -178,14 +178,6 @@ static Obj3DNode *parse_node(const uint8_t *buf, uint32_t buf_size,
 
             po->color_idx = pi->color_idx;
             po->num_vert_indices = (int)pi->num_vert_indices;
-            /* Carry through baked-lighting fields. R2-FOLLOWUP found
-             * these non-zero in ~80% of shipped prims; tak_unit's
-             * mesh-bake interprets each as one vertex's RGBA color
-             * for Gouraud-style shading at render time. */
-            po->lit_v0 = pi->unknown1;
-            po->lit_v1 = pi->unknown2;
-            po->lit_v2 = pi->unknown3;
-
             /* Texture name — empty string when offset_texture == 0
              * (flat-colour mode). */
             if (pi->offset_texture != 0) {

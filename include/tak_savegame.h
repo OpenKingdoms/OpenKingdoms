@@ -86,8 +86,8 @@
 #define TAK_CMDQ_HEADER_BYTES  16u
 #define TAK_CMDQ_ENTRY_BYTES   28u
 /* One COB piece and the fixed half of one COB thread. A thread's
- * stack follows at its live depth only: the words above the stack
- * pointer are whatever a deeper call left there. */
+ * whole stack follows, since a COB local can sit above the stack
+ * pointer. */
 #define TAK_COB_PIECE_BYTES   100u
 #define TAK_COB_THREAD_BYTES   24u
 

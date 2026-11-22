@@ -9,7 +9,8 @@
  * orders. IEEE 754 pins + - * / and sqrt to one answer, so those agree
  * everywhere, but it says nothing about a sine. Each platform's libm
  * rounds its own way and the difference survives into a different cell
- * after enough ticks. See docs/notes/2026-09-14-float-determinism.md.
+ * after enough ticks. See docs/notes/2026-09-04-multiplayer-hapinet.md,
+ * Which builds may share a room.
  *
  * These are built from pinned double constants and the four pinned
  * operations alone, so the answer is the same on every platform by

@@ -5,6 +5,7 @@
 #include "tak_platform.h"
 #include "tak_cob.h"      /* for CobScript */
 #include "tak_cob_vm.h"   /* for CobEngine, CobPiece */
+#include "tak_tex_atlas.h" /* for TexShadeMap */
 
 /* Forward-declared; Units_Render uses it in its signature but the
  * header doesn't dereference it. Files that actually consume a
@@ -44,7 +45,20 @@ typedef struct UnitMeshBatch {
     GPU_Texture *atlas_tex;     /* NULL = flat-color fallback batch */
     int          first_index;   /* offset into UnitMesh.indices */
     int          index_count;   /* triangle-count * 3 */
+    TexShadeMap  shade;         /* how its atlas draws each light level */
 } UnitMeshBatch;
+
+/* One 3DO primitive, lit flat as a whole each frame: its vertices are
+ * `vert_count` running from `first_vert`. */
+typedef struct UnitMeshFace {
+    float    normal[3];         /* outward unit normal, node-local */
+    uint16_t first_vert;
+    uint16_t vert_count;
+    uint16_t node;
+    uint8_t  batch;
+    uint8_t  flat_idx;          /* palette index of an untextured face */
+    uint16_t anim;              /* TexAtlas_AnimOf its texture, 0 when still */
+} UnitMeshFace;
 
 #define UNIT_MESH_MAX_BATCHES 32
 #define UNIT_MESH_MAX_NODES   128   /* shipped TAK monarchs have ≤50 */
@@ -85,15 +99,12 @@ typedef struct UnitMesh {
      * flat-fold positions. */
     float          *positions;   /* 3 * vert_count, node-local (TA units) */
     float          *uvs;         /* 2 * vert_count, atlas-space [0..1] */
-    uint32_t       *colors;      /* 1 * vert_count, RGBA8 — per-prim flat shade */
+    uint32_t       *colors;      /* 1 * vert_count, RGBA8, unlit */
     uint16_t       *indices;     /* 3 * tri_count, into positions */
     uint16_t       *vert_node_idx; /* vert_count entries; index into nodes[] */
-    /* Authored draw order per triangle (global tri index → sequence in
-     * the 3DO tree walk). The legacy renderer draws prims in model
-     * order with backface culling only — NO depth sort
-     * (legacy:197793-197807) — and artists authored prim order
-     * for correct layering (capes after torsos). Single-unit draws
-     * replay this order. */
+    /* Authored draw order per triangle in the 3DO walk (legacy:197793-197807).
+     * The original keys each pixel by height within a unit (legacy:265317),
+     * so this order decides only ties. */
     uint32_t       *tri_seq;     /* tri_count entries */
     /* An artist's model brings these. A baked 3DO leaves them NULL and
      * the 3D view makes a flat normal per triangle instead. */
@@ -101,6 +112,11 @@ typedef struct UnitMesh {
     float          *tangents;    /* 4 * vert_count, xyz and a sign, or NULL */
     int             vert_count;
     int             tri_count;
+    /* A baked 3DO's faces for the light, NULL for an artist's model.
+     * `flat_ramp`: the side palette through every level, or NULL. */
+    UnitMeshFace   *faces;
+    int             face_count;
+    const uint32_t *flat_ramp;
 
     UnitMeshBatch   batches[UNIT_MESH_MAX_BATCHES];
     int             batch_count;
@@ -152,6 +168,11 @@ typedef struct UnitWeapon {
      * frames instead of wounding it (legacy:250385-250398,
      * legacy:233857-233878). */
     uint8_t paralyzer;
+    /* lightmap: small, medium or large, UNIT_GLOW_*. Drawing only. */
+    uint8_t lightmap;
+    /* nimbus: its cast plays the side's nimbus sheet round the caster
+     * (legacy:249668-250439). Drawing only. */
+    uint8_t nimbus;
     char    explosion_class[32]; /* explosionclass */
     /* waterexplosionclass, read for a host's look. The simulation never reads it. */
     char    water_explosion_class[32];
@@ -172,9 +193,11 @@ typedef struct UnitWeapon {
     uint8_t los_kind;
     uint8_t is_los;             /* los_kind != 0 */
     int32_t emit_ticks;          /* emittime (30Hz frames) → 60Hz ticks */
+    int16_t bolt_ticks;          /* a lightning bolt's drawn life, ticks */
     uint8_t beam_inner[3];       /* innercolor RGB */
     uint8_t beam_middle[3];      /* middlecolor RGB */
     uint8_t beam_outer[3];       /* outercolor RGB */
+    uint8_t beam_add;            /* its hweffect is translucent: drawn added */
     /* Remote Effect spells, from their own keys: kind 1 lays
      * ring_count rings of sprite_count radiusart sprites, kind 2
      * rains rain_per_second weaponart drops for rain_ticks. */
@@ -185,6 +208,8 @@ typedef struct UnitWeapon {
     int32_t ring_count, ring_delay_ticks, ring_duration_ticks, sprite_count;
     int32_t buildup_ticks, decay_ticks;
     int32_t rain_per_second, rain_ticks;
+    int16_t rain_head;        /* a drop's picture drawn this far up, px, */
+    int16_t rain_head_dx;     /* and this far right, so its head meets its burst */
     int32_t water_weapon;     /* waterweapon targeting flag */
     /* unitsonly: only units stop the shot. groundbounce: it bounces
      * off the ground (legacy:250034-250036). */
@@ -317,6 +342,7 @@ typedef struct Projectile {
      * the visual for ttl_ticks. src→dest is the drawn ray. */
     uint8_t  is_beam;
     uint8_t  beam_rgb[3][3];      /* [inner|middle|outer][r,g,b] */
+    uint8_t  beam_add;            /* drawn added. Drawing only, not saved. */
     int32_t  src_x, src_y;
     /* Arc + orientation. Legacy integrates gravity into the vertical
      * velocity each substep and derives pitch from the velocity vector
@@ -406,6 +432,7 @@ typedef struct ProjectileEffect {
     uint16_t age_ticks;
     uint16_t life_ticks;       /* gone at this age, 0 when the height ends it */
     uint8_t  ticks_per_frame;  /* ticks each picture shows */
+    uint8_t  sheet_timed;      /* each picture holds the frames its sheet says */
     uint8_t  loops;            /* the pictures repeat instead of playing out */
     uint8_t  alive;
     int16_t  owner;            /* the unit it plays for, -1 for none */
@@ -413,6 +440,7 @@ typedef struct ProjectileEffect {
     int32_t  x_acc, y_acc;     /* the fraction of a pixel carried */
     uint16_t delay_ticks;      /* neither shown nor moved until this runs out */
     int16_t  land_explosion;   /* explosionclass played where a faller lands, -1 none */
+    int16_t  pic_dx, pic_dy;   /* its picture drawn this far right and up, px */
     uint32_t damage_owner_id;  /* damage flame: stable owner, 0 for other effects */
     int16_t  damage_node;      /* authored damage attachment in the owner's model */
     /* A puff of smoke or steam: its unit's stable id, and the picture it
@@ -427,7 +455,29 @@ typedef struct ProjectileEffect {
     uint32_t argb;
     uint8_t  wake_stage, wake_hold;
     uint16_t wake_left;
+    /* Drawn added to what is under it rather than blended over it. */
+    uint8_t  add;
+    /* A burst's fire, drawn before the other effects of its pass so the
+     * same burst's dust lies over it. */
+    uint8_t  under;
+    /* A ring particle on the far side of its unit, drawn before the units. */
+    uint8_t  behind;
+    /* Provisional: a soft oblong of light, no picture, its half width
+     * and height in px. 0 for any other effect. */
+    uint8_t  glow_w, glow_h;
+    /* Its brightness and core, 16 times the root of its size against the
+     * original Wisp's flash. */
+    uint8_t  glow_root16;
+    /* A large body's bloom: flatter in the middle than a strike's flash. */
+    uint8_t  glow_flat;
+    /* A cast's nimbus: flat on the ground under every unit. */
+    uint8_t  ground;
+    /* The stable id of the unit it follows by its ground point, 0 for none. */
+    uint32_t follow_id;
 } ProjectileEffect;
+
+/* The light flash sizes, as a weapon's `lightmap` names them. */
+enum { UNIT_GLOW_NONE = 0, UNIT_GLOW_SMALL, UNIT_GLOW_MEDIUM, UNIT_GLOW_LARGE };
 
 /* The picture an effect shows now, whatever has played it so far. */
 int Units_EffectPicture(const ProjectileEffect *e);
@@ -731,6 +781,9 @@ typedef struct UnitDef {
     /* The battle's mission leaves the type off its roster, so no one
      * may make one (legacy:226872-226874). */
     uint8_t  mission_barred;
+    /* Its script runs its own walk cycle, from a watcher thread or from
+     * MoveRate, by calling or starting `walk` itself. */
+    uint8_t  script_walks;
 
     /* COB script bundle (Phase D). Loaded eagerly per-def. */
     CobScript *cob_script;
@@ -980,7 +1033,7 @@ typedef struct Unit {
     uint32_t   stable_id;   /* deterministic replay/network identity */
     int32_t    world_x;     /* pixel position, top-left of footprint */
     int32_t    world_y;
-    float      heading;     /* radians, 0 = facing south             */
+    float      heading;     /* radians, 0 = facing north, turning east */
     float      pitch, roll; /* model tilt, radians, 0 = upright      */
     int32_t    velocity;    /* current speed in COB units/sec; 0 = stationary */
     int32_t    health;      /* current HP (Sprint 1 placeholder — Phase G refines) */
@@ -1407,6 +1460,9 @@ uint32_t          Units_NextStableId(void);
  * after a battle ends, so it is saved rather than worked out. */
 uint32_t          Units_SimTick(void);
 void              Units_SetSimTick(uint32_t tick);
+/* The game clock in the original's 30 Hz frames, which pictures play
+ * by: half the tick. */
+uint32_t          Units_ViewFrame(void);
 /* Set every player's mana cap and income from the finished units they
  * hold, as the original does each frame (legacy:235842-235974). */
 struct GameWorld;
@@ -1481,6 +1537,13 @@ void              Units_RenderBuildGhostFacing(struct TAK_Platform *plat,
                                                 int32_t world_x, int32_t world_y,
                                                 uint8_t alpha255, int valid,
                                                 int facing);
+/* The same at (world_x, world_y) as given, unsnapped: the armed cursor's. */
+void              Units_RenderBuildGhostFree(struct TAK_Platform *plat,
+                                              const struct GameWorld *world,
+                                              int def_idx, int color_idx,
+                                              int32_t world_x, int32_t world_y,
+                                              uint8_t alpha255, int valid,
+                                              int facing);
 
 /* ── Read only accessors for a second view ───────────────────────────
  *
@@ -1547,7 +1610,7 @@ void              Units_SetBackfaceCullInvert(int v);
  * sides of the model. */
 void              Units_DebugRotateAll(float delta_rad);
 
-/* Set one unit's heading (radians, 0 = facing south). No-op if `handle`
+/* Set one unit's heading (radians, 0 = facing north). No-op if `handle`
  * is out of range or the slot is not alive. */
 void              Units_SetHeading(int handle, float heading);
 
@@ -1749,6 +1812,11 @@ int         Units_SpriteArtSlot(const char *file);
 int         Units_SpriteArtPictures(int idx);
 /* Fires weapon `slot` of a unit at the ground, for tests. 1 when it fired. */
 int         Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y);
+/* Lightning bolts being drawn, beams from a save among them: the beam, its
+ * age and drawn life in ticks, and its strength then out of 256. */
+int               Units_GetBoltCount(void);
+const Projectile *Units_GetBolt(int i, int *out_age, int *out_life);
+int               Units_BoltStrength(int age, int life);
 /* Weapon `slot` of unit `handle` goes off on the ground at (x, y), as a
  * shell that came down there. Returns 1 when it did. */
 int         Units_DebugBlastAt(int handle, int slot, int32_t x, int32_t y);
@@ -1773,11 +1841,6 @@ int               Units_DebugTransportSoundCount(int unload);
 int               Units_GetWeaponArtKind(int def_idx, int weapon_slot,
                                          char *out_name, int out_cap);
 
-/* Drop all per-color cached UnitDef meshes. Use after TexAtlas_Reload
- * so the next spawn re-bakes meshes against the new atlases. Active
- * unit instances remain in the array but won't render until next bake.
- * (Caller should typically Units_ClearInstances after this.) */
-void              Units_DropAllMeshCaches(void);
 /* Build the route planner's layers for every walking def now, at
  * load, rather than in the first tick that plans for each. */
 void              Units_WarmPathCaches(const struct GameWorld *w);
@@ -1787,6 +1850,11 @@ void              Units_WarmPathCaches(const struct GameWorld *w);
  * Units_LoadDefs. Lazy-bake still works for any def the eager pass
  * skipped. Returns the number of meshes successfully baked. */
 int               Units_BakeMonarchMeshes(void);
+/* The band path: note the brightest level each atlas's meshes can reach,
+ * from every unit, feature and shot model, before the first bake. */
+void              Units_PlanShadeBands(void);
+/* 1 when models draw through the GL classic path's depth. */
+int               Units_ModelDepthReady(struct TAK_Platform *plat);
 
 /* The RGBA of an authored player colour, the same one the setup
  * screen shows for that index. Out of range wraps, as
@@ -1854,12 +1922,17 @@ int               Units_OrderMoveLeg(int handle, const UnitMoveLeg *leg, int que
  * the unit's orders the way the Units_Order* call for it does. Queued it
  * goes behind the order in hand and the legs before it, as Shift does,
  * and runs when those are done (manual section IV). A unit that could
- * not take it, or a full queue, refuses it. A factory takes a move or a
- * patrol as a standing order for its products. */
+ * not take it, a full queue, or a builder holding a summons without end
+ * refuses it. A factory takes a move or a patrol as a standing order for
+ * its products. */
 int               Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued);
 /* Units_OrderLeg's queued for the manual's Ctrl-click: the order replaces
  * the one in hand and the queued ones stay behind it. */
 #define UNIT_ORDER_KEEP 2
+/* Units_OrderLeg's queued for Ctrl+Shift: the order goes in hand and the
+ * one it displaces waits ahead of the queued ones. A patrol, a load or a
+ * boarding in hand has no queued form and is replaced, as with Ctrl. */
+#define UNIT_ORDER_FRONT 3
 /* The orders a unit holds, the one in hand first and then each queued
  * leg, patrol points with the one the route comes back through, and a
  * factory's rally with its standing orders. Writes up to cap, returns
@@ -2076,6 +2149,16 @@ int               Units_CanWalk(int handle);
 /* 0 for a unit the player cannot select: none there, dead, or still
  * being built, which the original never selects. */
 int               Units_IsSelectable(int handle);
+/* A selection ring in its unit's frame, px: centre and half axes across (x)
+ * and along (z). It tilts by the unit's own pitch and roll, radians. */
+typedef struct UnitSelectRing { float cx, cz, hx, hz, pitch, roll; } UnitSelectRing;
+/* The ring a selected unit shows, 0 for one that shows none: not in
+ * the selection, dead, or out of the local player's sight. */
+int               Units_SelectionRing(int handle, UnitSelectRing *out);
+/* The ring's point at angle t, tilted with the unit and turned to the
+ * heading, as a screen offset from the unit's ground point. */
+void              Units_SelectRingPoint(const UnitSelectRing *r, float heading,
+                                        float t, float *dx, float *dy);
 /* The ground under a pointer read flat off the screen. Terrain draws
  * lifted by its height times the tilt, so the world point under the
  * pointer sits further down the map than the flat reading, and a near
@@ -2105,7 +2188,6 @@ int               Units_DebugBuildSparkleRadius(int handle);
 int               Units_CanStandAt(int handle, int32_t x, int32_t y);
 /* Veteran rank 0..10 (0 = not a veteran). */
 int               Units_GetVeteranLevel(int handle);
-int               Units_GetSelectedVeteranLevel(void);
 void              Units_CommandAttackGroundSelected(int32_t world_x,
                                                     int32_t world_y);
 int               Units_SelectionHasBuilder(void);
@@ -2131,7 +2213,6 @@ int               Units_SelectionCanHelpBuild(int frame);
  * selection). Display strings are derived from the unit's anim_state
  * and def fields. The strings are static — caller must not free or
  * cache them past the next call. */
-const char       *Units_GetSelectedName(void);
 const char       *Units_GetSelectedStatus(void);
 /* The first selected unit's mission as the original names it, a key in
  * english/translate/unitmissions.tdf such as "UNITMISSIONCODE_PATROL".
@@ -2145,8 +2226,6 @@ const UnitDef    *Units_GetSelectedDef(void);   /* NULL when nothing selected */
  * or it carries none. Counted from the units recorded as carried by it,
  * the way the original walks the carrier's chain (legacy:152083-152086). */
 int               Units_GetSelectedCargoCount(void);
-/* Kills credited to the first selected unit, 0 with no selection. */
-int               Units_GetSelectedKills(void);
 /* Bit p set when player p owns a live unit. */
 uint32_t          Units_PlayersWithUnits(void);
 /* The units whose centre may lie in the box, from the simulation's
@@ -2342,6 +2421,10 @@ void              Units_SnapBuildSite(int def_idx,
                                        int32_t *world_x, int32_t *world_y);
 void              Units_SnapBuildSiteFacing(int def_idx, int facing,
                                              int32_t *world_x, int32_t *world_y);
+/* The cells a build of this def turned `facing` covers, the snap's own:
+ * a walker's move class footprint, else its own, 2x2 when it names none. */
+void              Units_BuildSiteCells(int def_idx, int facing,
+                                       int *out_fx, int *out_fz);
 
 /* Yardmap cell-code bits, as the FBI parse assigns them
  * (legacy:163224-163256) and placement tests them (legacy:218804). */
