@@ -487,8 +487,8 @@ static int test_the_reach_stops_at_whole_cells(void) {
 }
 
 /* One unit of sight 128 at (240, y) on a 512 px map whose ground steps
- * at y 256 from `north` to `south`. Returns the state of fog cell (7, row). */
-static int state_over_a_step(int north, int south, int32_t y, int row) {
+ * at y `split` from `north` to `south`. Returns the state of fog cell (7, row). */
+static int state_over_a_step(int north, int south, int split, int32_t y, int row) {
     GameWorld w;
     memset(&w, 0, sizeof(w));
     memset(g_test_units, 0, sizeof(g_test_units));
@@ -496,7 +496,7 @@ static int state_over_a_step(int north, int south, int32_t y, int row) {
     w.map_pixels_w = 512;
     w.map_pixels_h = 512;
     w.cfg.line_of_sight = 1;
-    g_split_y = 256;
+    g_split_y = split;
     g_north_h = north;
     g_south_h = south;
     if (Fog_Init(&w) != 0) return -1;
@@ -519,12 +519,15 @@ static int state_over_a_step(int north, int south, int32_t y, int row) {
 static int test_a_cells_ground_is_the_lowest_in_its_map_cell(void) {
     /* Low ground north, a plateau 128 high from y 256: a unit on the low
      * ground sees row 7 and not the plateau's first row. */
-    ASSERT_EQ_INT(TAK_FOG_VISIBLE, state_over_a_step(0, 128, 208, 7));
-    ASSERT_EQ_INT(TAK_FOG_UNEXPLORED, state_over_a_step(0, 128, 208, 8));
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, state_over_a_step(0, 128, 256, 208, 7));
+    ASSERT_EQ_INT(TAK_FOG_UNEXPLORED, state_over_a_step(0, 128, 256, 208, 8));
     /* A plateau north and low ground south: a unit on the low ground
      * sees row 8 and not the plateau's last row. */
-    ASSERT_EQ_INT(TAK_FOG_VISIBLE, state_over_a_step(128, 0, 400, 8));
-    ASSERT_EQ_INT(TAK_FOG_UNEXPLORED, state_over_a_step(128, 0, 400, 7));
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, state_over_a_step(128, 0, 256, 400, 8));
+    ASSERT_EQ_INT(TAK_FOG_UNEXPLORED, state_over_a_step(128, 0, 256, 400, 7));
+    /* The step inside row 8, plateau to its north: the row's ground is
+     * its low half, so the unit on the low ground sees it. */
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, state_over_a_step(128, 0, 272, 400, 8));
     return 0;
 }
 

@@ -471,12 +471,12 @@ the line of sight test read layers the human never sees. Player one's
 layer is an alias and is pointed again on load rather than stored
 twice.
 
-A unit's revealed cells are worked out once and stamped again until the
-unit has moved 16 px from where they were worked out, so the ground it
-lights follows that anchor rather than its exact position. The anchor,
-with the sight and the lit flag it was taken with, is state: it is
-hashed and saved. The cell list is a cache, a function of the anchor
-and the unit's eye.
+A unit's revealed cells are worked out once and stamped again on each
+fog update. The anchor moves only when the unit enters a new 32 px fog
+cell, so the ground it lights follows that anchor rather than its exact
+position. The anchor, with the sight and the lit flag it was taken with,
+is state: it is hashed and saved. The cell list is a cache, a function
+of the anchor and the unit's eye.
 
 ### State that looks derived
 

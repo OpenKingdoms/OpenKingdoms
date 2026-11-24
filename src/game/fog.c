@@ -235,7 +235,11 @@ void Fog_Update(GameWorld *world, int player_id) {
         return;
     size_t n = (size_t)world->fog_w * (size_t)world->fog_h;
     /* Built at the first stamp, once the map stands as it will. */
-    if (!world->fog_ground) fog_build_ground(world);
+    if (!world->fog_ground) {
+        fog_build_ground(world);
+        /* Cells cached over the flat fallback no longer hold. */
+        if (world->fog_ground) fog_cache_reset();
+    }
     /* The explored map grows in both modes (legacy:167404-167409). Line
      * of Sight off only fills the sight map, which is what
      * Fog_IsVisibleForPlayer answers (legacy:167211-167219). */

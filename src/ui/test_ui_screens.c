@@ -7821,7 +7821,7 @@ TEST(a_feature_past_the_known_map_is_cut_by_the_fog) {
     /* Sprite features the camera can be centred on, widest first, until
      * one leaves ink in the frame: some of the widest are markers with
      * nothing to draw. Three frames each: the whole map known, then
-     * only a three by three block beside the feature known,
+     * only a three by three block at the feature known,
      * then the whole map known with the feature gone. The clock is
      * stopped, so nothing recomputes the fog in between. What differs
      * between the first and the last is the feature's own ink. */
@@ -7845,12 +7845,10 @@ TEST(a_feature_past_the_known_map_is_cut_by_the_fog) {
         tried++;
         int32_t wx = world->features[cand].tile_x * 16 + cand_fx * 8;
         int32_t wy = world->features[cand].tile_z * 16 + cand_fz * 8;
-        /* The known block is centred two cells east of the fog cell drawn
-         * over the feature, which stands h / 2 up the picture under fog
-         * drawn TAK_FOG_LIFT_PX up, so the feature's west part lies past it. */
-        int cell_x = wx / TAK_FOG_CELL_PX + 2;
-        int cell_y = (wy - Terrain_SampleHeight(world, wx, wy) / 2 + TAK_FOG_LIFT_PX) /
-                     TAK_FOG_CELL_PX;
+        /* The feature's own fog cell is the known block's south-west
+         * cell, so the feature draws and its west part lies past it. */
+        int cell_x = wx / TAK_FOG_CELL_PX + 1;
+        int cell_y = wy / TAK_FOG_CELL_PX - 1;
         world->cam_x = wx - world->viewport_w / 2;
         world->cam_y = wy - world->viewport_h / 2;
 
@@ -7881,15 +7879,14 @@ TEST(a_feature_past_the_known_map_is_cut_by_the_fog) {
         /* Past the known block the overlay is solid, so the feature's
          * ink there is black, the way the ground under it is. Inside
          * the middle cell it is what it was. */
-        /* The overlay's quads blend towards their right and lower
-         * neighbours, so the solid dark starts two cells out on the
-         * near side and one cell out on the far side. Its rows are
-         * drawn TAK_FOG_LIFT_PX up the picture. */
+        /* The overlay ramps between cell centres, so the solid dark
+         * starts at the centre of the first unknown cell on each side.
+         * Its rows are drawn TAK_FOG_LIFT_PX up the picture. */
         int lift_y = world->cam_y + TAK_FOG_LIFT_PX;
-        int dark_x0 = (cell_x - 2) * TAK_FOG_CELL_PX - world->cam_x;
-        int dark_x1 = (cell_x + 2) * TAK_FOG_CELL_PX - world->cam_x;
-        int dark_y0 = (cell_y - 2) * TAK_FOG_CELL_PX - lift_y;
-        int dark_y1 = (cell_y + 2) * TAK_FOG_CELL_PX - lift_y;
+        int dark_x0 = (cell_x - 2) * TAK_FOG_CELL_PX + TAK_FOG_CELL_PX / 2 - world->cam_x;
+        int dark_x1 = (cell_x + 2) * TAK_FOG_CELL_PX + TAK_FOG_CELL_PX / 2 - world->cam_x;
+        int dark_y0 = (cell_y - 2) * TAK_FOG_CELL_PX + TAK_FOG_CELL_PX / 2 - lift_y;
+        int dark_y1 = (cell_y + 2) * TAK_FOG_CELL_PX + TAK_FOG_CELL_PX / 2 - lift_y;
         int inside_x = cell_x * TAK_FOG_CELL_PX - world->cam_x;
         int inside_y = cell_y * TAK_FOG_CELL_PX - lift_y;
         ink_past = black_past = ink_inside = kept_inside = 0;
@@ -7910,12 +7907,13 @@ TEST(a_feature_past_the_known_map_is_cut_by_the_fog) {
         free(known);
         free(edge);
         free(bare);
-        if (ink_past > 20) { pick = cand; fx = cand_fx; }
+        if (ink_past > 20 && ink_inside > 0) { pick = cand; fx = cand_fx; }
     }
     printf("(feature %d, %d tiles wide, %d tried: %d ink past the known ground, %d of it black, %d inside, %d kept) ",
            pick, fx, tried, ink_past, black_past, ink_inside, kept_inside);
     ASSERT(pick >= 0);
     ASSERT_EQ_INT(ink_past, black_past);
+    ASSERT(ink_inside > 0);
     ASSERT_EQ_INT(ink_inside, kept_inside);
 
     InGame_Shutdown();
