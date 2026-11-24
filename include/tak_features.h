@@ -32,6 +32,7 @@ typedef struct FeatureDef {
     char     seqname_shad[40];
     int      shadtrans;
     int      no_shadow;
+    int      no_draw_under_gray;
     /* `object` names a 3DO instead of a GAF sequence. Corpses are
      * models, not sprites, and the two keys are exclusive: the loader
      * reads `object` first and only falls back to filename/seqname

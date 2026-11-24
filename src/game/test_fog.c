@@ -460,6 +460,33 @@ static int test_a_unit_aboard_still_sees(void) {
     return 0;
 }
 
+/* A wall (nodrawundergray) draws only where the viewer sees now. Any
+ * other feature draws on explored ground, and nothing on unexplored. */
+static int test_a_wall_hides_under_the_grey(void) {
+    GameWorld w;
+    memset(&w, 0, sizeof(w));
+    w.map_pixels_w = 512;
+    w.map_pixels_h = 512;
+    w.cfg.line_of_sight = 1;
+    ASSERT_EQ_INT(0, Fog_Init(&w));
+    Fog_SetViewer(1);
+    uint8_t *layer = w.fog_layers[1];
+    layer[0] = TAK_FOG_UNEXPLORED;
+    layer[1] = TAK_FOG_EXPLORED;
+    layer[2] = TAK_FOG_VISIBLE;
+    ASSERT_EQ_INT(0, Fog_ShowsFeatureAt(&w, 0, 16, 16));
+    ASSERT_EQ_INT(0, Fog_ShowsFeatureAt(&w, 1, 16, 16));
+    ASSERT_EQ_INT(1, Fog_ShowsFeatureAt(&w, 0, 48, 16));
+    ASSERT_EQ_INT(0, Fog_ShowsFeatureAt(&w, 1, 48, 16));
+    ASSERT_EQ_INT(1, Fog_ShowsFeatureAt(&w, 0, 80, 16));
+    ASSERT_EQ_INT(1, Fog_ShowsFeatureAt(&w, 1, 80, 16));
+    /* With Line of Sight off explored ground is in sight. */
+    w.cfg.line_of_sight = 0;
+    ASSERT_EQ_INT(1, Fog_ShowsFeatureAt(&w, 1, 48, 16));
+    Fog_Free(&w);
+    return 0;
+}
+
 /* The block of nine cells around a unit is lit whatever its radius
  * buys (legacy:167401-167402). A wall's sightdistance is 45
  * (arawall.fbi), short of the 45.25 px to a diagonal neighbour's
@@ -688,6 +715,7 @@ int main(void) {
     failed |= test_an_ai_teammate_grants_no_sight();
     failed |= test_a_ridge_does_not_hide_the_ground_behind_it();
     failed |= test_the_nine_cells_around_a_unit_are_always_lit();
+    failed |= test_a_wall_hides_under_the_grey();
     failed |= test_a_unit_aboard_still_sees();
     failed |= test_the_reveal_follows_the_unit_across_a_cell_boundary();
     failed |= test_a_watcher_sees_the_whole_map_and_no_seat_changes();
