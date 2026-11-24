@@ -18984,6 +18984,11 @@ void Units_TickEngines(void) {
             }
             continue;
         }
+        /* Quick fix, no scripts play in the original after "Create" runs while
+         * under construction. Gated on life so the despawn finishes
+         * internally, in game the build effect is transparent at death. */
+        if (u->under_construction && u->alive == UNIT_ALIVE_ACTIVE)
+            continue;
         /* activatewhenbuilt: the moment the unit is complete, legacy
          * raises the activation state bit, and that rising edge runs
          * Activate once (legacy:236402). Lodestones raise their crystal
@@ -18991,7 +18996,7 @@ void Units_TickEngines(void) {
          * ACTIVATION port value, which scripts write themselves. Using
          * the port meant a script that cleared it got Activate restarted
          * every tick. Covers direct spawns and construction alike. */
-        if (!u->under_construction && u->alive == UNIT_ALIVE_ACTIVE &&
+        if (u->alive == UNIT_ALIVE_ACTIVE &&
             u->script_ev[UNIT_SCRIPT_EV_ACTIVATE] == 0) {
             const UnitDef *adef = Units_GetDef(u->def_idx);
             if (adef && adef->activate_when_built) {

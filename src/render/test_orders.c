@@ -19,6 +19,7 @@
 #include "tak_fog.h"
 #include "tak_hud.h"
 #include "tak_cob.h"
+#include "tak_cob_vm.h"
 #include "tak_ingame.h"
 #include "tak_ingame_keys.h"
 #include "tak_memory.h"
@@ -1523,6 +1524,37 @@ TEST(a_right_click_drops_the_hall_in_hand_and_leaves_its_frame) {
     oq_end();
 }
 
+/* A frame keeps the pose Create left it in: its threads wait until it is
+ * finished, as in the original, and a frame that dies still plays out. */
+TEST(a_frame_runs_no_scripts_until_it_is_finished) {
+    ASSERT_NOT_NULL(oq_world());
+    static const uint32_t code[] = {
+        0x10061000u, 1u, 0u,                           /* Create: start Spin */
+        0x10021001u, 0u, 0x10065000u,                  /* return 0 */
+        0x10021001u, 100u, 0x10013000u,                /* Spin: sleep 100 */
+        0x10021001u, 0u, 0x10065000u,                  /* return 0 */
+    };
+    static const char *const names[] = { "Create", "Spin" };
+    static const uint32_t offsets[] = { 0, 6 };
+    ASSERT_EQ_INT(0, Units_DebugSetDefScript(OQ_SOLDIER, code, 12, names,
+                                             offsets, 2));
+    int a = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX, OQ_CY);
+    int b = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX + 40, OQ_CY);
+    ASSERT(a >= 0 && b >= 0);
+    ((Unit *)oq_unit(a))->under_construction = 1;
+    ((Unit *)oq_unit(b))->under_construction = 1;
+    ASSERT_EQ_INT(1, Cob_AliveThreadCount(oq_unit(a)->cob));
+    oq_ticks(60);
+    ASSERT_EQ_INT(1, Cob_AliveThreadCount(oq_unit(a)->cob));
+    ((Unit *)oq_unit(a))->under_construction = 0;
+    oq_ticks(60);
+    ASSERT_EQ_INT(0, Cob_AliveThreadCount(oq_unit(a)->cob));
+    ASSERT_EQ_INT(b, Units_DebugKillHandle(b));
+    oq_ticks(60);
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, (int)oq_unit(b)->alive);
+    oq_end();
+}
+
 /* ── the Shift overlay ────────────────────────────────────────────── */
 
 /* A move in hand, then an attack, a building, a move, two patrol points
@@ -2902,6 +2934,7 @@ int main(int argc, char **argv) {
     RUN(a_dequeue_takes_a_builders_build_orders_of_the_def);
     RUN(a_right_click_on_a_builders_button_drops_that_kind);
     RUN(a_right_click_drops_the_hall_in_hand_and_leaves_its_frame);
+    RUN(a_frame_runs_no_scripts_until_it_is_finished);
     RUN(the_shift_overlay_plans_a_mixed_queue);
     RUN(a_patrol_in_hand_closes_through_its_start);
     RUN(the_shift_overlay_shows_a_barracks_rally);
