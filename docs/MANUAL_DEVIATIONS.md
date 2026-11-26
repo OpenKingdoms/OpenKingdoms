@@ -1738,7 +1738,7 @@ pull request, not here.
   in the original, and a box drops it. A click with M held that moves
   under 4 px gives that Move to the spot, a drag let go over the HUD
   keeps Move armed, and M while Move is armed from its button disarms
-  it.
+  it. The box takes whichever key the scheme gives Move (D-057).
 - Why: a quick way to take an army into a fight and leave the monarch
   behind.
 - Citation: the original's Keys.TDF binds M, LOWER_M and UPPER_M, to
@@ -1805,7 +1805,7 @@ pull request, not here.
 - Citation: the original's Keys.TDF binds LOWER_A and UPPER_A to
   UnitCommand Attack and LOWER_S and UPPER_S to Stop, leaves B empty,
   gives N to MoveToNextUnit and binds no letter to the camera. The
-  manual is silent.
+  manual is silent. These are the keys of the Standard scheme (D-057).
 
 ## R-008: A reel's soundtrack goes through the game's mixer
 
@@ -1858,5 +1858,23 @@ pull request, not here.
   pass of our own.
 - Citation: captures of the original's Mage Tower, Wisp and Death Totem.
   The manual is silent.
+
+## D-057: The battle's keys are a table with schemes
+
+- Change: every key the battle answers is an action in a table a scheme
+  fills. Standard is D-050's keys and the default. OTAK is the Keys.TDF
+  keys the engine has a command for, with only the arrows panning. Grid
+  puts the orders under the left hand. A player's own keys lie over the
+  scheme in `keys.cfg`, set from Key Binds on the options' Interface
+  page. E, or X in Grid, arms Resurrect for a selection whose sidebar
+  could raise, and the 3D camera gives E up meanwhile. Ctrl with Q, E,
+  R, F, Z or X no longer moves the 3D camera, and Ctrl+R no longer
+  turns a building being placed.
+- Why: OTAK keeps the original's keys and Standard keeps D-050's, so
+  each player picks. One press reaches one action.
+- Citation: the original reads its keys from Keys.TDF, which a player
+  can edit, and has no dialog for them. The file leaves E empty, though
+  E arms Resurrect in the original. `test_keybinds`. The manual is
+  silent.
 
 *(More entries added as deviations land.)*

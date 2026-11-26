@@ -13,6 +13,7 @@
 #include "tak_game_speed.h"
 #include "tak_ingame_debug.h"
 #include "tak_ingame_keys.h"
+#include "tak_keybinds.h"
 #include "tak_translate.h"
 #include "tak_world.h"
 #include "tak_ai.h"
@@ -1487,15 +1488,7 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
 /* The direction the held keys ask the camera to move, one step an axis.
  * The tick scales it by the frame's scroll distance. */
 static void ig_scroll_dir(const Uint8 *keys, int *out_dx, int *out_dy) {
-    int dx = 0, dy = 0;
-    /* With Ctrl down W, A, S and D are select keys, not the camera. */
-    int wasd = !keys[SDL_SCANCODE_LCTRL] && !keys[SDL_SCANCODE_RCTRL];
-    if (keys[SDL_SCANCODE_LEFT]  || (wasd && keys[SDL_SCANCODE_A])) dx -= 1;
-    if (keys[SDL_SCANCODE_RIGHT] || (wasd && keys[SDL_SCANCODE_D])) dx += 1;
-    if (keys[SDL_SCANCODE_UP]    || (wasd && keys[SDL_SCANCODE_W])) dy -= 1;
-    if (keys[SDL_SCANCODE_DOWN]  || (wasd && keys[SDL_SCANCODE_S])) dy += 1;
-    *out_dx = dx;
-    *out_dy = dy;
+    InGame_PanKeys(keys, out_dx, out_dy);
 }
 
 /* Move the camera through the active view, which keeps it on the map. */
@@ -1729,6 +1722,13 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
                  * nothing (deviation D-015). */
                 TAK_Cmd_EmitSelection(TAK_CMD_RECLAIM_FEATURE,
                                       gx, gy, hit, 0, q);
+                break;
+            case HUD_CMD_RESURRECT:
+                /* The order a plain click on a body gives, and nothing
+                 * where there is no body to raise. */
+                if (Units_SelectionRaiseModeAt(gx, gy) >= 0)
+                    TAK_Cmd_EmitSelection(TAK_CMD_RESURRECT_FEATURE,
+                                          gx, gy, -1, 0, q);
                 break;
             case HUD_CMD_GUARD:
                 if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer())
@@ -1981,6 +1981,7 @@ static void ig_order_key(InGameOrderKey k) {
     case IG_ORDER_UNLOAD: mode = HUD_CMD_UNLOAD; break;
     case IG_ORDER_HEAL:   mode = HUD_CMD_HEAL;   break;
     case IG_ORDER_CLEAR:  mode = HUD_CMD_CLEAR;  break;
+    case IG_ORDER_RESURRECT: mode = HUD_CMD_RESURRECT; break;
     case IG_ORDER_STOP:   mode = HUD_CMD_STOP;   break;
     case IG_ORDER_GATE:
         mode = Units_SelectedOnOffState() == 1 ? HUD_CMD_DEACTIVATE : HUD_CMD_ACTIVATE;
@@ -2068,13 +2069,13 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
 
     /* V switches between the classic view and the 3D view. The
      * original binds nothing to V (keys.tdf LOWER_V is empty). */
-    if (has_focus && !ig_alt && IG_PRESSED(SDL_SCANCODE_V)) {
+    if (has_focus && InGame_ViewKey(keys, ig.prev_keys)) {
         (void)InGame_SetView3D(!ig.view3d);
     }
 
     /* Toggle per-unit health bars on/off (keys.tdf SYMBOL_60 and
      * SYMBOL_7E, ToggleDamageBars, and manual section IV.2). */
-    if (IG_PRESSED(SDL_SCANCODE_GRAVE)) {
+    if (InGame_DamageBarsKey(keys, ig.prev_keys)) {
         Units_ToggleHealthBars();
         Settings_SetInt("DisplayDamageBars", Units_GetHealthBarsOn());
         Settings_Save();
@@ -2585,7 +2586,13 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
 
     /* The free camera's own controls, only while the 3D view is up. */
     if (ig.view3d && platform->has_focus && !console_keys) {
-        View3D_Input(world, platform, keys, ig.prev_keys,
+        /* A selection that can raise has the Resurrect key, which the
+         * camera shares in two schemes (D-057). */
+        uint8_t cam_keys[SDL_NUM_SCANCODES];
+        memcpy(cam_keys, keys, sizeof(cam_keys));
+        if (HUD_OrderShown(HUD_CMD_RESURRECT))
+            Keybinds_Release(KA_ORDER_RESURRECT, cam_keys);
+        View3D_Input(world, platform, cam_keys, ig.prev_keys,
                      (float)Timer_GetFrameDT(timer), wx, wy,
                      (buttons & SDL_BUTTON(SDL_BUTTON_MIDDLE)) != 0,
                      platform->wheel_dy);
