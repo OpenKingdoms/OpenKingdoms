@@ -15,6 +15,7 @@
  */
 
 #include "tak_features.h"
+#include "tak_fog.h"
 #include "tak_world.h"
 #include "tak_pathing.h"
 #include "tak_tdf.h"
@@ -392,6 +393,16 @@ int Features_InstanceCentre(const struct GameWorld *world, int idx,
     if (out_x) *out_x = (int32_t)world->features[idx].tile_x * 16 + fp_x * 8;
     if (out_y) *out_y = (int32_t)world->features[idx].tile_z * 16 + fp_z * 8;
     return 0;
+}
+
+int Features_InstanceShown(const struct GameWorld *world, int idx) {
+    if (!world || !world->features) return 0;
+    if (idx < 0 || idx >= world->feature_count) return 0;
+    const struct MapFeature *mf = &world->features[idx];
+    const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+    int32_t x = mf->world_x, y = mf->world_y;
+    if (!fd || !fd->object[0]) Features_InstanceCentre(world, idx, &x, &y);
+    return Fog_ShowsFeatureAt(world, fd ? fd->no_draw_under_gray : 0, x, y);
 }
 
 /* decompose_time holds the original's 30 Hz frames, counted down once

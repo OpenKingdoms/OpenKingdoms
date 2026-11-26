@@ -22807,9 +22807,7 @@ static void submit_corpse_models(TAK_Platform *plat,
         if (!fd || !fd->object[0]) continue;
         if (mf->world_x < left || mf->world_x > right) continue;
         if (mf->world_y < top  || mf->world_y > bottom) continue;
-        if (Fog_ShowsFeatureAt(world, fd->no_draw_under_gray, mf->world_x,
-            mf->world_y) == 0)
-            continue;
+        if (!Features_InstanceShown(world, i)) continue;
         int c = (mf->color_idx >= 0 && mf->color_idx <= 11) ? mf->color_idx : 0;
         g_proj_draw[n] = i;
         g_proj_key[n]  = mf->global_idx * 12 + c;
@@ -23892,8 +23890,7 @@ static int feature_screen_anchor(const struct GameWorld *world, int i,
     if (sx < -128 || sy < -128 ||
         sx > world->viewport_w + 128 ||
         sy > world->viewport_h + 128) return 0;
-    const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
-    if (!Fog_ShowsFeatureAt(world, fd ? fd->no_draw_under_gray : 0, wx, wy)) return 0;
+    if (!Features_InstanceShown(world, i)) return 0;
     *out_sx = sx;
     *out_sy = sy;
     return 1;
@@ -24858,8 +24855,7 @@ static void render_feature_shadows(const struct GameWorld *world, TAK_Platform *
             mf->world_x > world->cam_x + world->viewport_w + margin) continue;
         if (mf->world_y < world->cam_y - margin ||
             mf->world_y > world->cam_y + world->viewport_h + margin) continue;
-        if (Fog_ShowsFeatureAt(world, fd->no_draw_under_gray, mf->world_x,
-            mf->world_y) == 0) continue;
+        if (!Features_InstanceShown(world, i)) continue;
         const int c = (mf->color_idx >= 0 && mf->color_idx <= 11) ? mf->color_idx : 0;
         const UnitMesh *m = corpse_model_mesh(mf->global_idx, c);
         if (!m || m->vert_count == 0 || ensure_scratch(m->vert_count, m->tri_count * 3) != 0)

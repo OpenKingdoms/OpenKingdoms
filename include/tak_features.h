@@ -138,6 +138,10 @@ int  Features_InstanceHealth(const struct GameWorld *world, int idx,
 int  Features_InstanceCentre(const struct GameWorld *world, int idx,
                              int32_t *out_x, int32_t *out_y);
 
+/* Whether the fog lets instance `idx` be drawn, tested where it is
+ * drawn: a model at its own place, a sprite on its footprint's centre. */
+int  Features_InstanceShown(const struct GameWorld *world, int idx);
+
 /* Index into world->features of the resurrectable (or animatable)
  * instance whose footprint covers (world_x, world_y), or -1. The
  * original offers the raise order only when the cell's feature def

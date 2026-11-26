@@ -2211,10 +2211,7 @@ static void ig_info_pointer(TAK_Platform *platform, GameWorld *world) {
             int32_t gx = x, gy = y;
             Units_GroundUnderPoint(x, y, &gx, &gy);
             feature = Features_InfoAt(world, gx, gy);
-            const FeatureDef *fd = feature >= 0
-                ? Features_GetByIndex(world->features[feature].global_idx) : NULL;
-            if (feature >= 0 &&
-                !Fog_ShowsFeatureAt(world, fd ? fd->no_draw_under_gray : 0, gx, gy))
+            if (feature >= 0 && !Features_InstanceShown(world, feature))
                 feature = -1;
         }
     }

@@ -1066,7 +1066,7 @@ static void draw_features(const GameWorld *world, const float planes[6][4]) {
         const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
         if (!fd) continue;
         if (fd->object[0]) {
-            if (Fog_ShowsFeatureAt(world, fd->no_draw_under_gray, mf->world_x, mf->world_y) == 0) continue;
+            if (!Features_InstanceShown(world, i)) continue;
             int c = (mf->color_idx >= 0 && mf->color_idx <= 11) ? mf->color_idx : 0;
             const GpuModel *m = ModelStore_GetPainted(fd->object, c,
                                                       Units_FeaturePaint(fd));
@@ -1084,7 +1084,7 @@ static void draw_features(const GameWorld *world, const float planes[6][4]) {
         Features_InstanceFootprint(world, i, &fp_x, &fp_z);
         int32_t wx = mf->tile_x * 16 + fp_x * 8;
         int32_t wy = mf->tile_z * 16 + fp_z * 8;
-        if (Fog_ShowsFeatureAt(world, fd->no_draw_under_gray, wx, wy) == 0) continue;
+        if (!Features_InstanceShown(world, i)) continue;
         /* A sprite has no object name to find a model by, so an
          * artist's model for it goes by the sequence name: the standing
          * stones around a mana site are models3d/verhenge01.glb and so
