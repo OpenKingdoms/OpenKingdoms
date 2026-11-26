@@ -469,11 +469,14 @@ int Keybinds_Held(KeyAction a, const uint8_t *keys) {
     return kb_down_slot(a, keys, NULL) >= 0;
 }
 
-void Keybinds_Release(KeyAction a, uint8_t *keys) {
+void Keybinds_ReleaseHeld(KeyAction a, uint8_t *keys) {
     if (!kb_action_ok(a) || !keys) return;
+    if (!(k_info[a].flags & KF_ALT_OK) && kb_alt(keys)) return;
+    if (!(k_info[a].flags & KF_GUI_OK) && kb_gui(keys)) return;
     const KeyChord *c = kb_chords(a);
     for (int s = 0; s < KEYBIND_SLOTS; s++)
-        if (c[s].key && c[s].key < SDL_NUM_SCANCODES) keys[c[s].key] = 0;
+        if (c[s].key && c[s].key < SDL_NUM_SCANCODES && kb_mods_match(c[s], keys))
+            keys[c[s].key] = 0;
 }
 
 /* Escape and Enter belong to the dialogs and the chat line, the digits

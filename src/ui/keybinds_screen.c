@@ -83,6 +83,7 @@ static struct {
     KeyAction   q_action;
     int         q_slot;
     KeyChord    q_chord;
+    int         q_custom_was;    /* the player's keys were on before the ask */
 
     uint8_t     prev_keys[SDL_NUM_SCANCODES];
     int         prev_left, prev_right;
@@ -403,6 +404,10 @@ static void ks_bind(KeyAction a, int slot, KeyChord chord) {
 /* A key came down for the armed slot. One that another action answers
  * is asked about first. */
 static void ks_take(KeyAction a, int slot, KeyChord chord) {
+    /* A key set turns the player's keys on, so ask of the table that
+     * will answer then. */
+    int custom_was = Keybinds_CustomOn();
+    Keybinds_SetCustomOn(1);
     int other_slot = 0;
     KeyAction other = Keybinds_Conflict(a, chord, &other_slot);
     if (other == KA_NONE) { ks_bind(a, slot, chord); return; }
@@ -414,16 +419,21 @@ static void ks_take(KeyAction a, int slot, KeyChord chord) {
     ks.q_action = a;
     ks.q_slot = slot;
     ks.q_chord = chord;
+    ks.q_custom_was = custom_was;
     ks_ask(Q_CONFLICT, text);
+    if (ks.question != Q_CONFLICT) Keybinds_SetCustomOn(custom_was);
 }
 
 static void ks_answer(int yes) {
     int q = ks.question;
     ks.question = Q_NONE;
-    if (!yes) return;
+    if (!yes) {
+        if (q == Q_CONFLICT) Keybinds_SetCustomOn(ks.q_custom_was);
+        return;
+    }
     if (q == Q_CONFLICT) {
         KeyChord none = { 0, 0 };
-        for (int guard = 0; guard < 8; guard++) {
+        for (int guard = 0; guard < KA_COUNT * KEYBIND_SLOTS; guard++) {
             int slot = 0;
             KeyAction other = Keybinds_Conflict(ks.q_action, ks.q_chord, &slot);
             if (other == KA_NONE) break;
@@ -782,10 +792,8 @@ int KeyScreen_Tick(TAK_Platform *platform) {
     ks.last_mx = mx;
     ks.last_my = my;
 
-    int wheel = 0;
-    SDL_Event e;
-    while (SDL_PeepEvents(&e, 1, SDL_GETEVENT, SDL_MOUSEWHEEL, SDL_MOUSEWHEEL) > 0)
-        wheel += e.wheel.y;
+    /* The platform's pump has taken the wheel events off the queue. */
+    int wheel = focus ? platform->wheel_dy : 0;
 
     int leave = -1;
     if (MessageBox_IsOpen()) {

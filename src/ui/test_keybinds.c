@@ -358,9 +358,28 @@ TEST(resurrect_is_on_e_and_shares_it_with_the_camera) {
                           KA_ORDER_GUARD, chord(SDL_SCANCODE_E, KM_ANY_SHIFT), NULL));
         /* What the battle does with the camera's keys for such a selection. */
         hold(SDL_SCANCODE_E, 0);
-        Keybinds_Release(KA_ORDER_RESURRECT, keys);
+        Keybinds_ReleaseHeld(KA_ORDER_RESURRECT, keys);
         ASSERT(!Keybinds_Held(KA_CAM_TURN_RIGHT, keys));
     }
+}
+
+/* Lifting an action's key for another leaves it where the modifiers do
+ * not make the action. */
+TEST(a_key_is_lifted_only_where_its_action_would_answer) {
+    fresh();
+    KeyChord ctrl_f = { SDL_SCANCODE_F, KM_CTRL };
+    Keybinds_Set(KA_TURN_BUILDING_CW, 0, ctrl_f);
+    hold(SDL_SCANCODE_F, 0);
+    Keybinds_ReleaseHeld(KA_TURN_BUILDING_CW, keys);
+    ASSERT(Keybinds_Held(KA_CAM_TILT_DOWN, keys));
+    hold(SDL_SCANCODE_F, CTRL);
+    Keybinds_ReleaseHeld(KA_TURN_BUILDING_CW, keys);
+    ASSERT_EQ_INT(0, keys[SDL_SCANCODE_F]);
+    /* Alt makes no turn, so the bracket stays down. */
+    hold(SDL_SCANCODE_RIGHTBRACKET, ALT);
+    Keybinds_ReleaseHeld(KA_TURN_BUILDING_CW, keys);
+    ASSERT_EQ_INT(1, keys[SDL_SCANCODE_RIGHTBRACKET]);
+    Keybinds_ResetAll();
 }
 
 /* A scheme's own key pressed into its own action is the scheme's key,
@@ -405,5 +424,6 @@ int main(int argc, char *argv[]) {
     RUN(the_players_keys_survive_their_file_and_the_options);
     RUN(a_schemes_own_key_captures_as_the_scheme_has_it);
     RUN(resurrect_is_on_e_and_shares_it_with_the_camera);
+    RUN(a_key_is_lifted_only_where_its_action_would_answer);
     TEST_REPORT();
 }

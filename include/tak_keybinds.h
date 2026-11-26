@@ -192,8 +192,10 @@ int Keybinds_HasConflict(KeyAction a);
 int Keybinds_Pressed(KeyAction a, const uint8_t *keys, const uint8_t *prev);
 int Keybinds_Held(KeyAction a, const uint8_t *keys);
 
-/* Lift every key of an action in a copy of the keyboard. */
-void Keybinds_Release(KeyAction a, uint8_t *keys);
+/* Lift the keys of an action that are down with the modifiers it reads,
+ * in a copy of the keyboard. Another action on the same key with other
+ * modifiers keeps it. */
+void Keybinds_ReleaseHeld(KeyAction a, uint8_t *keys);
 
 /* The key a player pressed this frame to bind to `a`: 1 and the chord,
  * 0 for no key yet, -1 for a key that cannot be bound (Escape, Enter,

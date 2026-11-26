@@ -2591,7 +2591,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         uint8_t cam_keys[SDL_NUM_SCANCODES];
         memcpy(cam_keys, keys, sizeof(cam_keys));
         if (HUD_OrderShown(HUD_CMD_RESURRECT))
-            Keybinds_Release(KA_ORDER_RESURRECT, cam_keys);
+            Keybinds_ReleaseHeld(KA_ORDER_RESURRECT, cam_keys);
         View3D_Input(world, platform, cam_keys, ig.prev_keys,
                      (float)Timer_GetFrameDT(timer), wx, wy,
                      (buttons & SDL_BUTTON(SDL_BUTTON_MIDDLE)) != 0,

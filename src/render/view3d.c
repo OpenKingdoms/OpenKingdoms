@@ -1806,8 +1806,8 @@ void View3D_Input(GameWorld *world, const TAK_Platform *plat,
     uint8_t cam_keys[SDL_NUM_SCANCODES];
     if (HUD_GetBuildPlacementDefIdx() >= 0) {
         memcpy(cam_keys, keys, sizeof(cam_keys));
-        Keybinds_Release(KA_TURN_BUILDING_CW, cam_keys);
-        Keybinds_Release(KA_TURN_BUILDING_CCW, cam_keys);
+        Keybinds_ReleaseHeld(KA_TURN_BUILDING_CW, cam_keys);
+        Keybinds_ReleaseHeld(KA_TURN_BUILDING_CCW, cam_keys);
         keys = cam_keys;
     }
     if (Keybinds_Held(KA_CAM_TURN_LEFT, keys))  dyaw += turn;
