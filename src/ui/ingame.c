@@ -2193,7 +2193,7 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
 }
 
 /* The unit, else the shown feature, under the pointer over the world,
- * for the info panel. A feature on ground never seen is not named. */
+ * for the info panel. A feature is named only where it is drawn. */
 static void ig_info_pointer(TAK_Platform *platform, GameWorld *world) {
     int unit = -1, feature = -1, mx = 0, my = 0;
     int32_t x = 0, y = 0;
@@ -2211,8 +2211,9 @@ static void ig_info_pointer(TAK_Platform *platform, GameWorld *world) {
         if (unit < 0) {
             int32_t gx = x, gy = y;
             Units_GroundUnderPoint(x, y, &gx, &gy);
-            if (Fog_StateAt(world, gx, gy) != TAK_FOG_UNEXPLORED)
-                feature = Features_InfoAt(world, gx, gy);
+            feature = Features_InfoAt(world, gx, gy);
+            if (feature >= 0 && !Features_InstanceShown(world, feature))
+                feature = -1;
         }
     }
     HUD_SetPointerInfo(unit, feature);

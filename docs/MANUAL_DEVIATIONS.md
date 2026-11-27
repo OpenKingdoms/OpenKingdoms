@@ -1174,23 +1174,16 @@ pull request, not here.
 - Citation: issue #212. The manual does not describe the menu at this
   level.
 
-## D-014: Sight does not grow or shrink with the ground it falls on
+## D-014: Sight reads the eye fresh at every stamp
 
-- Change: a unit reveals every fog cell inside its sightdistance, plus
-  the nine cells around it, whatever the ground's height, and stamps
-  again only on a fog cell change. The original scales the radius by the
-  eye's height over each cell's lowest ground, seeing further downhill
-  and less uphill, lighting no cell above the eye and reaching at most
-  twice sightdistance (legacy:167413-167423), and stamps again when the
-  eye moves by more than 5 (legacy:167455-167456). On level ground the
-  two agree.
-- Why: the height term needs each unit's model height and a record of the
-  ground under each fog cell, which the original builds from the
-  heightmap (legacy:224395-224470), and that record and its stamp are
-  still to be written.
-- Citation: docs/notes/2026-09-04-combat-mechanics.md on the simulation
-  reading a unit's model. The manual is silent on sight at this level of
-  detail.
+- Change: a unit's sight grows and shrinks with the ground it falls on,
+  as the original's does, but the engine reads the eye at every stamp
+  and stamps again when it has moved at all. The original stamps again
+  once the eye has moved by more than 5 (legacy:167455-167456).
+- Why: a stale eye would have to be kept on the unit and in a save, for
+  a few px of height between two stamps.
+- Citation: the stamp's height term (legacy:167413-167423) and the
+  ground record (legacy:224395-224470). docs/notes/fog.md.
 
 ## D-015: The sweep clears a building you own
 
@@ -1378,8 +1371,8 @@ pull request, not here.
   patrol, also lets go of a picked target out of reach or inside its
   minrange.
 - Why: shots stop on what they fly into, and the original fires into a
-  hill without looking. With sight not yet shrinking uphill (D-014), an
-  archer in a clearing would shoot the trees until its target died.
+  hill without looking, so an archer in a clearing would shoot the trees
+  until its target died.
 - Citation: the original's fire gate looks only at range, reload, mana
   and facing (legacy:249328-249420), and a unit with no mover has no
   leash (legacy:15125). docs/notes/2026-09-04-combat-mechanics.md. The
