@@ -26,15 +26,42 @@ set, never cleared.
 Both are set up at load (legacy:167179). A unit's sight entry records
 its position, its type's eye height and its sight range
 (legacy:167249). The original scales a unit's sight radius by the
-height of the ground it lights, and the engine departs there, see
-D-014.
+height of the ground it lights, see Sight on high ground below.
 
 A unit's fog cell is height compensated. Its column is x over 32 and
 its row is z less half the unit's height, over 32, that is
 `(z - y/2) / 32` (legacy:208685, legacy:208695,
-legacy:250583-250596). Fog reveal, the minimap (legacy:208475) and the
-fire gates all use this one mapping, so a test that takes a unit's
-flat position instead is wrong wherever the ground slopes.
+legacy:250583-250596), and the minimap (legacy:208475) and the fire
+gates read it. For the reveal the screenshots in Sight on high ground
+fit the flat cell with the overlay drawn 64 px up instead, and the
+engine follows them.
+
+## Sight on high ground
+
+The stamp scales sightdistance by the eye's drop to each cell's lowest
+ground over the model's height, so on level ground the reach is
+sightdistance. A cell above the eye stays dark, the nine cells round
+the unit are always lit, and the reach is capped at twice sightdistance
+in whole cells (legacy:167402, legacy:167413-167423). The manual
+agrees: a unit on a hill sees farther (p. 56), and a Dirigible's height
+gives it a long line of sight (p. 42).
+
+The ground under each cell is a record built from the heightmap
+(legacy:224395-224470). Screenshots of the original on Abnar's Terrace
+fit it read flat, the lowest ground inside each map cell with open
+water at its surface, and the overlay drawn 64 px up as if all ground
+stood 128 high. The original never shows the last two cells of a map.
+The drop counts against the model's whole span, and a unit's eye is its
+base (ground, sea surface or flight altitude) plus that span. A unit
+under the water's surface takes the surface as its base, so a ship or a
+wader on open water sees its plain sight.
+
+The engine keeps the fog cells, the reveal anchor and every query on
+the flat map cells, so a unit or feature shows or hides by its own map
+cell. The overlay, the mist, the jammer's haze and the capture fog dump
+are drawn `TAK_FOG_LIFT_PX` higher. The minimap is flat and not lifted,
+as in the original. The 3D view, which the original does not have,
+shades the ground by the map cell under it.
 
 ## Line of Sight off
 

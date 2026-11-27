@@ -10959,6 +10959,22 @@ void Units_FogAnchor(int handle, int sight, int32_t *out_x, int32_t *out_y) {
     if (out_y) *out_y = u->fog_y;
 }
 
+/* Eye = base + the model's whole span, as measured against the original
+ * (docs/notes/fog.md). */
+void Units_FogEye(int handle, int32_t *out_eye, int32_t *out_tall) {
+    if (handle < 0 || handle >= g_unit_count) return;
+    int base, bottom, top;
+    unit_body_span(&g_units[handle], &base, &bottom, &top);
+    int tall = top - bottom;
+    if (tall < 1) tall = 1;
+    /* Under water the eye counts from the surface, as the ground does, so a
+     * wader keeps its plain sight as in the original. */
+    const GameWorld *w = World_Get();
+    if (w && base < w->water_height) base = w->water_height;
+    if (out_eye) *out_eye = base + tall;
+    if (out_tall) *out_tall = tall;
+}
+
 int Units_LoadBegin(int slot_count, uint32_t next_stable_id) {
     if (slot_count < 0 || slot_count > TAK_MAX_UNITS) return -1;
     Units_ClearInstances();

@@ -14,6 +14,9 @@ struct TAK_Platform;
  * grid as the 32 px graphic tiles (legacy:130169). The stamp and the
  * reveal anchor both measure in these cells. */
 #define TAK_FOG_CELL_PX 32
+/* Fog is drawn as if all ground stood 128 high, 64 px up the picture.
+ * Seen in the original (docs/notes/fog.md). */
+#define TAK_FOG_LIFT_PX 64
 
 int  Fog_Init(struct GameWorld *world);
 void Fog_Free(struct GameWorld *world);
@@ -52,8 +55,9 @@ int  Fog_ShowsFeatureAt(const struct GameWorld *world, int no_draw_under_gray,
 void Fog_RenderOverlay(const struct GameWorld *world, struct TAK_Platform *plat);
 /* The overlay's black over ground never seen, alone, for the mist. */
 void Fog_RenderShroud(const struct GameWorld *world, struct TAK_Platform *plat);
-/* The black the classic overlay lays on the fog cell holding a world
- * point, for the local viewer: 0 clear, 0x78 dimmed, 0xFF black. */
+/* The black the classic overlay lays on a point of the picture, which
+ * is the fog cell TAK_FOG_LIFT_PX south of it, for the local viewer:
+ * 0 clear, 0x78 dimmed, 0xFF black. */
 uint8_t Fog_OverlayAlphaAt(const struct GameWorld *world, int32_t world_x, int32_t world_y);
 /* Draws the overlay has taken since the process began, for a test. */
 uint32_t Fog_DebugOverlayDraws(void);

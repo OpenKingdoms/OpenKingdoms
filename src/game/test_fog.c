@@ -46,16 +46,27 @@ void Units_FogAnchor(int handle, int sight, int32_t *out_x, int32_t *out_y) {
     if (out_y) *out_y = u->fog_y;
 }
 
-/* A terrain the stamp is not supposed to read. The ridge is a band
- * of high ground between two x values, and every query is counted
- * so a test can assert the stamp made none. */
-static int g_ridge_x0, g_ridge_x1, g_ridge_h, g_terrain_queries;
+/* Every test unit's model is this tall. A unit's flight_alt lifts its eye. */
+#define TEST_TALL 32
+
+int Terrain_SampleHeight(const GameWorld *world, int32_t world_x, int32_t world_y);
+
+void Units_FogEye(int handle, int32_t *out_eye, int32_t *out_tall) {
+    if (handle < 0 || handle >= g_test_unit_count) return;
+    const Unit *u = &g_test_units[handle];
+    *out_eye = Terrain_SampleHeight(NULL, u->world_x, u->world_y) +
+               (int32_t)u->flight_alt + TEST_TALL;
+    *out_tall = TEST_TALL;
+}
+
+/* The terrain: level but for a ridge, a band of high ground between
+ * two x values. Set before the first Fog_Update. */
+static int g_ridge_x0, g_ridge_x1, g_ridge_h;
 
 int Terrain_SampleHeight(const GameWorld *world,
                          int32_t world_x, int32_t world_y) {
     (void)world;
     (void)world_y;
-    g_terrain_queries++;
     if (g_ridge_x1 > g_ridge_x0 &&
         world_x >= g_ridge_x0 && world_x < g_ridge_x1)
         return g_ridge_h;
@@ -354,7 +365,8 @@ static int test_an_ai_teammate_grants_no_sight(void) {
 
 /* The original's stamp walks fog cells and consults nothing between
  * the unit's cell and the cell it lights (legacy:167396-167427), so
- * a ridge hides nothing behind it. */
+ * a ridge hides nothing behind it. The ridge itself stands over the
+ * unit's eye and is dark but in the nine cells (legacy:167413-167423). */
 static int test_a_ridge_does_not_hide_the_ground_behind_it(void) {
     GameWorld w;
     memset(&w, 0, sizeof(w));
@@ -367,7 +379,6 @@ static int test_a_ridge_does_not_hide_the_ground_behind_it(void) {
     g_ridge_x0 = 96;
     g_ridge_x1 = 128;
     g_ridge_h = 200;
-    g_terrain_queries = 0;
 
     g_test_unit_count = 1;
     g_test_defs[0].sight_distance = 256;
@@ -378,19 +389,97 @@ static int test_a_ridge_does_not_hide_the_ground_behind_it(void) {
     g_test_units[0].world_y = 272;
     Fog_Update(&w, 1);
 
-    /* The unit's own cell and the ridge it stands against. */
+    /* The unit's own cell and the ridge it stands against, in the
+     * nine, and the ridge two rows down, which is not. */
     ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 80, 272));
     ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 112, 272));
+    ASSERT_EQ_INT(TAK_FOG_UNEXPLORED, Fog_StateAtForPlayer(&w, 1, 112, 336));
     /* Ground beyond the ridge, 4 and 6 cells out of the 8 the
      * radius buys. */
     ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 208, 272));
     ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 272, 272));
     /* 11 cells out, past the radius. */
     ASSERT_EQ_INT(TAK_FOG_UNEXPLORED, Fog_StateAtForPlayer(&w, 1, 432, 272));
-    /* The stamp asked the terrain nothing at all. */
-    ASSERT_EQ_INT(0, g_terrain_queries);
 
     g_ridge_x0 = g_ridge_x1 = g_ridge_h = 0;
+    Fog_Free(&w);
+    g_test_unit_count = 0;
+    return 0;
+}
+
+/* One unit of sight `sight` on a 1024 px map with a band of ground `h`
+ * high from x 448 to 576. It stands at x 464, on the band, and flies
+ * `alt` high. Returns how many fog cells of the low ground to its left
+ * it lights along its own row, or -1 when its own cell is dark. */
+static int cells_lit_to_the_left(int sight, int h, int alt) {
+    GameWorld w;
+    memset(&w, 0, sizeof(w));
+    memset(g_test_units, 0, sizeof(g_test_units));
+    memset(g_test_defs, 0, sizeof(g_test_defs));
+    w.map_pixels_w = 1024;
+    w.map_pixels_h = 512;
+    w.cfg.line_of_sight = 1;
+    g_ridge_x0 = 448;
+    g_ridge_x1 = 576;
+    g_ridge_h = h;
+    if (Fog_Init(&w) != 0) return -1;
+    g_test_unit_count = 1;
+    g_test_defs[0].sight_distance = sight;
+    g_test_units[0].alive = UNIT_ALIVE_ACTIVE;
+    g_test_units[0].player_id = 1;
+    g_test_units[0].world_x = 464;
+    g_test_units[0].world_y = 272;
+    g_test_units[0].flight_alt = (float)alt;
+    Fog_Update(&w, 1);
+    int own = Fog_StateAtForPlayer(&w, 1, 464, 272) == TAK_FOG_VISIBLE;
+    int lit = 0;
+    for (int32_t lx = 432; lx > 0; lx -= 32)
+        if (Fog_StateAtForPlayer(&w, 1, lx, 272) == TAK_FOG_VISIBLE) lit++;
+    g_ridge_x0 = g_ridge_x1 = g_ridge_h = 0;
+    Fog_Free(&w);
+    g_test_unit_count = 0;
+    return own ? lit : -1;
+}
+
+/* Sight grows with the eye's drop to the ground it falls on, counted
+ * against the model's span, up to twice sightdistance in whole cells
+ * (legacy:167413-167423). The unit's model is 32 high. */
+static int test_high_ground_and_a_flyer_see_twice_as_far(void) {
+    /* Level with the low ground: sightdistance, 4 cells. */
+    ASSERT_EQ_INT(4, cells_lit_to_the_left(128, 0, 0));
+    /* Half a model over it: half as far again. */
+    ASSERT_EQ_INT(6, cells_lit_to_the_left(128, 16, 0));
+    /* A model's height over it and more: twice, and no further. */
+    ASSERT_EQ_INT(8, cells_lit_to_the_left(128, 32, 0));
+    ASSERT_EQ_INT(8, cells_lit_to_the_left(128, 200, 0));
+    /* A flyer over level ground sees as a unit on a height does. */
+    ASSERT_EQ_INT(8, cells_lit_to_the_left(128, 0, 200));
+    return 0;
+}
+
+/* Open water counts at its surface, so a ship at sea sees its own sight
+ * and no more, as VERHARP was seen to in the original. */
+static int test_a_ship_on_open_water_sees_its_sight(void) {
+    GameWorld w;
+    memset(&w, 0, sizeof(w));
+    memset(g_test_units, 0, sizeof(g_test_units));
+    memset(g_test_defs, 0, sizeof(g_test_defs));
+    w.map_pixels_w = 1024;
+    w.map_pixels_h = 512;
+    w.water_height = 50;
+    w.cfg.line_of_sight = 1;
+    ASSERT_EQ_INT(0, Fog_Init(&w));
+    g_test_unit_count = 1;
+    g_test_defs[0].sight_distance = 128;
+    g_test_units[0].alive = UNIT_ALIVE_ACTIVE;
+    g_test_units[0].player_id = 1;
+    g_test_units[0].world_x = 464;
+    g_test_units[0].world_y = 272;
+    /* Riding the surface over a sea bed at 0. */
+    g_test_units[0].flight_alt = 50.0f;
+    Fog_Update(&w, 1);
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 336, 272));
+    ASSERT_EQ_INT(TAK_FOG_UNEXPLORED, Fog_StateAtForPlayer(&w, 1, 304, 272));
     Fog_Free(&w);
     g_test_unit_count = 0;
     return 0;
@@ -714,6 +803,8 @@ int main(void) {
     failed |= test_allies_share_sight();
     failed |= test_an_ai_teammate_grants_no_sight();
     failed |= test_a_ridge_does_not_hide_the_ground_behind_it();
+    failed |= test_high_ground_and_a_flyer_see_twice_as_far();
+    failed |= test_a_ship_on_open_water_sees_its_sight();
     failed |= test_the_nine_cells_around_a_unit_are_always_lit();
     failed |= test_a_wall_hides_under_the_grey();
     failed |= test_a_unit_aboard_still_sees();
