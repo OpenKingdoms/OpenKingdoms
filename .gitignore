@@ -84,3 +84,4 @@ __pycache__/
 
 # Scratch directory the paths test builds beside the binary.
 test_paths_scratch/
+test_keybinds_scratch/

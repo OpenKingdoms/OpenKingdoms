@@ -53,6 +53,9 @@ typedef enum {
     HUD_CMD_UNLOAD      = 6,    /* drop transport at point          */
     HUD_CMD_HEAL        = 7,    /* repair/heal target               */
     HUD_CMD_CLEAR       = 8,    /* clear/reclaim feature            */
+    /* Raise the body under the click. A key arms it (D-057): the
+     * sidebar has no button for it. */
+    HUD_CMD_RESURRECT   = 9,
     /* Immediate (non-targeting) commands — fire on click, no cursor swap. */
     HUD_CMD_STOP        = 100,
     HUD_CMD_AGGRO_OFF   = 101,  /* set selection to UNIT_AGGRO_OFFENSIVE */
@@ -127,6 +130,8 @@ int  HUD_TriggerCommand(int mode);
 /* An order's key presses its action button as a click would. 0 and
  * nothing done when the selection has no such button. */
 int  HUD_PressOrder(int mode);
+/* 1 when the selection can take the order, as a button would show. */
+int  HUD_OrderShown(int mode);
 
 /* Returns 1 if (win_x, win_y) hit an action button and the mode
  * was changed/issued; the caller (ingame.c click handler) should
