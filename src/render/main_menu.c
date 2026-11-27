@@ -19,8 +19,10 @@
  * in 2 (legacy:147778). Entering plays clip 5, which hands over to
  * clip 6, looping while the cursor stays; leaving plays clip 7 back
  * to rest (legacy:148022-148076). Clip n is Movies/Gui/<name>n.bik.
- * Without the clips the GAF entries cycle. All four clips are opened
- * when the menu opens.
+ * At rest a door shows clip 4's still, as the original does on screen,
+ * except the snort, which leaves the page's K showing.
+ * Without the clips a door shows sheet entry 0 at rest and entry 6
+ * while hovered. All four clips are opened when the menu opens.
  */
 
 #include "tak_modset.h"
@@ -88,15 +90,6 @@ static const SDL_Rect character_hit_rects[MENU_NUM_CHARACTERS] = {
     { 124,  42,  71, 130 },  /* Credits      (snort)   — 0x7c,  0x2a, 0x47, 0x82 */
 };
 
-/* Where a sheet sits against the hit rect anchor so its art lands on
- * the same art in the door's clips (D-013). */
-static const SDL_Point character_sheet_nudge[MENU_NUM_CHARACTERS] = {
-    { -2, -3 },  /* machine */
-    {  0,  0 },  /* girl */
-    {  3, -1 },  /* knight */
-    {  0,  0 },  /* snort */
-};
-
 /* Sentinel for "no state change requested". It must not collide with any
  * real GameStateEnum value: GAMESTATE_QUIT is -1, so -1 cannot mean "none". */
 #define MENU_NO_PENDING (-2)
@@ -117,29 +110,21 @@ static const char k_replays_label[] = "Replays";
 
 /* HelpText widget rect from mainmenu.gui line 112: 172 441 296 31. */
 static const SDL_Rect helptext_rect = { 172, 441, 296, 31 };
+/* The Version widget's rect in mainmenu.gui. */
+static const SDL_Rect version_rect = { 174, 408, 295, 14 };
 
 /* ── Character animation state ──────────────────────────────────── */
 
+/* One sheet entry, decoded once, with its hotspot. */
 typedef struct {
-    GAFFile *gaf;
-    uint32_t rgba_table[256];
-    int num_entries;
+    uint32_t *pixels;
+    int w, h, ox, oy;
+} SheetStill;
 
-    /* Pre-decoded RGBA for entry 0 frame 0 (idle sprite) */
-    uint32_t *idle_pixels;
-    int idle_w, idle_h;
-    int idle_ox, idle_oy;  /* hotspot of the idle/reference frame */
-
-    /* Current animation state */
-    int current_entry;
-    float anim_timer;
-    int animating;       /* currently playing hover animation? */
-    int returning;       /* playing to completion before reset? */
-
-    /* Most recently decoded frame for rendering */
-    uint32_t *current_pixels;
-    int current_w, current_h;
-    int current_ox, current_oy; /* hotspot offsets for current frame */
+typedef struct {
+    /* Drawn only when the clips cannot be played: entry 0 at rest and
+     * entry 6, the open door, while hovered. */
+    SheetStill rest_still, hover_still;
 
     /* Files 4 to 7, decoded once at init. */
     BinkPlayer *clips[BINK_CLIPS_PER_CHAR];
@@ -147,6 +132,12 @@ typedef struct {
     int active_clip;       /* -1 = no video, 0-3 = clip index (maps to files 4-7) */
     uint8_t drew_clip;     /* the last frame drew this door from a clip, not its sheet */
     int has_video;
+    /* Rests on clip 4's still. The snort does not: its still is redder
+     * than the K it covers, and the original's resting K is the page's. */
+    int rests_on_still;
+    /* The snort's clips go onto the page as their change from clip 4's
+     * still (D-059), so only the glow and the smoke show. */
+    uint32_t *page_ref;
     /* The original's button states: 2 rest, 4 still after a click,
      * 5 enter clip, 6 hover clip looping, 7 leave clip. State n plays
      * clip n. */
@@ -189,9 +180,6 @@ static struct {
     /* Interaction */
     int hovered_button;  /* -1 = none */
     int pending_nextstate; /* set by click handlers; returned from Tick */
-
-    /* Animation speed */
-    float frame_duration;
 } menu;
 
 /* The GAF helpers and offscreen surface have been moved to tak_ui.h —
@@ -200,40 +188,44 @@ static struct {
 
 /* ── Init character animation ───────────────────────────────────── */
 
+/* Adds each channel's change from ref to frame onto dst, so a pixel the
+ * clip leaves as it was in its still shows the page beneath. */
+static void blit_change(SDL_Surface *dst, int dst_x, int dst_y,
+                        const uint32_t *frame, const uint32_t *ref,
+                        int w, int h) {
+    if (!dst || dst->format->BytesPerPixel != 4) return;
+    if (SDL_LockSurface(dst) != 0) return;
+    for (int y = 0; y < h; y++) {
+        int dy = dst_y + y;
+        if (dy < 0 || dy >= dst->h) continue;
+        uint8_t *row = (uint8_t *)dst->pixels + (size_t)dy * dst->pitch;
+        const uint8_t *f = (const uint8_t *)(frame + (size_t)y * w);
+        const uint8_t *r = (const uint8_t *)(ref + (size_t)y * w);
+        for (int x = 0; x < w; x++) {
+            int dx = dst_x + x;
+            if (dx < 0 || dx >= dst->w) continue;
+            uint8_t *d = row + (size_t)dx * 4;
+            for (int c = 0; c < 4; c++) {
+                int v = d[c] + f[x * 4 + c] - r[x * 4 + c];
+                d[c] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+            }
+        }
+    }
+    SDL_UnlockSurface(dst);
+}
+
 /* init_character(ch, gaf_name, bink_name)
  *   gaf_name — filename base under data/anims (NULL for Bink-only buttons
  *              like Credits that have no static sprite)
  *   bink_name — base for Movies/Gui/<name>{4-7}.bik (NULL = no hover video) */
-static int init_character(CharacterAnim *ch, const char *gaf_name, const char *bink_name) {
+static void init_character(CharacterAnim *ch, const char *gaf_name, const char *bink_name) {
     memset(ch, 0, sizeof(*ch));
     ch->active_clip = -1;
     ch->state = 2;
 
-    if (gaf_name) {
-        char gaf_path[256], pcx_path[256];
-        snprintf(gaf_path, sizeof(gaf_path), "data/anims/%s.gaf", gaf_name);
-        snprintf(pcx_path, sizeof(pcx_path), "data/anims/%s.pcx", gaf_name);
-        if (UI_LoadGAFWithPalette(gaf_path, pcx_path, &ch->gaf, ch->rgba_table) != 0)
-            return -1;
-
-        ch->num_entries = (int)ch->gaf->num_entries;
-        ch->idle_pixels = UI_DecodeEntryIdle(ch->gaf, 0, ch->rgba_table,
-                                             &ch->idle_w, &ch->idle_h,
-                                             &ch->idle_ox, &ch->idle_oy);
-        ch->current_pixels = ch->idle_pixels;
-        ch->current_w = ch->idle_w;
-        ch->current_h = ch->idle_h;
-        ch->current_ox = ch->idle_ox;
-        ch->current_oy = ch->idle_oy;
-
-        fprintf(stderr, "MainMenu: %s idle %dx%d hotspot=(%d,%d) entries=%d\n",
-                gaf_name, ch->idle_w, ch->idle_h,
-                ch->idle_ox, ch->idle_oy, ch->num_entries);
-    }
-
     if (bink_name) {
         /* The clips count only when the player can open them: a build
-         * without the decoder falls back to the GAF entries. */
+         * without the decoder falls back to the sheet. */
         for (int c = 0; c < BINK_CLIPS_PER_CHAR; c++) {
             char rel[64];
             snprintf(rel, sizeof(rel), "Movies/Gui/%s%d.bik", bink_name, c + 4);
@@ -244,30 +236,31 @@ static int init_character(CharacterAnim *ch, const char *gaf_name, const char *b
             fprintf(stderr, "MainMenu: Bink videos available for %s\n", bink_name);
     }
 
-    return 0;
-}
-
-static void update_character_frame(CharacterAnim *ch) {
-    /* Don't free idle_pixels -- it's reused */
-    if (ch->current_pixels && ch->current_pixels != ch->idle_pixels) {
-        tak_free(ch->current_pixels);
-    }
-
-    if (ch->current_entry == 0 && !ch->animating) {
-        ch->current_pixels = ch->idle_pixels;
-        ch->current_w = ch->idle_w;
-        ch->current_h = ch->idle_h;
-        /* idle hotspot stays from init */
-    } else {
-        ch->current_pixels = UI_DecodeEntryIdle(
-            ch->gaf, ch->current_entry, ch->rgba_table,
-            &ch->current_w, &ch->current_h,
-            &ch->current_ox, &ch->current_oy);
-        if (!ch->current_pixels) {
-            ch->current_pixels = ch->idle_pixels;
-            ch->current_w = ch->idle_w;
-            ch->current_h = ch->idle_h;
+    ch->rests_on_still = ch->has_video && gaf_name != NULL;
+    if (ch->has_video && !gaf_name) {
+        const uint32_t *still = BinkPlayer_GetPixels(ch->clips[0]);
+        size_t n = (size_t)BinkPlayer_GetWidth(ch->clips[0]) *
+                   (size_t)BinkPlayer_GetHeight(ch->clips[0]);
+        if (still && n) {
+            ch->page_ref = (uint32_t *)tak_malloc(n * sizeof(uint32_t));
+            if (ch->page_ref) memcpy(ch->page_ref, still, n * sizeof(uint32_t));
         }
+    }
+    if (gaf_name && !ch->has_video) {
+        char gaf_path[256], pcx_path[256];
+        GAFFile *gaf = NULL;
+        uint32_t rgba_table[256];
+        snprintf(gaf_path, sizeof(gaf_path), "data/anims/%s.gaf", gaf_name);
+        snprintf(pcx_path, sizeof(pcx_path), "data/anims/%s.pcx", gaf_name);
+        if (UI_LoadGAFWithPalette(gaf_path, pcx_path, &gaf, rgba_table) != 0)
+            return;
+        SheetStill *rest = &ch->rest_still, *hover = &ch->hover_still;
+        rest->pixels = UI_DecodeEntryIdle(gaf, 0, rgba_table,
+                                          &rest->w, &rest->h, &rest->ox, &rest->oy);
+        if (gaf->num_entries > 6)
+            hover->pixels = UI_DecodeEntryIdle(gaf, 6, rgba_table, &hover->w,
+                                               &hover->h, &hover->ox, &hover->oy);
+        GAF_Close(gaf);
     }
 }
 
@@ -279,42 +272,12 @@ static void select_clip(CharacterAnim *ch, int clip_index) {
 }
 
 static void shutdown_character(CharacterAnim *ch) {
-    if (ch->current_pixels && ch->current_pixels != ch->idle_pixels)
-        tak_free(ch->current_pixels);
-    if (ch->idle_pixels) tak_free(ch->idle_pixels);
-    if (ch->gaf) GAF_Close(ch->gaf);
+    if (ch->page_ref) tak_free(ch->page_ref);
+    if (ch->rest_still.pixels) tak_free(ch->rest_still.pixels);
+    if (ch->hover_still.pixels) tak_free(ch->hover_still.pixels);
     for (int c = 0; c < BINK_CLIPS_PER_CHAR; c++)
         if (ch->clips[c]) BinkPlayer_Close(ch->clips[c]);
     memset(ch, 0, sizeof(*ch));
-}
-
-/* GAF-only doors (no clips on disk): cycle the entries while hovered
- * and finish the cycle after the cursor leaves. */
-static void character_gaf_fallback(CharacterAnim *ch, int is_hovered,
-                                   float frame_dt) {
-    /* The Credits snort has no sheet: its clip is all it is ever drawn
-     * from, so there is nothing here to cycle. */
-    if (!ch->gaf || ch->num_entries <= 0) return;
-    if (is_hovered && !ch->animating) {
-        ch->animating = 1;
-        ch->returning = 0;
-        ch->anim_timer = 0;
-    } else if (!is_hovered && ch->animating && !ch->returning) {
-        ch->returning = 1;
-    }
-    if (!ch->animating) return;
-    ch->anim_timer += frame_dt;
-    if (ch->anim_timer < menu.frame_duration) return;
-    ch->anim_timer -= menu.frame_duration;
-    ch->current_entry++;
-    if (ch->current_entry >= ch->num_entries) {
-        ch->current_entry = 0;
-        if (ch->returning || !is_hovered) {
-            ch->animating = 0;
-            ch->returning = 0;
-        }
-    }
-    update_character_frame(ch);
 }
 
 /* ── Public API ─────────────────────────────────────────────────── */
@@ -331,7 +294,8 @@ int MainMenu_DebugControlRects(SDL_Rect *out, int max) {
     for (int i = 0; i < MENU_NUM_CHARACTERS && n < max; i++) out[n++] = character_hit_rects[i];
     if (n < max) out[n++] = helptext_rect;
     /* The version line, full width, above the help text. */
-    if (n < max) out[n++] = (SDL_Rect){ 0, helptext_rect.y - 28, 640, 28 };
+    if (n < max) out[n++] = (SDL_Rect){ 0, version_rect.y, 640,
+                                        helptext_rect.y - version_rect.y };
     return n;
 }
 
@@ -347,7 +311,6 @@ const char *MainMenu_VersionText(void) {
 int MainMenu_Init(TAK_Platform *platform) {
     memset(&menu, 0, sizeof(menu));
     menu.hovered_button = -1;
-    menu.frame_duration = 1.0f / 8.0f;
 
     /* The offscreen compositing surface is owned by the UI module now
      * (created once in main()). Just verify it's live. */
@@ -452,10 +415,7 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
         int inside = (menu.hovered_button == i);
         int entered = inside && !ch->inside;
         ch->inside = inside;
-        if (!ch->has_video) {
-            character_gaf_fallback(ch, inside, frame_dt);
-            continue;
-        }
+        if (!ch->has_video) continue;
         int next = ch->state;
         if (entered) ch->hovered_flag = 1;
         /* Rest follows the cursor being there, not the crossing onto it:
@@ -562,41 +522,37 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
     for (int i = 0; i < MENU_NUM_CHARACTERS; i++) {
         CharacterAnim *ch = &menu.characters[i];
 
-        /* Draw anchor comes from the hit-rect top-left; the GAF idle frame's
-         * hotspot gets placed there. For animation frames, substitute idle's
-         * hotspot for per-frame hotspot so cycles don't jitter.
-         * Reference: the legacy reference line 140378-140424 (hit-rect setup)
-         * and NetPlayerMap_Method28 at line 147978. */
-        const SDL_Rect *hr = &character_hit_rects[i];
-
-        /* A clip is drawn only while a door plays one. At rest the sheet
-         * is drawn, as the original does: a clip is an opaque rectangle
-         * wider than the door art, with a baked background that does not
-         * quite match the page, and resting on it leaves a seam standing
-         * beside the door. The sheet is cut out to the art. */
-        if (ch->has_video && ch->active_player && ch->active_clip >= 0) {
-            const uint32_t *vpixels = BinkPlayer_GetPixels(ch->active_player);
-            int vw = BinkPlayer_GetWidth(ch->active_player);
-            int vh = BinkPlayer_GetHeight(ch->active_player);
-            if (vpixels && vw > 0 && vh > 0) {
-                /* The original game draws the Bink frame with its top-left
-                 * at the .gui rect's (x, y), using the video's natural
-                 * width/height — see the legacy reference CheatDetect_Process
-                 * at line 35248+ (quad vertices set from stored button.x,
-                 * button.y plus the Bink handle's intrinsic w/h). */
-                const SDL_Rect *gr = &button_rects[i];
-                Blit_RGBA(offscreen, gr->x, gr->y, vpixels, vw, vh);
-                ch->drew_clip = 1;
-                continue;
-            }
+        /* With clips a door is always drawn from one, at the .gui rect's
+         * corner at the clip's own size (legacy:35248). At rest that is
+         * clip 4's still: the original's resting doors match it and not
+         * the sheet, which is a larger render of the same art. */
+        if (ch->has_video) {
+            BinkPlayer *bp = ch->active_player ? ch->active_player
+                           : ch->rests_on_still ? ch->clips[0] : NULL;
+            const uint32_t *vpixels = BinkPlayer_GetPixels(bp);
+            int vw = BinkPlayer_GetWidth(bp);
+            int vh = BinkPlayer_GetHeight(bp);
+            ch->drew_clip = vpixels && vw > 0 && vh > 0;
+            if (ch->drew_clip && ch->page_ref &&
+                vw == BinkPlayer_GetWidth(ch->clips[0]) &&
+                vh == BinkPlayer_GetHeight(ch->clips[0]))
+                blit_change(offscreen, button_rects[i].x, button_rects[i].y,
+                            vpixels, ch->page_ref, vw, vh);
+            else if (ch->drew_clip)
+                Blit_RGBA(offscreen, button_rects[i].x, button_rects[i].y,
+                          vpixels, vw, vh);
+            continue;
         }
 
+        /* Without clips the sheet's hotspot goes on the hit rect's corner
+         * (legacy:140378-140424). */
         ch->drew_clip = 0;
-        if (ch->current_pixels) {
-            int dx = hr->x - ch->current_ox + character_sheet_nudge[i].x;
-            int dy = hr->y - ch->current_oy + character_sheet_nudge[i].y;
-            Blit_RGBA(offscreen, dx, dy,
-                      ch->current_pixels, ch->current_w, ch->current_h);
+        const SheetStill *st = (menu.hovered_button == i && ch->hover_still.pixels)
+                               ? &ch->hover_still : &ch->rest_still;
+        if (st->pixels) {
+            const SDL_Rect *hr = &character_hit_rects[i];
+            Blit_RGBA(offscreen, hr->x - st->ox, hr->y - st->oy,
+                      st->pixels, st->w, st->h);
         }
     }
 
@@ -628,17 +584,17 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
         const SDL_Rect *r = &button_rects[MENUBTN_REPLAYS];
         int w = Font_MeasureString(menu.tooltip_font, k_replays_label);
         Font_DrawString(menu.tooltip_font, offscreen, r->x + (r->w - w) / 2,
-                        helptext_rect.y - 28, k_replays_label);
+                        Font_CenterY(menu.tooltip_font, version_rect.y,
+                                     version_rect.h), k_replays_label);
     }
 
-    /* Version line above the bottom strip, where the original writes its own.
-     * Always on: the original shows it all the time, and it no longer fights
-     * the tooltip now that the tooltip is centred inside the strip. */
+    /* Version line, centred in the .gui's Version widget like the
+     * original's own. */
     if (menu.tooltip_font) {
         const char *version = MainMenu_VersionText();
         int vw = Font_MeasureString(menu.tooltip_font, version);
-        int vx = 320 - vw / 2;
-        int vy = helptext_rect.y - 28;
+        int vx = version_rect.x + (version_rect.w - vw) / 2;
+        int vy = Font_CenterY(menu.tooltip_font, version_rect.y, version_rect.h);
         Font_DrawString(menu.tooltip_font, offscreen, vx, vy, version);
     }
 

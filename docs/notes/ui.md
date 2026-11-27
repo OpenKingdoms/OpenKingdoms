@@ -29,9 +29,24 @@ fps.
 ### The doors
 
 Each door is a button with eight states (legacy:147778). State 2 is
-rest, drawn from the sprite sheet. States 4 to 7 play clips 4 to 7,
-`Movies/Gui/<name>N.bik`: 4 is the still after a click, 5 the enter
-clip, 6 the hover clip and 7 the leave clip.
+rest. States 4 to 7 play clips 4 to 7, `Movies/Gui/<name>N.bik`: 4 is
+the still after a click, 5 the enter clip, 6 the hover clip and 7 the
+leave clip.
+
+A resting door is drawn from clip 4's still, not from the sprite
+sheet. Observed on the GOG v4.0BB release under DxWnd, 640x480: on the
+three doors the resting menu differs from the engine drawing clip 4 at
+the widget's corner by 16 to 18 per pixel (the summed RGB difference,
+the same as over plain background, which is 16 bit dithering), and
+from the engine drawing the sheet by 60 to 65. Clip 5's first frame
+and clip 7's last fit as well, since all three are the same picture.
+The sheet is a larger render of the same art, 2 to 3 px bigger on each
+side. The snort is the exception. Its still is redder than the K it
+covers: the gold stroke averages 199,131,10 in the still, 221,185,20
+in the page and 213,179,22 on the original's resting screen. So at
+rest the K is the page's own, and while it plays the engine adds the
+clip's change from its still onto the page (D-059). Nothing on the
+resting menu moves. The dragon only snorts when the cursor is over it.
 
 Entering sets the hover flag and, from rest, starts clip 5
 (legacy:148064-148070). Each tick the button hands over only once the
