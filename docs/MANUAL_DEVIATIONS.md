@@ -1371,9 +1371,8 @@ pull request, not here.
   patrol, also lets go of a picked target out of reach or inside its
   minrange.
 - Why: shots stop on what they fly into, and the original fires into a
-  hill without looking. Its sight also shrinks uphill
-  (docs/notes/fog.md), and an
-  archer in a clearing would shoot the trees until its target died.
+  hill without looking, so an archer in a clearing would shoot the trees
+  until its target died.
 - Citation: the original's fire gate looks only at range, reload, mana
   and facing (legacy:249328-249420), and a unit with no mover has no
   leash (legacy:15125). docs/notes/2026-09-04-combat-mechanics.md. The

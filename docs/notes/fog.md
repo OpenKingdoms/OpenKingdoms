@@ -41,49 +41,27 @@ engine follows them.
 The stamp scales sightdistance by the eye's drop to each cell's lowest
 ground over the model's height, so on level ground the reach is
 sightdistance. A cell above the eye stays dark, the nine cells round
-the unit are always lit, and the reach is capped at twice
-sightdistance (legacy:167402, legacy:167413-167423). The ground under
-each cell is a record built from the heightmap (legacy:224395-224470).
-The manual agrees: a unit on a hill sees
-farther (p. 56), and a Dirigible's height gives it a long line of
-sight (p. 42).
+the unit are always lit, and the reach is capped at twice sightdistance
+in whole cells (legacy:167402, legacy:167413-167423). The manual
+agrees: a unit on a hill sees farther (p. 56), and a Dirigible's height
+gives it a long line of sight (p. 42).
 
-Seen in the original on Abnar's Terrace, from screenshots aligned to
-the pixel with engine captures of the same ground:
+The ground under each cell is a record built from the heightmap
+(legacy:224395-224470). Screenshots of the original on Abnar's Terrace
+fit it read flat, the lowest ground inside each map cell with open
+water at its surface, and the overlay drawn 64 px up as if all ground
+stood 128 high. The original never shows the last two cells of a map.
+The drop counts against the model's whole span, and a unit's eye is its
+base (ground, sea surface or flight altitude) plus that span. A unit
+under the water's surface takes the surface as its base, so a ship or a
+wader on open water sees its plain sight.
 
-- Two VERSWORDs on the same map row, one on sand 62 high and one on a
-  plateau 200 high, have their patches centred on the same fog row,
-  two rows above their flat cell. A flyer's patch is centred about
-  28 px above the ground under it. One rule fits every view: a fog cell
-  is the flat map cell, drawn 64 px higher, as if all ground stood 128
-  high. The original never shows the last two cells of a map.
-- On level ground VERMAGE (sight 215) lights 1024 × d² ≤ 215².
-- The cap is twice sight in whole cells: VERMAGE on a knoll lights
-  every cell to d² 169 and none from 170 to 180. VERSWORD (135) sees 8
-  cells from a height, VERMAGE 13, VERPAR (225) 14, TARBEAK (200) 12.
-- Below the cap the drop counts against the model's whole span. This
-  rests on one view at the foot of a slope.
-- The record is read flat: a cell's ground is the lowest inside its
-  own map cell, and only the drawing is lifted, by the fixed 64 px
-  that sits halfway between low and high ground.
-- A ship on open water sees its plain sight: VERHARP (320) lit about
-  10 cells. The sea counts at its surface, not its bed. Ships follow
-  the same rules as land units, and a unit in the water keeps its plain
-  sight.
-- A unit or feature shows or hides by its own map cell, not by the
-  lifted overlay over it.
-
-The height compensated cell misses the two VERSWORDs' row, which the
-flat cell drawn 64 px up fits. The original's overlay takes the same
-+64 bias on y (2026-09-04-rendering-visuals.md). The engine keeps the
-fog cells, the reveal anchor and every query on the flat map cells,
-and draws the overlay, the mist, the jammer's haze and the capture
-fog dump `TAK_FOG_LIFT_PX` higher. The eye is the unit's base (ground,
-sea surface or flight altitude) plus its model's whole span. A unit
-under the water's surface takes the surface as its base. A cell's
-ground is built once from the heightmap read every 8 px. The minimap
-is flat and not lifted, as in the original. The 3D view, which the
-original does not have, shades the ground by the map cell under it.
+The engine keeps the fog cells, the reveal anchor and every query on
+the flat map cells, so a unit or feature shows or hides by its own map
+cell. The overlay, the mist, the jammer's haze and the capture fog dump
+are drawn `TAK_FOG_LIFT_PX` higher. The minimap is flat and not lifted,
+as in the original. The 3D view, which the original does not have,
+shades the ground by the map cell under it.
 
 ## Line of Sight off
 
