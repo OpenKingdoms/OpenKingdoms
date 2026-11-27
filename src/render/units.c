@@ -2618,70 +2618,37 @@ static void play_projectile_hit_sound(const Projectile *p, const Unit *victim) {
     }
 }
 
-/* Alarm cues for the local player (legacy:15218-15235). A unit of the
- * viewer hit by another player raises the kingdom's underattack_sound
- * from sidedata, held off for underattack_delay seconds after each
- * play (legacy:221298-221325). A commander raises AlarmMon instead,
- * fifteen seconds apart, selected or not (legacy:221328-221340). A
- * selected unit stays quiet: the player is looking at it. */
-static uint32_t g_sound_tick;             /* advances once per Units_TickEngines */
-static uint32_t g_alarm_next_tick;        /* side alarm may play again at this tick */
-static uint32_t g_alarm_mon_next_tick;
-static int      g_alarm_side_loaded = -1; /* TakSide the cached sidedata row is for */
-static char     g_alarm_wav[32];
-static uint32_t g_alarm_delay_ticks = 30 * 60;
+/* Alarm cues for the local player (legacy:15223-15234). A commander
+ * of the viewer hit by another player raises AlarmMon, at most once in
+ * fifteen seconds, on screen or off (legacy:221328-221340). Any other
+ * unit raises the underattack_sound of its own side's sidedata while it
+ * is off screen, at most once in that side's underattack_delay seconds
+ * (legacy:221298-221325). Both timers run on the clock, as the
+ * original's do, not on battle ticks (legacy:221306, legacy:221333). */
+static uint64_t g_alarm_next_ms;
+static uint64_t g_alarm_mon_next_ms;
 
-static void copy_bounded(char *dst, size_t cap, const char *src);
-
-static void load_side_alarm(int side) {
-    g_alarm_side_loaded = side;
-    g_alarm_wav[0] = '\0';
-    g_alarm_delay_ticks = 30 * 60;
-    static const char *const paths[] = {
-        "data/gamedata/sidedata.tdf", "gamedata/sidedata.tdf"
-    };
-    for (int p = 0; p < 2; p++) {
-        TDFFile *tdf = TDF_Open(paths[p]);
-        if (!tdf) continue;
-        if (TDF_Load(tdf) != 0) { TDF_Close(tdf); continue; }
-        char section[16];
-        snprintf(section, sizeof(section), "SIDE%d", side);
-        if (TDF_PushSection(tdf, section) == 0) {
-            copy_bounded(g_alarm_wav, sizeof(g_alarm_wav),
-                         TDF_ReadString(tdf, "underattack_sound", ""));
-            float delay = TDF_ReadFloat(tdf, "underattack_delay", 30.0f);
-            if (delay < 0.0f) delay = 0.0f;
-            g_alarm_delay_ticks = (uint32_t)(delay * 60.0f + 0.5f);
-            TDF_PopSection(tdf);
-        }
-        TDF_Close(tdf);
-        return;
-    }
-}
-
-/* Bodies follow the selection state they read. */
-static int  unit_is_selected(const Unit *u);
+static int unit_on_screen(const GameWorld *w, const Unit *u);
 static void unit_alarm_on_damage(const Unit *victim, int shooter_handle);
 
 static void unit_alarm_on_damage_impl(const Unit *victim, int shooter_handle) {
-    if (!victim || victim->player_id != 1) return;
+    if (!victim || (int)victim->player_id != Units_LocalPlayer()) return;
     if (shooter_handle < 0 || shooter_handle >= g_unit_count) return;
     if (g_units[shooter_handle].player_id == victim->player_id) return;
     const UnitDef *d = Units_GetDef(victim->def_idx);
+    const uint64_t now = SDL_GetTicks64();
     if (d && d->commander) {
-        if (g_sound_tick < g_alarm_mon_next_tick) return;
-        g_alarm_mon_next_tick = g_sound_tick + 15 * 60;
+        if (now < g_alarm_mon_next_ms) return;
+        g_alarm_mon_next_ms = now + 15000;
         GameSound_PlayUI("AlarmMon");
         return;
     }
-    if (unit_is_selected(victim)) return;
-    const GameWorld *world = World_Get();
-    int side = world ? Units_PlayerSide(Units_LocalPlayer()) : 0;
-    if (side != g_alarm_side_loaded) load_side_alarm(side);
-    if (!g_alarm_wav[0]) return;
-    if (g_sound_tick < g_alarm_next_tick) return;
-    g_alarm_next_tick = g_sound_tick + g_alarm_delay_ticks;
-    GameSound_PlayUI(g_alarm_wav);
+    if (unit_on_screen(World_Get(), victim)) return;
+    const TakSideInfo *side = d ? Sides_Get(Sides_FindByPrefix(d->side)) : NULL;
+    if (!side || !side->underattack_sound[0]) return;
+    if (now < g_alarm_next_ms) return;
+    g_alarm_next_ms = now + (uint64_t)(side->underattack_delay * 1000.0f + 0.5f);
+    GameSound_PlayUI(side->underattack_sound);
 }
 
 int Units_CaptureThreshold(int veteran_level) {
@@ -4411,13 +4378,6 @@ int   Units_GetShadowsOn(void)           { return g_shadows_on; }
 static int g_selection[UNITS_SELECTION_MAX];
 static int g_selection_count = 0;
 
-static int unit_is_selected(const Unit *u) {
-    for (int s = 0; s < g_selection_count; s++) {
-        if (g_selection[s] >= 0 && &g_units[g_selection[s]] == u) return 1;
-    }
-    return 0;
-}
-
 static void unit_alarm_on_damage(const Unit *victim, int shooter_handle) {
     unit_alarm_on_damage_impl(victim, shooter_handle);
 }
@@ -4623,6 +4583,23 @@ static int32_t unit_drawn_y(const GameWorld *world, const Unit *u) {
     return ClickMap_DrawnY(u->world_y,
                            (float)Terrain_SampleHeight(world, u->world_x, u->world_y)
                                + Units_DrawnAlt(world, u), g_tan_tilt);
+}
+
+/* Off screen: the model's box, drawn where the unit stands, misses the
+ * battle view, the test the original's on screen list is made by
+ * (legacy:237270-237333, legacy:237338-237356). */
+static int unit_on_screen(const GameWorld *w, const Unit *u) {
+    int lo, hi;
+    def_body_span(u->def_idx, &lo, &hi);
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!w || !d) return 0;
+    const int32_t ay = unit_drawn_y(w, u);
+    const int32_t x0 = u->world_x + d->body_min_x_px;
+    const int32_t x1 = u->world_x + d->body_max_x_px;
+    const int32_t y0 = ay + d->body_min_z_px - (int32_t)((float)hi * g_tan_tilt);
+    const int32_t y1 = ay + d->body_max_z_px - (int32_t)((float)lo * g_tan_tilt);
+    return x0 <= w->cam_x + w->viewport_w && x1 >= w->cam_x &&
+           y0 <= w->cam_y + w->viewport_h && y1 >= w->cam_y;
 }
 
 void Units_GroundUnderPoint(int32_t flat_x, int32_t flat_y,
@@ -10820,10 +10797,8 @@ void Units_ClearInstances(void) {
     g_transport_sounds[0] = g_transport_sounds[1] = 0;
     g_sim_tick = 0;
     Cob_SetTick(1u);
-    g_sound_tick = 0;
-    g_alarm_next_tick = 0;
-    g_alarm_mon_next_tick = 0;
-    g_alarm_side_loaded = -1;
+    g_alarm_next_ms = 0;
+    g_alarm_mon_next_ms = 0;
     uid_reset();
 }
 
@@ -18937,7 +18912,6 @@ static void tick_auras(void) {
 void Units_TickEngines(void) {
     g_sim_tick++;
     Cob_SetTick(g_sim_tick);
-    g_sound_tick++;
     /* Sprint 1: per-tick simulation step.
      *   1. Combat: auto-target + damage + movement.
      *   2. Projectiles: advance + hit-test.
