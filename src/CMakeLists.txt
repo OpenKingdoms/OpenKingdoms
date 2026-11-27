@@ -105,6 +105,8 @@ set(TAK_GAME_SOURCES
     game/ai_tasknet.c
     game/ai_plan.c
     game/map_fingerprint.c
+    game/map_share.c
+    game/shipped_maps.c
     game/maps.c
     game/tnt.c
     game/world.c
@@ -139,6 +141,7 @@ set(TAK_UI_SOURCES
     ui/credits.c
     ui/story.c
     ui/multiplayer.c
+    ui/map_transfer.c
     ui/select_game.c
     ui/translate.c
     ui/ingame.c
@@ -437,6 +440,9 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/battle_setup.c
     ui/map_browser.c
     ui/multiplayer.c
+    ui/map_transfer.c
+    game/map_share.c
+    game/shipped_maps.c
     ui/select_game.c
     ui/translate.c
     ui/options.c
@@ -721,6 +727,9 @@ add_executable(test_unit_stall
     ui/battle_setup.c
     ui/map_browser.c
     ui/multiplayer.c
+    ui/map_transfer.c
+    game/map_share.c
+    game/shipped_maps.c
     ui/select_game.c
     ui/net_session.c
     net/player_id.c
@@ -1297,6 +1306,10 @@ target_compile_definitions(test_map_fingerprint PRIVATE
 add_executable(test_maps
     game/test_maps.c
     game/maps.c
+    game/map_share.c
+    game/shipped_maps.c
+    game/map_fingerprint.c
+    core/sha256.c
     core/hpi/hpi.c
     core/hpi/hpi_vfs.c
     core/hpi/hpi_decompress.c

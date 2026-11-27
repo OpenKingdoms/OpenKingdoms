@@ -26,6 +26,7 @@
 #include "tak_sides.h"
 #include "tak_dataset.h"
 #include "tak_map_fingerprint.h"
+#include "tak_map_transfer.h"
 #include "tak_net_session.h"
 #include "tak_net_match.h"
 #include "tak_net_room.h"
@@ -446,17 +447,18 @@ static int mp_row_of(const GUIWidget *w);
  * A map we do not have is reported too. The server greys the row and
  * says why, which is the whole point of carrying the reason. */
 static void mp_report_have_map(void) {
-    static uint8_t sent_for[TAK_NET_FINGERPRINT_BYTES];
-    static int     sent_any;
+    static uint32_t sent_room;
+    static uint8_t  sent_for[TAK_NET_FINGERPRINT_BYTES];
+    static uint64_t sent_ms;
     TAK_NetClient *c = NetSession_Client();
     if (!c || c->seat == TAK_NET_SEAT_NONE) return;
     if (!c->room.map_name[0]) return;
-    if (sent_any &&
-        memcmp(sent_for, c->room.map_fingerprint, sizeof sent_for) == 0) {
-        return;
-    }
-    memcpy(sent_for, c->room.map_fingerprint, sizeof sent_for);
-    sent_any = 1;
+    uint64_t now = SDL_GetTicks64();
+    int fresh = sent_room != c->room.room_id ||
+                memcmp(sent_for, c->room.map_fingerprint, sizeof sent_for) != 0;
+    /* A seat taken again, or a room joined again, has lost our word. */
+    int lost = !(c->room.slot[c->seat].flags & TAK_SLOTF_HAS_MAP) && now - sent_ms > 3000;
+    if (!fresh && !lost) return;
 
     TAK_MsgRoomEdit e;
     memset(&e, 0, sizeof e);
@@ -464,7 +466,13 @@ static void mp_report_have_map(void) {
     /* Our own fingerprint for that map name. The server compares it
      * with the host's and decides. If we cannot compute one we send
      * zeroes, which cannot match, which is the honest answer. */
-    (void)TAK_MapFingerprint_FromName(c->room.map_name, e.fingerprint);
+    int have = TAK_MapFingerprint_FromName(c->room.map_name, e.fingerprint) == 0 &&
+               memcmp(e.fingerprint, c->room.map_fingerprint, sizeof e.fingerprint) == 0;
+    sent_room = c->room.room_id;
+    memcpy(sent_for, c->room.map_fingerprint, sizeof sent_for);
+    sent_ms = now;
+    /* Saying no again changes nothing. */
+    if (!fresh && !have) return;
     (void)TAK_NetClient_EditRoom(c, &e);
 }
 
@@ -1054,6 +1062,18 @@ int MP_WatchFirstSeat(const TAK_MsgStartGame *sg) {
     return 0;
 }
 
+/* The room's map on its way to whoever lacks it, and what it says. */
+static void mp_map_transfer(uint64_t now_ms) {
+    static unsigned shown;
+    MapTransfer_Tick(NetSession_Client(), now_ms);
+    if (MapTransfer_TextSerial() != shown) {
+        shown = MapTransfer_TextSerial();
+        if (MapTransfer_Text()[0]) mp_say(MapTransfer_Text());
+    }
+    char said[192];
+    while (MapTransfer_TakeLine(said, sizeof said)) mp_chat_push(NULL, said);
+}
+
 /* What the session did since the last frame. The room is a view of the
  * server's snapshot, so everything here either refills the rows or
  * moves the screen on. */
@@ -1077,6 +1097,12 @@ static int mp_take_events(TAK_Platform *platform) {
              * with a seat not ready, a map someone lacks, everyone on
              * one team: each has words, and the strip is where they go.
              * Silence here is what made Go look broken. */
+            if (c->reject.reason == TAK_REJECT_MAP_MISSING) {
+                char why[256];
+                MapTransfer_WhyNotStart(&c->room, why, sizeof why);
+                mp_say(why);
+                break;
+            }
             mp_say(c->reject.text[0] ? c->reject.text : "The server said no.");
             break;
         case TAK_NC_EV_CHAT:
@@ -1111,6 +1137,8 @@ static int mp_take_events(TAK_Platform *platform) {
             break;
         }
     }
+    /* Here, so it goes on under any dialog over the room. */
+    if (next == GAMESTATE_MULTIPLAYER) mp_map_transfer(SDL_GetTicks64());
     return next;
 }
 

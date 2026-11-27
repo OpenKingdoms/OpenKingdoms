@@ -321,8 +321,15 @@ typedef enum {
     VFS_ARCHIVE_HPI = 0,
     VFS_ARCHIVE_UFO = 1,
     VFS_ARCHIVE_KMP = 2,
-    VFS_ARCHIVE_MOD = 3
+    VFS_ARCHIVE_MOD = 3,
+    /* A map pack another player sent, kept in the player's own folder.
+     * It serves kmap/ alone, as a game folder pack does. */
+    VFS_ARCHIVE_RECEIVED = 4
 } VFSArchiveKind;
+
+static int is_pack_kind(uint8_t kind) {
+    return kind == VFS_ARCHIVE_KMP || kind == VFS_ARCHIVE_RECEIVED;
+}
 
 static char **archive_paths = NULL;
 static uint8_t *archive_kinds = NULL;
@@ -334,6 +341,8 @@ static char *local_dir = NULL;
 static char *game_root = NULL;
 static int vfs_initialized = 0;
 static VFSMountFilter vfs_mount_filter = NULL;
+/* Where received map packs are kept, mounted after the game's own. */
+static char *received_dir = NULL;
 static unsigned vfs_generation = 0;
 
 void VFS_SetMountFilter(VFSMountFilter keep) {
@@ -397,7 +406,7 @@ static int vfs_pick_archive(const char *path) {
     uint32_t best_date = 0;
     int kmap = is_kmap_path(path);
     for (size_t i = 0; i < total_archive_count; i++) {
-        if (archive_kinds[i] == VFS_ARCHIVE_KMP && !kmap) continue;
+        if (is_pack_kind(archive_kinds[i]) && !kmap) continue;
         uint32_t date = 0;
         if (!HPI_FindFile(archives[i], path, &date)) continue;
         /* A mod's copy beats the game's whatever the dates say, and a
@@ -591,7 +600,28 @@ int VFS_Init(const char *game_dir, const char *loose_dir) {
     if (ufo_count > 1) qsort(ufo_files, (size_t)ufo_count, sizeof(char *), path_cmp);
     if (kmp_count > 1) qsort(kmp_files, (size_t)kmp_count, sizeof(char *), path_cmp);
 
-    total_archive_count = (size_t)(hpi_count + ufo_count + kmp_count);
+    /* Then the map packs other players sent, after the game's own. */
+    char **recv_files = NULL;
+    int recv_count = 0;
+    if (received_dir && scan_directory(received_dir, ".kmp", &recv_files, &recv_count) != 0) {
+        recv_files = NULL;
+        recv_count = 0;
+    }
+    if (recv_count > 1) qsort(recv_files, (size_t)recv_count, sizeof(char *), path_cmp);
+    /* Their slots come after the others, so they are merged in below. */
+    if (recv_count > 0) {
+        char **grown = (char **)tak_realloc(kmp_files, sizeof(char *) * (size_t)(kmp_count + recv_count));
+        if (grown) {
+            kmp_files = grown;
+            for (int i = 0; i < recv_count; i++) kmp_files[kmp_count + i] = recv_files[i];
+        } else {
+            for (int i = 0; i < recv_count; i++) tak_free(recv_files[i]);
+            recv_count = 0;
+        }
+        tak_free(recv_files);
+    }
+
+    total_archive_count = (size_t)(hpi_count + ufo_count + kmp_count + recv_count);
     size_t base_count = total_archive_count;
 
     if (total_archive_count == 0) {
@@ -610,7 +640,7 @@ int VFS_Init(const char *game_dir, const char *loose_dir) {
         if (!archive_paths || !archive_kinds || !archives) {
             for (int i = 0; i < hpi_count; i++) tak_free(hpi_files[i]);
             for (int i = 0; i < ufo_count; i++) tak_free(ufo_files[i]);
-            for (int i = 0; i < kmp_count; i++) tak_free(kmp_files[i]);
+            for (int i = 0; i < kmp_count + recv_count; i++) tak_free(kmp_files[i]);
             tak_free(hpi_files);
             tak_free(ufo_files);
             tak_free(kmp_files);
@@ -627,9 +657,9 @@ int VFS_Init(const char *game_dir, const char *loose_dir) {
             archive_paths[n] = ufo_files[i];
             archive_kinds[n] = VFS_ARCHIVE_UFO;
         }
-        for (int i = 0; i < kmp_count; i++, n++) {
+        for (int i = 0; i < kmp_count + recv_count; i++, n++) {
             archive_paths[n] = kmp_files[i];
-            archive_kinds[n] = VFS_ARCHIVE_KMP;
+            archive_kinds[n] = i < kmp_count ? VFS_ARCHIVE_KMP : VFS_ARCHIVE_RECEIVED;
         }
         tak_free(hpi_files);
         tak_free(ufo_files);
@@ -637,6 +667,18 @@ int VFS_Init(const char *game_dir, const char *loose_dir) {
 
         for (size_t i = 0; i < total_archive_count; i++) {
             archives[i] = HPI_OpenArchive(archive_paths[i]);
+            if (!archives[i] && archive_kinds[i] == VFS_ARCHIVE_RECEIVED) {
+                /* A received pack is the player's to lose, not the game's. */
+                fprintf(stderr, "VFS_Init: received map pack left out: %s\n", archive_paths[i]);
+                tak_free(archive_paths[i]);
+                memmove(&archive_paths[i], &archive_paths[i + 1],
+                        sizeof(char *) * (total_archive_count - i - 1));
+                memmove(&archive_kinds[i], &archive_kinds[i + 1], total_archive_count - i - 1);
+                total_archive_count--;
+                base_count--;
+                i--;
+                continue;
+            }
             if (!archives[i]) {
                 fprintf(stderr, "VFS_Init: failed to open archive: %s\n",
                         archive_paths[i]);
@@ -742,7 +784,7 @@ static const char *strip_archive_prefix(const char *path, size_t *out_archive) {
     if (*slash == '\0' || slash == path) return NULL;
     size_t comp_len = (size_t)(slash - path);
     for (size_t i = 0; i < total_archive_count; i++) {
-        if (archive_kinds[i] == VFS_ARCHIVE_KMP) continue;
+        if (is_pack_kind(archive_kinds[i])) continue;
         const char *base = archive_paths[i];
         for (const char *p = archive_paths[i]; *p; p++)
             if (*p == '/' || *p == '\\') base = p + 1;
@@ -977,7 +1019,7 @@ int VFS_ListFiles(const char *pattern, char ***out_paths, int *out_count) {
     /* Search archives (last-loaded first for priority) */
     int kmap_pattern = is_kmap_path(pattern);
     for (size_t i = total_archive_count; i-- > 0;) {
-        if (archive_kinds[i] == VFS_ARCHIVE_KMP && !kmap_pattern) continue;
+        if (is_pack_kind(archive_kinds[i]) && !kmap_pattern) continue;
         char **arc_paths = NULL;
         int arc_count = 0;
         if (HPI_ListFiles(archives[i], pattern, &arc_paths, &arc_count) != 0)
@@ -1030,7 +1072,7 @@ int VFS_ListFiles(const char *pattern, char ***out_paths, int *out_count) {
                                         : (size_t)(pat - pattern);
         for (size_t i = total_archive_count; i-- > 0;) {
             if (pass == 1 && i != owner) continue;
-            if (archive_kinds[i] == VFS_ARCHIVE_KMP) continue;
+            if (is_pack_kind(archive_kinds[i])) continue;
             char **arc_paths = NULL;
             int arc_count = 0;
             if (HPI_ListFiles(archives[i], pat, &arc_paths, &arc_count) != 0)
@@ -1088,4 +1130,111 @@ fail:
 
 void VFS_FreeBuffer(void *data) {
     tak_free(data);
+}
+
+/* ── Received map packs and where a file comes from ─────────────────── */
+
+void VFS_SetReceivedMapDir(const char *dir) {
+    tak_free(received_dir);
+    received_dir = NULL;
+    if (!dir || !dir[0]) return;
+    received_dir = tak_strdup(dir);
+    /* scan_directory adds its own separator. */
+    size_t n = received_dir ? strlen(received_dir) : 0;
+    while (n > 1 && (received_dir[n - 1] == '/' || received_dir[n - 1] == '\\'))
+        received_dir[--n] = '\0';
+}
+
+static int received_slot(const char *path) {
+    for (size_t i = 0; i < total_archive_count; i++)
+        if (archive_kinds[i] == VFS_ARCHIVE_RECEIVED && tak_stricmp(archive_paths[i], path) == 0)
+            return (int)i;
+    return -1;
+}
+
+int VFS_DropMapPack(const char *path) {
+    if (!vfs_initialized || !path) return -1;
+    int i = received_slot(path);
+    if (i < 0) return -1;
+    HPI_CloseArchive(archives[i]);
+    tak_free(archive_paths[i]);
+    size_t after = total_archive_count - (size_t)i - 1;
+    memmove(&archives[i], &archives[i + 1], sizeof(archives[0]) * after);
+    memmove(&archive_paths[i], &archive_paths[i + 1], sizeof(archive_paths[0]) * after);
+    memmove(&archive_kinds[i], &archive_kinds[i + 1], after);
+    total_archive_count--;
+    return 0;
+}
+
+int VFS_AddMapPack(const char *path) {
+    if (!vfs_initialized || !path || !path[0]) return -1;
+    (void)VFS_DropMapPack(path);
+    HPIArchive *a = HPI_OpenArchive(path);
+    if (!a) return -1;
+    size_t n = total_archive_count + 1;
+    char **paths = (char **)tak_realloc(archive_paths, sizeof(char *) * n);
+    if (paths) archive_paths = paths;
+    uint8_t *kinds = (uint8_t *)tak_realloc(archive_kinds, n);
+    if (kinds) archive_kinds = kinds;
+    HPIArchive **arcs = (HPIArchive **)tak_realloc(archives, sizeof(HPIArchive *) * n);
+    if (arcs) archives = arcs;
+    char *copy = tak_strdup(path);
+    if (!paths || !kinds || !arcs || !copy) {
+        tak_free(copy);
+        HPI_CloseArchive(a);
+        return -1;
+    }
+    /* Last of the packs, before the mods. */
+    size_t at = 0;
+    while (at < total_archive_count && archive_kinds[at] != VFS_ARCHIVE_MOD) at++;
+    size_t after = total_archive_count - at;
+    memmove(&archives[at + 1], &archives[at], sizeof(archives[0]) * after);
+    memmove(&archive_paths[at + 1], &archive_paths[at], sizeof(archive_paths[0]) * after);
+    memmove(&archive_kinds[at + 1], &archive_kinds[at], after);
+    archives[at] = a;
+    archive_paths[at] = copy;
+    archive_kinds[at] = VFS_ARCHIVE_RECEIVED;
+    total_archive_count = n;
+    return 0;
+}
+
+static int origin_of_archive(size_t i, char *archive, size_t cap) {
+    if (archive && cap) {
+        const char *base = archive_paths[i];
+        for (const char *p = archive_paths[i]; *p; p++)
+            if (*p == '/' || *p == '\\') base = p + 1;
+        snprintf(archive, cap, "%s", base);
+    }
+    switch (archive_kinds[i]) {
+    case VFS_ARCHIVE_HPI:      return VFS_ORIGIN_GAME;
+    case VFS_ARCHIVE_UFO:      return VFS_ORIGIN_ADDED;
+    case VFS_ARCHIVE_KMP:      return VFS_ORIGIN_MAP_PACK;
+    case VFS_ARCHIVE_RECEIVED: return VFS_ORIGIN_RECEIVED;
+    default:                   return VFS_ORIGIN_MOD;
+    }
+}
+
+int VFS_FileOrigin(const char *path, char *archive, size_t cap) {
+    if (archive && cap) archive[0] = '\0';
+    if (!path || !vfs_initialized) return VFS_ORIGIN_NONE;
+    /* The order VFS_ReadFile takes them in. */
+    char full[4096];
+    if (mod_dir_find(path, full, sizeof full)) return VFS_ORIGIN_MOD;
+    int hit = vfs_pick_archive(path);
+    if (hit >= 0) return origin_of_archive((size_t)hit, archive, cap);
+    if (local_dir && build_loose_path(full, sizeof(full), local_dir, path) == 0) {
+        vfs_fixup_case(full);
+        struct stat st;
+        if (stat(full, &st) == 0 && !(st.st_mode & S_IFDIR)) return VFS_ORIGIN_LOOSE;
+    }
+    size_t owner = 0;
+    const char *alt = strip_archive_prefix(path, &owner);
+    if (alt) {
+        int alt_hit = vfs_pick_archive(alt);
+        if (alt_hit >= 0) return origin_of_archive((size_t)alt_hit, archive, cap);
+        const char *bare = bare_name(alt);
+        if (bare && HPI_FileExists(archives[owner], bare))
+            return origin_of_archive(owner, archive, cap);
+    }
+    return VFS_ORIGIN_NONE;
 }

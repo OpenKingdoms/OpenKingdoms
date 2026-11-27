@@ -544,6 +544,94 @@ TEST(every_human_must_hold_the_same_map_by_fingerprint) {
 
 /* ── Loading and the match ──────────────────────────────────────────── */
 
+static int share(TAK_Room *r, uint32_t id, uint32_t value, const uint8_t *fp) {
+    TAK_MsgRoomEdit e;
+    memset(&e, 0, sizeof(e));
+    e.field = TAK_EDIT_MAP_SHARE;
+    e.seat = TAK_NET_SEAT_NONE;
+    e.value = value;
+    memcpy(e.fingerprint, fp, TAK_NET_FINGERPRINT_BYTES);
+    return TAK_Room_Edit(r, id, &e, NULL);
+}
+
+/* The host's client says whether its map may be sent, for that one map,
+ * and a host that takes over speaks for its own copy. Nobody's ready
+ * moves, since the map is the same map. */
+TEST(the_host_says_whether_its_map_may_be_sent_and_a_new_host_speaks_for_itself) {
+    TAK_Room r;
+    uint8_t seat = 0;
+    open_room(&r, NULL);
+    ASSERT_EQ_INT(0, join(&r, 2, "Brother", &seat));
+    ASSERT_EQ_INT(0, join(&r, 3, "Dad", &seat));
+    ASSERT_EQ_INT(0, edit(&r, 2, TAK_EDIT_READY, 1, 0, NULL, NULL));
+    ASSERT_EQ_INT(TAK_MAPSHARE_UNKNOWN, TAK_Room_MapShare(&r));
+
+    ASSERT_EQ_INT(TAK_REJECT_NOT_ALLOWED, share(&r, 2, TAK_MAPSHARE_OFFERED, test_fingerprint));
+    ASSERT_EQ_INT(TAK_REJECT_NOT_ALLOWED, share(&r, HOST_ID, TAK_MAPSHARE_OFFERED, fp_b));
+    ASSERT_EQ_INT(TAK_REJECT_NOT_ALLOWED, share(&r, HOST_ID, TAK_MAPSHARE_COUNT, test_fingerprint));
+    ASSERT_EQ_INT(0, share(&r, HOST_ID, TAK_MAPSHARE_OFFERED, test_fingerprint));
+    ASSERT_EQ_INT(TAK_MAPSHARE_OFFERED, TAK_Room_MapShare(&r));
+    ASSERT_EQ_INT(1, r.slot[1].ready);
+    TAK_MsgRoomState rs;
+    TAK_Room_Snapshot(&r, &rs);
+    ASSERT_EQ_INT(TAK_MAPSHARE_OFFERED, rs.map_share);
+
+    /* The same map chosen again keeps its word and who has it, since
+     * nobody says either twice. */
+    ASSERT_EQ_INT(0, have_map(&r, 2, 1, test_fingerprint));
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_MAP, TAK_NET_SEAT_NONE, 0, "Vain Blessings", NULL));
+    ASSERT_EQ_INT(TAK_MAPSHARE_OFFERED, TAK_Room_MapShare(&r));
+    ASSERT(r.slot[1].flags & TAK_SLOTF_HAS_MAP);
+    ASSERT_EQ_INT(1, r.slot[1].ready);
+    /* Another map has said nothing yet. */
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_MAP, TAK_NET_SEAT_NONE, 0, "Bleak Hollow", NULL));
+    ASSERT_EQ_INT(TAK_MAPSHARE_UNKNOWN, TAK_Room_MapShare(&r));
+    ASSERT(!(r.slot[1].flags & TAK_SLOTF_HAS_MAP));
+    ASSERT_EQ_INT(0, share(&r, HOST_ID, TAK_MAPSHARE_EXPANSION, test_fingerprint));
+    ASSERT_EQ_INT(TAK_MAPSHARE_EXPANSION, TAK_Room_MapShare(&r));
+
+    /* The new host has not said what its copy is. */
+    TAK_Room_Leave(&r, HOST_ID, NULL);
+    ASSERT_EQ_INT(2, (int)r.host_client_id);
+    ASSERT_EQ_INT(TAK_MAPSHARE_UNKNOWN, TAK_Room_MapShare(&r));
+    ASSERT_EQ_INT(0, share(&r, 2, TAK_MAPSHARE_OFFERED, test_fingerprint));
+    ASSERT_EQ_INT(TAK_MAPSHARE_OFFERED, TAK_Room_MapShare(&r));
+}
+
+/* A player receiving the map says how far it has come, which leaves
+ * their ready alone, and having it clears what they said. */
+TEST(a_seat_says_how_far_the_map_has_come_and_keeps_its_ready) {
+    TAK_Room r;
+    uint8_t seat = 0;
+    open_room(&r, NULL);
+    ASSERT_EQ_INT(0, join(&r, 2, "Brother", &seat));
+    ASSERT_EQ_INT(0, edit(&r, 2, TAK_EDIT_READY, 1, 0, NULL, NULL));
+    ASSERT_EQ_INT(0, edit(&r, 2, TAK_EDIT_MAP_STATE, 1, 40, NULL, NULL));
+    ASSERT_EQ_INT(40, r.slot[1].map_state);
+    ASSERT_EQ_INT(1, r.slot[1].ready);
+    ASSERT_EQ_INT(TAK_REJECT_NOT_ALLOWED, edit(&r, 2, TAK_EDIT_MAP_STATE, 1, 101, NULL, NULL));
+    ASSERT_EQ_INT(TAK_REJECT_NOT_ALLOWED, edit(&r, 2, TAK_EDIT_MAP_STATE, 0, 50, NULL, NULL));
+    ASSERT_EQ_INT(40, r.slot[1].map_state);
+    ASSERT_EQ_INT(0, edit(&r, 2, TAK_EDIT_MAP_STATE, 1, TAK_MAPSTATE_FAILED, NULL, NULL));
+    ASSERT_EQ_INT(TAK_MAPSTATE_FAILED, r.slot[1].map_state);
+    ASSERT_EQ_INT(0, edit(&r, 2, TAK_EDIT_MAP_STATE, 1, TAK_MAPSTATE_CONFLICT, NULL, NULL));
+    ASSERT_EQ_INT(0, have_map(&r, 2, 1, test_fingerprint));
+    ASSERT(r.slot[1].flags & TAK_SLOTF_HAS_MAP);
+    ASSERT_EQ_INT(0, r.slot[1].map_state);
+    /* A new map, and nothing said of it. */
+    ASSERT_EQ_INT(0, edit(&r, 2, TAK_EDIT_MAP_STATE, 1, 60, NULL, NULL));
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_MAP, TAK_NET_SEAT_NONE, 0, "Bleak Hollow", NULL));
+    ASSERT_EQ_INT(0, r.slot[1].map_state);
+    /* The same map chosen again leaves how far it has come. */
+    ASSERT_EQ_INT(0, edit(&r, 2, TAK_EDIT_MAP_STATE, 1, 70, NULL, NULL));
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_MAP, TAK_NET_SEAT_NONE, 0, "Bleak Hollow", NULL));
+    ASSERT_EQ_INT(70, r.slot[1].map_state);
+    /* Still waiting on a player receiving the map, it refuses to start. */
+    ASSERT_EQ_INT(0, edit(&r, 2, TAK_EDIT_READY, 1, 0, NULL, NULL));
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_READY, 0, 0, NULL, NULL));
+    ASSERT_EQ_INT(TAK_REJECT_MAP_MISSING, TAK_Room_CanStart(&r, HOST_ID));
+}
+
 static void start_two(TAK_Room *r) {
     uint8_t seat = 0;
     open_room(r, NULL);
@@ -937,6 +1025,8 @@ int main(void) {
     RUN(start_needs_the_host_another_human_a_map_and_everyone_ready);
     RUN(start_needs_a_map_fingerprint_not_just_a_name);
     RUN(every_human_must_hold_the_same_map_by_fingerprint);
+    RUN(the_host_says_whether_its_map_may_be_sent_and_a_new_host_speaks_for_itself);
+    RUN(a_seat_says_how_far_the_map_has_come_and_keeps_its_ready);
     RUN(a_watcher_may_join_a_match_under_way_but_a_player_may_not);
     RUN(a_drop_in_room_starts_with_the_host_alone_against_the_computer);
     RUN(a_drop_in_takes_a_computer_seat_as_the_world_has_it);

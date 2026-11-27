@@ -300,12 +300,124 @@ TEST(room_state_round_trips_all_eight_slots) {
     ASSERT_EQ_INT(0, TAK_Net_Split(buf, n, &f));
     ASSERT_EQ_INT(0, TAK_Msg_RoomStateDecode(&b, f.payload, f.payload_len));
     ASSERT(memcmp(&a, &b, sizeof(a)) == 0);
-    /* The protocol 1 and 2 forms are the only shorter ones that read. */
+    /* The protocol 1, 2 and 5 forms are the only shorter ones that read. */
     ASSERT_EQ_INT((int)(n - TAK_NET_FRAME_HEADER - TAK_NET_SEATS -
-                        2 * TAK_NET_NAME_MAX),
+                        2 * TAK_NET_NAME_MAX - (TAK_NET_SEATS + 1)),
                   first_accepted_truncation(buf, n));
-    ASSERT_EQ_INT(2, accepted_truncations(buf, n));
+    ASSERT_EQ_INT(3, accepted_truncations(buf, n));
     ASSERT(accepts_trailing(buf, n) == 0);
+}
+
+/* Protocol 11 adds each seat's word on the map and the host's, after the
+ * watchers. An older client is written what it always was. */
+TEST(room_state_carries_the_maps_share_from_protocol_eleven_and_not_before) {
+    TAK_MsgRoomState a, b;
+    for (int watchers = 0; watchers <= 2; watchers++) {
+        memset(&a, 0, sizeof(a));
+        a.room_id = 4;
+        a.seat_count = TAK_NET_SEATS;
+        a.watchers = (uint8_t)watchers;
+        for (int w = 0; w < watchers; w++) strcpy(a.watcher_name[w], w ? "Elm" : "Yew");
+        for (int i = 0; i < TAK_NET_SEATS; i++) {
+            a.slot[i].kind = i < 3 ? TAK_NSLOT_HUMAN : TAK_NSLOT_EMPTY;
+            a.slot[i].start_pos = (uint8_t)i;
+        }
+        a.slot[1].map_state = 40;
+        a.slot[2].map_state = TAK_MAPSTATE_FAILED;
+        a.map_share = TAK_MAPSHARE_OFFERED;
+        uint8_t v10[1024], v11[1024];
+        size_t n10 = TAK_Msg_RoomStateEncodeV(&a, 10, v10, sizeof v10);
+        size_t n11 = TAK_Msg_RoomStateEncodeV(&a, 11, v11, sizeof v11);
+        ASSERT(n10 > 0);
+        ASSERT_EQ_INT((int)(n10 + TAK_NET_SEATS + 1), (int)n11);
+        ASSERT(memcmp(v10 + TAK_NET_FRAME_HEADER, v11 + TAK_NET_FRAME_HEADER,
+                      n10 - TAK_NET_FRAME_HEADER) == 0);
+        TAK_NetFrame f;
+        ASSERT_EQ_INT(0, TAK_Net_Split(v11, n11, &f));
+        ASSERT_EQ_INT(0, TAK_Msg_RoomStateDecode(&b, f.payload, f.payload_len));
+        ASSERT(memcmp(&a, &b, sizeof(a)) == 0);
+        /* 10 reads back with nothing said of the map. */
+        ASSERT_EQ_INT(0, TAK_Net_Split(v10, n10, &f));
+        ASSERT_EQ_INT(0, TAK_Msg_RoomStateDecode(&b, f.payload, f.payload_len));
+        ASSERT_EQ_INT(TAK_MAPSHARE_UNKNOWN, b.map_share);
+        ASSERT_EQ_INT(0, b.slot[1].map_state);
+        ASSERT_EQ_INT(2, b.slot[2].start_pos);
+        ASSERT_EQ_STR(watchers ? "Yew" : "", b.watcher_name[0]);
+    }
+}
+
+/* A request names a whole piece, and a piece is the whole of the one it
+ * answers, so neither end can be fed a part of one or more than one. */
+TEST(map_requests_and_pieces_round_trip_and_are_whole_or_refused) {
+    TAK_MsgMapRequest q, q2;
+    memset(&q, 0, sizeof q);
+    q.client_id = 7;
+    for (int i = 0; i < TAK_NET_FINGERPRINT_BYTES; i++) q.fingerprint[i] = (uint8_t)(i * 5 + 1);
+    q.offset = 3 * TAK_NET_MAP_CHUNK;
+    size_t n = TAK_Msg_MapRequestEncode(&q, buf, sizeof(buf));
+    ASSERT(n > 0);
+    TAK_NetFrame f;
+    ASSERT_EQ_INT(0, TAK_Net_Split(buf, n, &f));
+    ASSERT_EQ_INT(TAK_MSG_MAP_REQUEST, f.type);
+    ASSERT_EQ_INT(0, TAK_Msg_MapRequestDecode(&q2, f.payload, f.payload_len));
+    ASSERT(memcmp(&q, &q2, sizeof q) == 0);
+    ASSERT_EQ_INT(-1, first_accepted_truncation(buf, n));
+    ASSERT(accepts_trailing(buf, n) == 0);
+    /* Part way into a piece, or past the largest map, is not a piece. */
+    tak_put_u32(buf + n - 4, 5);
+    ASSERT(TAK_Net_Validate(buf, n) != 0);
+    tak_put_u32(buf + n - 4, TAK_NET_MAP_MAX);
+    ASSERT(TAK_Net_Validate(buf, n) != 0);
+    q.offset = 5;
+    ASSERT_EQ_INT(0, (int)TAK_Msg_MapRequestEncode(&q, buf, sizeof(buf)));
+
+    static uint8_t piece[TAK_NET_MAP_CHUNK];
+    for (uint32_t i = 0; i < TAK_NET_MAP_CHUNK; i++) piece[i] = (uint8_t)(i * 13u);
+    TAK_MsgMapData d, d2;
+    memset(&d, 0, sizeof d);
+    d.client_id = 9;
+    memcpy(d.fingerprint, q.fingerprint, sizeof d.fingerprint);
+    d.total = 2 * TAK_NET_MAP_CHUNK + 100;
+    d.offset = 2 * TAK_NET_MAP_CHUNK;
+    d.len = 100;
+    d.data = piece;
+    n = TAK_Msg_MapDataEncode(&d, buf, sizeof(buf));
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(0, TAK_Net_Split(buf, n, &f));
+    ASSERT_EQ_INT(0, TAK_Msg_MapDataDecode(&d2, f.payload, f.payload_len));
+    ASSERT_EQ_INT(9, (int)d2.client_id);
+    ASSERT_EQ_INT((int)d.total, (int)d2.total);
+    ASSERT_EQ_INT(100, d2.len);
+    ASSERT(d2.data >= buf && d2.data < buf + n);
+    ASSERT(memcmp(d2.data, piece, 100) == 0);
+    ASSERT_EQ_INT(-1, first_accepted_truncation(buf, n));
+    ASSERT(accepts_trailing(buf, n) == 0);
+
+    /* A whole piece fits a frame. */
+    d.offset = 0;
+    d.len = TAK_NET_MAP_CHUNK;
+    ASSERT(TAK_Msg_MapDataEncode(&d, buf, sizeof(buf)) > 0);
+    /* Short of the piece, past the map, or bigger than any map. */
+    d.len = TAK_NET_MAP_CHUNK - 1;
+    ASSERT_EQ_INT(0, (int)TAK_Msg_MapDataEncode(&d, buf, sizeof(buf)));
+    d.offset = 2 * TAK_NET_MAP_CHUNK;
+    d.len = 99;
+    ASSERT_EQ_INT(0, (int)TAK_Msg_MapDataEncode(&d, buf, sizeof(buf)));
+    d.offset = 3 * TAK_NET_MAP_CHUNK;
+    d.len = 0;
+    ASSERT_EQ_INT(0, (int)TAK_Msg_MapDataEncode(&d, buf, sizeof(buf)));
+    d.total = TAK_NET_MAP_MAX + 1;
+    d.offset = 0;
+    d.len = TAK_NET_MAP_CHUNK;
+    ASSERT_EQ_INT(0, (int)TAK_Msg_MapDataEncode(&d, buf, sizeof(buf)));
+    /* A total of 0 is the host saying no, and carries nothing. */
+    d.total = 0;
+    d.len = 0;
+    n = TAK_Msg_MapDataEncode(&d, buf, sizeof(buf));
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(0, TAK_Net_Validate(buf, n));
+    d.len = 1;
+    ASSERT_EQ_INT(0, (int)TAK_Msg_MapDataEncode(&d, buf, sizeof(buf)));
 }
 
 /* Protocol 5 names the watchers after the starts. A client of 2 to 4 is
@@ -913,6 +1025,19 @@ TEST(random_and_mutated_frames_never_crash_the_parser) {
     strcpy(jr.code, "ABC234");
     seed_len[seeds] = TAK_Msg_JoinRoomEncode(&jr, seed[seeds], sizeof(seed[0]));
     seeds++;
+    TAK_MsgMapRequest mq;
+    memset(&mq, 0, sizeof(mq));
+    mq.offset = TAK_NET_MAP_CHUNK;
+    seed_len[seeds] = TAK_Msg_MapRequestEncode(&mq, seed[seeds], sizeof(seed[0]));
+    seeds++;
+    static const uint8_t piece[40] = { 1, 2, 3 };
+    TAK_MsgMapData md;
+    memset(&md, 0, sizeof(md));
+    md.total = 40;
+    md.len = 40;
+    md.data = piece;
+    seed_len[seeds] = TAK_Msg_MapDataEncode(&md, seed[seeds], sizeof(seed[0]));
+    seeds++;
 
     int accepted = 0;
     for (int iter = 0; iter < 200000; iter++) {
@@ -945,6 +1070,8 @@ int main(void) {
     RUN(an_unterminated_text_field_comes_back_terminated);
     RUN(welcome_reject_and_ping_round_trip);
     RUN(room_state_round_trips_all_eight_slots);
+    RUN(room_state_carries_the_maps_share_from_protocol_eleven_and_not_before);
+    RUN(map_requests_and_pieces_round_trip_and_are_whole_or_refused);
     RUN(room_state_and_start_game_speak_protocol_one_without_the_starts);
     RUN(room_state_names_its_watchers_from_protocol_five_and_not_before);
     RUN(room_list_refuses_more_rooms_than_the_cap);

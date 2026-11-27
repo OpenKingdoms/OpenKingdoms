@@ -220,7 +220,7 @@ paths = [
 ctest = "^(test_build_facing|test_capture|test_command_pipeline|test_line_of_fire|test_movement|test_orders|test_render_cache|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
 ui = [
   ["battle_", 16],
-  ["mp_room", 18],
+  ["mp_room", 20],
   ["options_", 6],
   ["f1_opens_the_in_game_menu_with_the_shipped_buttons", 1],
   ["story_", 14],
@@ -254,7 +254,7 @@ paths = ["src/ui/gui_loader.c", "src/ui/gui_render.c"]
 ctest = "^(test_build_facing|test_capture|test_command_pipeline|test_gui_loader|test_gui_loader_no_data|test_line_of_fire|test_movement|test_orders|test_render_cache|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
 ui = [
   ["battle_", 16],
-  ["mp_room", 18],
+  ["mp_room", 20],
   ["select_game", 10],
   ["story_", 14],
   ["hud_static_art_fits_its_cell", 1],

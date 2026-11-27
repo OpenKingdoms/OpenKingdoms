@@ -46,9 +46,12 @@
  * not from turn 0. 10: a client joining a match under way, to rejoin,
  * drop in or watch, takes a snapshot and the turns after it when
  * START_GAME carries TAK_STARTF_SNAPSHOT, so the relay keeps only a
- * window of the log. 2 to 10 share a room. The relay speaks every
+ * window of the log. 11: a player without the room's map asks the
+ * host for it through the relay (MAP_REQUEST, MAP_DATA), the room
+ * says whether the host's map may be sent, and each seat says how
+ * much of it has come. 2 to 11 share a room. The relay speaks every
  * version and writes each client the one it said hello with. */
-#define TAK_NET_PROTOCOL_VERSION      10
+#define TAK_NET_PROTOCOL_VERSION      11
 #define TAK_NET_PROTOCOL_MIN          1
 
 /* The simulation a client plays, sent as engine_build_id. A room holds
@@ -283,6 +286,11 @@ typedef enum TAK_NetMsg {
     TAK_MSG_ROOM_STATE      = 22,
     TAK_MSG_CHAT            = 23,
     TAK_MSG_START           = 24,
+    /* Protocol 11: a player missing the room's map asks the host for it
+     * a piece at a time. The relay passes each request to the host and
+     * each piece only to the player who asked for it. */
+    TAK_MSG_MAP_REQUEST     = 25,
+    TAK_MSG_MAP_DATA        = 26,
 
     TAK_MSG_START_GAME      = 32,
     TAK_MSG_LOAD_PROGRESS   = 33,
@@ -468,6 +476,9 @@ typedef enum TAK_NetEditField {
     /* value is the start to take, 0 based, refused while another seat
      * holds it, or -1 to give yours back. Clears your ready. */
     TAK_EDIT_START,
+    /* Protocol 11. value is how much of the room's map has come to you,
+     * 1 to 100, a TAK_MAPSTATE_* code, or 0. Leaves ready alone. */
+    TAK_EDIT_MAP_STATE,
     /* The host's. Map, options and the cap clear everyone's ready. */
     TAK_EDIT_MAP = 32,
     TAK_EDIT_OPTIONS,
@@ -481,8 +492,31 @@ typedef enum TAK_NetEditField {
     TAK_EDIT_KICK,
     /* seat's start becomes value, swapping with the seat that holds it,
      * or -1 frees it. A map change frees every start. */
-    TAK_EDIT_MOVE_START
+    TAK_EDIT_MOVE_START,
+    /* Protocol 11. value is a TAK_NetMapShare for the map whose
+     * fingerprint rides with it, and is dropped for any other map. */
+    TAK_EDIT_MAP_SHARE
 } TAK_NetEditField;
+
+/* What the host's client says of the room's map, protocol 11. Only a map
+ * a player made is sent, and for a map the original's releases ship the
+ * room names what a player without it needs. */
+typedef enum TAK_NetMapShare {
+    TAK_MAPSHARE_UNKNOWN = 0,   /* not said yet, or a host before 11 */
+    TAK_MAPSHARE_OFFERED,       /* sent to anyone who asks */
+    TAK_MAPSHARE_GAME,          /* ships with the game */
+    TAK_MAPSHARE_EXPANSION,     /* ships with The Iron Plague */
+    TAK_MAPSHARE_MAP_PACK,      /* one of Cavedog's own map packs */
+    TAK_MAPSHARE_TOO_BIG,       /* over TAK_NET_MAP_MAX as sent */
+    TAK_MAPSHARE_UNREADABLE,    /* the host's own copy would not read */
+    TAK_MAPSHARE_SHIPPED_NAME,  /* named as a map the original ships */
+    TAK_MAPSHARE_COUNT
+} TAK_NetMapShare;
+
+/* A seat's word on the room's map, protocol 11: 0 for nothing to say,
+ * 1 to 100 for how much has come, or one of these. */
+#define TAK_MAPSTATE_FAILED   255u  /* what came would not check or keep */
+#define TAK_MAPSTATE_CONFLICT 254u  /* holds another map of that name */
 
 /* ── System commands the relay injects into the turn stream ───────────
  * They ride on TAK_NET_SEAT_SERVER so every simulation applies them on
@@ -639,6 +673,8 @@ typedef struct TAK_NetSlot {
     char     name[TAK_NET_NAME_MAX];
     /* The claimed start: 0 any, n the map's nth. Protocol 2 on. */
     uint8_t  start_pos;
+    /* TAK_EDIT_MAP_STATE's value. Protocol 11 on. */
+    uint8_t  map_state;
 } TAK_NetSlot;
 #define TAK_SLOTF_LOADED  0x01u
 #define TAK_SLOTF_HAS_MAP 0x02u   /* reported the room's map fingerprint */
@@ -662,6 +698,8 @@ typedef struct TAK_MsgRoomState {
     /* Who is watching, `watchers` of them, after the starts. Protocol 5
      * on, and empty from an older sender. */
     char        watcher_name[TAK_NET_WATCHERS_MAX][TAK_NET_NAME_MAX];
+    /* TAK_NetMapShare, after each seat's map_state. Protocol 11 on. */
+    uint8_t     map_share;
 } TAK_MsgRoomState;
 
 typedef enum TAK_NetChatScope {
@@ -726,6 +764,32 @@ typedef struct TAK_MsgLoaded {
 typedef struct TAK_MsgGo {
     uint32_t first_turn;
 } TAK_MsgGo;
+
+/* A map goes as one compressed bundle of its files, in pieces of
+ * TAK_NET_MAP_CHUNK, each asked for by its offset. */
+#define TAK_NET_MAP_CHUNK   16384u
+#define TAK_NET_MAP_MAX     (4u << 20)
+
+/* client_id is the player asking. A client sends 0 and the relay
+ * writes the asker's own before it passes the request to the host.
+ * offset is a whole number of pieces. */
+typedef struct TAK_MsgMapRequest {
+    uint32_t client_id;
+    uint8_t  fingerprint[TAK_NET_FINGERPRINT_BYTES];
+    uint32_t offset;
+} TAK_MsgMapRequest;
+
+/* The host's answer to one request, for client_id: the whole piece at
+ * offset, or a total of 0 for a map it cannot send. Decode points `data`
+ * into the caller's frame and copies nothing. */
+typedef struct TAK_MsgMapData {
+    uint32_t       client_id;
+    uint8_t        fingerprint[TAK_NET_FINGERPRINT_BYTES];
+    uint32_t       total;
+    uint32_t       offset;
+    uint16_t       len;
+    const uint8_t *data;
+} TAK_MsgMapData;
 
 /* A snapshot is a save of the whole world in memory, taken between two
  * ticks at a tick the hash is reported on, and the turns after it. */
@@ -906,9 +970,10 @@ size_t TAK_Msg_RoomEditEncode(const TAK_MsgRoomEdit *m, void *out, size_t cap);
 int    TAK_Msg_RoomEditDecode(TAK_MsgRoomEdit *m, const void *p, size_t len);
 
 /* The room state and START_GAME in a given protocol version: 1 leaves
- * the starts out, and a room state before 5 leaves the watchers' names
- * out. The plain encoders write the newest. The decoders take any and
- * leave what an older sender left out at 0. */
+ * the starts out, a room state before 5 leaves the watchers' names out,
+ * and one before 11 the map's share and each seat's map state. The plain
+ * encoders write the newest. The decoders take any and leave what an
+ * older sender left out at 0. */
 size_t TAK_Msg_RoomStateEncode(const TAK_MsgRoomState *m, void *out, size_t cap);
 size_t TAK_Msg_RoomStateEncodeV(const TAK_MsgRoomState *m, uint16_t version,
                                 void *out, size_t cap);
@@ -935,6 +1000,10 @@ int    TAK_Msg_LoadedDecode(TAK_MsgLoaded *m, const void *p, size_t len);
 
 size_t TAK_Msg_GoEncode(const TAK_MsgGo *m, void *out, size_t cap);
 int    TAK_Msg_GoDecode(TAK_MsgGo *m, const void *p, size_t len);
+size_t TAK_Msg_MapRequestEncode(const TAK_MsgMapRequest *m, void *out, size_t cap);
+int    TAK_Msg_MapRequestDecode(TAK_MsgMapRequest *m, const void *p, size_t len);
+size_t TAK_Msg_MapDataEncode(const TAK_MsgMapData *m, void *out, size_t cap);
+int    TAK_Msg_MapDataDecode(TAK_MsgMapData *m, const void *p, size_t len);
 size_t TAK_Msg_SnapRequestEncode(const TAK_MsgSnapRequest *m, void *out, size_t cap);
 int    TAK_Msg_SnapRequestDecode(TAK_MsgSnapRequest *m, const void *p, size_t len);
 size_t TAK_Msg_SnapDataEncode(const TAK_MsgSnapData *m, void *out, size_t cap);

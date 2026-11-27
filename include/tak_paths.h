@@ -26,6 +26,11 @@ const char *Paths_PrefDir(void);
 /* The saved game directory under it, created on first use. */
 const char *Paths_SaveDir(void);
 
+/* Where maps other players sent are kept, created on first use: maps
+ * under the preference directory, and in a browser a folder beside the
+ * game files the page keeps. Never the game folder itself. */
+const char *Paths_ReceivedMapDir(void);
+
 /* Full path of one save. Returns 0 on success, -1 when the slug is
  * unusable or the buffer is too small. A slug carrying a separator, a
  * drive colon or a parent reference is refused: the display name lives

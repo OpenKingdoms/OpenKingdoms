@@ -472,6 +472,65 @@ check('mods kept in storage without the game files do not pass for them', async 
   assert.ok(isPreset('tak-enhanced.preset.json') && isPreset('tak-enhanced.mod.tdf') && !isPreset('readme.txt'));
 });
 
+check('a map another player sent is kept with the game files and read back after a reload', async () => {
+  /* Origin private storage, as far as the page uses it. */
+  function dirHandle() {
+    const kids = new Map();
+    return {
+      kind: 'directory', kids,
+      entries() {
+        const list = Array.from(kids.entries());
+        let i = 0;
+        return { next: () => Promise.resolve(i < list.length ? { done: false, value: list[i++] } : { done: true }) };
+      },
+      getDirectoryHandle(name, opt) {
+        if (!kids.has(name)) { if (!(opt && opt.create)) return Promise.reject(new Error('NotFound')); kids.set(name, dirHandle()); }
+        return Promise.resolve(kids.get(name));
+      },
+      getFileHandle(name, opt) {
+        if (!kids.has(name)) {
+          if (!(opt && opt.create)) return Promise.reject(new Error('NotFound'));
+          const fh = { kind: 'file', bytes: null,
+                       createWritable: () => Promise.resolve({ write: (b) => { fh.bytes = b; return Promise.resolve(); },
+                                                               close: () => Promise.resolve() }) };
+          kids.set(name, fh);
+        }
+        return Promise.resolve(kids.get(name));
+      }
+    };
+  }
+  const store = dirHandle();
+  const memfs = { '/game/Received/Shared Isle.kmp': new Uint8Array([1, 2, 3]) };
+  const FS = { readFile: (p) => { if (!memfs[p]) throw new Error('ENOENT'); return memfs[p]; } };
+  const warned = [];
+  const keepReceived = new Function('Module', 'window', 'opfsDir', 'RECEIVED', 'console',
+    functionSource('keepReceived') + 'return keepReceived;')(
+    { FS }, {}, () => Promise.resolve(store), 'Received', { warn: (m) => warned.push(m) });
+  keepReceived('Received/Shared Isle.kmp');
+  keepReceived('Received/../data.hpi');
+  keepReceived('data.hpi');
+  await new Promise((r) => setTimeout(r, 10));
+  const kept = store.kids.get('Received');
+  assert.ok(kept, 'nothing kept');
+  assert.deepStrictEqual(Array.from(kept.kids.keys()), ['Shared Isle.kmp']);
+  assert.deepStrictEqual(Array.from(kept.kids.get('Shared Isle.kmp').bytes), [1, 2, 3]);
+  assert.deepStrictEqual(warned, []);
+
+  /* The next load lists it among the game's files, to go back where it was. */
+  store.kids.set('data.hpi', { kind: 'file' });
+  const isKmp = (n) => /\.kmp$/i.test(n);
+  const no = () => false;
+  const cacheEntries = new Function('collect', 'isArchive', 'isWav', 'isKmp', 'isModel', 'isObject',
+    'isBik', 'isPreset', 'MUSIC', 'MAPS', 'RECEIVED', 'MODELS', 'OBJECTS', 'MOVIES', 'GUI', 'MODS',
+    functionSource('cacheEntries') + 'return cacheEntries;')(
+    new Function(functionSource('collect') + 'return collect;')(),
+    (n) => /\.hpi$/i.test(n), no, isKmp, no, no, no, no,
+    'Music', 'Maps', 'Received', 'models3d', 'objects3d', 'Movies', 'Gui', 'Mods');
+  const rels = (await cacheEntries(store)).map((e) => e.rel);
+  assert.ok(rels.includes('data.hpi'));
+  assert.ok(rels.includes('Received/Shared Isle.kmp'), 'listed: ' + rels.join(', '));
+});
+
 (async () => {
   for (const [what, fn] of cases) {
     try { await fn(); console.log('ok   ' + what); }

@@ -38,8 +38,12 @@ static int fingerprint_set(const uint8_t *fp) {
 /* A new map: nobody has confirmed it yet except the host, whose client
  * computed the fingerprint the room now carries. */
 static void reset_map_flags(TAK_Room *r) {
-    for (int i = 0; i < TAK_NET_SEATS; i++)
+    for (int i = 0; i < TAK_NET_SEATS; i++) {
         r->slot[i].flags = (uint8_t)(r->slot[i].flags & ~TAK_SLOTF_HAS_MAP);
+        r->slot[i].map_state = 0;
+    }
+    r->map_share = TAK_MAPSHARE_UNKNOWN;
+    r->map_share_by = 0;
     uint8_t host = TAK_Room_SeatOf(r, r->host_client_id);
     if (host != TAK_NET_SEAT_NONE && fingerprint_set(r->cfg.map_fingerprint))
         r->slot[host].flags |= TAK_SLOTF_HAS_MAP;
@@ -384,6 +388,7 @@ static int own_row_field(uint8_t field) {
     case TAK_EDIT_READY:
     case TAK_EDIT_HAVE_MAP:
     case TAK_EDIT_START:
+    case TAK_EDIT_MAP_STATE:
         return 1;
     default:
         return 0;
@@ -481,9 +486,29 @@ int TAK_Room_Edit(TAK_Room *r, uint32_t client_id,
         int match = fingerprint_set(r->cfg.map_fingerprint) &&
                     memcmp(e->fingerprint, r->cfg.map_fingerprint,
                            TAK_NET_FINGERPRINT_BYTES) == 0;
-        if (match) r->slot[mine].flags |= TAK_SLOTF_HAS_MAP;
-        else r->slot[mine].flags = (uint8_t)(r->slot[mine].flags & ~TAK_SLOTF_HAS_MAP);
+        if (match) {
+            r->slot[mine].flags |= TAK_SLOTF_HAS_MAP;
+            r->slot[mine].map_state = 0;
+        } else {
+            r->slot[mine].flags = (uint8_t)(r->slot[mine].flags & ~TAK_SLOTF_HAS_MAP);
+        }
         fx->seat = mine;
+        break;
+    }
+    case TAK_EDIT_MAP_STATE: {
+        if (e->value > 100 && e->value != TAK_MAPSTATE_FAILED &&
+            e->value != TAK_MAPSTATE_CONFLICT) return TAK_REJECT_NOT_ALLOWED;
+        r->slot[mine].map_state = (uint8_t)e->value;
+        fx->seat = mine;
+        break;
+    }
+    case TAK_EDIT_MAP_SHARE: {
+        /* Said of one map, so a word about the last one is dropped. */
+        if (e->value >= TAK_MAPSHARE_COUNT || !fingerprint_set(r->cfg.map_fingerprint) ||
+            memcmp(e->fingerprint, r->cfg.map_fingerprint, TAK_NET_FINGERPRINT_BYTES) != 0)
+            return TAK_REJECT_NOT_ALLOWED;
+        r->map_share = (uint8_t)e->value;
+        r->map_share_by = client_id;
         break;
     }
     case TAK_EDIT_WATCH: {
@@ -512,6 +537,11 @@ int TAK_Room_Edit(TAK_Room *r, uint32_t client_id,
     }
     case TAK_EDIT_MAP: {
         if (!e->text[0]) return TAK_REJECT_NOT_ALLOWED;
+        /* The same map again changes nothing: who has it, the starts and
+         * everyone's ready stay, and nobody would report the map twice. */
+        if (strcmp(r->cfg.map_name, e->text) == 0 &&
+            memcmp(r->cfg.map_fingerprint, e->fingerprint, TAK_NET_FINGERPRINT_BYTES) == 0)
+            return 0;
         copy_str(r->cfg.map_name, TAK_NET_MAP_NAME_MAX, e->text);
         /* The fingerprint travels beside the name, computed from the map
          * itself. A host that sends a name with no fingerprint leaves the
@@ -713,6 +743,11 @@ uint32_t TAK_Room_SetConnected(TAK_Room *r, uint32_t client_id, int connected) {
 
 /* ── Views ──────────────────────────────────────────────────────────── */
 
+uint8_t TAK_Room_MapShare(const TAK_Room *r) {
+    return r->map_share_by && r->map_share_by == r->host_client_id
+         ? r->map_share : (uint8_t)TAK_MAPSHARE_UNKNOWN;
+}
+
 void TAK_Room_Snapshot(const TAK_Room *r, TAK_MsgRoomState *out) {
     memset(out, 0, sizeof(*out));
     out->room_id = r->id;
@@ -733,6 +768,7 @@ void TAK_Room_Snapshot(const TAK_Room *r, TAK_MsgRoomState *out) {
     for (int i = 0; i < TAK_NET_SEATS; i++) out->slot[i] = r->slot[i];
     for (int i = 0; i < r->watcher_count && i < TAK_NET_WATCHERS_MAX; i++)
         copy_str(out->watcher_name[i], TAK_NET_NAME_MAX, r->watcher[i].name);
+    out->map_share = TAK_Room_MapShare(r);
 }
 
 void TAK_Room_Summary(const TAK_Room *r, uint32_t viewer_build,

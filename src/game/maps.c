@@ -114,10 +114,10 @@ void TAK_Maps_Free(TAK_MapEntry *entries) {
     tak_free(entries);
 }
 
-int TAK_Maps_FindFile(const char *key, const char *ext,
-                      char *out, size_t out_cap) {
-    if (!key || !ext || !out || out_cap == 0) return -1;
-
+/* The first copy in the order above from a received map pack, when
+ * `received` is set, or from anywhere else when it is not. */
+static int find_in(const char *key, const char *ext, int received,
+                   char *out, size_t out_cap) {
     char upper[16];
     size_t e = 0;
     for (; ext[e] && e < sizeof(upper) - 1; e++) {
@@ -127,14 +127,25 @@ int TAK_Maps_FindFile(const char *key, const char *ext,
     upper[e] = '\0';
 
     for (size_t d = 0; d < sizeof(lookup_dirs) / sizeof(lookup_dirs[0]); d++) {
-        snprintf(out, out_cap, "%s%s.%s", lookup_dirs[d], key, ext);
-        if (VFS_FileExists(out) == 0) return 0;
-        /* Shipped maps mix .tnt and .TNT, and a case-sensitive loose
-         * tree does not fold that for us. */
-        snprintf(out, out_cap, "%s%s.%s", lookup_dirs[d], key, upper);
-        if (VFS_FileExists(out) == 0) return 0;
+        for (int c = 0; c < 2; c++) {
+            /* Shipped maps mix .tnt and .TNT, and a case-sensitive loose
+             * tree does not fold that for us. */
+            snprintf(out, out_cap, "%s%s.%s", lookup_dirs[d], key, c ? upper : ext);
+            if (VFS_FileExists(out) != 0) continue;
+            if ((VFS_FileOrigin(out, NULL, 0) == VFS_ORIGIN_RECEIVED) == received) return 0;
+        }
     }
+    return -1;
+}
 
+int TAK_Maps_FindFile(const char *key, const char *ext,
+                      char *out, size_t out_cap) {
+    if (!key || !ext || !out || out_cap == 0) return -1;
+    /* Every part from where the .ota is, so two maps of one name are
+     * never read as one, and a received map gives way to any other. */
+    int received = find_in(key, "ota", 0, out, out_cap) != 0 &&
+                   find_in(key, "ota", 1, out, out_cap) == 0;
+    if (find_in(key, ext, received, out, out_cap) == 0) return 0;
     snprintf(out, out_cap, "maps/Maps/%s.%s", key, ext);
     return -1;
 }

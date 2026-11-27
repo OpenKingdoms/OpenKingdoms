@@ -11,6 +11,12 @@
  * pointer), so a file shorter than this has no header at all. */
 #define TNT_HEADER_BYTES 0x34
 
+/* Whether n bytes at off lie inside the file, in 64 bits so neither a
+ * hostile offset nor a 32 bit size_t can wrap past the end. */
+static int tnt_span_ok(uint64_t off, uint64_t n, uint64_t size) {
+    return off <= size && n <= size - off;
+}
+
 static void tnt_build_derived_heightmap(TNTFile *out) {
     if (!out || !out->tile_map || out->width_tiles <= 0 || out->height_tiles <= 0)
         return;
@@ -84,7 +90,7 @@ int  TNT_Load(TNTFile *out, const char *path, const uint32_t *rgba_table) {
              * Maze shows varied 61..125 forming the maze. */
             uint32_t off_map = *(uint32_t*)(tnt_buffer + 0x10);
             size_t   sz_map  = (size_t)W * (size_t)H;
-            if ((size_t)off_map + sz_map <= tnt_size) {
+            if (tnt_span_ok(off_map, (uint64_t)W * (uint64_t)H, tnt_size)) {
                 out->tile_map = tnt_buffer + off_map;
                 tnt_build_derived_heightmap(out);
             } else {
@@ -96,7 +102,7 @@ int  TNT_Load(TNTFile *out, const char *path, const uint32_t *rgba_table) {
              * (0xFFFF = no feature). Not consumed in Phase B. */
             uint32_t off_feat = *(uint32_t*)(tnt_buffer + 0x14);
             size_t   sz_feat  = (size_t)W * (size_t)H * 2;
-            if ((size_t)off_feat + sz_feat <= tnt_size) {
+            if (tnt_span_ok(off_feat, (uint64_t)W * (uint64_t)H * 2u, tnt_size)) {
                 out->feature_layer = (const uint16_t*)(tnt_buffer + off_feat);
             } else {
                 fprintf(stderr, "TNT: %s feature_layer out of range (off=0x%x, need %zu)\n",
@@ -119,7 +125,7 @@ int  TNT_Load(TNTFile *out, const char *path, const uint32_t *rgba_table) {
             uint32_t cnt_names = *(uint32_t*)(tnt_buffer + 0x1C);
             const size_t REC_SIZE = 132;
             if (off_names > 0 && cnt_names > 0 &&
-                off_names + (size_t)cnt_names * REC_SIZE <= tnt_size) {
+                tnt_span_ok(off_names, (uint64_t)cnt_names * REC_SIZE, tnt_size)) {
                 char (*names)[64] = (char (*)[64])tak_malloc((size_t)cnt_names * 64);
                 if (names) {
                     for (uint32_t i = 0; i < cnt_names; i++) {
@@ -163,9 +169,10 @@ int  TNT_Load(TNTFile *out, const char *path, const uint32_t *rgba_table) {
                 size_t sz_ids = n * sizeof(uint32_t);
                 size_t sz_bx  = n;
                 size_t sz_by  = n;
-                if ((size_t)off_ids   + sz_ids <= tnt_size &&
-                    (size_t)off_tex_x + sz_bx  <= tnt_size &&
-                    (size_t)off_tex_y + sz_by  <= tnt_size) {
+                uint64_t blocks = (uint64_t)bw * (uint64_t)bh;
+                if (tnt_span_ok(off_ids, blocks * sizeof(uint32_t), tnt_size) &&
+                    tnt_span_ok(off_tex_x, blocks, tnt_size) &&
+                    tnt_span_ok(off_tex_y, blocks, tnt_size)) {
                     out->block_chunk_ids = (const uint32_t *)(tnt_buffer + off_ids);
                     out->block_tex_x     = tnt_buffer + off_tex_x;
                     out->block_tex_y     = tnt_buffer + off_tex_y;
@@ -189,7 +196,7 @@ int  TNT_Load(TNTFile *out, const char *path, const uint32_t *rgba_table) {
          * terrain.hpi as JPG chunks. Observed dims: w varies 396..449,
          * h always 431 across shipped maps. */
         uint32_t off_mm_bg = *(uint32_t*)(tnt_buffer + 0x30);
-        if ((size_t)off_mm_bg + 8 > tnt_size) {
+        if (!tnt_span_ok(off_mm_bg, 8, tnt_size)) {
             fprintf(stderr, "TNT: %s minimap_bg header past EOF (off=0x%x, size=%u)\n",
                     path, off_mm_bg, tnt_size);
         } else {
@@ -197,7 +204,7 @@ int  TNT_Load(TNTFile *out, const char *path, const uint32_t *rgba_table) {
             uint32_t mh = *(uint32_t*)(tnt_buffer + off_mm_bg + 4);
             size_t   sz = (size_t)mw * (size_t)mh;
             if (mw == 0 || mh == 0 || mw > 4096 || mh > 4096 ||
-                (size_t)off_mm_bg + 8 + sz > tnt_size) {
+                !tnt_span_ok((uint64_t)off_mm_bg + 8, sz, tnt_size)) {
                 fprintf(stderr, "TNT: %s minimap_bg dims invalid (%u x %u, need %zu)\n",
                         path, mw, mh, sz);
             } else {
@@ -213,7 +220,7 @@ int  TNT_Load(TNTFile *out, const char *path, const uint32_t *rgba_table) {
          * (HPIView's TNTHEADER / docs put it at 0x28 — that's for TA's
          * older 0x2000 format. Verified empirically on TAK 0x4000 files.) */
         uint32_t minimap_data_offset = *(uint32_t*)(tnt_buffer + 0x2C);
-        if (minimap_data_offset + 8 > (uint32_t)tnt_size) {
+        if (!tnt_span_ok(minimap_data_offset, 8, tnt_size)) {
             fprintf(stderr, "No minimap available for this TNT file %s\n", path);
             return 0;
         }
@@ -227,7 +234,7 @@ int  TNT_Load(TNTFile *out, const char *path, const uint32_t *rgba_table) {
         }
 
         size_t minimap_rgba_area = (size_t)minimap_height * minimap_width;
-        if (minimap_data_offset + 8 + minimap_rgba_area > (size_t)tnt_size) {
+        if (!tnt_span_ok((uint64_t)minimap_data_offset + 8, minimap_rgba_area, tnt_size)) {
             fprintf(stderr, "TNT: %s minimap pixel data truncated\n", path);
             return 0;
         }

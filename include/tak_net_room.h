@@ -29,6 +29,8 @@
  *   - the start waits until every human has reported the room's map by
  *     its fingerprint, which is the original's matching map gate done
  *     with a hash rather than a name
+ *   - the host says whether its map may be sent, and a player receiving
+ *     it reports how much has come, neither touching anyone's ready
  *   - a player may claim a start position no other seat holds, the host
  *     may move any seat's start, swapping with its holder, and a new map
  *     frees every start
@@ -75,6 +77,11 @@ typedef struct TAK_Room {
     TAK_NetSlot     slot[TAK_NET_SEATS];
     TAK_RoomWatcher watcher[TAK_NET_WATCHERS_MAX];
     uint8_t         watcher_count;
+    /* What the host's client said of the map, TAK_NetMapShare, and who
+     * said it. A new host speaks for its own copy, so until it does the
+     * room's answer is TAK_MAPSHARE_UNKNOWN. */
+    uint8_t         map_share;
+    uint32_t        map_share_by;
 } TAK_Room;
 
 /* What a change did, beyond the room state itself. */
@@ -174,6 +181,10 @@ uint8_t TAK_Room_SeatOf(const TAK_Room *r, uint32_t client_id);
 int     TAK_Room_IsWatcher(const TAK_Room *r, uint32_t client_id);
 int     TAK_Room_HumanCount(const TAK_Room *r);
 int     TAK_Room_OccupiedCount(const TAK_Room *r);
+
+/* What the room's host says of its map, TAK_NetMapShare: whether it
+ * may be sent to a player without it, and if not, why not. */
+uint8_t TAK_Room_MapShare(const TAK_Room *r);
 
 /* Record a measured round trip for the battle room's Ping column. */
 void TAK_Room_SetPing(TAK_Room *r, uint32_t client_id, uint16_t ping_ms);

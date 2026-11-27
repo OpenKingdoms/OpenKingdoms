@@ -73,6 +73,37 @@ static int sweep(void) {
             }
         }
     }
+    /* A map request and the last piece of a map, each byte of them
+     * flipped in turn, so the bounds on a piece are walked one at a time. */
+    {
+        static uint8_t piece[TAK_NET_MAP_CHUNK];
+        uint8_t seeds[2][TAK_NET_FRAME_HEADER + 64 + TAK_NET_MAP_CHUNK];
+        size_t seed_len[2];
+        TAK_MsgMapRequest q;
+        memset(&q, 0, sizeof(q));
+        q.client_id = 3;
+        q.offset = 2 * TAK_NET_MAP_CHUNK;
+        seed_len[0] = TAK_Msg_MapRequestEncode(&q, seeds[0], sizeof(seeds[0]));
+        TAK_MsgMapData d;
+        memset(&d, 0, sizeof(d));
+        d.client_id = 3;
+        d.total = 3 * TAK_NET_MAP_CHUNK + 17;
+        d.offset = 3 * TAK_NET_MAP_CHUNK;
+        d.len = 17;
+        d.data = piece;
+        seed_len[1] = TAK_Msg_MapDataEncode(&d, seeds[1], sizeof(seeds[1]));
+        for (int k = 0; k < 2; k++) {
+            size_t len = seed_len[k] < sizeof(seeds[k]) ? seed_len[k] : 0;
+            for (size_t at = 0; at < len; at++) {
+                for (int bit = 0; bit < 8; bit++) {
+                    memcpy(frame, seeds[k], len);
+                    frame[at] ^= (uint8_t)(1u << bit);
+                    LLVMFuzzerTestOneInput(frame, len);
+                    cases++;
+                }
+            }
+        }
+    }
     /* Shorter than a header, and the largest frame we accept. */
     for (size_t n = 0; n < TAK_NET_FRAME_HEADER; n++)
         LLVMFuzzerTestOneInput(frame, n);
