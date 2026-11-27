@@ -421,6 +421,8 @@ static void occ_refresh(int handle);
 static void occ_sync_mobile(int handle);
 static int  unit_spawn_facing(int def_idx, int player_id, int color_idx,
                               int32_t x, int32_t y, int facing);
+/* Set around one call that makes a build frame, so its Create sees one. */
+static int  g_spawn_frame;
 static void unit_half_extent(const Unit *u, const UnitDef *d, int dflt,
                              int *hx, int *hz);
 
@@ -7607,10 +7609,12 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
     /* A product leaves the yard as a unit and never stands turned. */
     facing = factory_production ? 0 : Units_DefFacing(building_def_idx, facing);
 
+    g_spawn_frame = 1;
     int new_handle = unit_spawn_facing(building_def_idx,
                                        u->player_id,
                                        u->team_color_idx,
                                        world_x, world_y, facing);
+    g_spawn_frame = 0;
     if (new_handle < 0) return -1;
 
     Unit *bu = &g_units[new_handle];
@@ -11180,6 +11184,12 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->carry_seq = 0;
     u->carry_next = 0;
     u->under_construction = 0;
+    /* A frame is one before its Create runs, so a script waiting on
+     * BUILD_PERCENT_LEFT waits (legacy:226599-226608, legacy:226779). */
+    if (g_spawn_frame) {
+        u->under_construction = 1;
+        u->health = 1;
+    }
     u->build_hp_accum = 0.0f;
     u->heal_frac_256 = 0;
     u->attack_pct = 100;
