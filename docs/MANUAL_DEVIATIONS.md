@@ -1236,11 +1236,8 @@ pull request, not here.
   - A patrol list sends the unit's patrol order to each point in turn,
     going on within 64 pixels or once it turns for the next. The
     original queues the patrol orders on the unit.
-  - `w N` is N seconds, read as the original reads it
-    (legacy:228719-228732). A wait with a distance ends on an enemy its
-    side sees within that straight-line reach, never a neutral seat's,
-    and the original also counts the seat's sighted buildings when its
-    brain weighs defence.
+  - `w N D` ends early on an enemy unit its side sees within D, where
+    the original also counts the buildings the seat sees.
   - `wa` ends when the watched unit's health drops, where the original
     also wakes on a miss that does no damage.
   - `a TYPE` takes the nearest unit of the type, where the original
@@ -1250,17 +1247,16 @@ pull request, not here.
   - `i NAME` boards at once and the list waits until the unit is set
     down, though a `w` runs out aboard. The original runs the list
     aboard (legacy:182203-182225, legacy:184105-184124).
-  - `v` is read and dropped, as the speed it sets has no field. `s` gives the unit back to the computer player, but only once its
-    list has ended, so one hand at a time moves it. The original hands it
-    over at the `s`.
+  - `v` is read and dropped, as the speed it sets has no field. `s`
+    gives the unit back to the computer player only once its list has
+    ended. The original hands it over at the `s`.
   - The computer plays the second seat when its line calls it strategic,
-    as every shipped chapter does, with the units no list holds. The
-    original plays every seat a line names. A strategic ally, the third
-    seat in 18 chapters, is not played yet, and a passive seat is not
-    played, where the original gives it a fifth of the brain's share.
+    as every shipped chapter does. The original plays every seat a line
+    names, a passive one on a fifth of the brain's share. A strategic
+    ally, the third seat in 18 chapters, is not played yet.
   - A mission seat's home is its building that trains nearest the middle
-    of its buildings, else the nearest of them, as a campaign brain is
-    never sent to its start position (legacy:18774-18777).
+    of its buildings, as a campaign brain is never sent to its start
+    position (legacy:18774-18777).
   - `SetAttribute` sets health, mana and the scales of D-020.
     `ReadValue` and `WriteValue` are not in, and no shipped script of
     the first campaign calls them.
