@@ -267,14 +267,10 @@ game mode 3 with the room's Use Map Script on (legacy:177664-177693),
 which turns on when the host picks such a map (legacy:138696). A
 skirmish plays the map plain with monarchs.
 
-The file is a float 1.0, then lists each led by a count: per kind
-scales (0x110 bytes: name, then armour, attack and rank percent at
-+0x104), start units (0x238 bytes: name, ident, cell x at +0x200 and z
-at +0x208, start at +0x20c, health, armour and attack percent, rank at
-+0x220), nine rule sections (every player, then starts 1 to 8), and the
-areas (0x110 bytes: name and a cell box) (legacy:172631-173084). A
-condition or action is a type and five 64 byte text fields. Anywhere
-is an area of its own ahead of the file's.
+The file holds per kind scales, start units, nine rule sections (every
+player, then starts 1 to 8) and named areas, each list led by its count
+(legacy:172631-173084). A condition or action is a type and five 64 byte
+text fields. Anywhere is an area of its own ahead of the file's.
 
 At game start the start units replace the monarchs, each seat gets the
 rules of section 0 and of its own start, and a counter `s` holds its
