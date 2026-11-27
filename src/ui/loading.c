@@ -32,6 +32,8 @@
 #include "tak_memory.h"
 #include "tak_mission.h"
 #include "tak_mission_script.h"
+#include "tak_map_scenario.h"
+#include "tak_chat.h"
 #include "tak_game_sound.h"
 #include "tak_fog.h"
 #include "tak_moveinfo.h"
@@ -275,6 +277,17 @@ static int32_t mission_seat_mana(int player_id) {
  * of its argument the priority (legacy:178318-178326). */
 static void mission_script_sound(const char *name, int flags) {
     GameSound_Play2D(name, 0x7f, flags & 7);
+}
+
+/* A scripted map's line for this machine's seat, "name> text" as the
+ * original writes it (legacy:171683-171727). */
+static void scenario_message(int to, int from, const char *text) {
+    const GameWorld *w = World_Get();
+    if (!w || to != Units_LocalPlayer() || TAK_Match_IsWatching()) return;
+    const char *name = from >= 1 && from <= TAK_MAX_PLAYERS ? w->cfg.players[from - 1].name : "";
+    char line[CHAT_TEXT_MAX];
+    snprintf(line, sizeof line, "%s> %s", name, text);
+    Chat_Push(line, CHAT_TYPE_MINE, to, SDL_GetTicks());
 }
 
 /* "missions/missions/takmission01_mt.ota" to "takmission01_mt". */
@@ -833,6 +846,14 @@ static void loading_advance_step(TAK_Platform *platform) {
             MissionScript_Begin(stem, Units_LocalPlayer(), 0);
             MissionScript_SetUnitLimit(world->cfg.units_per_side);
         }
+        /* A scripted map in a match plays its .crt, new or out of a
+         * save, in place of the monarchs (legacy:177664-177693). */
+        int scenario = 0;
+        if (world && !world->mission.path[0] && world->cfg.map_script) {
+            MapScenario_SetSpawnHook(mission_unit_joins_economy);
+            MapScenario_SetMessageHook(scenario_message);
+            scenario = MapScenario_Begin(world->map_name) == 1;
+        }
         if (world && restoring) {
             fprintf(stderr,
                     "LS_FINALIZE: restoring from a save, nothing spawned\n");
@@ -896,6 +917,8 @@ static void loading_advance_step(TAK_Platform *platform) {
             }
             tak_free(handles);
             fprintf(stderr, "LS_FINALIZE: spawned %d campaign unit(s)\n", spawned);
+        } else if (world && scenario) {
+            MapScenario_Start();
         } else if (world && world->num_start_positions > 0) {
             int has_start[TAK_MAX_PLAYERS + 1] = { 0 };
             int spawnable_slots = 0;

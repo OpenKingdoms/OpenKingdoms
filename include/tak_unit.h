@@ -1721,6 +1721,16 @@ int               Units_DebugGhostMatchesUnit(int handle,
 /* Set the veteran rank outright: experience becomes rank times the
  * kind's experiencepoints. */
 void              Units_DebugSetVeteranLevel(int handle, int level);
+/* The rank a map's script gives: half way into it, as the original's
+ * setter puts it, and none for a noveteran kind (legacy:232954). */
+void              Units_SetVeteranLevel(int handle, int level);
+/* A map script's own hands on a unit: a death as from a lethal hit, a
+ * heal held to full health, a hurt with no attacker, and its health
+ * scaled by a percent that may take it past full. */
+int               Units_ScriptKill(int handle);
+int               Units_ScriptHeal(int handle, int amount);
+int               Units_ScriptHarm(int handle, int amount);
+void              Units_ScaleHealth(int handle, int pct);
 
 /* Test hook: world heading (radians, 0 = north, +x = east at pi/2) that
  * a named mesh piece faces, its authored forward composed through the

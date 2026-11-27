@@ -121,6 +121,7 @@ set(TAK_GAME_SOURCES
     game/features.c
     game/mission.c
     game/mission_script.c
+    game/map_scenario.c
     game/sides.c
 )
 
@@ -517,6 +518,7 @@ set(TAK_SCREEN_TEST_SOURCES
     game/features.c
     game/mission.c
     game/mission_script.c
+    game/map_scenario.c
     game/sides.c
     core/dataset.c
     render/palette.c
@@ -822,6 +824,7 @@ add_executable(test_unit_stall
     game/features.c
     game/mission.c
     game/mission_script.c
+    game/map_scenario.c
     game/sides.c
     render/palette.c
     render/pal_lookup.c
@@ -1064,6 +1067,7 @@ set(TAK_OWN_TRIG_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/game/ai.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/mission.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/mission_script.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/map_scenario.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/sim_rand.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/sim_hash.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/game_speed.c

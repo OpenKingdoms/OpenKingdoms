@@ -57,6 +57,8 @@
 #define TAK_SECT_CMDQ TAK_SAVE_ID('C', 'M', 'D', 'Q')
 /* A campaign mission's script and order lists. Only a mission has it. */
 #define TAK_SECT_MSCR TAK_SAVE_ID('M', 'S', 'C', 'R')
+/* A scripted map's rules, timers and tallies. Only such a map has it. */
+#define TAK_SECT_SCEN TAK_SAVE_ID('S', 'C', 'E', 'N')
 /* What an end screen reads beyond the tallies (tak_battle_record.h).
  * Nothing in the simulation reads it, so it is optional and an older
  * reader skips it. */
