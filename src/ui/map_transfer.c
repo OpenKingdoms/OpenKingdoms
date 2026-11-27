@@ -15,10 +15,10 @@
 #include <string.h>
 
 /* Pieces asked for at once, how long one may take before it is asked
- * again, and how long the whole may go quiet before it has stopped. */
+ * again, and how long the whole may go quiet, past the relay's minute. */
 #define MT_WINDOW        4
 #define MT_ASK_AGAIN_MS  15000u
-#define MT_STALL_MS      45000u
+#define MT_STALL_MS      75000u
 /* A host answers only while its link has this little waiting, so the
  * room's own traffic is never buried behind a map. */
 #define MT_HOST_BACKLOG  (64u * 1024u)
@@ -200,7 +200,7 @@ static void begin(TAK_NetClient *c, uint64_t now_ms) {
     const TAK_MsgRoomState *rs = &c->room;
     char why[256];
     int shipped = TAK_MapShare_Shipped(mt.fp);
-    if (!shipped) shipped = TAK_MapShare_ShippedName(mt.name);
+    if (!shipped && TAK_MapShare_ShippedName(mt.name)) shipped = TAK_MAPSHARE_SHIPPED_NAME;
     if (shipped) {
         TAK_MapShare_Advice(shipped, NULL, mt.name, why, sizeof why);
         mt.state = MT_REFUSED;
@@ -437,6 +437,9 @@ void MapTransfer_WhyNotStart(const TAK_MsgRoomState *rs, char *out, size_t cap) 
         else if (share == TAK_MAPSHARE_MAP_PACK)
             snprintf(out, cap, "%s does not have %s, one of Cavedog's map packs.",
                      s->name, rs->map_name);
+        else if (share == TAK_MAPSHARE_SHIPPED_NAME)
+            snprintf(out, cap, "%s does not have %s, which is named as a shipped map and "
+                     "so is not sent.", s->name, rs->map_name);
         else if (share == TAK_MAPSHARE_OFFERED)
             snprintf(out, cap, "%s does not have %s yet.", s->name, rs->map_name);
         else

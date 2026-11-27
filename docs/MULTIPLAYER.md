@@ -676,10 +676,10 @@ and the blurb, as one compressed bundle of at most 4 MB, in pieces of
 asked for which piece and nothing of the map: it passes a request to the
 host no more often than once in 25 ms for each player, passes a piece on
 only to the player who asked for it and only once, and lets a request the
-host never answers go after 10 s. A player is asked for no more than
-twice the largest map in a minute, whatever map the room is on, and all
-the rooms together no more than 2 MB a second. A request past either
-waits its turn. A piece it would queue behind a player who is not
+host never answers go after 10 s. No more than twice the largest map is
+asked for one player in a minute, whatever map the room is on, no more
+than 1 MB a second for one room and 2 MB a second for all of them, and a
+request past any of these waits its turn. A piece it would queue behind a player who is not
 reading is dropped, and the player asks again.
 
 The player checks the fingerprint of what came against the room's before
@@ -688,8 +688,10 @@ anything is written, keeps it as a `.kmp` map pack in a folder of its own,
 files the page keeps, and mounts it at once. It is never put over a map
 of that name the player has from anywhere else, and any copy of that
 name the player adds later is read in its place. Then it tells the room
-it has the map, and the host may start. A map whose name is a shipped
-map's is not sent either, so a shipped map edited by a byte stays home.
+it has the map, and the host may start. A map named as a shipped map is
+not sent either, so a shipped map edited by a byte stays home, and the
+room says so. A received `.tnt` must describe a map of at most 2048
+tiles a side, where the largest shipped is 544.
 
 ---
 

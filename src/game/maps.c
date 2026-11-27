@@ -114,8 +114,8 @@ void TAK_Maps_Free(TAK_MapEntry *entries) {
     tak_free(entries);
 }
 
-/* The first copy in the order above, of any source but a received map
- * pack unless `received` is set. */
+/* The first copy in the order above from a received map pack, when
+ * `received` is set, or from anywhere else when it is not. */
 static int find_in(const char *key, const char *ext, int received,
                    char *out, size_t out_cap) {
     char upper[16];
@@ -132,7 +132,7 @@ static int find_in(const char *key, const char *ext, int received,
              * tree does not fold that for us. */
             snprintf(out, out_cap, "%s%s.%s", lookup_dirs[d], key, c ? upper : ext);
             if (VFS_FileExists(out) != 0) continue;
-            if (received || VFS_FileOrigin(out, NULL, 0) != VFS_ORIGIN_RECEIVED) return 0;
+            if ((VFS_FileOrigin(out, NULL, 0) == VFS_ORIGIN_RECEIVED) == received) return 0;
         }
     }
     return -1;
@@ -141,11 +141,11 @@ static int find_in(const char *key, const char *ext, int received,
 int TAK_Maps_FindFile(const char *key, const char *ext,
                       char *out, size_t out_cap) {
     if (!key || !ext || !out || out_cap == 0) return -1;
-    if (find_in(key, ext, 0, out, out_cap) == 0) return 0;
-    /* A map another player sent gives way, whole, to any other map of
-     * its name, so the two are never read as one. */
-    if (find_in(key, "ota", 0, out, out_cap) != 0 && find_in(key, ext, 1, out, out_cap) == 0)
-        return 0;
+    /* Every part from where the .ota is, so two maps of one name are
+     * never read as one, and a received map gives way to any other. */
+    int received = find_in(key, "ota", 0, out, out_cap) != 0 &&
+                   find_in(key, "ota", 1, out, out_cap) == 0;
+    if (find_in(key, ext, received, out, out_cap) == 0) return 0;
     snprintf(out, out_cap, "maps/Maps/%s.%s", key, ext);
     return -1;
 }

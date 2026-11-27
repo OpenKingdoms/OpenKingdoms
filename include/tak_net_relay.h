@@ -136,6 +136,9 @@ typedef struct TAK_RelayRoom {
     /* The snapshot each world last took, which alone may later be found
      * wanting, once. */
     uint32_t          snap_given[TAK_TURN_SIMS_MAX];
+    /* Map pieces asked of this room's host this second. */
+    uint64_t          map_second_ms;
+    uint32_t          map_second_bytes;
 } TAK_RelayRoom;
 
 struct TAK_Ledger;
@@ -169,9 +172,11 @@ typedef struct TAK_Relay {
     /* Map pieces passed on from a host, and asked for and turned away. */
     uint32_t         map_pieces;
     uint32_t         map_refused;
-    /* Map pieces asked of hosts this second, every room together. */
+    /* Map pieces asked of hosts this second, every room together, and
+     * which player the next tick looks at first. */
     uint64_t         map_second_ms;
     uint32_t         map_second_bytes;
+    uint32_t         map_turn;
 } TAK_Relay;
 
 /* The turn logs' storage is the caller's, split evenly between rooms. */

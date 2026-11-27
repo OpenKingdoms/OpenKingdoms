@@ -14,6 +14,8 @@
  * and the parts the fingerprint parses stay well past any real map's. */
 #define TAK_MAP_SHARE_TXT_MAX  4096u
 #define TAK_MAP_SHARE_TDF_MAX  (256u << 10)
+/* The largest map a sent .tnt may describe. The largest shipped is 544. */
+#define TAK_MAP_SHARE_TILES_MAX 2048u
 /* The most a bundle may inflate to. */
 #define TAK_MAP_SHARE_RAW_MAX  (16u << 20)
 

@@ -204,14 +204,17 @@ static const char *OWN_KMP = "test_maps_tmp/Maps/Home Made.kmp";
 
 static const char ISLE_OTA[] =
     "[GlobalHeader]\n{\nmissionname=Player Isle;\nnumplayers=2;\n}\n";
-static const char ISLE_TNT[] = "the terrain of a map a player made";
-static const char ISLE_TNT_2[] = "the same map with its terrain edited";
+/* A TNT header, 32 tiles by 32, then the rest of a map. */
+#define TNT_HEAD "\x00\x40\x00\x00" "\x20\x00\x00\x00" "\x20\x00\x00\x00"
+static const char ISLE_TNT[] = TNT_HEAD "the terrain of a map a player made";
+static const char ISLE_TNT_2[] = TNT_HEAD "the same map with its terrain edited";
+static const char HOME_TNT[] = TNT_HEAD "a player's terrain";
 static const char ISLE_CRT[] = "craters";
 static const char ISLE_TXT[] = "Two players, one island.";
 
-static void isle_files(TAK_MapShareFiles *f, const char *tnt) {
+static void isle_files(TAK_MapShareFiles *f, const char *tnt, size_t tnt_size) {
     memset(f, 0, sizeof *f);
-    f->map.tnt = tnt;      f->map.tnt_size = strlen(tnt);
+    f->map.tnt = tnt;      f->map.tnt_size = tnt_size;
     f->map.ota = ISLE_OTA; f->map.ota_size = sizeof ISLE_OTA - 1;
     f->map.crt = ISLE_CRT; f->map.crt_size = sizeof ISLE_CRT - 1;
     f->txt = ISLE_TXT;     f->txt_size = sizeof ISLE_TXT - 1;
@@ -232,11 +235,11 @@ static void share_fixture_end(void) {
  * map, a cut short bundle or one that claims too much is refused. */
 TEST(a_sent_map_reads_back_whole_and_any_other_bundle_is_refused) {
     TAK_MapShareFiles f, back;
-    isle_files(&f, ISLE_TNT);
+    isle_files(&f, ISLE_TNT, sizeof ISLE_TNT - 1);
     uint8_t fp[TAK_MAP_FINGERPRINT_BYTES], other[TAK_MAP_FINGERPRINT_BYTES];
     ASSERT_EQ_INT(0, TAK_MapFingerprint_FromFiles(&f.map, fp));
     TAK_MapShareFiles g;
-    isle_files(&g, ISLE_TNT_2);
+    isle_files(&g, ISLE_TNT_2, sizeof ISLE_TNT_2 - 1);
     ASSERT_EQ_INT(0, TAK_MapFingerprint_FromFiles(&g.map, other));
 
     uint8_t *wire = NULL;
@@ -264,6 +267,17 @@ TEST(a_sent_map_reads_back_whole_and_any_other_bundle_is_refused) {
     ASSERT_EQ_INT(-1, TAK_MapShare_Unpack(wire, len, fp, &back));
     tak_free(wire);
 
+    /* A .tnt of a map bigger than any battle is built at. */
+    static char wide[sizeof ISLE_TNT];
+    memcpy(wide, ISLE_TNT, sizeof wide);
+    wide[5] = 0x10;                                   /* 4128 tiles wide */
+    isle_files(&g, wide, sizeof wide - 1);
+    uint8_t wide_fp[TAK_MAP_FINGERPRINT_BYTES];
+    ASSERT_EQ_INT(0, TAK_MapFingerprint_FromFiles(&g.map, wide_fp));
+    ASSERT_EQ_INT(0, TAK_MapShare_Pack(&g, &wire, &len));
+    ASSERT_EQ_INT(-1, TAK_MapShare_Unpack(wire, len, wide_fp, &back));
+    tak_free(wire);
+
     /* A map without its terrain is no map to send. */
     f.map.tnt = NULL;
     ASSERT(TAK_MapShare_Pack(&f, &wire, &len) != 0);
@@ -284,7 +298,7 @@ TEST(a_received_map_is_kept_as_a_pack_and_read_from_it) {
     ASSERT_EQ_INT(0, VFS_Init(GAME_DIR, NULL));
 
     TAK_MapShareFiles f;
-    isle_files(&f, ISLE_TNT);
+    isle_files(&f, ISLE_TNT, sizeof ISLE_TNT - 1);
     uint8_t fp[TAK_MAP_FINGERPRINT_BYTES], got[TAK_MAP_FINGERPRINT_BYTES];
     ASSERT_EQ_INT(0, TAK_MapFingerprint_FromFiles(&f.map, fp));
     ASSERT(TAK_MapFingerprint_FromName("Player Isle", got) != 0);
@@ -298,7 +312,7 @@ TEST(a_received_map_is_kept_as_a_pack_and_read_from_it) {
     ASSERT_EQ_INT(1, TAK_MapShare_HasOwn("Alpha Field"));
 
     /* The host edited it since: the new copy goes over the old one. */
-    isle_files(&f, ISLE_TNT_2);
+    isle_files(&f, ISLE_TNT_2, sizeof ISLE_TNT_2 - 1);
     uint8_t fp2[TAK_MAP_FINGERPRINT_BYTES];
     ASSERT_EQ_INT(0, TAK_MapFingerprint_FromFiles(&f.map, fp2));
     ASSERT_EQ_INT(0, TAK_MapShare_Keep("test_maps_tmp/received/", "Player Isle", &f));
@@ -349,7 +363,7 @@ TEST(only_a_map_a_player_made_is_offered) {
     TestHPIEntry ip[] = { { "maps/Creon Pass.ota", "[GlobalHeader]", 100, 0 },
                           { "maps/Creon Pass.tnt", "ip tnt", 100, 0 } };
     TestHPIEntry own[] = { { "kmap/Home Made.ota", "[GlobalHeader]\n{\nnumplayers=2;\n}\n", 100, 0 },
-                           { "kmap/Home Made.tnt", "a player's terrain", 100, 0 } };
+                           { "kmap/Home Made.tnt", HOME_TNT, 100, sizeof HOME_TNT - 1 } };
     int w = test_write_hpi(BASE_HPI, base, 2);
     w |= test_write_hpi(IP_HPI, ip, 2);
     w |= test_write_hpi(OWN_KMP, own, 2);

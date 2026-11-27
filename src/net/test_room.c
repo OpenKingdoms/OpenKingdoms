@@ -582,6 +582,7 @@ TEST(the_host_says_whether_its_map_may_be_sent_and_a_new_host_speaks_for_itself)
     ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_MAP, TAK_NET_SEAT_NONE, 0, "Vain Blessings", NULL));
     ASSERT_EQ_INT(TAK_MAPSHARE_OFFERED, TAK_Room_MapShare(&r));
     ASSERT(r.slot[1].flags & TAK_SLOTF_HAS_MAP);
+    ASSERT_EQ_INT(1, r.slot[1].ready);
     /* Another map has said nothing yet. */
     ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_MAP, TAK_NET_SEAT_NONE, 0, "Bleak Hollow", NULL));
     ASSERT_EQ_INT(TAK_MAPSHARE_UNKNOWN, TAK_Room_MapShare(&r));

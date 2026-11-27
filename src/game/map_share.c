@@ -131,6 +131,15 @@ int TAK_MapShare_Unpack(const uint8_t *wire, uint32_t len,
         n[k] = size;
         at += size;
     }
+    /* A .tnt the loader would take, of a size a battle can be built at. */
+    if (ok && p[PART_TNT] && n[PART_TNT] >= 12) {
+        const uint8_t *t = (const uint8_t *)p[PART_TNT];
+        uint32_t w = tak_get_u32(t + 4), h = tak_get_u32(t + 8);
+        ok = tak_get_u32(t) == 0x4000u && w >= 1 && h >= 1 &&
+             w <= TAK_MAP_SHARE_TILES_MAX && h <= TAK_MAP_SHARE_TILES_MAX;
+    } else {
+        ok = 0;
+    }
     if (!ok || at != raw || !p[PART_TNT] || !p[PART_OTA]) {
         tak_free(bundle);
         return -1;
@@ -203,7 +212,7 @@ int TAK_MapShare_Status(const char *map_key, const uint8_t fp[TAK_MAP_FINGERPRIN
     if (!map_key || !fp) return TAK_MAPSHARE_UNREADABLE;
     int shipped = TAK_MapShare_Shipped(fp);
     if (shipped) return shipped;
-    if (TAK_MapShare_ShippedName(map_key)) return TAK_MapShare_ShippedName(map_key);
+    if (TAK_MapShare_ShippedName(map_key)) return TAK_MAPSHARE_SHIPPED_NAME;
     /* Out of the game's own archives is the game's, whatever its print. */
     for (int k = PART_TNT; k <= PART_TDF; k++) {
         char path[512], archive[128];
@@ -406,6 +415,10 @@ void TAK_MapShare_Advice(int share, const char *shown, const char *map_key,
         break;
     case TAK_MAPSHARE_UNREADABLE:
         snprintf(out, cap, "The host's %s cannot be sent.", name);
+        break;
+    case TAK_MAPSHARE_SHIPPED_NAME:
+        snprintf(out, cap, "The host's %s has the name of a map the original ships, "
+                 "so it is not sent.", name);
         break;
     default:
         snprintf(out, cap, "You do not have %s.", name);

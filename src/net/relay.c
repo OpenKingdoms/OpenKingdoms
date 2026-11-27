@@ -330,6 +330,7 @@ static void snap_tick(TAK_Relay *r, TAK_RelayRoom *rr) {
 #define MAP_MINUTE_MS     60000u
 #define MAP_MINUTE_BYTES  (2u * TAK_NET_MAP_MAX)
 #define MAP_SECOND_BYTES  (2u << 20)
+#define MAP_ROOM_BYTES    (1u << 20)   /* one room's share of that a second */
 
 /* From protocol 11 a client asks for a map and answers for one. */
 static int shares_maps(const TAK_RelayClient *cl) {
@@ -368,12 +369,19 @@ static void map_pass(TAK_Relay *r, TAK_RelayClient *cl) {
         r->map_second_ms = r->now;
         r->map_second_bytes = 0;
     }
+    TAK_RelayRoom *rr = &r->room[cl->room];
+    if (r->now - rr->map_second_ms >= 1000u) {
+        rr->map_second_ms = r->now;
+        rr->map_second_bytes = 0;
+    }
     if (cl->map.minute_bytes + TAK_NET_MAP_CHUNK > MAP_MINUTE_BYTES ||
-        r->map_second_bytes + TAK_NET_MAP_CHUNK > MAP_SECOND_BYTES) return;
+        r->map_second_bytes + TAK_NET_MAP_CHUNK > MAP_SECOND_BYTES ||
+        rr->map_second_bytes + TAK_NET_MAP_CHUNK > MAP_ROOM_BYTES) return;
     for (int k = 0; k < TAK_RELAY_MAP_WINDOW; k++) {
         if (cl->map.state[k] != 1) continue;
         cl->map.minute_bytes += TAK_NET_MAP_CHUNK;
         r->map_second_bytes += TAK_NET_MAP_CHUNK;
+        rr->map_second_bytes += TAK_NET_MAP_CHUNK;
         TAK_MsgMapRequest m;
         m.client_id = cl->id;
         memcpy(m.fingerprint, cl->map.fingerprint, TAK_NET_FINGERPRINT_BYTES);
@@ -443,8 +451,10 @@ static void on_map_data(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgMapData 
 /* Pieces the host never answered are let go, and the player asks
  * again. Held ones go to the host as their turn comes. */
 static void map_tick(TAK_Relay *r) {
-    for (int i = 0; i < TAK_RELAY_CLIENTS_MAX; i++) {
-        TAK_RelayClient *cl = &r->client[i];
+    /* Each tick starts at the next player, so no seat is always first. */
+    r->map_turn = (r->map_turn + 1u) % TAK_RELAY_CLIENTS_MAX;
+    for (int j = 0; j < TAK_RELAY_CLIENTS_MAX; j++) {
+        TAK_RelayClient *cl = &r->client[(r->map_turn + (uint32_t)j) % TAK_RELAY_CLIENTS_MAX];
         if (!cl->in_use) continue;
         int held = 0;
         for (int k = 0; k < TAK_RELAY_MAP_WINDOW; k++) {

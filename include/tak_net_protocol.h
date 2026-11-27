@@ -499,6 +499,7 @@ typedef enum TAK_NetMapShare {
     TAK_MAPSHARE_MAP_PACK,      /* one of Cavedog's own map packs */
     TAK_MAPSHARE_TOO_BIG,       /* over TAK_NET_MAP_MAX as sent */
     TAK_MAPSHARE_UNREADABLE,    /* the host's own copy would not read */
+    TAK_MAPSHARE_SHIPPED_NAME,  /* named as a map the original ships */
     TAK_MAPSHARE_COUNT
 } TAK_NetMapShare;
 

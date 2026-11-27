@@ -2391,6 +2391,24 @@ TEST(mp_room_says_whether_it_has_the_rooms_map) {
     if (!saw_have_map) printf("(nothing said whether we have the map) ");
     ASSERT_EQ_INT(1, saw_have_map);
 
+    /* Another room on the same map has heard nothing from us yet. */
+    rs.room_id = 6;
+    rs.revision = 1;
+    n = TAK_Msg_RoomStateEncode(&rs, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1200));
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, Multiplayer_Tick(&platform, 1.0f / 60.0f));
+    int again = 0;
+    while ((sent = TAK_NetClient_TakeMessage(c, msg, sizeof msg)) > 0) {
+        TAK_NetFrame f;
+        TAK_MsgRoomEdit e;
+        if (TAK_Net_Split(msg, sent, &f) == 0 && f.type == TAK_MSG_ROOM_EDIT &&
+            TAK_Msg_RoomEditDecode(&e, f.payload, f.payload_len) == 0 &&
+            e.field == TAK_EDIT_HAVE_MAP &&
+            memcmp(e.fingerprint, rs.map_fingerprint, TAK_NET_FINGERPRINT_BYTES) == 0)
+            again++;
+    }
+    ASSERT_EQ_INT(1, again);
+
     Multiplayer_Shutdown();
     NetSession_Disconnect();
     UI_Shutdown();
@@ -2410,6 +2428,8 @@ static void mp_share_files(TAK_MapShareFiles *f, uint8_t fp[TAK_MAP_FINGERPRINT_
         x = x * 1103515245u + 12345u;
         mp_share_tnt[i] = (uint8_t)(x >> 16);
     }
+    /* A TNT header, 32 tiles by 32, before the noise. */
+    memcpy(mp_share_tnt, "\x00\x40\x00\x00\x20\x00\x00\x00\x20\x00\x00\x00", 12);
     memset(f, 0, sizeof *f);
     f->map.tnt = mp_share_tnt;  f->map.tnt_size = sizeof mp_share_tnt;
     f->map.ota = MP_SHARE_OTA;  f->map.ota_size = sizeof MP_SHARE_OTA - 1;

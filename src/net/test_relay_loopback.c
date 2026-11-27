@@ -2431,7 +2431,7 @@ TEST(a_player_asking_without_end_is_held_back_and_an_old_host_is_never_asked) {
     ASSERT(host->map_asks > (int)budget);
     ASSERT(joiner->map_pieces > (int)budget);
 
-    /* Six players at once share the relay's own budget a second. */
+    /* Six players in one room share that room's budget a second. */
     setup(20, 0, 95);
     host = map_room(&joiner, 0);
     ASSERT(host != NULL);
@@ -2453,7 +2453,7 @@ TEST(a_player_asking_without_end_is_held_back_and_an_old_host_is_never_asked) {
             for (uint32_t k = 0; k < 4; k++) map_ask(many[i], MAP_FP, k * TAK_NET_MAP_CHUNK);
         run_for(100);
     }
-    int per_second = (int)((2u << 20) / TAK_NET_MAP_CHUNK);
+    int per_second = (int)((1u << 20) / TAK_NET_MAP_CHUNK);
     ASSERT(host->map_asks - before <= 4 * per_second);
     ASSERT(host->map_asks - before >= 2 * per_second);
 
