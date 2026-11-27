@@ -745,13 +745,9 @@ pull request, not here.
   carrying a wave or a builder, lands where the enemy arms at the landing
   and the most it flies over on the way cost least.
 - Why: Issue #454 asks that a player on an island not be safe from the
-  computer. Measured against an island seat that never crosses, Veruna
-  and Zhon never crossed at all, since one Mer Warrior or Swamp Beast
-  that could wade over left the seat not cut off, and half the crossings that
-  did go were lost with their transport, War Galleys to the island's War
-  Galleys while they held their fire and Ghost Ships shot down over the
-  island on the way to a landing on its far side. The original's
-  skirmish AI never loads a transport (A-013).
+  computer. One wader that could cross left a seat not cut off, and
+  transports that held their fire or flew over defences were lost on the
+  way. The original's skirmish AI never loads a transport (A-013).
 - Citation: The manual describes no AI rule at this level.
 
 ## T-001: Flying transports load and unload by the ground rules

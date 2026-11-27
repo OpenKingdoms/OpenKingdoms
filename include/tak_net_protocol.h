@@ -212,8 +212,9 @@
  * buys sight, up to twice sightdistance. 86: the computer plays a
  * mission's strategic second seat once order lists let its units go. 87:
  * a scripted map in a match plays its start units and rules. 88: every
- * builder of a group told to build takes the order. */
-#define TAK_ENGINE_BUILD_ID           88
+ * builder of a group told to build takes the order. 89: a computer cut
+ * off by water crosses past waders, with its fleet and safer flights. */
+#define TAK_ENGINE_BUILD_ID           89
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
