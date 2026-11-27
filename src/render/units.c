@@ -16768,9 +16768,9 @@ static void cloak_hold(Unit *u, const UnitDef *def, int ticks) {
 
 static int g_cloak_near[TAK_MAX_UNITS];
 
-/* Returns 1 if an uncloaked, alive and built enemy of its side is within its
- * mincloakdistance (legacy:20826-20845, legacy:20536-20540).
- * Units this side holds fire on (neutral) are not counted. */
+/* An enemy its side sees, built and not cloaked itself, inside
+ * mincloakdistance (legacy:20826-20845, legacy:20536-20540). A neutral
+ * seat is none, since every seat counts it an ally (legacy:177727-177734). */
 static int cloak_enemy_near(const Unit *u, const UnitDef *def) {
     int r = def->min_cloak_distance;
     if (r <= 0) return 0;
