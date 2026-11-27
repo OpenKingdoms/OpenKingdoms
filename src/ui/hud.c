@@ -1815,23 +1815,38 @@ int HUD_QueueBadgeText(int factory, int def_idx, char *out, size_t cap) {
     return 1;
 }
 
+/* The kind a right click on a walking builder's button drops. */
+static int g_drop_def = -1;
+
+static int hud_holds_build_of(int handle, int target_handle) {
+    (void)target_handle;
+    return Units_BuildOrderCountForDef(handle, g_drop_def) > 0;
+}
+
 int HUD_BuildButtonRightClick(int def_idx) {
     int n_sel = 0;
     const int *sel = Units_GetSelection(&n_sel);
     if (!sel || n_sel <= 0 || !hud_selection_is_own()) return 0;
     const UnitDef *sd = Units_GetSelectedDef();
     /* A builder that walks drops every build order of the kind, the one
-     * in hand too (legacy:150067-150093), a factory as many as the keys
-     * say. */
+     * in hand too (legacy:150067-150093), and each selected one does, as
+     * one click sends them all. A factory drops as many as the keys say. */
     int walks = sd && sd->max_velocity > 0.0f;
-    int queued = walks ? Units_BuildOrderCountForDef(sel[0], def_idx)
-                       : Units_FactoryQueuedCountForDef(sel[0], def_idx);
+    int queued = 0;
+    if (walks)
+        for (int s = 0; s < n_sel; s++) queued += Units_BuildOrderCountForDef(sel[s], def_idx);
+    else
+        queued = Units_FactoryQueuedCountForDef(sel[0], def_idx);
     uint16_t count = walks ? (uint16_t)TAK_FACTORY_ALL : HUD_BuildCountArg();
+    g_drop_def = def_idx;
     /* The click is heard now and the queue changes on the tick. */
-    if (queued <= 0 ||
-        TAK_Cmd_EmitUnit(TAK_CMD_FACTORY_DEQUEUE, sel[0], 0, 0, -1,
-                         (uint16_t)def_idx, count) != 0)
-        return 0;
+    int sent = queued <= 0 ? -1
+             : walks ? TAK_Cmd_EmitSelectionWhere(TAK_CMD_FACTORY_DEQUEUE, 0, 0, -1,
+                                                  (uint16_t)def_idx, count,
+                                                  hud_holds_build_of)
+                     : TAK_Cmd_EmitUnit(TAK_CMD_FACTORY_DEQUEUE, sel[0], 0, 0, -1,
+                                        (uint16_t)def_idx, count);
+    if (sent != 0) return 0;
     GameSound_PlayUI("subbuild");   /* queue shrank (legacy:39328) */
     return 1;
 }

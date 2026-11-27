@@ -7744,6 +7744,22 @@ static int builder_takes_site(const Unit *u, const UnitDef *d, int def_idx,
            unit_spot_clear(d, x, y, 1);
 }
 
+static int unit_def_on_build_list(int builder_def, int def);
+
+int Units_BuildOrderTaker(int handle, int def_idx, int own_list) {
+    if (handle < 0 || handle >= g_unit_count || !Units_GetDef(def_idx)) return 0;
+    const Unit *u = &g_units[handle];
+    const UnitDef *ud = Units_GetDef(u->def_idx);
+    if (u->alive != UNIT_ALIVE_ACTIVE || u->under_construction || !ud ||
+        !(ud->cap_flags & UNIT_CAP_BUILDER))
+        return 0;
+    if ((own_list || ud->builder_limited) &&
+        !unit_def_on_build_list(u->def_idx, def_idx))
+        return 0;
+    return ud->max_velocity > 0.0f ? UNITS_BUILD_TAKER_WALKS
+                                   : UNITS_BUILD_TAKER_STRUCTURE;
+}
+
 int Units_OrderBuild(int builder_handle, int def_idx, int32_t world_x,
                      int32_t world_y, int facing, int endless) {
     Unit *u = order_unit(builder_handle);
@@ -17230,6 +17246,34 @@ static int builder_site_frame(int h, int def, int32_t x, int32_t y, int facing) 
     return -1;
 }
 
+/* Its player's frame found on its site: the builder joins it and keeps
+ * its order's def and summons. 1 when it did. */
+static int builder_join_frame(int h, int frame, int def, int endless) {
+    g_leg_taking = 1;
+    int took = Units_OrderRepair(h, frame);
+    g_leg_taking = 0;
+    if (!took) return 0;
+    g_units[h].build_endless = (uint8_t)endless;
+    g_units[h].build_def = (int16_t)def;
+    return 1;
+}
+
+/* Its player's other builders still walking to the same site join the
+ * frame h has just raised there, so a group sent with one click builds
+ * it together, which is ours (M-013). */
+static void builder_site_joiners(int h, int def) {
+    int frame = g_units[h].build_target;
+    for (int j = 0; frame >= 0 && j < g_unit_count; j++) {
+        const Unit *o = &g_units[j];
+        if (j == h || o->alive != UNIT_ALIVE_ACTIVE ||
+            o->player_id != g_units[h].player_id || o->cmd_kind != UNIT_CMD_BUILD ||
+            o->build_target >= 0 || !o->build_held || o->build_def != def)
+            continue;
+        if (builder_site_frame(j, def, o->cmd_x, o->cmd_y, o->build_facing) == frame)
+            builder_join_frame(j, frame, def, o->build_endless);
+    }
+}
+
 /* A builder at its site starts the frame once no unit stands on it. A
  * site only units hold is waited for and the looks counted, anything else
  * in the way, or no room for one more unit, ends the order
@@ -17249,20 +17293,12 @@ static void builder_summon_next(Unit *u, int h, int in_reach) {
             u->build_def = (int16_t)def;
             u->build_tries = 0;
             u->build_wait = 0;
+            builder_site_joiners(h, def);
             return;
         }
     } else {
         int frame = builder_site_frame(h, def, x, y, facing);
-        if (frame >= 0) {
-            g_leg_taking = 1;
-            int took = Units_OrderRepair(h, frame);
-            g_leg_taking = 0;
-            if (took) {
-                u->build_endless = (uint8_t)endless;
-                u->build_def = (int16_t)def;
-                return;
-            }
-        }
+        if (frame >= 0 && builder_join_frame(h, frame, def, endless)) return;
         if (u->build_tries <= SUMMON_LOOKS &&
             (build_def_walks(d) ? unit_spot_clear(d, x, y, 1)
                                 : build_site_test(def, x, y, facing, 0, 0))) {

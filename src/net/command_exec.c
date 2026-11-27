@@ -465,23 +465,35 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
                 applied++;
             }
             break;
-        case TAK_CMD_BUILD:
-            /* The first builder that can take the site starts it, as a
-             * click on the ghost does. */
-            for (int i = 0; i < count; i++) {
-                int took = mode
-                    ? exec_leg(g_exec_handles[i], UNIT_LEG_BUILD, cmd, -1)
-                    : Units_OrderBuild(g_exec_handles[i],
-                                       (int)cmd->build_type_id,
-                                       cmd->target_x, cmd->target_y,
-                                       (int)(cmd->arg & 3u),
-                                       (cmd->arg & TAK_CMD_ARG_ENDLESS) != 0);
-                if (took) {
+        case TAK_CMD_BUILD: {
+            /* Every walker named that can build it takes it, as the original
+             * orders each selected builder (legacy:39198-39256), else the
+             * first structure that can. */
+            int def = (int)cmd->build_type_id;
+            int walkers = 0;
+            for (int i = 0; i < count; i++)
+                walkers += Units_BuildOrderTaker(g_exec_handles[i], def, 0) ==
+                           UNITS_BUILD_TAKER_WALKS;
+            /* In a group each takes only a type its own menu offers. */
+            int own_list = walkers > 1;
+            for (int pass = UNITS_BUILD_TAKER_WALKS;
+                 pass <= UNITS_BUILD_TAKER_STRUCTURE && !applied; pass++) {
+                for (int i = 0; i < count; i++) {
+                    if (Units_BuildOrderTaker(g_exec_handles[i], def, own_list) != pass)
+                        continue;
+                    int took = mode
+                        ? exec_leg(g_exec_handles[i], UNIT_LEG_BUILD, cmd, -1)
+                        : Units_OrderBuild(g_exec_handles[i], def,
+                                           cmd->target_x, cmd->target_y,
+                                           (int)(cmd->arg & 3u),
+                                           (cmd->arg & TAK_CMD_ARG_ENDLESS) != 0);
+                    if (!took) continue;
                     applied++;
-                    break;
+                    if (pass == UNITS_BUILD_TAKER_STRUCTURE) break;
                 }
             }
             break;
+        }
         case TAK_CMD_FACTORY_ENQUEUE: {
             int n = exec_factory_count(cmd);
             int unfinished = (cmd->arg & TAK_FACTORY_UNFINISHED) != 0;

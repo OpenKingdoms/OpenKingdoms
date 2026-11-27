@@ -2224,17 +2224,28 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
 #undef IG_PRESSED
 }
 
+/* The unit drawn under the pointer over the world, -1 for none, and 1
+ * when the pointer is over the world at all, at (x, y). */
+static int ig_pointer_unit(TAK_Platform *platform, GameWorld *world,
+                           int *unit, int32_t *x, int32_t *y) {
+    int mx = 0, my = 0;
+    *unit = -1;
+    if (platform->has_focus) SDL_GetMouseState(&mx, &my);
+    if (g_dbg_mouse_on) { mx = g_dbg_mouse_x; my = g_dbg_mouse_y; }
+    if (!platform->has_focus || Minimap_IsLarge() || InGameMenu_IsOpen() ||
+        Briefing_IsOpen() || ig.sd_ask || HUD_HitTest(mx, my, platform) ||
+        !ig_view()->pointer_to_world(world, platform, mx, my, x, y))
+        return 0;
+    *unit = ig_view()->pointer_to_unit(world, platform, mx, my);
+    return 1;
+}
+
 /* The unit, else the shown feature, under the pointer over the world,
  * for the info panel. A feature is named only where it is drawn. */
 static void ig_info_pointer(TAK_Platform *platform, GameWorld *world) {
-    int unit = -1, feature = -1, mx = 0, my = 0;
+    int unit = -1, feature = -1;
     int32_t x = 0, y = 0;
-    if (platform->has_focus) SDL_GetMouseState(&mx, &my);
-    if (g_dbg_mouse_on) { mx = g_dbg_mouse_x; my = g_dbg_mouse_y; }
-    if (platform->has_focus && !Minimap_IsLarge() && !InGameMenu_IsOpen() &&
-        !Briefing_IsOpen() && !ig.sd_ask && !HUD_HitTest(mx, my, platform) &&
-        ig_view()->pointer_to_world(world, platform, mx, my, &x, &y)) {
-        unit = ig_view()->pointer_to_unit(world, platform, mx, my);
+    if (ig_pointer_unit(platform, world, &unit, &x, &y)) {
         /* A wall under the pointer is passed over (reported from play). */
         int n = 0;
         const Unit *units = Units_GetActive(&n);
@@ -2418,8 +2429,15 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * never while a chat line is being typed. */
     {
         const Uint8 *ks = SDL_GetKeyboardState(NULL);
-        OrderOverlay_SetShift(platform->has_focus && !Chat_IsOpen() &&
-                              (ks[SDL_SCANCODE_LSHIFT] || ks[SDL_SCANCODE_RSHIFT]));
+        int shift = platform->has_focus && !Chat_IsOpen() &&
+                    (ks[SDL_SCANCODE_LSHIFT] || ks[SDL_SCANCODE_RSHIFT]);
+        OrderOverlay_SetShift(shift);
+        /* The unit under the pointer is in focus too (legacy:238326).
+         * Only the classic view draws the overlay. */
+        int hover = -1;
+        int32_t hx = 0, hy = 0;
+        if (shift && !ig.view3d) (void)ig_pointer_unit(platform, world, &hover, &hx, &hy);
+        OrderOverlay_SetHover(hover);
     }
     int32_t shake_x = 0, shake_y = 0;
     ViewShake_Step(&shake_x, &shake_y);
@@ -2788,6 +2806,7 @@ void InGame_Shutdown(void) {
      * starts in 2D, would hand its ghost to a view that is not up. */
     HUD_SetBuildGhostHook(NULL);
     OrderOverlay_SetShift(0);
+    OrderOverlay_SetHover(-1);
     g_request_view3d = 0;
     Translate_Free(&g_death_lines);
     /* A test's mouse goes with the battle it drove. */

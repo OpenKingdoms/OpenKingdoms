@@ -1009,19 +1009,21 @@ pull request, not here.
 - Citation: docs/notes/pathing.md, "Ship hulls". The manual describes no
   rule for spacing.
 
-## M-013: A build order goes to one of the builders it names
+## M-013: Several builders take one building together
 
-- Change: a placing click with several builders selected gives the
-  building, or the summons, to the first of them that can take its site,
-  and the others keep what they were doing. A builder given the same
-  order before the frame is up joins it there, where the original's
-  reports the target blocked (legacy:12096-12116).
-- Why: the original gives the order to every builder that can build it
-  (legacy:39200-39248), and the latecomers help the first frame up. Here
-  more builders are sent with a click on the frame.
-- Citation: the walkthrough in manual section III sends a second builder
-  with a click on the frame, which still works. docs/notes/economy.md,
-  "A summons without end", has the original's rule.
+- Change: with several units selected the build menu is the first
+  selected unit's. A placing click sends every selected builder that
+  walks and has the type on its own build list, and a right click on the
+  button takes that kind from each of them. Once one of them raises the
+  frame, the others of its player sent to that site join it, where the
+  original's latecomer reports the target blocked (legacy:12096-12116).
+- Why: the original's placing click orders every selected builder that
+  can build the type (legacy:39198-39256), but it shows the build menu
+  only while one unit is selected (legacy:153423-153437) and a change of
+  selection ends the placement (legacy:242517-242527), so its builders
+  never share one from a placing click. Here a group sent with one click
+  builds it together.
+- Citation: issue #544. docs/notes/economy.md, "A build order".
 
 ## M-014: Flyers in the air count each other in pairs
 
@@ -1463,14 +1465,19 @@ pull request, not here.
 ## D-031: Shift shows the selection's orders
 
 - Change: while Shift is held, the classic view draws a line from each
-  of your selected units through its orders, with a marker for each
-  move, attack target, patrol and its way round, and rally point, and a
-  queued building as a ghost at its spot and facing. Other players'
-  units show nothing, and a target you cannot see gives nothing away.
+  of your selected units, and from your unit under the pointer, through
+  its orders, with a marker for each move, attack target, patrol and its
+  way round, and rally point. The look of the lines and markers is ours.
+  Other players' units show nothing, and a target you cannot see gives
+  nothing away.
 - Why: Shift queues orders (manual section IV), and a player cannot tell
   what is lined up without a picture, as Beyond All Reason draws one.
-- Citation: no such drawing was found in the original.
-  docs/notes/ui.md, "Shift orders".
+- Citation: the original draws the orders of the same units while Shift
+  is held, with each queued building as a ghost, and every unit's queued
+  buildings when a builder is in focus (legacy:210741-210744,
+  legacy:238278-238350). The manual's Conjuring Structures says Shift
+  shows the summoning unit's queued tasks as ghosts. docs/notes/ui.md,
+  "Shift orders".
 
 ## D-032: Battles are recorded, and the main menu plays them back
 

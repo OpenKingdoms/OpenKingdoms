@@ -4,9 +4,12 @@
  *
  * With Shift held the classic view draws a line from each selected unit
  * of the local player's through the orders it holds, a marker at each,
- * and a translucent ghost for each building it has queued. Nothing is
- * drawn without Shift. It reads the orders through Units_OrdersOf and
- * writes nothing the simulation keeps.
+ * and a translucent ghost for each building it has queued. The unit
+ * under the pointer shows its route too, and when the one unit selected
+ * or the one under the pointer has a build list, every unit of the local
+ * player's shows the buildings it has queued. Nothing is drawn without
+ * Shift. It reads the orders through Units_OrdersOf and writes nothing
+ * the simulation keeps.
  */
 #ifndef TAK_ORDER_OVERLAY_H
 #define TAK_ORDER_OVERLAY_H
@@ -55,9 +58,15 @@ int  OrderOverlay_Plan(int handle, OrderStop *out, int cap);
 /* Whether Shift is down for the battle screen this frame. */
 void OrderOverlay_SetShift(int held);
 
-/* Draw the routes of the local player's selected units, in the classic
- * view's projection. Returns how many stops were drawn, 0 without
- * Shift. */
+/* The unit under the pointer this frame, -1 for none. */
+void OrderOverlay_SetHover(int handle);
+
+/* Test hook: the queued buildings the last draw showed. */
+int  OrderOverlay_DebugGhosts(void);
+
+/* Draw the routes of the local player's selected units and the queued
+ * buildings above, in the classic view's projection. Returns how many
+ * stops were drawn, 0 without Shift. */
 int  OrderOverlay_Draw(const struct GameWorld *world,
                        struct TAK_Platform *plat);
 

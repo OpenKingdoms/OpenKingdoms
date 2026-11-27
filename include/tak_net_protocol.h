@@ -211,8 +211,9 @@
  * it is a frame, so the frame holds the pose Create gives it. 85: height
  * buys sight, up to twice sightdistance. 86: the computer plays a
  * mission's strategic second seat once order lists let its units go. 87:
- * a scripted map in a match plays its start units and rules. */
-#define TAK_ENGINE_BUILD_ID           87
+ * a scripted map in a match plays its start units and rules. 88: every
+ * builder of a group told to build takes the order. */
+#define TAK_ENGINE_BUILD_ID           88
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
