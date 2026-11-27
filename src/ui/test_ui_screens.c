@@ -63,6 +63,7 @@
 #include "tak_features.h"
 #include "tak_ai.h"
 #include "tak_mission_script.h"
+#include "tak_map_scenario.h"
 #include "tak_sim_hash.h"
 #include "tak_briefing.h"
 #include "tak_game_info.h"
@@ -756,6 +757,66 @@ TEST(battle_setup_lists_every_installed_map) {
     ASSERT_EQ_INT(-1, find_map_by_key("takmission01_mt"));
     ASSERT_EQ_INT(-1, find_map_by_key("takmission23_ph"));
     ASSERT_EQ_INT(-1, find_map_by_key("takx01_dh"));
+
+    /* The list keys pick a map the way a click on its row does and keep
+     * it in view, as the original's list box takes them
+     * (legacy:319494-319530). */
+    int vis = BattleSetup_MapRowsVisible(), shown = BattleSetup_ShownCount();
+    ASSERT(shown > 2 * vis);
+    BattleSetup_SelectMap(BattleSetup_ShownRow(0));
+    uint8_t *const keys[] = { &platform.pressed_down, &platform.pressed_up,
+                              &platform.pressed_end, &platform.pressed_home,
+                              &platform.pressed_page_down, &platform.pressed_page_up };
+    const int want_row[] = { 1, 0, shown - 1, 0, vis, 0 };
+    const int want_top[] = { 0, 0, shown - vis, 0, vis, 0 };
+    for (int k = 0; k < 6; k++) {
+        *keys[k] = 1;
+        ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, BattleSetup_Tick(&platform, 1.0f / 60.0f));
+        *keys[k] = 0;
+        ASSERT_EQ_STR(BattleSetup_MapKey(BattleSetup_ShownRow(want_row[k])),
+                      BattleSetup_Config()->map_name);
+        ASSERT_EQ_INT(want_top[k], BattleSetup_MapScroll());
+    }
+    /* Down off the last row in view brings the next one in. */
+    BattleSetup_SelectMap(BattleSetup_ShownRow(vis - 1));
+    platform.pressed_down = 1;
+    (void)BattleSetup_Tick(&platform, 1.0f / 60.0f);
+    platform.pressed_down = 0;
+    ASSERT_EQ_STR(BattleSetup_MapKey(BattleSetup_ShownRow(vis)), BattleSetup_Config()->map_name);
+    ASSERT_EQ_INT(1, BattleSetup_MapScroll());
+    /* The wheel over the list scrolls it, through the pump that takes it. */
+    GUIRuntime *brt = BattleSetup_Runtime();
+    const GUIWidget *list = NULL;
+    for (int i = 0; i < GUIRuntime_NumWidgets(brt) && !list; i++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(brt, i);
+        if (w && tak_stricmp(w->name, "MapList") == 0) list = w;
+    }
+    ASSERT_NOT_NULL(list);
+    SDL_WarpMouseInWindow(platform.window, list->rect.x + 20, list->rect.y + 10);
+    SDL_Event wheel;
+    memset(&wheel, 0, sizeof wheel);
+    wheel.type = SDL_MOUSEWHEEL;
+    wheel.wheel.y = -2;
+    wheel.wheel.preciseY = -2.0f;
+    ASSERT_EQ_INT(1, SDL_PushEvent(&wheel));
+    ASSERT_EQ_INT(1, TAK_Platform_PumpEvents(&platform));
+    (void)BattleSetup_Tick(&platform, 1.0f / 60.0f);
+    platform.wheel_dy = 0;
+    ASSERT_EQ_INT(3, BattleSetup_MapScroll());
+    /* The search still takes typing, and the keys walk what it shows. */
+    snprintf(platform.text_in, sizeof platform.text_in, "%s", "castle");
+    platform.text_in_len = 6;
+    platform.pressed_home = 1;
+    (void)BattleSetup_Tick(&platform, 1.0f / 60.0f);
+    platform.text_in_len = 0;
+    platform.text_in[0] = '\0';
+    platform.pressed_home = 0;
+    ASSERT(BattleSetup_ShownCount() >= 2 && BattleSetup_ShownCount() < shown);
+    ASSERT_EQ_STR(BattleSetup_MapKey(BattleSetup_ShownRow(0)), BattleSetup_Config()->map_name);
+    platform.pressed_down = 1;
+    (void)BattleSetup_Tick(&platform, 1.0f / 60.0f);
+    platform.pressed_down = 0;
+    ASSERT_EQ_STR(BattleSetup_MapKey(BattleSetup_ShownRow(1)), BattleSetup_Config()->map_name);
 
     BattleSetup_Shutdown();
     UI_Shutdown();
@@ -2573,6 +2634,15 @@ TEST(mp_room_builds_the_world_the_server_described) {
     n = mp_encode_room(msg, sizeof msg, 1, 2, 606);
     (void)TAK_NetClient_OnMessage(c, msg, n, 1100);
     (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    /* The host launches while this player is in Options, with a change
+     * made there and not kept. */
+    ASSERT_EQ_INT(1, Multiplayer_HandleClick("Options", -1));
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, Multiplayer_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(1, Multiplayer_OptionsOpen());
+    int bars = Settings_GetInt("DisplayDamageBars", 0) != 0;
+    ASSERT_EQ_INT(1, Options_ClickWidget("Visual"));
+    ASSERT_EQ_INT(1, Options_ClickWidget("ShowDamage"));
+    ASSERT_EQ_INT(!bars, Settings_GetInt("DisplayDamageBars", 0) != 0);
 
     /* A match on a real map, with two seats the server has already
      * decided everything about. */
@@ -2650,6 +2720,10 @@ TEST(mp_room_builds_the_world_the_server_described) {
 
     World_End(&platform);
     Multiplayer_Shutdown();
+    /* Leaving the room put Options away as Cancel would. */
+    ASSERT_EQ_INT(0, Multiplayer_OptionsOpen());
+    ASSERT_EQ_INT(0, Options_ClickWidget("Ok"));
+    ASSERT_EQ_INT(bars, Settings_GetInt("DisplayDamageBars", 0) != 0);
     NetSession_Disconnect();
     UI_Shutdown();
     teardown_platform(&platform);
@@ -3273,6 +3347,64 @@ TEST(mp_room_map_chooser_scrolls_by_its_bar) {
     ASSERT_EQ_INT(1, Multiplayer_MapChooserThumbRect(&thumb));
     ASSERT_EQ_INT(track.y, thumb.y);
 
+    /* The list keys pick a row the way a click does and keep it in view
+     * (legacy:319494-319530). */
+    uint8_t *const keys[] = { &platform.pressed_down, &platform.pressed_up,
+                              &platform.pressed_end, &platform.pressed_home,
+                              &platform.pressed_page_down, &platform.pressed_page_up };
+    const int want_row[] = { 1, 0, count - 1, 0, vis, 0 };
+    const int want_top[] = { 0, 0, count - vis, 0, vis, 0 };
+    for (int k = 0; k < 6; k++) {
+        *keys[k] = 1;
+        ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, Multiplayer_Tick(&platform, 1.0f / 60.0f));
+        *keys[k] = 0;
+        ASSERT_EQ_INT(want_row[k], Multiplayer_MapChooserSelected());
+        ASSERT_EQ_INT(want_top[k], Multiplayer_MapChooserScroll());
+    }
+    Multiplayer_MapChooserSelect(vis - 1);
+    platform.pressed_down = 1;
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    platform.pressed_down = 0;
+    ASSERT_EQ_INT(vis, Multiplayer_MapChooserSelected());
+    ASSERT_EQ_INT(1, Multiplayer_MapChooserScroll());
+    /* The search still takes typing, and the keys walk what it shows. */
+    snprintf(platform.text_in, sizeof platform.text_in, "%s", "castle");
+    platform.text_in_len = 6;
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    platform.text_in_len = 0;
+    platform.text_in[0] = '\0';
+    int found = Multiplayer_MapChooserRowCount();
+    ASSERT(found >= 2 && found < count);
+    platform.pressed_home = 1;
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    platform.pressed_home = 0;
+    platform.pressed_down = 1;
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    platform.pressed_down = 0;
+    ASSERT_EQ_INT(1, Multiplayer_MapChooserSelected());
+    /* OK sends the row the keys chose. */
+    char picked[96];
+    snprintf(picked, sizeof picked, "%s", Multiplayer_MapChooserRowKey(1));
+    mp_drain(c);
+    Multiplayer_MapChooserPress("OK");
+    TAK_MsgRoomEdit ed[2];
+    ASSERT_EQ_INT(1, mp_take_edits(c, ed, 2));
+    ASSERT_EQ_INT(TAK_EDIT_MAP, ed[0].field);
+    ASSERT_EQ_STR(picked, ed[0].text);
+    /* Escape puts the chooser away and stays with it, though it is still
+     * down on the room's next frames. The test sets SDL's own key array. */
+    (void)Multiplayer_HandleClick("Map", widget_index_named(rt, "Map"));
+    ASSERT_EQ_INT(1, Multiplayer_MapChooserOpen());
+    Uint8 *held = (Uint8 *)SDL_GetKeyboardState(NULL);
+    held[SDL_SCANCODE_ESCAPE] = 1;
+    int closing = Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    int still_open = Multiplayer_MapChooserOpen();
+    int after = Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    held[SDL_SCANCODE_ESCAPE] = 0;
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, closing);
+    ASSERT_EQ_INT(0, still_open);
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, after);
+
     Multiplayer_CloseMapChooser();
     Multiplayer_Shutdown();
     NetSession_Disconnect();
@@ -3628,7 +3760,8 @@ TEST(the_game_options_are_kept_for_the_next_battle) {
     ASSERT_EQ_INT(!next.monarch_expendable, saved_death);
     ASSERT_EQ_INT(1, hosted);
     ASSERT_EQ_INT((int)(defaults.line_of_sight ? TAK_ROOMOPT_LINE_OF_SIGHT : 0u) |
-                  (int)TAK_ROOMOPT_MAP_REVEALED, (int)cr.options);
+                  (int)TAK_ROOMOPT_MAP_REVEALED | (int)TAK_ROOMOPT_MAP_SCRIPT,
+                  (int)cr.options);
     ASSERT_EQ_INT(900, (int)cr.unit_cap);
     ASSERT_EQ_INT(0, took);
     ASSERT_EQ_INT((int)TAK_ROOMOPT_LINE_OF_SIGHT, (int)e.value);
@@ -3782,6 +3915,47 @@ TEST(mp_room_chat_goes_out_and_comes_in) {
     (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
     ASSERT_EQ_INT(1, Multiplayer_ChatLineCount());
     ASSERT_EQ_STR("player 1: welcome", Multiplayer_ChatLine(0));
+
+    /* Options opens over the room (legacy:137340-137347) and the room
+     * stays live under it: a line said meanwhile comes in, and what is
+     * typed meanwhile is not chat. */
+    GUIRuntime *rt = Multiplayer_Runtime();
+    ASSERT_EQ_INT(1, Multiplayer_HandleClick("Options", widget_index_named(rt, "Options")));
+    ASSERT_EQ_INT(1, Multiplayer_OptionsOpen());
+    memcpy(cm.text, "still here", 11);
+    n = TAK_Msg_ChatEncode(&cm, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1400));
+    snprintf(platform.text_in, sizeof platform.text_in, "%s", "typed");
+    platform.text_in_len = 5;
+    platform.pressed_up = 1;
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, Multiplayer_Tick(&platform, 1.0f / 60.0f));
+    platform.text_in_len = 0;
+    platform.text_in[0] = '\0';
+    platform.pressed_up = 0;
+    ASSERT_EQ_INT(1, Multiplayer_OptionsOpen());
+    ASSERT_EQ_INT(2, Multiplayer_ChatLineCount());
+    ASSERT_EQ_STR("player 1: still here", Multiplayer_ChatLine(1));
+    ASSERT_EQ_STR("", Multiplayer_ChatTyping());
+    /* Cancel puts it away onto the room. An Escape that cancels is still
+     * down on the room's next frames, and leaves the room only once it
+     * has come up and gone down again. The test sets SDL's own key array. */
+    ASSERT_EQ_INT(1, Options_ClickWidget("Cancel"));
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, Multiplayer_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(0, Multiplayer_OptionsOpen());
+    Uint8 *held = (Uint8 *)SDL_GetKeyboardState(NULL);
+    int got[4];
+    held[SDL_SCANCODE_ESCAPE] = 1;
+    got[0] = Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    got[1] = Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    held[SDL_SCANCODE_ESCAPE] = 0;
+    got[2] = Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    held[SDL_SCANCODE_ESCAPE] = 1;
+    got[3] = Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    held[SDL_SCANCODE_ESCAPE] = 0;
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, got[0]);
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, got[1]);
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, got[2]);
+    ASSERT_EQ_INT(GAMESTATE_MENU, got[3]);
 
     Multiplayer_Shutdown();
     ASSERT_EQ_INT(0, (int)SDL_IsTextInputActive());
@@ -4850,6 +5024,7 @@ TEST(black_peace_follows_its_mission_file) {
     ASSERT_NOT_NULL(world);
     ASSERT_EQ_INT(0, InGame_Init(&platform));
     InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    uint32_t thinks = TAK_AI_DebugThinks(2);
 
     /* Player1 is "logo 1 taros", Player2 "logo 3 aramon", and seats 9
      * and 10 name no logo, so they take their own numbers from nought. */
@@ -4925,10 +5100,21 @@ TEST(black_peace_follows_its_mission_file) {
     ASSERT_EQ_INT(-1, Units_Spawn(Units_FindDefByName("TARDRAG"), 1, 1,
                                   128 * 16, 118 * 16));
 
-    /* Every mobile unit of the second seat gone is the win. */
+    /* The second seat, strategic, is the computer's, but not the builder
+     * its list tells to wait (legacy:177742, legacy:228755). */
     InGame_DebugRunSimTicks(30);
-    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    ASSERT(TAK_AI_DebugThinks(2) > thinks);
     units = Units_GetActive(&unit_count);
+    int mage = -1;
+    for (int i = 0; i < unit_count && mage < 0; i++)
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 2 &&
+            (int)units[i].def_idx == Units_FindDefByName("ARABUILD")) mage = i;
+    ASSERT(mage >= 0);
+    ASSERT_EQ_INT(1, MissionOrders_Holds(mage));
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)units[mage].cmd_kind);
+
+    /* Every mobile unit of the second seat gone is the win. */
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
     for (int i = 0; i < unit_count; i++) {
         const UnitDef *d = Units_GetDef((int)units[i].def_idx);
         if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 2 &&
@@ -7810,6 +7996,8 @@ TEST(a_feature_past_the_known_map_is_cut_by_the_fog) {
     ASSERT_NOT_NULL(world->fog_layers[1]);
     ASSERT_EQ_INT(0, InGame_Init(&platform));
     Units_SetShadowsOn(0);
+    /* No pointer: its cursor animates by the clock and would count as ink. */
+    platform.has_focus = 0;
 
     Timer timer;
     Timer_Init(&timer);
@@ -7819,7 +8007,7 @@ TEST(a_feature_past_the_known_map_is_cut_by_the_fog) {
     /* Sprite features the camera can be centred on, widest first, until
      * one leaves ink in the frame: some of the widest are markers with
      * nothing to draw. Three frames each: the whole map known, then
-     * only the three by three cells around the feature's centre known,
+     * only a three by three block at the feature known,
      * then the whole map known with the feature gone. The clock is
      * stopped, so nothing recomputes the fog in between. What differs
      * between the first and the last is the feature's own ink. */
@@ -7843,7 +8031,10 @@ TEST(a_feature_past_the_known_map_is_cut_by_the_fog) {
         tried++;
         int32_t wx = world->features[cand].tile_x * 16 + cand_fx * 8;
         int32_t wy = world->features[cand].tile_z * 16 + cand_fz * 8;
-        int cell_x = wx / TAK_FOG_CELL_PX, cell_y = wy / TAK_FOG_CELL_PX;
+        /* The feature's own fog cell is the known block's south-west
+         * cell, so the feature draws and its west part lies past it. */
+        int cell_x = wx / TAK_FOG_CELL_PX + 1;
+        int cell_y = wy / TAK_FOG_CELL_PX - 1;
         world->cam_x = wx - world->viewport_w / 2;
         world->cam_y = wy - world->viewport_h / 2;
 
@@ -7874,15 +8065,16 @@ TEST(a_feature_past_the_known_map_is_cut_by_the_fog) {
         /* Past the known block the overlay is solid, so the feature's
          * ink there is black, the way the ground under it is. Inside
          * the middle cell it is what it was. */
-        /* The overlay's quads blend towards their right and lower
-         * neighbours, so the solid dark starts two cells out on the
-         * near side and one cell out on the far side. */
-        int dark_x0 = (cell_x - 2) * TAK_FOG_CELL_PX - world->cam_x;
-        int dark_x1 = (cell_x + 2) * TAK_FOG_CELL_PX - world->cam_x;
-        int dark_y0 = (cell_y - 2) * TAK_FOG_CELL_PX - world->cam_y;
-        int dark_y1 = (cell_y + 2) * TAK_FOG_CELL_PX - world->cam_y;
+        /* The overlay ramps between cell centres, so the solid dark
+         * starts at the centre of the first unknown cell on each side.
+         * Its rows are drawn TAK_FOG_LIFT_PX up the picture. */
+        int lift_y = world->cam_y + TAK_FOG_LIFT_PX;
+        int dark_x0 = (cell_x - 2) * TAK_FOG_CELL_PX + TAK_FOG_CELL_PX / 2 - world->cam_x;
+        int dark_x1 = (cell_x + 2) * TAK_FOG_CELL_PX + TAK_FOG_CELL_PX / 2 - world->cam_x;
+        int dark_y0 = (cell_y - 2) * TAK_FOG_CELL_PX + TAK_FOG_CELL_PX / 2 - lift_y;
+        int dark_y1 = (cell_y + 2) * TAK_FOG_CELL_PX + TAK_FOG_CELL_PX / 2 - lift_y;
         int inside_x = cell_x * TAK_FOG_CELL_PX - world->cam_x;
-        int inside_y = cell_y * TAK_FOG_CELL_PX - world->cam_y;
+        int inside_y = cell_y * TAK_FOG_CELL_PX - lift_y;
         ink_past = black_past = ink_inside = kept_inside = 0;
         for (int y = 0; y < H; y++) {
             for (int x = 0; x < W; x++) {
@@ -7901,12 +8093,13 @@ TEST(a_feature_past_the_known_map_is_cut_by_the_fog) {
         free(known);
         free(edge);
         free(bare);
-        if (ink_past > 20) { pick = cand; fx = cand_fx; }
+        if (ink_past > 20 && ink_inside > 0) { pick = cand; fx = cand_fx; }
     }
     printf("(feature %d, %d tiles wide, %d tried: %d ink past the known ground, %d of it black, %d inside, %d kept) ",
            pick, fx, tried, ink_past, black_past, ink_inside, kept_inside);
     ASSERT(pick >= 0);
     ASSERT_EQ_INT(ink_past, black_past);
+    ASSERT(ink_inside > 0);
     ASSERT_EQ_INT(ink_inside, kept_inside);
 
     InGame_Shutdown();
@@ -9044,7 +9237,9 @@ static int story_next_is_loading(int next) {
  * Movies\Post<stem>.bik after it (legacy:168719). The install has one
  * before every mission of the first campaign and one after the last of
  * Aramon's. Starting a mission that has one goes to the clip, and the
- * clip hands over to loading. */
+ * clip hands over to loading. Issue #538: the kingdom's shield plays
+ * first, Movies\<side>.bik for the side Player1 plays
+ * (legacy:241639-241662). */
 TEST(story_a_mission_with_a_clip_plays_it_first) {
     if (setup_vfs() != 0) SKIP("no data dir");
     char clip[160];
@@ -9062,9 +9257,11 @@ TEST(story_a_mission_with_a_clip_plays_it_first) {
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
     int next = Story_StartMission(&platform, 0);
     ASSERT_EQ_INT(GAMESTATE_CREDITS, next);
-    ASSERT_EQ_STR("Movies/takmission01_mt.bik", Credits_RequestedClip());
+    ASSERT_EQ_STR("Movies/ARAMON.bik", Credits_RequestedClip());
+    ASSERT_EQ_STR("Movies/takmission01_mt.bik", Credits_RequestedThen());
     ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, Credits_RequestedState());
     /* The mission is set up behind the clip, not after it. */
     GameWorld *world = World_Get();
@@ -9073,8 +9270,26 @@ TEST(story_a_mission_with_a_clip_plays_it_first) {
     /* And the clip screen opens it and goes where it was told. */
     ASSERT_EQ_INT(0, Credits_Init(&platform));
     ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, Credits_ReturnState());
+    ASSERT_EQ_STR("", Credits_RequestedThen());
+    Credits_Shutdown();
+    /* The second clip plays when the first ends: a tick a frame, so the
+     * pair takes the ticks of both shields, 105 and 126 frames. */
+    Credits_RequestPair("Movies/ARAMON.bik", "Movies/ZHON.bik", GAMESTATE_CAMPAIGN);
+    ASSERT_EQ_INT(0, Credits_Init(&platform));
+    int ticks = 0;
+    next = GAMESTATE_CREDITS;
+    while (next == GAMESTATE_CREDITS && ticks++ < 1000)
+        next = Credits_Tick(&platform, 1.0f);
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, next);
+    printf("(%d ticks) ", ticks);
+    ASSERT(ticks >= 200 && ticks < 300);
+    Credits_Shutdown();
+    /* A first clip the install lacks leaves the second. */
+    Credits_RequestPair("Movies/NOSUCHSIDE.bik", "Movies/ZHON.bik", GAMESTATE_CAMPAIGN);
+    ASSERT_EQ_INT(0, Credits_Init(&platform));
     Credits_Shutdown();
     World_End(&platform);
+    UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
 }
@@ -9101,7 +9316,7 @@ TEST(the_next_chapter_plays_its_clip_after_a_win) {
     /* Chapter one goes by way of its clip. */
     int next = Story_StartMission(&platform, 0);
     ASSERT_EQ_INT(GAMESTATE_CREDITS, next);
-    ASSERT_EQ_STR("Movies/takmission01_mt.bik", Credits_RequestedClip());
+    ASSERT_EQ_STR("Movies/takmission01_mt.bik", Credits_RequestedThen());
     ASSERT_EQ_INT(0, Credits_Init(&platform));
     ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, Credits_ReturnState());
     Credits_Shutdown();
@@ -9133,7 +9348,7 @@ TEST(the_next_chapter_plays_its_clip_after_a_win) {
     ASSERT_EQ_INT(1, Story_SelectedChapter());
     next = Story_StartMission(&platform, Story_SelectedChapter());
     ASSERT_EQ_INT(GAMESTATE_CREDITS, next);
-    ASSERT_EQ_STR("Movies/takmission02_mt.bik", Credits_RequestedClip());
+    ASSERT_EQ_STR("Movies/takmission02_mt.bik", Credits_RequestedThen());
     ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, Credits_RequestedState());
     ASSERT_EQ_INT(0, Credits_Init(&platform));
     ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, Credits_ReturnState());
@@ -9166,6 +9381,10 @@ TEST(a_mission_gives_each_player_the_side_its_line_names) {
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
 
     int ip_next = Story_StartMissionFile(&platform, "takx03_ph.ota");
+    /* The player's side is the shield shown first. */
+    char ip_shield[64];
+    snprintf(ip_shield, sizeof(ip_shield), "%s", Credits_RequestedClip());
+    int has_creon_shield = BinkPlayer_ClipExists("Movies/CREON.bik");
     GameWorld *world = World_Get();
     int creon = world ? world->cfg.players[0].side : -1;
     int veruna = world ? world->cfg.players[1].side : -1;
@@ -9184,6 +9403,7 @@ TEST(a_mission_gives_each_player_the_side_its_line_names) {
     ASSERT_EQ_INT(TAK_SIDE_VERUNA, veruna);
     ASSERT_EQ_INT(TAK_SIDE_ARAMON, aramon);
     ASSERT_EQ_INT(TAK_SIDE_TAROS, taros);
+    if (has_creon_shield) ASSERT_EQ_STR("Movies/CREON.bik", ip_shield);
 }
 
 /* The campaign list is a scan of camps\*.tdf named through the
@@ -20431,6 +20651,214 @@ TEST(a_match_world_rebuilt_from_a_snapshot_plays_on_alike) {
     VFS_Shutdown();
 }
 
+/* Units of a kind a player has standing, by unit name. */
+static int sm_count(int player, const char *name) {
+    int def = Units_FindDefByName(name), n = 0, c = 0;
+    const Unit *u = Units_GetActive(&n);
+    for (int i = 0; i < n; i++)
+        c += u[i].player_id == player && u[i].def_idx == def &&
+             u[i].alive == UNIT_ALIVE_ACTIVE;
+    return c;
+}
+
+/* King of the Hill in a match, built from START_GAME as a client builds
+ * it: each seat starts with its start's units from the map's .crt and
+ * no monarch, a rule sends a swordsman to its base every few seconds,
+ * a world rebuilt from a snapshot part way through plays on with the
+ * same hashes, the rules' timers included, and the other player's
+ * machine computes the same battle. */
+TEST(a_scripted_map_plays_its_script_in_a_match_and_through_a_snapshot) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    ASSERT_NOT_NULL(c);
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 21);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1000));
+    TAK_MsgStartGame sg;
+    memset(&sg, 0, sizeof sg);
+    sg.match_id = 12;
+    sg.seed = 777;
+    sg.your_seat = 0;
+    sg.turn_ticks = 3;
+    snprintf(sg.map_name, sizeof sg.map_name, "King of the Hill");
+    sg.options = TAK_ROOMOPT_LINE_OF_SIGHT | TAK_ROOMOPT_MAP_SCRIPT;
+    sg.slot[0].kind = TAK_NSLOT_HUMAN;
+    sg.slot[0].side = TAK_SIDE_ARAMON;
+    sg.slot[0].team = 1;
+    sg.slot[1].kind = TAK_NSLOT_HUMAN;
+    sg.slot[1].side = TAK_SIDE_ARAMON;
+    sg.slot[1].team = 2;
+    sg.slot[1].colour = 1;
+    sg.slot[2].kind = TAK_NSLOT_COMPUTER;
+    sg.slot[2].side = TAK_SIDE_ARAMON;
+    sg.slot[2].team = 3;
+    sg.slot[2].colour = 2;
+    n = TAK_Msg_StartGameEncode(&sg, msg, sizeof msg);
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+    ASSERT_EQ_INT(0, MP_BeginMatchWorld(&platform, &c->start));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, pl_run_loading(&platform, 900));
+    TAK_MsgGo go;
+    go.first_turn = 0;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1200));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 8));
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    /* Not a campaign mission: its units are the script's, so the
+     * computer seats play as in any match. */
+    ASSERT_EQ_INT(0, World_Get()->mission.objective_count);
+    ASSERT_EQ_INT(0, World_Get()->mission.placement_count);
+    /* The start's army, and no monarch: the script replaces the spawn. */
+    for (int p = 1; p <= 2; p++) {
+        if (end_find_monarch(p) >= 0) printf("(seat %d has a monarch) ", p);
+        ASSERT(end_find_monarch(p) < 0);
+        ASSERT_EQ_INT(4, sm_count(p, "ARAARCH"));
+        ASSERT_EQ_INT(2, sm_count(p, "ARABROAD"));
+        ASSERT_EQ_INT(2, sm_count(p, "ARAAT"));
+        ASSERT_EQ_INT(1, sm_count(p, "NPCFLAG"));
+        ASSERT_EQ_INT(0, sm_count(p, "ARASWORD"));
+    }
+    /* The second start's flag stands at ten times its hit points. */
+    {
+        int flag = Units_FindDefByName("NPCFLAG"), un = 0;
+        const Unit *u = Units_GetActive(&un);
+        for (int i = 0; i < un; i++)
+            if (u[i].def_idx == flag && u[i].player_id == 2)
+                ASSERT_EQ_INT(10 * u[i].max_health, u[i].health);
+    }
+    int32_t timer = 0;
+    ASSERT_EQ_INT(0, MapScenario_DebugTimer(1, 1, &timer));
+    ASSERT_EQ_INT(3, timer);
+
+    /* A swordsman for each seat by its fourth second, in its base. */
+    sr_turns(c, 0, 1200, UINT32_MAX, 0, 1300);
+    static SnapRun sent, played, rebuilt;
+    memset(&sent, 0, sizeof sent);
+    sr_run_to(c, &sent, 300);
+    ASSERT_EQ_INT(1, sm_count(1, "ARASWORD"));
+    ASSERT_EQ_INT(1, sm_count(2, "ARASWORD"));
+    {
+        int sword = Units_FindDefByName("ARASWORD"), un = 0;
+        const Unit *u = Units_GetActive(&un);
+        for (int i = 0; i < un; i++) {
+            if (u[i].def_idx != sword || u[i].player_id != 1) continue;
+            int cx = u[i].world_x / 16, cz = u[i].world_y / 16;
+            if (cx < 13 || cx > 19 || cz < 103 || cz > 109)
+                printf("(seat 1's swordsman at cell %d,%d) ", cx, cz);
+            ASSERT(cx >= 13 && cx <= 19 && cz >= 103 && cz <= 109);
+        }
+    }
+
+    /* A snapshot taken between two of its rule's seconds. */
+    sr_run_to(c, &sent, 600);
+    c->snap_asked = 78;
+    sr_run_to(c, &sent, 660);
+    for (int i = 0; i < 64 && c->snap_out; i++) {
+        (void)TAK_NetClient_SnapshotPump(c, 1u << 20);
+        sr_drain(c, &sent);
+    }
+    ASSERT_EQ_INT(660, (int)sent.snap_tick);
+    memset(&played, 0, sizeof played);
+    sr_run_to(c, &played, 1800);
+    int swords1 = sm_count(1, "ARASWORD");
+    ASSERT(swords1 >= 4);
+    ASSERT_EQ_INT(0, MapScenario_DebugTimer(1, 1, &timer));
+    int32_t timer_played = timer;
+
+    for (uint32_t off = 0; off < sent.snap_len; off += TAK_NET_SNAP_CHUNK) {
+        TAK_MsgSnapData d;
+        d.snap_id = 6;
+        d.tick = sent.snap_tick;
+        d.total = sent.snap_len;
+        d.offset = off;
+        uint32_t left = sent.snap_len - off;
+        d.len = (uint16_t)(left < TAK_NET_SNAP_CHUNK ? left : TAK_NET_SNAP_CHUNK);
+        d.data = sent.snap + off;
+        n = TAK_Msg_SnapDataEncode(&d, msg, sizeof msg);
+        ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 2000));
+    }
+    memset(&rebuilt, 0, sizeof rebuilt);
+    NetSession_Tick(2000);
+    sr_drain(c, &rebuilt);
+    ASSERT_EQ_INT(1, rebuilt.results);
+    ASSERT_EQ_INT(0, rebuilt.refusals);
+    go.first_turn = 220;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 2100));
+    TAK_Match_End();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    ASSERT_EQ_INT(0, MapScenario_Active());
+    ASSERT_EQ_INT(0, MP_RebuildMatchWorld(&platform));
+    ASSERT_EQ_INT(1, MP_RebuiltFromSnapshot());
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 900));
+    ASSERT_EQ_INT(660, (int)TAK_CmdQueue_Tick());
+    ASSERT_EQ_INT(1, MapScenario_Active());
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    sr_turns(c, 220, 1200, UINT32_MAX, 0, 2200);
+    sr_run_to(c, &rebuilt, 1800);
+    ASSERT_EQ_INT(0, rebuilt.refusals);
+    for (int k = 720 / 60 - 1; k < 1800 / 60; k++) {
+        ASSERT(played.hash[k] != 0);
+        ASSERT_EQ_INT((int)played.hash[k], (int)rebuilt.hash[k]);
+    }
+    ASSERT_EQ_INT(swords1, sm_count(1, "ARASWORD"));
+    ASSERT_EQ_INT(0, MapScenario_DebugTimer(1, 1, &timer));
+    ASSERT_EQ_INT(timer_played, timer);
+
+    /* The second seat's machine, from the same START_GAME. */
+    TAK_Match_End();
+    NetSession_Disconnect();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    NetSession_BeginWithoutLink("Other");
+    c = NetSession_Client();
+    ASSERT_NOT_NULL(c);
+    n = sg_encode_welcome(msg, sizeof msg, 22);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 3000));
+    sg.your_seat = 1;
+    n = TAK_Msg_StartGameEncode(&sg, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 3100));
+    ASSERT_EQ_INT(0, MP_BeginMatchWorld(&platform, &c->start));
+    ASSERT_EQ_INT(2, Units_LocalPlayer());
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, pl_run_loading(&platform, 900));
+    go.first_turn = 0;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 3200));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 8));
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    sr_turns(c, 0, 1200, UINT32_MAX, 0, 3300);
+    static SnapRun other;
+    memset(&other, 0, sizeof other);
+    sr_run_to(c, &other, 1800);
+    for (int k = 0; k < 1800 / 60; k++) {
+        uint32_t want = played.hash[k] ? played.hash[k] : sent.hash[k];
+        ASSERT(want != 0);
+        ASSERT_EQ_INT((int)want, (int)other.hash[k]);
+    }
+
+    tak_free(sent.snap);
+    TAK_Match_End();
+    NetSession_Disconnect();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    Settings_SetStr("RejoinMatch", "");
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A beaten seat's match played as frames, the monarch falling at one
  * second. look_around presses Tab, scrolls and clicks as a watcher does.
  * Fills hash[k] with the hash it reported for tick 60 * (k + 1) and
@@ -22378,9 +22806,10 @@ TEST(sound_orders_voice_the_unit_flat) {
     sfx_teardown(&platform);
 }
 
-/* A unit of the player hit by someone else raises the kingdom's alarm
- * from sidedata, once per underattack_delay, unless it is selected.
- * The monarch raises AlarmMon on its own timer (legacy:15218-15235). */
+/* A unit of the player hit by someone else raises its side's alarm
+ * from sidedata, once per underattack_delay, only while it is off
+ * screen, selected or not. The monarch raises AlarmMon on its own timer
+ * (legacy:15223-15234, issue #535). */
 TEST(sound_alarms_when_own_units_are_hit) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -22422,14 +22851,29 @@ TEST(sound_alarms_when_own_units_are_hit) {
     Timer_Init(&timer);
     timer.max_ticks_per_frame = 30;
     units = Units_GetActive(&unit_count);
+    const int32_t kx = units[knight].world_x, ky = units[knight].world_y;
     int hp0 = units[knight].health;
     int hits = 0;
+    /* In view and not selected: the player sees the fight, no alarm. */
+    for (int i = 0; i < 1200 && hits < 1; i++) {
+        sfx_look_at(world, kx, ky);
+        sfx_run_frames(&platform, &timer, 1);
+        units = Units_GetActive(&unit_count);
+        if (units[knight].health < hp0) { hits++; hp0 = units[knight].health; }
+    }
+    ASSERT_EQ_INT(1, hits);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("AlarmAra"));
+    /* Out of view and selected: the alarm. */
+    Units_SelectSingle(knight);
+    hits = 0;
     for (int i = 0; i < 1200 && hits < 2; i++) {
+        sfx_look_at(world, cx, cy);
         sfx_run_frames(&platform, &timer, 1);
         units = Units_GetActive(&unit_count);
         if (units[knight].health < hp0) { hits++; hp0 = units[knight].health; }
     }
     ASSERT_EQ_INT(2, hits);
+    Units_SelectSingle(-1);
     /* Two hits inside the thirty second window: one alarm. */
     ASSERT_EQ_INT(1, GameSound_DebugCountPrefix("AlarmAra"));
     const GameSoundEvent *ev = GameSound_DebugEvent(GameSound_DebugFindPrefix("AlarmAra"));
@@ -23491,6 +23935,17 @@ TEST(f1_opens_the_in_game_menu_with_the_shipped_buttons) {
     timer.max_ticks_per_frame = 30;
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, igm_frame(&platform, &timer));
     ASSERT_EQ_INT(1, InGameMenu_IsOpen());
+
+    /* Its Options carry the Resolution slider's sizes as the menu's do,
+     * and the battle takes a step at once (legacy:157711-157721). */
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_Press("Options"));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Visual"));
+    ASSERT_EQ_INT(HUD_SCALE_FIT, platform.scale_mode);
+    ASSERT_EQ_INT(1, Options_ClickWidget("incbutton"));
+    ASSERT_EQ_INT(HUD_SCALE_ORIGINAL, platform.scale_mode);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, igm_frame(&platform, &timer));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Cancel"));
+    ASSERT_EQ_INT(HUD_SCALE_FIT, platform.scale_mode);
 
     igm_teardown(&platform);
 }
@@ -25945,6 +26400,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_seat_beaten_in_a_match_watches_the_rest_of_it);
     RUN_UI_TEST(a_beaten_seat_looking_around_keeps_the_battles_hash);
     RUN_UI_TEST(a_match_world_rebuilt_from_a_snapshot_plays_on_alike);
+    RUN_UI_TEST(a_scripted_map_plays_its_script_in_a_match_and_through_a_snapshot);
     RUN_UI_TEST(mp_room_follows_the_servers_later_snapshot);
     RUN_UI_TEST(mp_room_builds_the_world_the_server_described);
     RUN_UI_TEST(mp_room_a_press_on_another_players_row_sends_nothing);

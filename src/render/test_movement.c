@@ -2393,7 +2393,9 @@ TEST(a_flyer_never_lands_on_sea_it_had_not_explored) {
     GameWorld *w = mv_island();
     ASSERT_NOT_NULL(w);
     ASSERT_EQ_INT(0, Fog_Init(w));
-    ((UnitDef *)Units_GetDef(MV_FLY_DRAG))->sight_distance = 230;
+    /* Aloft it sees twice this, 7 whole cells, 224 px, near the 230 px the
+     * case was built on. */
+    ((UnitDef *)Units_GetDef(MV_FLY_DRAG))->sight_distance = 115;
     int h = Units_Spawn(MV_FLY_DRAG, 1, 0, 2600, 1500);
     ASSERT(h >= 0);
     Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);

@@ -55,8 +55,10 @@ pull request, not here.
   slider on the Visual page lists the display's sizes plus Fit, which
   stretches the 640x480 battle screen over the window, and in fullscreen
   a size below the desktop's is a real mode change, as in the original.
-  In a browser the sizes are one to four screen pixels per game pixel,
-  by default the page's devicePixelRatio rounded. A new install starts
+  In a browser the sizes are the page at one to four screen pixels per
+  game pixel, by default the page's devicePixelRatio rounded, and the
+  usual desktop sizes up to the screen's, drawn at that size and scaled
+  to fit the page. A new install starts
   on Original, an options file from before the setting keeps Fit, and on
   Windows a switch from Fit to Original takes effect from the next
   start.
@@ -1176,23 +1178,16 @@ pull request, not here.
 - Citation: issue #212. The manual does not describe the menu at this
   level.
 
-## D-014: Sight does not grow or shrink with the ground it falls on
+## D-014: Sight reads the eye fresh at every stamp
 
-- Change: a unit reveals every fog cell inside its sightdistance, plus
-  the nine cells around it, whatever the ground's height, and stamps
-  again only on a fog cell change. The original scales the radius by the
-  eye's height over each cell's lowest ground, seeing further downhill
-  and less uphill, lighting no cell above the eye and reaching at most
-  twice sightdistance (legacy:167413-167423), and stamps again when the
-  eye moves by more than 5 (legacy:167455-167456). On level ground the
-  two agree.
-- Why: the height term needs each unit's model height and a record of the
-  ground under each fog cell, which the original builds from the
-  heightmap (legacy:224395-224470), and that record and its stamp are
-  still to be written.
-- Citation: docs/notes/2026-09-04-combat-mechanics.md on the simulation
-  reading a unit's model. The manual is silent on sight at this level of
-  detail.
+- Change: a unit's sight grows and shrinks with the ground it falls on,
+  as the original's does, but the engine reads the eye at every stamp
+  and stamps again when it has moved at all. The original stamps again
+  once the eye has moved by more than 5 (legacy:167455-167456).
+- Why: a stale eye would have to be kept on the unit and in a save, for
+  a few px of height between two stamps.
+- Citation: the stamp's height term (legacy:167413-167423) and the
+  ground record (legacy:224395-224470). docs/notes/fog.md.
 
 ## D-015: The sweep clears a building you own
 
@@ -1245,8 +1240,8 @@ pull request, not here.
   - A patrol list sends the unit's patrol order to each point in turn,
     going on within 64 pixels or once it turns for the next. The
     original queues the patrol orders on the unit.
-  - `w N` is N seconds, as Total Annihilation documented it. The
-    original's time unit is inferred.
+  - `w N D` ends early on an enemy unit its side sees within D, where
+    the original also counts the buildings the seat sees.
   - `wa` ends when the watched unit's health drops, where the original
     also wakes on a miss that does no damage.
   - `a TYPE` takes the nearest unit of the type, where the original
@@ -1256,8 +1251,16 @@ pull request, not here.
   - `i NAME` boards at once and the list waits until the unit is set
     down, though a `w` runs out aboard. The original runs the list
     aboard (legacy:182203-182225, legacy:184105-184124).
-  - `c`, `s` and `v` are read and dropped. Nothing makes a unit
-    unselectable for `s` to undo, and the speed `v` sets has no field.
+  - `v` is read and dropped, as the speed it sets has no field. `s`
+    gives the unit back to the computer player only once its list has
+    ended. The original hands it over at the `s`.
+  - The computer plays the second seat when its line calls it strategic,
+    as every shipped chapter does. The original plays every seat a line
+    names, a passive one on a fifth of the brain's share. A strategic
+    ally, the third seat in 18 chapters, is not played yet.
+  - A mission seat's home is its building that trains nearest the middle
+    of its buildings, as a campaign brain is never sent to its start
+    position (legacy:18774-18777).
   - `SetAttribute` sets health, mana and the scales of D-020.
     `ReadValue` and `WriteValue` are not in, and no shipped script of
     the first campaign calls them.
@@ -1268,7 +1271,9 @@ pull request, not here.
   `o N` is the unit's standing orders, not a change of owner.
 - Citation: legacy:228246-228770 the order list, legacy:8920-8958 the
   wait, legacy:8963-9031 the attack on a type, legacy:233216 the
-  standing orders. The map script's engine is made at legacy:177876,
+  standing orders, legacy:228755-228765 and legacy:8911 the hold a list
+  puts on its unit, legacy:177733-177742 and legacy:19335 the seats the
+  computer plays. The map script's engine is made at legacy:177876,
   its command host is legacy:178336-178652, its value ports
   legacy:178722-178822, its created and trigger events
   legacy:178218-178250, its destroyed event legacy:177932 and its
@@ -1380,8 +1385,8 @@ pull request, not here.
   patrol, also lets go of a picked target out of reach or inside its
   minrange.
 - Why: shots stop on what they fly into, and the original fires into a
-  hill without looking. With sight not yet shrinking uphill (D-014), an
-  archer in a clearing would shoot the trees until its target died.
+  hill without looking, so an archer in a clearing would shoot the trees
+  until its target died.
 - Citation: the original's fire gate looks only at range, reload, mana
   and facing (legacy:249328-249420), and a unit with no mover has no
   leash (legacy:15125). docs/notes/2026-09-04-combat-mechanics.md. The
@@ -1883,5 +1888,22 @@ pull request, not here.
   can edit, and has no dialog for them. The file leaves E empty, though
   E arms Resurrect in the original. `test_keybinds`. The manual is
   silent.
+
+## D-058: A scripted map's rules run on every machine
+
+- Change: every seat's rules run on every machine in seat order, as
+  part of the lockstep simulation. A win the rules call for a seat
+  beats each seat at war with it, so the match ends. A kill is tallied
+  when the blow lands and a loss when the unit's record ends. The
+  chance condition draws from the simulation's generator. A health,
+  armour or attack scale of 0 leaves the unit as authored. Use Map
+  Script is on when a room opens and keeps the host's choice from map
+  to map.
+- Why: the original ran each machine's own seats, let the network carry
+  what they did, and ended only the winner's game. Lockstep needs one
+  result on every machine.
+- Citation: legacy:173086-173338, legacy:206542-206576, legacy:173375.
+  `a_scripted_map_plays_its_script_in_a_match_and_through_a_snapshot`.
+  The manual is silent.
 
 *(More entries added as deviations land.)*

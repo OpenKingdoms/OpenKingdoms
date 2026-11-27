@@ -67,6 +67,7 @@ const Projectile *Units_GetProjectiles(int *out_count) {
 uint32_t TAK_SimHash_AI(uint32_t h) { return TAK_HashU32(h, g_ai_state); }
 /* No mission runs here. */
 uint32_t TAK_SimHash_Mission(uint32_t h) { return h; }
+uint32_t TAK_SimHash_Scenario(uint32_t h) { return h; }
 
 /* ── fixture ──────────────────────────────────────────────────────── */
 

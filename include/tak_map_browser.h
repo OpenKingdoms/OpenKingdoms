@@ -103,6 +103,11 @@ int  MapBrowser_StripPress(TAK_MapBrowser *b, const TAK_MapStrip *s,
 /* Typed characters and Backspace into the search. 1 when it changed. */
 int  MapBrowser_Type(TAK_MapBrowser *b, const struct TAK_Platform *p,
                      int backspace);
+/* The list keys this frame. at is the selection's place in the shown list,
+ * -1 when hidden, and *top the first row in view, moved to keep the new
+ * selection in view. Returns the place to select, -1 for no change. */
+int  MapBrowser_ListKeys(const TAK_MapBrowser *b, const struct TAK_Platform *p,
+                         int at, int visible, int *top);
 void MapBrowser_DrawStrip(const TAK_MapBrowser *b, const TAK_MapStrip *s,
                           SDL_Surface *off, struct Font *font);
 

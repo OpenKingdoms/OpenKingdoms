@@ -206,8 +206,13 @@
  * from the engine. 80: a mission's order lists run patrols, attacks on a
  * place, standing orders and placed angles as the original's do. 81: a Shift
  * drag lays a line of buildings, and a summons without end refuses Shift
- * orders. 82: Ctrl+Shift puts an order in front of the queue. */
-#define TAK_ENGINE_BUILD_ID           82
+ * orders. 82: Ctrl+Shift puts an order in front of the queue. 83: a unit
+ * stays cloaked by a neutral seat's units. 84: a build frame's Create sees
+ * it is a frame, so the frame holds the pose Create gives it. 85: height
+ * buys sight, up to twice sightdistance. 86: the computer plays a
+ * mission's strategic second seat once order lists let its units go. 87:
+ * a scripted map in a match plays its start units and rules. */
+#define TAK_ENGINE_BUILD_ID           87
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
@@ -435,6 +440,9 @@ typedef enum TAK_NetPaceReason {
  * like any other, and the engine build a room needs keeps a build
  * without them out. */
 #define TAK_ROOMOPT_REMASTERED        0x0080u
+/* Use Map Script: a scripted map plays its .crt (legacy:139234). On
+ * when a room opens, as the original sets it for such a map. */
+#define TAK_ROOMOPT_MAP_SCRIPT        0x0100u
 
 /* HELLO flag bits. */
 #define TAK_HELLOF_IRON_PLAGUE    0x01u
