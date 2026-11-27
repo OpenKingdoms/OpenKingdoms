@@ -132,6 +132,8 @@ static struct {
      * how long it is readable. */
     uint32_t view3d_notice_until;
     TAK_Platform *platform;
+    /* The play area the last frame had, 0 before the first. */
+    int32_t last_view_w, last_view_h;
 } ig;
 
 /* A battle asked to open in the 3D view (the --view3d flag). */
@@ -1492,6 +1494,20 @@ static void ig_scroll_dir(const Uint8 *keys, int *out_dx, int *out_dy) {
 }
 
 /* Move the camera through the active view, which keeps it on the map. */
+/* A play area grown by a Resolution step or a resized window keeps the
+ * view inside the far edges, where every scroll keeps it. */
+static void ig_keep_view_on_map(GameWorld *world) {
+    int grew = ig.last_view_w && (world->viewport_w > ig.last_view_w ||
+                                  world->viewport_h > ig.last_view_h);
+    ig.last_view_w = world->viewport_w;
+    ig.last_view_h = world->viewport_h;
+    if (!grew) return;
+    int32_t max_x = world->map_pixels_w - world->viewport_w;
+    int32_t max_y = world->map_pixels_h - world->viewport_h;
+    if (max_x >= 0 && world->cam_x > max_x) world->cam_x = max_x;
+    if (max_y >= 0 && world->cam_y > max_y) world->cam_y = max_y;
+}
+
 static void ig_move_camera(GameWorld *world, int32_t dx, int32_t dy) {
     if (!world || (!dx && !dy)) return;
     ig_view()->scroll(world, dx, dy);
@@ -2253,6 +2269,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     /* HUD reserves the right sidebar + bottom strip; viewport_w/h
      * shrink to the visible game area for camera bounds + math. */
     HUD_Init(platform, world);
+    ig_keep_view_on_map(world);
 
     /* A match hears the wire before it runs a tick: the turns that
      * arrived this frame are what the next ticks are allowed to be.
