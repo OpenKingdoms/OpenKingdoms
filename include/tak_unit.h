@@ -2262,6 +2262,12 @@ int               Units_BeginBuildingForUnitFacing(int builder_handle,
 int               Units_OrderBuild(int builder_handle, int def_idx,
                                    int32_t world_x, int32_t world_y,
                                    int facing, int endless);
+/* Whether a placing click's order for def reaches this unit: a builder,
+ * held to its own list when it is limited (legacy:39200-39203) or when
+ * own_list is set. 1 for one that walks, 2 for a structure, 0 for neither. */
+#define UNITS_BUILD_TAKER_WALKS     1
+#define UNITS_BUILD_TAKER_STRUCTURE 2
+int               Units_BuildOrderTaker(int handle, int def_idx, int own_list);
 /* 1 when Ctrl on a walking builder's button summons def without end,
  * which takes bmcode 1 (legacy:150077-150084). */
 int               Units_DefCanRepeat(int def_idx);

@@ -1007,19 +1007,21 @@ pull request, not here.
 - Citation: docs/notes/pathing.md, "Ship hulls". The manual describes no
   rule for spacing.
 
-## M-013: A build order goes to one of the builders it names
+## M-013: Several builders take one building together
 
-- Change: a placing click with several builders selected gives the
-  building, or the summons, to the first of them that can take its site,
-  and the others keep what they were doing. A builder given the same
-  order before the frame is up joins it there, where the original's
-  reports the target blocked (legacy:12096-12116).
-- Why: the original gives the order to every builder that can build it
-  (legacy:39200-39248), and the latecomers help the first frame up. Here
-  more builders are sent with a click on the frame.
-- Citation: the walkthrough in manual section III sends a second builder
-  with a click on the frame, which still works. docs/notes/economy.md,
-  "A summons without end", has the original's rule.
+- Change: with several units selected the build menu is the first
+  selected unit's. A placing click sends every selected builder that
+  walks and has the type on its own build list, and a right click on the
+  button takes that kind from each of them. Once one of them raises the
+  frame, the others of its player sent to that site join it, where the
+  original's latecomer reports the target blocked (legacy:12096-12116).
+- Why: the original's placing click orders every selected builder that
+  can build the type (legacy:39198-39256), but it shows the build menu
+  only while one unit is selected (legacy:153423-153437) and a change of
+  selection ends the placement (legacy:242517-242527), so its builders
+  never share one from a placing click. Here a group sent with one click
+  builds it together.
+- Citation: issue #544. docs/notes/economy.md, "A build order".
 
 ## M-014: Flyers in the air count each other in pairs
 

@@ -1488,6 +1488,18 @@ TEST(a_right_click_on_a_builders_button_drops_that_kind) {
     oq_ticks(1);
     ASSERT_EQ_INT(0, Units_BuildOrderCountForDef(bd, OQ_BARRACKS));
     ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(frame)->alive);
+    /* A group sent with one click drops the kind with one click. */
+    int other = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY + 64);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, other, OQ_CX + 8, OQ_CY + 200, -1,
+                                OQ_HALL, TAK_CMD_ARG_QUEUE));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 200, -1,
+                                OQ_HALL, TAK_CMD_ARG_QUEUE));
+    Units_SelectSingle(bd);
+    Units_SelectAdd(other);
+    ASSERT_EQ_INT(1, HUD_BuildButtonRightClick(OQ_HALL));
+    oq_ticks(1);
+    ASSERT_EQ_INT(0, Units_BuildOrderCountForDef(bd, OQ_HALL));
+    ASSERT_EQ_INT(0, Units_BuildOrderCountForDef(other, OQ_HALL));
     oq_end();
 }
 
@@ -2724,8 +2736,9 @@ TEST(a_site_nobody_has_begun_blocks_nobody) {
     oq_end();
 }
 
-/* Two builders of one player sent to one site raise one frame between
- * them: the later one finds it standing and joins it, which is ours. */
+/* Builders of one player sent to one site raise one frame between them,
+ * the others joining it, which is ours. One click orders each builder it
+ * names whose own list holds the type (legacy:39198-39256). */
 TEST(a_second_builder_sent_to_a_site_joins_the_first) {
     ASSERT_NOT_NULL(oq_world());
     int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
@@ -2740,6 +2753,52 @@ TEST(a_second_builder_sent_to_a_site_joins_the_first) {
     ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(second)->cmd_kind);
     ASSERT_EQ_INT(oq_unit(first)->build_target, oq_unit(second)->build_target);
     ASSERT_EQ_INT(1, oq_frames_of(OQ_HALL));
+    int joined = oq_unit(first)->build_target;
+
+    const int soldier = OQ_SOLDIER, hall = OQ_HALL;
+    Units_DebugSetBuildables(OQ_BUILDER, &hall, 1);
+    Units_DebugSetBuildables(OQ_HELPER, &soldier, 1);
+    Units_DebugSetBuildables(OQ_LIMITED, &soldier, 1);
+    int32_t tx = OQ_CX + 8, ty = OQ_CY + 400;
+    int b[3];
+    TAK_GameCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type = TAK_CMD_BUILD;
+    cmd.seat = 1;
+    cmd.target_x = tx;
+    cmd.target_y = ty;
+    cmd.build_type_id = OQ_HALL;
+    for (int k = 0; k < 3; k++) {
+        b[k] = Units_Spawn(OQ_BUILDER, 1, 0, tx - 120 + 120 * k, ty + 150);
+        ASSERT(b[k] >= 0);
+        cmd.unit_ids[cmd.unit_count++] = Units_GetStableId(b[k]);
+    }
+    int mage = Units_Spawn(OQ_LIMITED, 1, 0, tx + 200, ty + 150);
+    int sword = Units_Spawn(OQ_SOLDIER, 1, 0, tx - 200, ty + 150);
+    int king = Units_Spawn(OQ_HELPER, 1, 0, tx + 260, ty + 150);
+    ASSERT(mage >= 0 && sword >= 0 && king >= 0);
+    cmd.unit_ids[cmd.unit_count++] = Units_GetStableId(mage);
+    cmd.unit_ids[cmd.unit_count++] = Units_GetStableId(sword);
+    cmd.unit_ids[cmd.unit_count++] = Units_GetStableId(king);
+    ASSERT_EQ_INT(3, TAK_CommandExec_Apply(&cmd));
+    cmd.target_x = tx + 200;
+    cmd.arg = TAK_CMD_ARG_QUEUE;
+    ASSERT_EQ_INT(3, TAK_CommandExec_Apply(&cmd));
+    for (int k = 0; k < 3; k++) {
+        ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(b[k])->cmd_kind);
+        ASSERT_EQ_INT(1, (int)oq_unit(b[k])->leg_count);
+        ASSERT_EQ_INT(UNIT_LEG_BUILD, (int)oq_unit(b[k])->legs[0].kind);
+    }
+    ASSERT(oq_unit(mage)->cmd_kind != UNIT_CMD_BUILD);
+    ASSERT(oq_unit(sword)->cmd_kind != UNIT_CMD_BUILD);
+    ASSERT(oq_unit(king)->cmd_kind != UNIT_CMD_BUILD);
+    /* The nearest raises it and the two still walking join it at once. */
+    for (t = 0; t < 2000 && oq_unit(b[1])->build_target < 0; t++) oq_ticks(1);
+    ASSERT(oq_unit(b[1])->build_target >= 0);
+    ASSERT(oq_dist(b[0], tx, ty) > 100 && oq_dist(b[2], tx, ty) > 100);
+    ASSERT_EQ_INT(oq_unit(b[1])->build_target, oq_unit(b[0])->build_target);
+    ASSERT_EQ_INT(oq_unit(b[1])->build_target, oq_unit(b[2])->build_target);
+    ASSERT(oq_unit(b[1])->build_target != joined);
     oq_end();
 }
 
