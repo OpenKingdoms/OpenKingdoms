@@ -5022,6 +5022,7 @@ TEST(black_peace_follows_its_mission_file) {
     ASSERT_NOT_NULL(world);
     ASSERT_EQ_INT(0, InGame_Init(&platform));
     InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    uint32_t thinks = TAK_AI_DebugThinks(2);
 
     /* Player1 is "logo 1 taros", Player2 "logo 3 aramon", and seats 9
      * and 10 name no logo, so they take their own numbers from nought. */
@@ -5097,10 +5098,21 @@ TEST(black_peace_follows_its_mission_file) {
     ASSERT_EQ_INT(-1, Units_Spawn(Units_FindDefByName("TARDRAG"), 1, 1,
                                   128 * 16, 118 * 16));
 
-    /* Every mobile unit of the second seat gone is the win. */
+    /* The second seat, strategic, is the computer's, but not the builder
+     * its list tells to wait (legacy:177742, legacy:228755). */
     InGame_DebugRunSimTicks(30);
-    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    ASSERT(TAK_AI_DebugThinks(2) > thinks);
     units = Units_GetActive(&unit_count);
+    int mage = -1;
+    for (int i = 0; i < unit_count && mage < 0; i++)
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 2 &&
+            (int)units[i].def_idx == Units_FindDefByName("ARABUILD")) mage = i;
+    ASSERT(mage >= 0);
+    ASSERT_EQ_INT(1, MissionOrders_Holds(mage));
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)units[mage].cmd_kind);
+
+    /* Every mobile unit of the second seat gone is the win. */
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
     for (int i = 0; i < unit_count; i++) {
         const UnitDef *d = Units_GetDef((int)units[i].def_idx);
         if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 2 &&

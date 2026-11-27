@@ -47,8 +47,9 @@ enum {
     MS_STEP_BOARD,          /* ref ident */
     MS_STEP_SELF_DESTRUCT = 11, /* saves keep the numbers, 10 was an `o` step */
     MS_STEP_UNLOAD,         /* a, b squares */
-    MS_STEP_SKIP,           /* selectable, speed, unknown */
-    MS_STEP_CLOAK
+    MS_STEP_SKIP,           /* speed, unknown */
+    MS_STEP_CLOAK,
+    MS_STEP_RELEASE         /* `s`: the computer may use the unit again */
 };
 
 typedef struct MsStep {
@@ -61,7 +62,7 @@ typedef struct MsStep {
 typedef struct MsProgram {
     int16_t  unit;          /* -1 when the slot is free */
     uint8_t  started;       /* the order at pc has been given */
-    uint8_t  pad;
+    uint8_t  holds;         /* it gives orders, so the computer keeps off */
     uint32_t stable_id;
     uint16_t first, count, pc;
     int16_t  watch;         /* wait-for-attack: whose health is marked */
@@ -98,6 +99,9 @@ static struct {
 
     MsProgram  program[MS_PROGRAMS];
     int16_t    program_of[MS_MAX_UNITS];   /* slot + 1, 0 for none */
+    /* The stable id of a unit a list keeps from the computer player for
+     * good, until an `s`, 0 for none (legacy:228755-228765, legacy:8911). */
+    uint32_t   held_id[MS_MAX_UNITS];
     MsStep     step[MS_STEPS];
     int        steps_used;
 
@@ -201,6 +205,10 @@ static void ms_program_free(MsProgram *p) {
     p->unit = -1;
 }
 
+static void ms_let_go(int handle) {
+    if (handle >= 0 && handle < MS_MAX_UNITS) ms.held_id[handle] = 0;
+}
+
 /* Close the holes finished lists leave in the step pool. A list keeps
  * all its steps, a patrol round goes back over them. */
 static void ms_steps_compact(void) {
@@ -261,7 +269,23 @@ static void ms_step_from(const MissionCommand *c, MsStep *s) {
         break;
     case MISSION_CMD_SELF_DESTRUCT: s->type = MS_STEP_SELF_DESTRUCT; break;
     case MISSION_CMD_CLOAK:         s->type = MS_STEP_CLOAK; break;
+    case MISSION_CMD_SELECTABLE:    s->type = MS_STEP_RELEASE; break;
     default:                        s->type = MS_STEP_SKIP; break;
+    }
+}
+
+/* The orders the original queues as a unit mission, which is what
+ * takes the unit (legacy:228246-228770). `o`, `c`, `v` and `i` set
+ * fields or board at once. */
+static int ms_cmd_holds(MissionCommandType t) {
+    switch (t) {
+    case MISSION_CMD_WAIT: case MISSION_CMD_WAIT_ANIMATION:
+    case MISSION_CMD_MOVE: case MISSION_CMD_PATROL: case MISSION_CMD_ATTACK:
+    case MISSION_CMD_BUILD: case MISSION_CMD_SELF_DESTRUCT:
+    case MISSION_CMD_SELECTABLE: case MISSION_CMD_UNLOAD:
+        return 1;
+    default:
+        return 0;
     }
 }
 
@@ -281,10 +305,13 @@ int MissionOrders_Give(int handle, const char *text) {
     if (n > 0xffff) n = 0xffff;
     /* `o` is no step. Each one sets the standing orders as the list is
      * read, so the last holds from the start (legacy:228595). */
-    int level = -1, steps = 0;
+    int level = -1, steps = 0, holds = 0, keeps = 0;
     for (int i = 0; i < n; i++) {
         if (cmds[i].type != MISSION_CMD_ORDERS) steps++;
         else if (cmds[i].a >= 0 && cmds[i].a <= 2) level = cmds[i].a;
+        holds |= ms_cmd_holds(cmds[i].type);
+        keeps |= cmds[i].type == MISSION_CMD_PATROL ||
+                 cmds[i].type == MISSION_CMD_SELF_DESTRUCT;
     }
     if (ms.steps_used + steps > MS_STEPS) ms_steps_compact();
     int slot = -1;
@@ -297,10 +324,16 @@ int MissionOrders_Give(int handle, const char *text) {
         return 0;
     }
     if (level >= 0) Units_OrderSetAggro(handle, level);
+    /* A list that gives an order takes the unit from the computer player
+     * until it ends. A patrol, a `d` or an attack on a place leaves out the
+     * MakeSelectable at its end, so only an `s` gives the unit back
+     * (legacy:228755-228765). */
+    if (keeps) ms.held_id[handle] = u->stable_id;
     if (steps > 0) {
         MsProgram *p = &ms.program[slot];
         memset(p, 0, sizeof(*p));
         p->unit = (int16_t)handle;
+        p->holds = (uint8_t)holds;
         p->stable_id = u->stable_id;
         p->first = (uint16_t)ms.steps_used;
         p->count = (uint16_t)steps;
@@ -320,21 +353,40 @@ int MissionOrders_Running(int handle) {
     return ms.program_of[handle] != 0;
 }
 
+int MissionOrders_Holds(int handle) {
+    const Unit *u = ms.active ? ms_unit(handle) : NULL;
+    if (!u || handle >= MS_MAX_UNITS) return 0;
+    if (ms.held_id[handle] == u->stable_id) return 1;
+    /* A list gives the unit back at its end, and what follows an `s`
+     * still runs as it did, so one hand at a time moves it. */
+    int slot = ms.program_of[handle];
+    return slot && ms.program[slot - 1].holds &&
+           ms.program[slot - 1].stable_id == u->stable_id;
+}
+
 int MissionOrders_DebugDone(void) { return ms.done_orders; }
 
 static int ms_idle(const Unit *u) {
     return u->cmd_kind == UNIT_CMD_NONE;
 }
 
+/* An enemy the unit's side sees, a neutral seat's never, within a
+ * straight-line reach: the original looks in its seat's list of enemies
+ * in sight (legacy:8939-8950, legacy:20639-20664, the list built at
+ * legacy:20511-20520). */
 static int ms_enemy_within(const Unit *u, int32_t reach) {
     int n = 0;
     const Unit *units = Units_GetActive(&n);
+    int64_t r2 = (int64_t)reach * reach;
     for (int i = 0; i < n; i++) {
         const Unit *o = &units[i];
         if (o->alive != UNIT_ALIVE_ACTIVE) continue;
-        if (!Units_PlayersAreEnemies(u->player_id, o->player_id)) continue;
-        if (ms_distance(o->world_x - u->world_x,
-                        o->world_y - u->world_y) <= reach) return 1;
+        if (!Units_PlayersAreEnemies(u->player_id, o->player_id) ||
+            Units_HoldsFireOn(u->player_id, o->player_id) ||
+            !Units_SideSees(u->player_id, i)) continue;
+        int64_t dx = (int64_t)o->world_x - u->world_x;
+        int64_t dz = (int64_t)o->world_y - u->world_y;
+        if (dx * dx + dz * dz <= r2) return 1;
     }
     return 0;
 }
@@ -410,8 +462,10 @@ static int ms_step_run(MsProgram *p, int handle, const Unit *u) {
                 took = Units_OrderUnload(handle, s->a * MS_CELL, s->b * MS_CELL);
             } else if (s->type == MS_STEP_ATTACK_PLACE) {
                 /* Fires on the place until another order. A unit with no
-                 * weapon takes none and skips it (legacy:228354, legacy:186915). */
+                 * weapon takes none and skips it (legacy:228354, legacy:186915),
+                 * and one that takes it is kept (legacy:228367, legacy:228671). */
                 took = Units_OrderAttackGround(handle, s->a * MS_CELL, s->b * MS_CELL);
+                if (took) ms.held_id[handle] = u->stable_id;
             } else {
                 took = Units_OrderMove(handle, s->a * MS_CELL, s->b * MS_CELL);
             }
@@ -479,10 +533,15 @@ static int ms_step_run(MsProgram *p, int handle, const Unit *u) {
     case MS_STEP_BUILD: {
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (d && d->max_velocity <= 0.0f) {
-            /* A factory: so many of the thing (legacy:228486). */
-            int count = s->a > 0 ? s->a : 1;
-            for (int i = 0; i < count; i++) Units_FactoryEnqueue(handle, s->ref);
-            return 1;
+            /* A factory: so many of the thing, and the order lasts until
+             * they are made (legacy:228486, legacy:9323-9328). */
+            if (!p->started) {
+                int count = s->a > 0 ? s->a : 1;
+                for (int i = 0; i < count; i++) Units_FactoryEnqueue(handle, s->ref);
+                p->started = 1;
+                return 0;
+            }
+            return Units_FactoryQueuedCountForDef(handle, s->ref) == 0;
         }
         if (!p->started) {
             if (!Units_OrderBuild(handle, s->ref, s->b * MS_CELL,
@@ -509,6 +568,11 @@ static int ms_step_run(MsProgram *p, int handle, const Unit *u) {
         /* 'c' sets the cloak order of a unit that can cloak
          * (legacy:228515-228519). */
         (void)Units_OrderCloak(handle, 1);
+        return 1;
+
+    case MS_STEP_RELEASE:
+        /* The original's MakeSelectable (legacy:228658-228670, legacy:8911). */
+        ms_let_go(handle);
         return 1;
 
     default:
@@ -573,8 +637,9 @@ static int32_t ms_cmd_create(const char *name, int n_args, const int32_t *a) {
     unitname[len] = '\0';
     int def = Units_FindDefByName(unitname);
     if (def < 0 || player < 1) return 0;
-    int handle = Units_Spawn(def, player, Units_PlayerColorIndex(player),
-                             x * MS_CELL, z * MS_CELL);
+    int32_t wx = x * MS_CELL, wz = z * MS_CELL;
+    Units_MissionPlacePoint(def, 1, &wx, &wz);
+    int handle = Units_Spawn(def, player, Units_PlayerColorIndex(player), wx, wz);
     if (handle < 0) return 0;
     if (g_ms_spawn) g_ms_spawn(handle);
     return handle + 1;
@@ -760,6 +825,7 @@ static void ms_events(void) {
     if (n > MS_MAX_UNITS) n = MS_MAX_UNITS;
     for (int i = 0; i < MS_MAX_UNITS; i++) {
         const Unit *u = i < n ? ms_unit(i) : NULL;
+        if (ms.held_id[i] && (!u || u->stable_id != ms.held_id[i])) ms.held_id[i] = 0;
         if (ms.unit_id[i] && (!u || u->stable_id != ms.unit_id[i])) {
             int32_t args[1] = { i + 1 };
             g_ms_going_id = ms.unit_id[i];
@@ -896,7 +962,8 @@ int MissionScript_DebugStatic(int index, int32_t *out) {
 /* ── the save and the hash ────────────────────────────────────────── */
 
 #define MS_SAVE_MAGIC_V1 0x3143534du   /* "MSC1", no type or owner per unit */
-#define MS_SAVE_MAGIC    0x3243534du   /* "MSC2" */
+#define MS_SAVE_MAGIC_V2 0x3243534du   /* "MSC2", no holds */
+#define MS_SAVE_MAGIC    0x3343534du   /* "MSC3" */
 
 typedef struct MsOut { uint8_t *p; unsigned len; } MsOut;
 
@@ -949,6 +1016,7 @@ static void ms_write(MsOut *o) {
         if (p->unit < 0) continue;
         out_i16(o, p->unit);
         out_u8(o, p->started);
+        out_u8(o, p->holds);
         out_u32(o, p->stable_id);
         out_u16(o, p->count);
         out_u16(o, p->pc);
@@ -961,6 +1029,14 @@ static void ms_write(MsOut *o) {
             out_i16(o, s->ref);
             out_i16(o, s->a); out_i16(o, s->b); out_i16(o, s->c);
         }
+    }
+    uint16_t held = 0;
+    for (int i = 0; i < MS_MAX_UNITS; i++) if (ms.held_id[i]) held++;
+    out_u16(o, held);
+    for (int i = 0; i < MS_MAX_UNITS; i++) {
+        if (!ms.held_id[i]) continue;
+        out_u16(o, (uint16_t)i);
+        out_u32(o, ms.held_id[i]);
     }
     out_u8(o, (uint8_t)(ms.engine_up ? 1 : 0));
     if (!ms.engine_up) return;
@@ -1020,7 +1096,8 @@ int MissionScript_LoadState(const unsigned char *data, unsigned len) {
     MsIn in = { data, len, 0, 0 };
     if (!ms.active || !data) return -1;
     uint32_t magic = in_u32(&in);
-    if (magic != MS_SAVE_MAGIC && magic != MS_SAVE_MAGIC_V1) return -1;
+    if (magic != MS_SAVE_MAGIC && magic != MS_SAVE_MAGIC_V2 &&
+        magic != MS_SAVE_MAGIC_V1) return -1;
     ms.verdict = in_i32(&in);
     ms.tick = in_u32(&in);
     ms.done_orders = in_i32(&in);
@@ -1067,6 +1144,7 @@ int MissionScript_LoadState(const unsigned char *data, unsigned len) {
         memset(p, 0, sizeof(*p));
         p->unit = in_i16(&in);
         p->started = in_u8(&in);
+        p->holds = magic == MS_SAVE_MAGIC ? in_u8(&in) : 1;
         p->stable_id = in_u32(&in);
         p->count = in_u16(&in);
         p->pc = in_u16(&in);
@@ -1087,6 +1165,28 @@ int MissionScript_LoadState(const unsigned char *data, unsigned len) {
             s->a = in_i16(&in); s->b = in_i16(&in); s->c = in_i16(&in);
         }
         ms.program_of[p->unit] = (int16_t)(i + 1);
+    }
+    memset(ms.held_id, 0, sizeof(ms.held_id));
+    if (magic == MS_SAVE_MAGIC) {
+        int held = in_u16(&in);
+        if (held > MS_MAX_UNITS) return -1;
+        for (int i = 0; i < held && !in.bad; i++) {
+            int h = in_u16(&in);
+            uint32_t id = in_u32(&in);
+            if (h >= MS_MAX_UNITS) return -1;
+            ms.held_id[h] = id;
+        }
+    } else {
+        /* An older save kept no holds, and no computer played a mission
+         * then: a patrol or an attack on a place there is a list's. */
+        int n = 0;
+        (void)Units_GetActive(&n);
+        for (int i = 0; i < n && i < MS_MAX_UNITS; i++) {
+            const Unit *u = ms_unit(i);
+            if (u && u->player_id >= 2 && (u->cmd_kind == UNIT_CMD_PATROL ||
+                                           u->cmd_kind == UNIT_CMD_ATTACK_GROUND))
+                ms.held_id[i] = u->stable_id;
+        }
     }
     int had_engine = in_u8(&in);
     if (in.bad) return -1;

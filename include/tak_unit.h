@@ -2424,6 +2424,13 @@ void              Units_SnapBuildSite(int def_idx,
                                        int32_t *world_x, int32_t *world_y);
 void              Units_SnapBuildSiteFacing(int def_idx, int facing,
                                              int32_t *world_x, int32_t *world_y);
+/* Where a mission puts a unit of this type given a point in pixels. A
+ * placed unit's point is its centre (legacy:169600-169615) and a script's
+ * `create` names the top-left cell of its footprint (corner,
+ * legacy:178380-178385). A building then snaps onto the cells
+ * (legacy:219464-219481). */
+void              Units_MissionPlacePoint(int def_idx, int corner,
+                                          int32_t *world_x, int32_t *world_y);
 /* The cells a build of this def turned `facing` covers, the snap's own:
  * a walker's move class footprint, else its own, 2x2 when it names none. */
 void              Units_BuildSiteCells(int def_idx, int facing,

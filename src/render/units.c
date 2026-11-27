@@ -46,6 +46,7 @@
 #include "tak_sound.h"
 #include "tak_battle_config.h"  /* TAK_MAX_PLAYERS */
 #include "tak_ai.h"
+#include "tak_mission_script.h"
 #include "tak_terrain.h"
 #include "tak_click_map.h"
 #include "tak_fog.h"
@@ -7152,6 +7153,19 @@ void Units_SnapBuildSiteFacing(int def_idx, int facing,
      * lands square on a 2x2 pad. */
     *world_x = floor_div16(*world_x - fx * 8 + 8) * 16 + fx * 8;
     *world_y = floor_div16(*world_y - fz * 8 + 8) * 16 + fz * 8;
+}
+
+void Units_MissionPlacePoint(int def_idx, int corner, int32_t *world_x,
+                             int32_t *world_y) {
+    const UnitDef *d = Units_GetDef(def_idx);
+    if (!d || !world_x || !world_y) return;
+    if (corner) {
+        int fx, fz;
+        build_site_cells(d, 0, &fx, &fz);
+        *world_x += fx * 8;
+        *world_y += fz * 8;
+    }
+    if (!build_def_walks(d)) Units_SnapBuildSiteFacing(def_idx, 0, world_x, world_y);
 }
 
 /* The def's water-depth window. The move class owns it when the def
@@ -17776,11 +17790,11 @@ static void Units_TickCombat(void) {
              * enemy monarchs do not idle forever. A placeholder until
              * the full AIBrain (legacy:15241+) lands. A human's idle
              * army is that human's to order, so this never moves one,
-             * whichever seat this machine plays. */
+             * whichever seat this machine plays, nor one a mission's list holds. */
             if (u->target < 0 && u->cmd_kind == UNIT_CMD_NONE &&
                 u->post_set == UNIT_POST_NONE &&
                 !unit_seat_is_human(u->player_id) &&
-                def->max_velocity > 0.0f)
+                def->max_velocity > 0.0f && !MissionOrders_Holds(i))
             {
                 int weapon_range = (def->num_weapons > 0)
                     ? weapon_effective_range(&def->weapons[0]) : 0;
