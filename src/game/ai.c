@@ -2145,6 +2145,31 @@ int TAK_AI_DebugFerryAim(int player_id) {
     return g_ai_ferry_aim[player_id].handle;
 }
 
+int TAK_AI_DebugFerryLanding(int player_id, int32_t *x, int32_t *y) {
+    if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return 0;
+    for (int k = 0; k < AI_FERRIES; k++) {
+        const AiFerry *f = &g_ai_ferry[player_id][k];
+        if (f->stage == AI_FERRY_NONE) continue;
+        *x = f->land_x;
+        *y = f->land_y;
+        return 1;
+    }
+    return 0;
+}
+
+int TAK_AI_DebugOverWater(int handle, int32_t hx, int32_t hy, int32_t ex, int32_t ey) {
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    const GameWorld *world = World_Get();
+    if (!units || !world || handle < 0 || handle >= count) return 0;
+    const Unit *u = &units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d || d->can_fly || d->max_velocity <= 0.0f || !d->movement_class[0]) return 0;
+    const MoveClassDef *mc = TAK_MoveInfo_Find(&world->moveinfo, d->movement_class);
+    return TAK_PathGroundConnected(world, mc, (int)d->max_slope, u->world_x, u->world_y, ex, ey) &&
+           !TAK_PathGroundConnected(world, mc, (int)d->max_slope, u->world_x, u->world_y, hx, hy);
+}
+
 int TAK_AI_DebugFerryStage(int player_id) {
     if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return 0;
     for (int k = 0; k < AI_FERRIES; k++)
@@ -3946,6 +3971,20 @@ static int32_t ai_guard_at(int32_t x, int32_t y) {
     return g_ai_guard[cy * AI_INF_MAX_W + cx];
 }
 
+/* The most enemy arms a flight from (ax, ay) to (bx, by) passes over, read
+ * every half cell of the line (A-019). */
+static int32_t ai_guard_on_way(int32_t ax, int32_t ay, int32_t bx, int32_t by) {
+    int32_t len = ai_approx_dist((int64_t)bx - ax, (int64_t)by - ay);
+    int steps = len / (AI_INF_CELL_PX / 2);
+    int32_t most = 0;
+    for (int k = 1; k < steps; k++) {
+        int32_t g = ai_guard_at(ax + (int32_t)((int64_t)(bx - ax) * k / steps),
+                                ay + (int32_t)((int64_t)(by - ay) * k / steps));
+        if (g > most) most = g;
+    }
+    return most;
+}
+
 static int ai_walks_to(const GameWorld *world, const MoveClassDef *mc, int slope,
                        int h, int32_t ax, int32_t ay, int32_t x, int32_t y);
 
@@ -3962,14 +4001,18 @@ static void ai_ferry_aim(const GameWorld *world, const Unit *units,
     a->x = ap->target_x;
     a->y = ap->target_y;
     a->guard = ai_guard_at(a->x, a->y);
-    int h = -1;
-    for (int i = 0; i < unit_count && h < 0; i++) {
+    /* A walker the water stops, so a wader's ground does not set the aim. */
+    int h = -1, stopped = -1;
+    for (int i = 0; i < unit_count && stopped < 0; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p || u->under_construction)
             continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
-        if (ai_def_is_mobile_combat(d) && !d->can_fly && !ai_def_is_ship(d)) h = i;
+        if (!ai_def_is_mobile_combat(d) || d->can_fly || ai_def_is_ship(d)) continue;
+        if (h < 0) h = i;
+        if (!ai_unit_ground_reaches(u, d, ap->target_x, ap->target_y)) stopped = i;
     }
+    if (stopped >= 0 && !(g_ai_tactics_off[p] & TAK_AI_TACTIC_LANDING)) h = stopped;
     if (h < 0 || ap->target_handle < 0) return;
     const UnitDef *hd = Units_GetDef(units[h].def_idx);
     const MoveClassDef *mc = hd->movement_class[0]
@@ -4022,6 +4065,10 @@ static int ai_landing_point(const GameWorld *world, const Unit *units, int unit_
     int found = 0, near_found = 0;
     int32_t best = 0, near_best = 0;
     int32_t x0 = (tx - AI_LANDING_REACH) & ~15, y0 = (ty - AI_LANDING_REACH) & ~15;
+    /* A flyer of a seat cut off is shot at all the way in, so the arms it
+     * flies over count. */
+    int on_way = td->can_fly && tu->player_id <= TAK_MAX_PLAYERS && g_ai_cut_off[tu->player_id] &&
+                 !(g_ai_tactics_off[tu->player_id] & TAK_AI_TACTIC_LANDING);
     for (int32_t y = y0; y <= ty + AI_LANDING_REACH; y += AI_LANDING_STEP) {
         if (y < 32 || y >= world->map_pixels_h - 32) continue;
         for (int32_t x = x0; x <= tx + AI_LANDING_REACH; x += AI_LANDING_STEP) {
@@ -4031,6 +4078,7 @@ static int ai_landing_point(const GameWorld *world, const Unit *units, int unit_
             int far = d >= AI_LANDING_STANDOFF;
             /* Ground the enemy holds costs more to land on. */
             int32_t threat = ai_guard_at(x, y);
+            if (on_way) threat += ai_guard_on_way(tu->world_x, tu->world_y, x, y);
             if (threat > 0) d += threat * AI_LANDING_THREAT_PX;
             if (far ? (found && d >= best) : (found || (near_found && d >= near_best)))
                 continue;
@@ -4205,10 +4253,12 @@ static int ai_ferry_launch(const GameWorld *world, const Unit *units,
         return 0;
     }
     g_ai_member[t] = 0;
-    /* A transport under way holds its fire, so a fight never takes it
-     * off its errand. */
+    /* A transport under way holds its fire, so a fight never takes it off
+     * its errand. Under A-019 an armed one holds its ground with fire on,
+     * shooting as it sails, and its move or unload is not broken off. */
     f->aggro = units[t].aggro_mode;
-    Units_OrderSetAggro(t, UNIT_AGGRO_PASSIVE);
+    Units_OrderSetAggro(t, td->num_weapons > 0 && !(g_ai_tactics_off[p] & TAK_AI_TACTIC_LANDING)
+                           ? UNIT_AGGRO_DEFENSIVE : UNIT_AGGRO_PASSIVE);
     for (int i = 0; i < unit_count && i < AI_MEMBER_CAP; i++) {
         if (g_ai_member[i] != slot + 1 || units[i].player_id != p) continue;
         int aboard = 0;
@@ -4433,6 +4483,9 @@ static void ai_ferry_step(const GameWorld *world, const Unit *units,
         units[t].alive != UNIT_ALIVE_ACTIVE || units[t].stable_id != f->transport_id) {
         /* A crossing lost with its transport waits longer to try again. */
         int lost = g && g->kind == AI_GROUP_FERRY;
+        g_ai_counts[p][TAK_AI_COUNT_FERRIES_SUNK] +=
+            t < 0 || t >= unit_count || units[t].alive != UNIT_ALIVE_ACTIVE ||
+            units[t].stable_id != f->transport_id;
         ai_ferry_end(p, f, now, lost ? AI_FERRY_LOST_RETRY : AI_FERRY_RETRY);
         return;
     }
@@ -5448,31 +5501,50 @@ static int ai_walks_to(const GameWorld *world, const MoveClassDef *mc, int slope
     return !ground;
 }
 
-/* Whether no walker of the seat, one asked a movement class and never a
- * ship, could walk from home to (x, y), or to the shore by it when it is
- * out on the water. No with no shore near and for a seat with no walkers. */
+/* A class that walks water this deep wades over to an island (A-019). */
+#define AI_WADER_DEPTH 255
+
+/* Whether no walker of the seat, one a movement class and never a ship,
+ * walks from home to (x, y) or the shore by it, or under A-019 only waders
+ * under half its walkers by strength do. No for a seat with no walkers. */
 static int ai_home_cut_off(const GameWorld *world, const Unit *units,
                            int unit_count, int p, int32_t x, int32_t y) {
     const AiPlayer *ap = &g_ai_players[p];
     int probers[AI_WAVE_PROBERS];
-    int n = 0;
+    int32_t value[AI_WAVE_PROBERS] = { 0 };
+    int32_t total = 0, reach = 0;
+    int n = 0, dry = 0;
     for (int i = 0; i < unit_count; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p || u->under_construction)
             continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
-        if (ai_def_is_mobile_combat(d) && !ai_def_is_ship(d))
-            ai_add_prober(units, i, d, probers, &n);
+        if (!ai_def_is_mobile_combat(d) || ai_def_is_ship(d) || d->can_fly) continue;
+        ai_add_prober(units, i, d, probers, &n);
+        int32_t v = AI_UnitCombatValue(d);
+        if (v < 1) v = 1;
+        for (int k = 0; k < n; k++) {
+            const UnitDef *pd = Units_GetDef(units[probers[k]].def_idx);
+            if (pd->max_slope != d->max_slope ||
+                ai_stricmp(pd->movement_class, d->movement_class) != 0) continue;
+            value[k] += v;
+            total += v;
+            break;
+        }
     }
     for (int k = 0; k < n; k++) {
         const UnitDef *d = Units_GetDef(units[probers[k]].def_idx);
         const MoveClassDef *mc = d->movement_class[0]
                                ? TAK_MoveInfo_Find(&world->moveinfo, d->movement_class)
                                : NULL;
-        if (ai_walks_to(world, mc, d->max_slope, probers[k], ap->base_x, ap->base_y, x, y))
-            return 0;
+        if (!ai_walks_to(world, mc, d->max_slope, probers[k], ap->base_x, ap->base_y, x, y))
+            continue;
+        reach += value[k];
+        dry += mc && mc->max_water_depth < AI_WADER_DEPTH;
     }
-    return n > 0;
+    if (dry > 0 || world->water_height <= 0 || (g_ai_tactics_off[p] & TAK_AI_TACTIC_LANDING))
+        return n > 0 && reach == 0;
+    return n > 0 && reach * 2 < total;
 }
 
 /* A transport the seat can still ferry with: one going up, the ferry's
@@ -5976,7 +6048,14 @@ typedef struct AiFleetRead {
     int     ship;           /* -1 for none */
     int     building;       /* -1 for none */
     int32_t mark_x, mark_y; /* the water it is shelled from */
+    int     crossing;       /* the ship carrying a wave over, -1 for none */
+    int     raider;         /* the enemy ship nearest it, -1 for none */
 } AiFleetRead;
+/* Enemy ships this near a crossing are fought, and a cover ship this far
+ * from it closes to this much short of it, past AI_SAIL_CLEAR_PX (A-019). */
+#define AI_COVER_FIGHT_PX 768
+#define AI_COVER_NEAR_PX  576
+#define AI_COVER_SHORT_PX 448
 
 static int ai_weapon_reach(const UnitDef *d) {
     int32_t range = 0;
@@ -6010,9 +6089,20 @@ static AiTask ai_fleet_read(const GameWorld *world, const Unit *units, int unit_
     const AiPlayer *ap = &g_ai_players[p];
     AiFleetState fs;
     memset(&fs, 0, sizeof(fs));
-    r->ship = r->building = -1;
+    r->ship = r->building = r->crossing = r->raider = -1;
     r->mark_x = r->mark_y = 0;
     if (!g_ai_cut_off[p] || (g_ai_tactics_off[p] & TAK_AI_TACTIC_FLEET)) return AI_TASK_STAND;
+    /* A wave sailing over or setting down from a ship is covered (A-019). */
+    for (int k = 0; k < AI_FERRIES && r->crossing < 0 &&
+                    !(g_ai_tactics_off[p] & TAK_AI_TACTIC_LANDING); k++) {
+        const AiFerry *f = &g_ai_ferry[p][k];
+        int t = f->transport;
+        if (f->rider_id || (f->stage != AI_FERRY_SAILING && f->stage != AI_FERRY_LANDING) ||
+            t < 0 || t >= unit_count || units[t].alive != UNIT_ALIVE_ACTIVE ||
+            units[t].stable_id != f->transport_id ||
+            !ai_def_is_ship(Units_GetDef(units[t].def_idx))) continue;
+        r->crossing = t;
+    }
     int64_t sx = 0, sy = 0;
     const UnitDef *flag = NULL;
     int32_t reach = 0;
@@ -6038,7 +6128,7 @@ static AiTask ai_fleet_read(const GameWorld *world, const Unit *units, int unit_
     const MoveClassDef *mc = flag->movement_class[0]
                            ? TAK_MoveInfo_Find(&world->moveinfo, flag->movement_class) : NULL;
     int32_t lx = units[lead].world_x, ly = units[lead].world_y;
-    int64_t best_ship = INT64_MAX, best_bld = INT64_MAX;
+    int64_t best_ship = INT64_MAX, best_bld = INT64_MAX, best_raider = INT64_MAX;
     for (int i = 0; i < unit_count; i++) {
         const Unit *t = &units[i];
         if (t->alive != UNIT_ALIVE_ACTIVE || t->under_construction) continue;
@@ -6052,6 +6142,13 @@ static AiTask ai_fleet_read(const GameWorld *world, const Unit *units, int unit_
             if (!ai_visible_to(world, p, t)) continue;
             if (!TAK_PathGroundConnected(world, mc, flag->max_slope, lx, ly,
                                          t->world_x, t->world_y)) continue;
+            if (r->crossing >= 0) {
+                const Unit *c = &units[r->crossing];
+                int64_t cx2 = (int64_t)t->world_x - c->world_x, cy2 = (int64_t)t->world_y - c->world_y;
+                int64_t c2 = cx2 * cx2 + cy2 * cy2;
+                if (c2 <= (int64_t)AI_COVER_FIGHT_PX * AI_COVER_FIGHT_PX &&
+                    (r->raider < 0 || c2 < best_raider)) { r->raider = i; best_raider = c2; }
+            }
             fs.enemy_ships++;
             fs.enemy_value += AI_UnitCombatValue(td);
             if (ap->base_known && ai_within(t->world_x, t->world_y, ap->base_x, ap->base_y,
@@ -6068,6 +6165,7 @@ static AiTask ai_fleet_read(const GameWorld *world, const Unit *units, int unit_
         }
     }
     fs.mark_known = r->building >= 0;
+    fs.crossing = r->crossing >= 0;
     const char *why = NULL;
     AiTask task = AI_Htn_FleetTask(&fs, &why);
     if (ai_trace())
@@ -6090,6 +6188,32 @@ static void ai_fleet_step(const GameWorld *world, const Unit *units, int unit_co
     AiSeaMemo memo = { -1, 0, 0, 0 };
     if (!ai_sails_to_target(world, p, (int)u->def_idx, 0, u->world_x, u->world_y, &memo))
         task = AI_TASK_STAND;
+    if (task == AI_TASK_ESCORT && r->crossing >= 0) {
+        /* Sail with the crossing and fight the ships that come at it. */
+        if (r->raider >= 0) {
+            if (u->cmd_kind == UNIT_CMD_ATTACK && u->target == r->raider) return;
+            ai_commit(units, i);
+            Units_CommandAttackUnit(i, r->raider);
+            ai_count_order(p, units[r->raider].player_id, 0);
+            return;
+        }
+        const Unit *c = &units[r->crossing];
+        if (ai_within(u->world_x, u->world_y, c->world_x, c->world_y, AI_COVER_NEAR_PX)) return;
+        if (u->cmd_kind == UNIT_CMD_MOVE &&
+            ai_within(u->cmd_x, u->cmd_y, c->world_x, c->world_y, AI_COVER_NEAR_PX)) return;
+        if (u->cmd_kind != UNIT_CMD_NONE && u->cmd_kind != UNIT_CMD_MOVE &&
+            u->cmd_kind != UNIT_CMD_ATTACK) return;
+        int32_t dx = u->world_x - c->world_x, dy = u->world_y - c->world_y;
+        int32_t len = ai_approx_dist(dx, dy);
+        int32_t mx = c->world_x, my = c->world_y;
+        if (len > 0) {
+            mx += (int32_t)((int64_t)dx * AI_COVER_SHORT_PX / len);
+            my += (int32_t)((int64_t)dy * AI_COVER_SHORT_PX / len);
+        }
+        ai_commit(units, i);
+        Units_CommandMoveUnit(i, mx & ~15, my & ~15);
+        return;
+    }
     if (task == AI_TASK_HUNT && r->ship >= 0) {
         if (u->cmd_kind == UNIT_CMD_ATTACK && u->target == r->ship) return;
         ai_commit(units, i);

@@ -6015,10 +6015,11 @@ TEST(a_dead_monarch_leaves_no_mana_in_the_pool) {
  * seats swapped so the ground favours nobody, under the remastered
  * battlefield rules when TAK_AI_DUEL_REMASTERED is 1, and prints what
  * each side killed and lost, the lodestones it held, the fighters it
- * raised and what it had standing at the end. TAK_AI_DUEL_FIRST is the
- * first seed's number, TAK_AI_DUEL_PLAIN=1 or 2 plays only the games
- * with the plain seat there, and TAK_AI_DUEL_STARTS=a,b claims the map's
- * starts a and b for the seats. It is registered only when asked for. */
+ * raised, its walkers on the enemy's land over water and what it had
+ * standing at the end. TAK_AI_DUEL_FIRST is the first seed's number,
+ * TAK_AI_DUEL_PLAIN=1 or 2 plays only the games with the plain seat
+ * there, and TAK_AI_DUEL_STARTS=a,b claims the map's starts a and b for
+ * the seats. It is registered only when asked for. */
 #define DUEL_DEFS 512
 typedef struct DuelTally {
     int     lode_seconds[3];
@@ -6038,6 +6039,11 @@ typedef struct DuelTally {
     /* Monarch seconds more than 1280 px from its start, and whether it fell. */
     int64_t monarch_far_s[3];
     int     monarch_lost[3];
+    /* Walker seconds on ground that walks to the enemy's start and not to
+     * the seat's own, the most there at once, and buildings at the end. */
+    int64_t over_s[3];
+    int     over_peak[3];
+    int     buildings_end[3];
 } DuelTally;
 static char g_duel_names[DUEL_DEFS][16];
 
@@ -6070,7 +6076,7 @@ static void duel_sample(DuelTally *t, int second) {
         sy[q] = world->start_positions[s].z * 16;
         has_start[q] = 1;
     }
-    int lodes[3] = { 0, 0, 0 };
+    int lodes[3] = { 0, 0, 0 }, over[3] = { 0, 0, 0 };
     for (int i = 0; i < count && i < TAK_MAX_UNITS; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id < 1 || u->player_id > 2)
@@ -6078,6 +6084,10 @@ static void duel_sample(DuelTally *t, int second) {
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (!d || u->under_construction) continue;
         if (duel_is_lodestone(d)) lodes[u->player_id]++;
+        int q = 3 - u->player_id;
+        if (has_start[q] && has_start[u->player_id])
+            over[u->player_id] += TAK_AI_DebugOverWater(i, sx[u->player_id], sy[u->player_id],
+                                                        sx[q], sy[q]);
         if (d->commander && has_start[u->player_id]) {
             int64_t dx = u->world_x - sx[u->player_id], dy = u->world_y - sy[u->player_id];
             if (dx * dx + dy * dy > 1280 * 1280) t->monarch_far_s[u->player_id]++;
@@ -6110,6 +6120,8 @@ static void duel_sample(DuelTally *t, int second) {
         }
     }
     for (int p = 1; p <= 2; p++) {
+        t->over_s[p] += over[p];
+        if (over[p] > t->over_peak[p]) t->over_peak[p] = over[p];
         t->lode_seconds[p] += lodes[p];
         if (second > 0 && second % 300 == 0 && second / 300 <= 4)
             t->lodes_at[p][second / 300 - 1] = lodes[p];
@@ -6175,6 +6187,7 @@ static void duel_read_base(DuelTally *t) {
     }
     /* A base is read at its fullest, not after the enemy has been at it. */
     for (int p = 1; p <= 2; p++) {
+        t->buildings_end[p] = buildings[p];
         if (buildings[p] < t->buildings[p]) continue;
         t->buildings[p] = buildings[p];
         t->touching[p] = touching[p];
@@ -6303,6 +6316,10 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_FIRE_STEPS));
         fprintf(stderr, "duel:   seat %d rides %d, %d set ashore\n", p,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_RIDES), TAK_AI_DebugCount(p, TAK_AI_COUNT_ASHORE));
+        fprintf(stderr, "duel:   seat %d walker seconds over the water %lld, most at once %d, "
+                "buildings %d at the end of %d at most, ferries sunk %d\n", p,
+                (long long)tally->over_s[p], tally->over_peak[p], tally->buildings_end[p],
+                tally->buildings[p], TAK_AI_DebugCount(p, TAK_AI_COUNT_FERRIES_SUNK));
         fprintf(stderr, "duel:   seat %d monarch %s, %lld s past 1280 px of home, sent home %d, "
                 "took secondary %d special %d\n", p,
                 tally->monarch_lost[p] ? "lost" : "standing",

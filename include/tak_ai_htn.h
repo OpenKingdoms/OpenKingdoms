@@ -24,7 +24,7 @@ typedef enum {
     AI_TASK_FALL_BACK,  /* members in the field come home */
     AI_TASK_RAID,       /* a few fast members go at the enemy's economy */
     AI_TASK_EVADE,      /* a unit steps off ground that hurts it */
-    AI_TASK_ESCORT,     /* a group covers a builder on its way to a pad */
+    AI_TASK_ESCORT,     /* a group covers a builder, or warships a crossing */
     AI_TASK_HOLD_GROUND,/* a group stands on the ground it went out to */
     AI_TASK_DEFEND,     /* a group goes at what attacks the seat's own */
     AI_TASK_FERRY,      /* a transport carries the wave over the water */
@@ -52,6 +52,7 @@ typedef struct AiFleetState {
     int32_t enemy_value;        /* their strength */
     int     near_home;          /* one of those is off the seat's home */
     int     mark_known;         /* an enemy building can be shelled from water */
+    int     crossing;           /* a wave of the seat's is at sea in a ship */
 } AiFleetState;
 AiTask AI_Htn_FleetTask(const AiFleetState *s, const char **reason);
 

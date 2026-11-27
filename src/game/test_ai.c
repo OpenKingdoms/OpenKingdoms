@@ -93,11 +93,20 @@ int TAK_PathGroundConnected(const struct GameWorld *world,
            (ay >= g_conn_y) == (by >= g_conn_y);
 }
 
-/* Only the class a test names BOAT is found, and it needs water. */
-static MoveClassDef g_boat_class;
+/* Only the classes a test names are found: BOAT needs water, WADER walks
+ * deep water and CLIMBER only shallows. */
+static MoveClassDef g_boat_class, g_wader_class, g_climber_class;
 const MoveClassDef *TAK_MoveInfo_Find(const MoveInfoTable *table,
                                       const char *name) {
     (void)table;
+    if (name && strcmp(name, "WADER") == 0) {
+        g_wader_class.max_water_depth = 10000;
+        return &g_wader_class;
+    }
+    if (name && strcmp(name, "CLIMBER") == 0) {
+        g_climber_class.max_water_depth = 20;
+        return &g_climber_class;
+    }
     if (!name || strcmp(name, "BOAT") != 0) return NULL;
     g_boat_class.min_water_depth = 10;
     return &g_boat_class;
@@ -3611,6 +3620,16 @@ static int test_htn_the_fleet_table(void) {
     ASSERT_EQ_INT(AI_TASK_STAND, AI_Htn_FleetTask(&f, NULL));
     f.mark_known = 1;
     ASSERT_EQ_INT(AI_TASK_SHELL, AI_Htn_FleetTask(&f, NULL));
+    /* A-019. A wave at sea in a ship is sailed with by whatever ships there
+     * are, after enemy ships off home. */
+    f.crossing = 1;
+    f.ships = 1;
+    ASSERT_EQ_INT(AI_TASK_ESCORT, AI_Htn_FleetTask(&f, NULL));
+    f.enemy_ships = 1;
+    f.near_home = 1;
+    ASSERT_EQ_INT(AI_TASK_HUNT, AI_Htn_FleetTask(&f, NULL));
+    f.ships = 0;
+    ASSERT_EQ_INT(AI_TASK_STAND, AI_Htn_FleetTask(&f, NULL));
     return 0;
 }
 
@@ -3707,6 +3726,160 @@ static int ferries_for_walkers(int walkers, int convoy) {
     if (TAK_AI_LoadState(buf, TAK_AI_StateBytes()) != 0) return -1;
     if (TAK_AI_DebugFerries(2) != n || TAK_SimHash_AI(TAK_SIM_HASH_SEED) != hash) return -2;
     return n;
+}
+
+/* A-019. A cut off seat's warship sails with a wave crossing in a ship and
+ * goes at an enemy ship near it, out of the reach of home, and the armed
+ * transport crosses with its fire on. With A-019 off none of it. */
+static int crossing_covered(int landing) {
+    GameWorld w;
+    static const int loner[5] = { 0, 2, 0, 2, 2 };
+    setup_hostility_fixture(&w, loner);
+    g_visible = 1;
+    g_conn_split = 1;
+    g_conn_x = 3100;
+    g_conn_y = 1000;
+    g_conn_climbs = 40;
+    g_can_carry = 1;
+    if (!landing) TAK_AI_DebugSetTactics(2, TAK_AI_TACTIC_ALL & ~TAK_AI_TACTIC_LANDING);
+    enum { GUN = 10 };
+    int troop = hf_troop(2);
+    int32_t bx = g_units[troop].world_x, by = g_units[troop].world_y;
+    /* One more than the hold, so one stays home and the seat is still cut off. */
+    for (int k = 1; k < 5; k++) hf_add_unit(2, HF_TROOP, bx + 16 * k, by);
+    strcpy(g_defs[HF_FERRY].unitname, "VERTRANS");
+    strcpy(g_defs[HF_FERRY].category, "VER SHIP TRANSPORT");
+    strcpy(g_defs[HF_FERRY].movement_class, "BOAT");
+    g_defs[HF_FERRY].max_velocity = 2.0f;
+    g_defs[HF_FERRY].max_slope = 40;
+    g_defs[HF_FERRY].cap_flags = UNIT_CAP_TRANSPORT;
+    g_defs[HF_FERRY].transport_capacity = 4;
+    g_defs[HF_FERRY].num_weapons = 1;
+    g_defs[HF_FERRY].weapons[0].range = 200;
+    strcpy(g_defs[GUN].unitname, "VERFLAG");
+    strcpy(g_defs[GUN].category, "VER SHIP ATTACK");
+    strcpy(g_defs[GUN].movement_class, "BOAT");
+    g_defs[GUN].max_velocity = 3.0f;
+    g_defs[GUN].max_slope = 40;
+    g_defs[GUN].num_weapons = 1;
+    g_defs[GUN].weapons[0].range = 200;
+    g_defs[GUN].weapons[0].damage = 40;
+    g_defs[GUN].sight_distance = 300;
+    int ship = hf_add_unit(2, HF_FERRY, bx + 64, by + 300);
+    g_units[ship].carried_by = -1;
+    int gun = hf_add_unit(2, GUN, bx - 900, by + 900);
+    g_units[gun].carried_by = -1;
+    TAK_AI_DebugSetWaveTarget(2, 0);
+    int tick = 60;
+    for (int k = 0; k < 6 && TAK_AI_DebugFerryStage(2) == 0; k++, tick += 60)
+        hf_run_ticks(&w, tick, 1);
+    if (TAK_AI_DebugFerryStage(2) != 1) return -1;
+    int aggro = g_units[ship].aggro_mode;
+    /* The wave and its ship reach the shore, and the wave goes aboard. */
+    int riders[8], n = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        if (g_units[i].player_id != 2 || g_units[i].cmd_kind != UNIT_CMD_MOVE) continue;
+        if (i != ship && g_units[i].def_idx != HF_TROOP) continue;
+        if (i != ship && n < 8) riders[n++] = i;
+        g_units[i].world_x = g_units[i].cmd_x;
+        g_units[i].world_y = g_units[i].cmd_y;
+        g_units[i].cmd_kind = UNIT_CMD_NONE;
+    }
+    hf_run_ticks(&w, tick, 1);
+    tick += 60;
+    if (TAK_AI_DebugFerryStage(2) != 2) return -2;
+    for (int k = 0; k < n; k++) {
+        g_units[riders[k]].alive = UNIT_ALIVE_TRANSPORTED;
+        g_units[riders[k]].carried_by = (int16_t)ship;
+        g_units[ship].cargo_count++;
+    }
+    g_units[ship].cmd_kind = UNIT_CMD_NONE;
+    hf_run_ticks(&w, tick, 1);
+    tick += 60;
+    if (TAK_AI_DebugFerryStage(2) != 3) return -3;
+    /* Out at sea, past the reach of home. */
+    g_units[ship].world_x = bx - 1900;
+    g_units[ship].world_y = by + 600;
+    g_units[gun].cmd_kind = UNIT_CMD_NONE;
+    hf_run_ticks(&w, tick, 1);
+    tick += 60;
+    int64_t dx = (int64_t)g_units[gun].cmd_x - g_units[ship].world_x;
+    int64_t dy = (int64_t)g_units[gun].cmd_y - g_units[ship].world_y;
+    int covered = g_units[gun].cmd_kind == UNIT_CMD_MOVE && dx * dx + dy * dy <= 576 * 576;
+    /* An enemy ship off the crossing is gone at. */
+    int raider = hf_add_unit(1, GUN, g_units[ship].world_x - 500, g_units[ship].world_y);
+    g_units[raider].carried_by = -1;
+    hf_run_ticks(&w, tick, 1);
+    int fought = g_units[gun].cmd_kind == UNIT_CMD_ATTACK && g_units[gun].target == raider;
+    g_can_carry = 0;
+    g_conn_climbs = 0;
+    printf("[%s: %d covered, %d fought, transport stance %d] ", landing ? "on" : "off",
+           covered, fought, aggro);
+    return covered * 100 + fought * 10 + aggro;
+}
+
+static int test_ai_a_crossing_at_sea_is_covered(void) {
+    ASSERT_EQ_INT(110 + UNIT_AGGRO_DEFENSIVE, crossing_covered(1));
+    ASSERT_EQ_INT(UNIT_AGGRO_PASSIVE, crossing_covered(0));
+    return 0;
+}
+
+/* A-019. A flying transport lands its wave where it flies over the fewest
+ * enemy arms on the way, not by the shortest walk past a fortress. */
+static int flight_landing(int landing, int32_t *x, int32_t *y) {
+    GameWorld w;
+    static const int loner[5] = { 0, 2, 0, 2, 2 };
+    setup_hostility_fixture(&w, loner);
+    g_visible = 0;
+    g_conn_split = 1;
+    g_conn_x = 3100;
+    g_conn_y = 2400;
+    g_can_carry = 1;
+    if (!landing) TAK_AI_DebugSetTactics(2, TAK_AI_TACTIC_ALL & ~TAK_AI_TACTIC_LANDING);
+    int troop = hf_troop(2);
+    int32_t bx = g_units[troop].world_x, by = g_units[troop].world_y;
+    for (int k = 1; k < 4; k++) hf_add_unit(2, HF_TROOP, bx + 16 * k, by);
+    strcpy(g_defs[HF_FERRY].unitname, "TARSHIP");
+    strcpy(g_defs[HF_FERRY].category, "TAR AIR TRANSPORT");
+    g_defs[HF_FERRY].max_velocity = 3.0f;
+    g_defs[HF_FERRY].can_fly = 1;
+    g_defs[HF_FERRY].cap_flags = UNIT_CAP_TRANSPORT;
+    g_defs[HF_FERRY].transport_capacity = 4;
+    int ferry = hf_add_unit(2, HF_FERRY, bx + 64, by);
+    g_units[ferry].carried_by = -1;
+    /* A fort on the straight line in from home to the monarch it aims at. */
+    for (int k = 0; k < 30; k++) hf_add_unit(1, HF_TROOP, 1600 + 16 * (k % 6), 128 + 16 * (k / 6));
+    TAK_AI_DebugSetWaveTarget(2, 0);
+    for (int k = 0; k < 6 && TAK_AI_DebugFerryStage(2) == 0; k++)
+        hf_run_ticks(&w, 60 + 60 * k, 1);
+    g_can_carry = 0;
+    if (TAK_AI_DebugFerryAim(2) != 0) return -1;
+    return TAK_AI_DebugFerryLanding(2, x, y);
+}
+
+/* How near the flight from (ax, ay) to (bx, by) passes the fort at (fx, fy),
+ * squared. */
+static double flight_pass(double ax, double ay, double bx, double by, double fx, double fy) {
+    double dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+    double t = len2 > 0 ? ((fx - ax) * dx + (fy - ay) * dy) / len2 : 0;
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+    double px = ax + t * dx - fx, py = ay + t * dy - fy;
+    return px * px + py * py;
+}
+
+static int test_ai_a_flyer_lands_clear_of_the_arms_on_its_way(void) {
+    int32_t ox = 0, oy = 0, fx = 0, fy = 0;
+    ASSERT_EQ_INT(1, flight_landing(0, &fx, &fy));
+    ASSERT_EQ_INT(1, flight_landing(1, &ox, &oy));
+    double home_x = 200 * 16 + 40 + 64, home_y = 10 * 16;
+    double off = flight_pass(home_x, home_y, fx, fy, 1640, 160);
+    double on = flight_pass(home_x, home_y, ox, oy, 1640, 160);
+    printf("[landing without the way (%d,%d) passes the fort at %.0f px squared, with it "
+           "(%d,%d) at %.0f] ", fx, fy, off, ox, oy, on);
+    ASSERT_TRUE(off < 256.0 * 256.0);
+    ASSERT_TRUE(on > 384.0 * 384.0);
+    return 0;
 }
 
 static int test_ai_a_large_army_runs_more_than_one_ferry(void) {
@@ -4157,9 +4330,9 @@ static int test_ai_a_ship_on_other_water_is_no_boat(void) {
     return 0;
 }
 
-/* A-013. A seat one of whose walker classes walks to the target is not
- * cut off, though another cannot (#232's Lake Lokken): that one walks
- * and nothing waits for a boat. */
+/* A-013. One walker class that walks to the target leaves a seat not cut
+ * off (#232's Lake Lokken). A-019: one that only wades there, a Swamp Beast,
+ * does not while under half the walkers, and the rest are ferried. */
 static int test_ai_a_seat_one_walker_class_walks_from_is_not_cut_off(void) {
     GameWorld w;
     static const int loner[5] = { 0, 2, 0, 2, 2 };
@@ -4180,9 +4353,75 @@ static int test_ai_a_seat_one_walker_class_walks_from_is_not_cut_off(void) {
     g_defs[HF_CLIMBER].num_weapons = 1;
     g_defs[HF_CLIMBER].sight_distance = 140;
     g_defs[HF_CLIMBER].weapons[0].range = 40;
+    g_defs[HF_CLIMBER].weapons[0].damage = 40;
     hf_add_unit(2, HF_CLIMBER, g_units[hf_troop(2)].world_x, g_units[hf_troop(2)].world_y + 32);
     hf_run_ticks(&w, 120, 1);
     ASSERT_EQ_INT(-1, TAK_AI_DebugFerryAim(2));
+    /* Three troops the water stops and one wader that crosses it. */
+    for (int k = 0; k < 2; k++)
+        hf_add_unit(2, HF_TROOP, g_units[hf_troop(2)].world_x + 32 * (k + 1),
+                    g_units[hf_troop(2)].world_y);
+    hf_run_ticks(&w, 180, 1);
+    ASSERT_EQ_INT(-1, TAK_AI_DebugFerryAim(2));
+    strcpy(g_defs[HF_CLIMBER].movement_class, "WADER");
+    w.water_height = 0;
+    hf_run_ticks(&w, 240, 1);
+    ASSERT_EQ_INT(-1, TAK_AI_DebugFerryAim(2));
+    w.water_height = 40;
+    TAK_AI_DebugSetTactics(2, TAK_AI_TACTIC_ALL & ~TAK_AI_TACTIC_LANDING);
+    hf_run_ticks(&w, 300, 1);
+    int before = TAK_AI_DebugFerryAim(2);
+    TAK_AI_DebugSetTactics(2, TAK_AI_TACTIC_ALL);
+    hf_run_ticks(&w, 360, 1);
+    printf("[wader with three troops: aim %d, %d without A-019] ", TAK_AI_DebugFerryAim(2),
+           before);
+    ASSERT_EQ_INT(-1, before);
+    ASSERT_TRUE(TAK_AI_DebugFerryAim(2) >= 0);
+    /* Half the strength and more wading over walks, as before. */
+    for (int i = 0; i < g_unit_count; i++)
+        if (g_units[i].player_id == 2 && g_units[i].def_idx == HF_TROOP &&
+            i != hf_troop(2)) g_units[i].alive = 0;
+    hf_run_ticks(&w, 420, 1);
+    ASSERT_EQ_INT(-1, TAK_AI_DebugFerryAim(2));
+    return 0;
+}
+
+/* A-019. A seat ferried over for its waders judges the target's ground by a
+ * walker the water stops, so a rich enemy building on the seat's own ground
+ * that a wader could walk to is no aim. */
+static int test_ai_a_ferry_aims_by_a_walker_the_water_stops(void) {
+    GameWorld w;
+    static const int loner[5] = { 0, 2, 0, 2, 2 };
+    setup_hostility_fixture(&w, loner);
+    g_visible = 0;
+    g_conn_split = 1;
+    g_conn_x = 3100;
+    g_conn_y = 1000;
+    g_conn_climbs = 40;
+    w.water_height = 40;
+    enum { KEEP = 8 };
+    strcpy(g_defs[HF_CLIMBER].unitname, "ZONSWAMP");
+    strcpy(g_defs[HF_CLIMBER].category, "ZON MELEE ATTACK");
+    strcpy(g_defs[HF_CLIMBER].movement_class, "WADER");
+    g_defs[HF_CLIMBER].max_velocity = 1.0f;
+    g_defs[HF_CLIMBER].max_slope = 40;
+    g_defs[HF_CLIMBER].num_weapons = 1;
+    g_defs[HF_CLIMBER].weapons[0].range = 40;
+    strcpy(g_defs[KEEP].unitname, "ARAKEEP");
+    strcpy(g_defs[KEEP].category, "ARA");
+    g_defs[KEEP].build_cost = 5000;
+    /* The seat's first walker wades, the three after it do not. */
+    int troop = hf_troop(2);
+    g_units[troop].def_idx = HF_CLIMBER;
+    for (int k = 1; k < 4; k++)
+        hf_add_unit(2, HF_TROOP, g_units[troop].world_x + 32 * k, g_units[troop].world_y);
+    int keep = hf_add_unit(1, KEEP, 3600, 400);
+    TAK_AI_DebugSetWaveTarget(2, 0);
+    hf_run_ticks(&w, 60, 1);
+    printf("[aim %d, the keep on the seat's own ground %d] ", TAK_AI_DebugFerryAim(2), keep);
+    ASSERT_TRUE(TAK_AI_DebugFerryAim(2) >= 0);
+    ASSERT_TRUE(TAK_AI_DebugFerryAim(2) != keep);
+    g_conn_climbs = 0;
     return 0;
 }
 
@@ -5624,6 +5863,8 @@ int main(void) {
     if (test_ai_a_group_drops_a_target_it_cannot_reach() != 0) return 1;
     if (test_ai_a_builder_finds_a_shore_near_itself() != 0) return 1;
     if (test_ai_a_large_army_runs_more_than_one_ferry() != 0) return 1;
+    if (test_ai_a_crossing_at_sea_is_covered() != 0) return 1;
+    if (test_ai_a_flyer_lands_clear_of_the_arms_on_its_way() != 0) return 1;
     if (test_ai_a_builder_rides_to_a_pad_it_cannot_walk_to() != 0) return 1;
     if (test_plan_a_cut_off_seat_trains_the_warships_it_needs() != 0) return 1;
     if (test_htn_the_fleet_table() != 0) return 1;
@@ -5635,6 +5876,7 @@ int main(void) {
     if (test_ai_a_small_island_still_builds() != 0) return 1;
     if (test_ai_units_at_home_do_not_pack_on_one_point() != 0) return 1;
     if (test_ai_a_seat_one_walker_class_walks_from_is_not_cut_off() != 0) return 1;
+    if (test_ai_a_ferry_aims_by_a_walker_the_water_stops() != 0) return 1;
     if (test_plan_cut_off_builds_a_yard_then_a_transport() != 0) return 1;
     if (test_ai_wave_waits_out_a_garrison_it_can_see() != 0) return 1;
     if (test_ai_outmatched_members_come_home() != 0) return 1;
