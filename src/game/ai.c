@@ -387,6 +387,7 @@ static int ai_count_owned(const Unit *units, int unit_count,
 
 static int ai_limit_allows(const Unit *units, int unit_count,
                            int player_id, int def_idx) {
+    if (Units_TypeCapReached(player_id, def_idx)) return 0;
     if (def_idx < 0 || def_idx >= AI_MAX_DEFS) return 1;
     int32_t lim = g_ai_limit[def_idx];
     if (lim < 0) return 1;

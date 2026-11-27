@@ -306,6 +306,17 @@ static const HudPixels *portrait_missing(int def_idx) {
     return NULL;
 }
 
+/* Dims a card the seat may not build, as a locked option greys. */
+static void hud_grey_rect(SDL_Surface *dst, SDL_Rect r) {
+    SDL_Surface *veil = SDL_CreateRGBSurfaceWithFormat(0, 1, 1, 32,
+                                                       SDL_PIXELFORMAT_RGBA32);
+    if (!veil) return;
+    SDL_FillRect(veil, NULL, SDL_MapRGBA(veil->format, 30, 24, 16, 176));
+    SDL_SetSurfaceBlendMode(veil, SDL_BLENDMODE_BLEND);
+    SDL_BlitScaled(veil, NULL, dst, &r);
+    SDL_FreeSurface(veil);
+}
+
 /* Decode + cache the buildpic JPG for a unit def. A full cache gives up
  * its oldest portrait. */
 static const HudPixels *portrait_pixels_for_def(int def_idx) {
@@ -1541,6 +1552,8 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
                             SDL_Rect dst = dlg_rect;
                             hud_blit_pixels(port, off, &dst);
                         }
+                        if (Units_TypeCapReached(Units_LocalPlayer(), g_build_list[b]))
+                            hud_grey_rect(off, dlg_rect);
                     }
                     HUDBuildSlot *bs = &g_build_slots_live[g_build_slots_count++];
                     bs->dlg     = dlg_rect;
@@ -1949,6 +1962,8 @@ int HUD_HandleSidebarClickHeld(int win_x, int win_y, TAK_Platform *plat,
         const HUDBuildSlot *bs = &g_build_slots_live[i];
         if (win_x < bs->rect.x || win_x >= bs->rect.x + bs->rect.w) continue;
         if (win_y < bs->rect.y || win_y >= bs->rect.y + bs->rect.h) continue;
+        /* A greyed card takes no press. */
+        if (Units_TypeCapReached(Units_LocalPlayer(), bs->def_idx)) return 1;
         /* Factory (immobile builder) producing a mobile unit: enqueue
          * in-yard, no placement ghost — legacy queue counts. */
         {

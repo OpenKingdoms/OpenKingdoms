@@ -142,6 +142,18 @@ const UnitDef *Units_GetDef(int idx) {
 }
 int Units_GetDefCount(void) { return MOCK_DEFS; }
 
+/* As units.c counts it: the seat's live units of the type, frames too. */
+int Units_TypeCapReached(int player_id, int def_idx) {
+    if (def_idx < 0 || def_idx >= MOCK_DEFS || g_defs[def_idx].total_allowed <= 0)
+        return 0;
+    int n = 0;
+    for (int i = 0; i < g_unit_count; i++)
+        n += g_units[i].player_id == player_id && g_units[i].def_idx == def_idx &&
+             (g_units[i].alive == UNIT_ALIVE_ACTIVE ||
+              g_units[i].alive == UNIT_ALIVE_TRANSPORTED);
+    return n >= g_defs[def_idx].total_allowed;
+}
+
 GameWorld *World_Get(void) { return (GameWorld *)g_world; }
 
 const Unit *Units_GetActive(int *out_count) {

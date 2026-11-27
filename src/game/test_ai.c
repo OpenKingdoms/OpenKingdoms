@@ -180,6 +180,18 @@ const UnitDef *Units_GetDef(int idx) {
 }
 int Units_GetDefCount(void) { return MOCK_DEFS; }
 
+/* As units.c counts it: the seat's live units of the type, frames too. */
+int Units_TypeCapReached(int player_id, int def_idx) {
+    if (def_idx < 0 || def_idx >= MOCK_DEFS || g_defs[def_idx].total_allowed <= 0)
+        return 0;
+    int n = 0;
+    for (int i = 0; i < g_unit_count; i++)
+        n += g_units[i].player_id == player_id && g_units[i].def_idx == def_idx &&
+             (g_units[i].alive == UNIT_ALIVE_ACTIVE ||
+              g_units[i].alive == UNIT_ALIVE_TRANSPORTED);
+    return n >= g_defs[def_idx].total_allowed;
+}
+
 GameWorld *World_Get(void) { return (GameWorld *)g_world; }
 
 const Unit *Units_GetActive(int *out_count) {
@@ -5785,6 +5797,56 @@ static int test_ai_a_group_that_wins_holds_or_presses_on(void) {
     return 0;
 }
 
+/* A type at its totalallowed is passed over as one at the profile's
+ * limit is, so the seat starts the next factory kind. */
+static int test_ai_passes_over_a_type_at_its_total_allowed(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    g_mock_mana = 5000;
+    g_mock_max_mana = 5000;
+    g_mock_income = 50;
+    strcpy(g_defs[4].unitname, "TARDUNG");
+    strcpy(g_defs[4].category, "TAR FACTORY");
+    g_defs[4].cap_flags = UNIT_CAP_BUILDER;
+    g_defs[4].worker_time = 10.0f;
+    strcpy(g_defs[5].unitname, "TARFIRE");
+    strcpy(g_defs[5].category, "TAR ATTACK BALLISTIC");
+    g_defs[5].max_velocity = 1.0f;
+    g_defs[5].num_weapons = 1;
+    g_defs[5].sight_distance = 156;
+    g_defs[5].weapons[0].range = 900;
+    g_buildable_counts[0] = 3;
+    g_buildables[0][0] = 1;
+    g_buildables[0][1] = 2;
+    g_buildables[0][2] = 4;
+    g_buildable_counts[4] = 1;
+    g_buildables[4][0] = 5;
+    /* No profile limit, only the type's own cap of one. */
+    g_defs[2].total_allowed = 1;
+    TAK_AI_DebugSetWeight(2, 10.0f);
+    TAK_AI_DebugSetWeight(4, 10.0f);
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 2;
+    g_units[1].def_idx = 1;
+    g_units[2].alive = UNIT_ALIVE_ACTIVE;
+    g_units[2].player_id = 2;
+    g_units[2].def_idx = 2;
+    g_units[2].build_target = -1;
+    g_units[2].cmd_kind = UNIT_CMD_BUILD;
+    g_unit_count = 3;
+    w.skirmish_elapsed_ticks = 600;
+    g_begin_calls = 0;
+    g_last_build_def = -1;
+    int started = -1;
+    for (int k = 0; k < 20 && started < 0; k++) {
+        w.skirmish_elapsed_ticks += 60;
+        TAK_AI_TickSkirmish(&w);
+        if (g_begin_calls > 0) started = g_last_build_def;
+    }
+    ASSERT_EQ_INT(4, started);
+    return 0;
+}
+
 int main(void) {
     /* These cases step the AI at whole seconds and expect every seat. */
     TAK_AI_DebugSetStagger(0);
@@ -5803,6 +5865,7 @@ int main(void) {
     ASSERT_EQ_INT(0, TAK_AI_PursuitRadius(0, 0, 3));
     if (test_ai_builds_economy_then_production_then_combat() != 0) return 1;
     if (test_ai_moves_to_the_next_factory_at_the_limit() != 0) return 1;
+    if (test_ai_passes_over_a_type_at_its_total_allowed() != 0) return 1;
     if (test_ai_builds_lodestone_on_sacred_pad() != 0) return 1;
     if (test_ai_a_build_on_its_way_counts_as_a_frame() != 0) return 1;
     if (test_ai_wave_targets_follow_the_teams() != 0) return 1;

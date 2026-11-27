@@ -769,6 +769,8 @@ int Mission_LoadOTA(const char *vfs_path, MissionData *out) {
     parse_size_text(TDF_ReadString(tdf, "Size", ""), &out->size_x, &out->size_y);
     /* A missing key reads as 0 (legacy:168883). */
     out->mapping = TDF_ReadInt(tdf, "mapping", 0);
+    out->max_units = TDF_ReadInt(tdf, "maxunits", 0);
+    if (out->max_units < 0) out->max_units = 0;
     if (parse_objectives(tdf, out) != 0) goto done;
 
     if (TDF_PushSection(tdf, "Map Data") == 0) {

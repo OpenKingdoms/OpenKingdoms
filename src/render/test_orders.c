@@ -309,6 +309,62 @@ TEST(a_barracks_at_the_unit_limit_waits_and_goes_on) {
     oq_end();
 }
 
+/* totalallowed caps a type per seat, the frame on the pad counted. A
+ * mission's placement is made whatever the cap. */
+TEST(a_type_at_its_total_allowed_is_not_made) {
+    ASSERT_NOT_NULL(oq_world());
+    int b = oq_barracks();
+    ((UnitDef *)Units_GetDef(OQ_SOLDIER))->total_allowed = 1;   /* test-only */
+    ASSERT_EQ_INT(0, Units_TypeCapReached(1, OQ_SOLDIER));
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(b, OQ_SOLDIER));
+    ASSERT(oq_unit(b)->build_target >= 0);
+    ASSERT_EQ_INT(1, Units_TypeCapReached(1, OQ_SOLDIER));
+    ASSERT_EQ_INT(-1, Units_FactoryEnqueue(b, OQ_SOLDIER));
+    ASSERT_EQ_INT(-1, Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX + 200, OQ_CY));
+    ASSERT_EQ_INT(0, Units_TypeCapReached(2, OQ_SOLDIER));
+    ASSERT(Units_Spawn(OQ_SOLDIER, 2, 1, OQ_CX + 200, OQ_CY + 200) >= 0);
+    ASSERT(Units_SpawnUncapped(OQ_SOLDIER, 1, 0, OQ_CX + 260, OQ_CY) >= 0);
+    oq_ticks(500);
+    ASSERT_EQ_INT(2, oq_count(OQ_SOLDIER));
+    ASSERT_EQ_INT(0, Units_FactoryQueueCount(b));
+    oq_end();
+}
+
+/* A mission's maxunits is the seat's limit in place of the lobby's. */
+/* A run queued below the cap is dropped once the cap is met, so the
+ * queue behind it goes on. */
+TEST(a_run_past_its_total_allowed_leaves_the_queue_moving) {
+    ASSERT_NOT_NULL(oq_world());
+    int b = oq_barracks();
+    ((UnitDef *)Units_GetDef(OQ_SOLDIER))->total_allowed = 1;   /* test-only */
+    ASSERT_EQ_INT(0, Units_FactoryAdd(b, OQ_SOLDIER, 3, 0));
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(b, OQ_ARCHER));
+    oq_ticks(3000);
+    ASSERT_EQ_INT(1, oq_count(OQ_SOLDIER));
+    ASSERT_EQ_INT(1, oq_count(OQ_ARCHER));
+    ASSERT_EQ_INT(0, Units_FactoryQueueCount(b));
+    ((UnitDef *)Units_GetDef(OQ_SOLDIER))->total_allowed = 0;
+    oq_end();
+}
+
+TEST(a_missions_maxunits_is_the_seats_limit) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    w->cfg.units_per_side = 2000;
+    w->mission.max_units = 3;
+    ASSERT_EQ_INT(2000, Units_SeatUnitCap());
+    strcpy(w->mission.path, "missions/test.ota");
+    ASSERT_EQ_INT(3, Units_SeatUnitCap());
+    for (int k = 0; k < 3; k++)
+        ASSERT(Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX + k * 40, OQ_CY) >= 0);
+    ASSERT_EQ_INT(-1, Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX + 160, OQ_CY));
+    ASSERT(Units_Spawn(OQ_SOLDIER, 2, 1, OQ_CX, OQ_CY + 200) >= 0);
+    ASSERT(Units_SpawnUncapped(OQ_SOLDIER, 1, 0, OQ_CX + 200, OQ_CY) >= 0);
+    w->mission.path[0] = 0;
+    w->mission.max_units = 0;
+    oq_end();
+}
+
 /* ── rally points ─────────────────────────────────────────────────── */
 
 /* A soldier a builder finished still goes to the barracks' rally
@@ -2985,6 +3041,9 @@ int main(int argc, char **argv) {
     RUN(a_barracks_trains_on_after_stop);
     RUN(a_barracks_trains_on_after_a_guard_order);
     RUN(a_barracks_at_the_unit_limit_waits_and_goes_on);
+    RUN(a_type_at_its_total_allowed_is_not_made);
+    RUN(a_run_past_its_total_allowed_leaves_the_queue_moving);
+    RUN(a_missions_maxunits_is_the_seats_limit);
     RUN(a_soldier_another_builder_finished_goes_to_the_rally_point);
     RUN(a_soldier_carries_the_barracks_standing_orders);
     RUN(shift_adds_five_and_a_right_click_takes_the_last_first);

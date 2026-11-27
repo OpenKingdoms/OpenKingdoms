@@ -536,6 +536,9 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
             for (int i = 0; i < count; i++) {
                 /* A transport with riders stays where it is (legacy:155789). */
                 if (units[g_exec_handles[i]].cargo_count > 0) continue;
+                /* Nor one the receiver owns totalallowed of already. */
+                if (Units_TypeCapReached(other, units[g_exec_handles[i]].def_idx))
+                    continue;
                 Units_SetOwner(g_exec_handles[i], other, color);
                 applied++;
             }

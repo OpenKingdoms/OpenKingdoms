@@ -784,6 +784,9 @@ typedef struct UnitDef {
     /* Its script runs its own walk cycle, from a watcher thread or from
      * MoveRate, by calling or starting `walk` itself. */
     uint8_t  script_walks;
+    /* totalallowed: the most of the type one seat may own, frames
+     * counted. 0 is no cap. */
+    int16_t  total_allowed;
 
     /* COB script bundle (Phase D). Loaded eagerly per-def. */
     CobScript *cob_script;
@@ -1508,8 +1511,20 @@ void              Units_LoadFinish(void);
 int               Units_Spawn(int def_idx, int player_id, int team_color_idx,
                                int32_t world_x, int32_t world_y);
 
-/* Times Units_Spawn refused, the seat's unit limit and an exhausted
- * slot pool together, for the probes and the tests that watch it. */
+/* Units_Spawn exempt from the seat's unit limit and the type's
+ * totalallowed, for the units a mission places at its start. */
+int               Units_SpawnUncapped(int def_idx, int player_id,
+                                      int team_color_idx,
+                                      int32_t world_x, int32_t world_y);
+
+/* The seat's unit limit: the mission's maxunits, else the lobby's. */
+int               Units_SeatUnitCap(void);
+
+/* Whether the seat owns totalallowed of the type already. */
+int               Units_TypeCapReached(int player_id, int def_idx);
+
+/* Times Units_Spawn refused, for any cap, a barred type or an exhausted
+ * slot pool, for the probes and the tests that watch it. */
 uint32_t          Units_DebugSpawnFailures(void);
 
 /* Render a one-shot translucent "ghost" of a building at the given
