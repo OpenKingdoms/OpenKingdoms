@@ -55,8 +55,10 @@ pull request, not here.
   slider on the Visual page lists the display's sizes plus Fit, which
   stretches the 640x480 battle screen over the window, and in fullscreen
   a size below the desktop's is a real mode change, as in the original.
-  In a browser the sizes are one to four screen pixels per game pixel,
-  by default the page's devicePixelRatio rounded. A new install starts
+  In a browser the sizes are the page at one to four screen pixels per
+  game pixel, by default the page's devicePixelRatio rounded, and the
+  usual desktop sizes up to the screen's, drawn at that size and scaled
+  to fit the page. A new install starts
   on Original, an options file from before the setting keeps Fit, and on
   Windows a switch from Fit to Original takes effect from the next
   start.

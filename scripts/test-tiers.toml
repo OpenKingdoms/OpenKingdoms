@@ -222,6 +222,7 @@ ui = [
   ["battle_", 16],
   ["mp_room", 18],
   ["options_", 6],
+  ["f1_opens_the_in_game_menu_with_the_shipped_buttons", 1],
   ["story_", 14],
   ["end_screen", 7],
   ["main_menu", 9],

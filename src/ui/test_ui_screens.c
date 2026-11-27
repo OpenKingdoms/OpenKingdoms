@@ -23726,6 +23726,17 @@ TEST(f1_opens_the_in_game_menu_with_the_shipped_buttons) {
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, igm_frame(&platform, &timer));
     ASSERT_EQ_INT(1, InGameMenu_IsOpen());
 
+    /* Its Options carry the Resolution slider's sizes as the menu's do,
+     * and the battle takes a step at once (legacy:157711-157721). */
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_Press("Options"));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Visual"));
+    ASSERT_EQ_INT(HUD_SCALE_FIT, platform.scale_mode);
+    ASSERT_EQ_INT(1, Options_ClickWidget("incbutton"));
+    ASSERT_EQ_INT(HUD_SCALE_ORIGINAL, platform.scale_mode);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, igm_frame(&platform, &timer));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Cancel"));
+    ASSERT_EQ_INT(HUD_SCALE_FIT, platform.scale_mode);
+
     igm_teardown(&platform);
 }
 

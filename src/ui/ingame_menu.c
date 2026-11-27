@@ -49,6 +49,7 @@ static struct {
     Font       *font_help;
     int         off_x;      /* the dialog stands in the middle of the play area */
     int         off_y;
+    TAK_Platform *platform; /* what Options' Resolution slider sizes */
     char        path[128];
     char        enter_widget[32];
     char        esc_widget[32];
@@ -131,6 +132,17 @@ static void free_dialog(void) {
     m.path[0] = '\0';
 }
 
+/* The menu stands in the middle of the play area, not of the screen:
+ * the sidebar and the bottom strip are not ground it may cover. The
+ * area moves with the battle's size, so every frame places it again. */
+static void place_dialog(void) {
+    if (!m.rt) return;
+    SDL_Rect area;
+    HUD_DialogArea(&area);
+    GUI_CenterOffset(&m.dialog, area, &m.off_x, &m.off_y);
+    GUIRuntime_SetOffset(m.rt, m.off_x, m.off_y);
+}
+
 static int load_dialog(const char *path) {
     free_dialog();
     if (GUIDialog_Load(&m.dialog, path) != 0) {
@@ -143,20 +155,15 @@ static int load_dialog(const char *path) {
     set_text(m.path, sizeof(m.path), path);
     parse_accelerators(m.dialog.root.tooltip);
 
-    /* The menu stands in the middle of the play area, not of the screen:
-     * the sidebar and the bottom strip are not ground it may cover. */
-    SDL_Rect area;
-    HUD_DialogArea(&area);
-    GUI_CenterOffset(&m.dialog, area, &m.off_x, &m.off_y);
-    GUIRuntime_SetOffset(m.rt, m.off_x, m.off_y);
-
+    place_dialog();
     m.prev_enter = m.prev_esc = 0;
     return 0;
 }
 
-int InGameMenu_Open(void) {
+int InGameMenu_Open(TAK_Platform *platform) {
     if (m.open) return 0;
     memset(&m, 0, sizeof(m));
+    m.platform = platform;
     if (load_dialog(menu_file()) != 0) return -1;
     m.font_help = Font_Load("data/fonts/b_times new roman (100b)", UI_RGBAFormat());
     /* The clock stops while the menu is up in single player and in
@@ -191,7 +198,8 @@ int InGameMenu_IsOpen(void) { return m.open; }
 int InGameMenu_OpenBrowser(int load) {
     if (igm_mode() == IGM_MULTI) return -1;
     if (!load && Replay_IsPlaying()) return -1;
-    if (!m.open && InGameMenu_Open() != 0) return -1;
+    /* The frame that ticks the menu names the platform. */
+    if (!m.open && InGameMenu_Open(NULL) != 0) return -1;
     (void)press_named(load ? "LoadGame" : "SaveGame");
     if (m.browser_open) return 0;
     InGameMenu_Close();
@@ -218,7 +226,7 @@ static int press_named(const char *name) {
     }
     if (tak_stricmp(name, "Options") == 0) {         /* legacy:154740 */
         Options_SetReturnState(GAMESTATE_IN_GAME);
-        if (Options_Init(NULL) == 0) m.options_open = 1;
+        if (Options_Init(m.platform) == 0) m.options_open = 1;
         return GAMESTATE_IN_GAME;
     }
     if (tak_stricmp(name, "Cancel") == 0) {          /* legacy:156337-156341 */
@@ -332,6 +340,9 @@ static void draw_help_strip(void) {
 
 int InGameMenu_Tick(TAK_Platform *platform) {
     if (!m.open || !m.rt) return GAMESTATE_IN_GAME;
+    if (platform) m.platform = platform;
+    /* The save and information dialogs over it place themselves once. */
+    if (!m.browser_open && !m.info_open) place_dialog();
 
     int focus = platform && platform->has_focus;
     const Uint8 *keys = SDL_GetKeyboardState(NULL);

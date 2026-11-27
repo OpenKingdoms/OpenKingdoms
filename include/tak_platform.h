@@ -33,6 +33,9 @@ typedef struct TAK_DisplayConfig {
     /* In a browser, screen pixels to a game pixel under Original: 0
      * picks the whole part of the page's devicePixelRatio. */
     int pixel_size;
+    /* In a browser, Original holds window_w x window_h rather than the
+     * page's size. The desktop window is that size anyway. */
+    int hold_size;
 } TAK_DisplayConfig;
 
 /* Sensible defaults — modern resolution, bilinear when not integer-fit. */
@@ -96,13 +99,17 @@ typedef struct TAK_Platform {
     int            vsync;
     int            scale_mode;    /* HUD_ScaleMode                         */
     int            pixel_size;    /* browser only, 0 = from the page       */
+    /* Browser only: the size Original draws at whatever the page's, shown
+     * scaled to fit it. 0 x 0 follows the page. */
+    int            held_w, held_h;
     /* On Windows the scale the process started under, which fixed its
      * DPI awareness for the run. -1 elsewhere. */
     int            started_scale;
 } TAK_Platform;
 
 /* A size the battle can run at under Original. pixel_size is the screen
- * pixels to a game pixel in a browser, 0 on the desktop. */
+ * pixels to a game pixel for a browser stop that follows the page, 0 for
+ * a size of its own. */
 typedef struct TAK_Resolution {
     int w, h;
     int pixel_size;
@@ -167,8 +174,8 @@ void TAK_Platform_SetCanvasSize(TAK_Platform *plat, int w, int h);
 
 /* Switch between the Original and Fit scales. In a browser this sizes
  * the page's canvas to match: under Original the drawing buffer is the
- * page's size in screen pixels over pixel_size, under Fit it is the
- * page's 16:9 box. */
+ * held size or the page's size in screen pixels over pixel_size, under
+ * Fit it is the page's 16:9 box. */
 void TAK_Platform_SetScaleMode(TAK_Platform *plat, int scale_mode,
                                int pixel_size);
 
@@ -177,20 +184,25 @@ void TAK_Platform_SetScaleMode(TAK_Platform *plat, int scale_mode,
 void TAK_Platform_BattleCanvasSize(const TAK_Platform *plat, int *w, int *h);
 
 /* Screen pixels to a game pixel as it stands: 1 on the desktop, and in
- * a browser the setting or the whole part of devicePixelRatio. */
+ * a browser the setting or the whole part of devicePixelRatio, or 0
+ * while a held size is scaled to the page. */
 int TAK_Platform_PixelSize(const TAK_Platform *plat);
 
-/* The sizes Original can run at here, smallest first, at most cap. On
- * the desktop: the display's modes from 640x480 up that fit the screen,
- * plus the window as it is. In a browser: the page at each pixel size
- * that leaves at least 640x480. */
+/* The size the last Resolution stop asked for: the window on the
+ * desktop, in a browser the held size or 0 x 0 for the page's own. */
+void TAK_Platform_HeldSize(const TAK_Platform *plat, int *w, int *h);
+
+/* The sizes Original can run at here, smallest first, at most cap: on
+ * the desktop the display's modes from 640x480 up that fit the screen
+ * and the window as it is, in a browser the page at each pixel size
+ * that leaves 640x480 and the usual sizes up to the screen's. */
 int TAK_Platform_Resolutions(const TAK_Platform *plat, TAK_Resolution *out,
                              int cap);
 
-/* Set a windowed desktop window to w x h pixels, centred on its own
- * display. In fullscreen, the desktop's size keeps the desktop and any
- * other size changes the display mode. Returns -1 in a browser, where
- * the page decides the size, or when the mode will not take. */
+/* Size a windowed desktop window, centred on its display, or in
+ * fullscreen change the display mode unless w x h is the desktop's. In a
+ * browser the battle draws at w x h scaled to fit the page, and 0 x 0
+ * follows the page again. Returns -1 when the size will not take. */
 int TAK_Platform_SetWindowSize(TAK_Platform *plat, int w, int h);
 
 #endif /* TAK_PLATFORM_H */
