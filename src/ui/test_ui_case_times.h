@@ -234,7 +234,7 @@ static const UiCaseTime g_ui_case_times[] = {
     { "select_game_scrolls_by_its_arrows", 144 },
     { "the_lobby_says_what_data_it_has_and_joins_a_linked_game", 144 },
     { "main_menu_door_reopens_when_the_cursor_returns_during_the_leave_clip", 131 },
-    { "main_menu_door_rests_on_its_sheet_and_plays_from_its_clip", 129 },
+    { "main_menu_door_rests_on_its_still_and_plays_from_its_clip", 129 },
     { "music_follows_the_screen", 76 },
     { "select_game_remembers_the_address_it_was_given", 76 },
     { "the_books_load_dialog_is_shown_and_its_escape_stays_with_it", 70 },

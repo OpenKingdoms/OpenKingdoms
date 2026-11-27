@@ -17191,16 +17191,16 @@ static void close_menu_with_door_clips(TAK_Platform *platform) {
     VFS_Shutdown();
 }
 
-/* At rest a door is its sheet, cut out to the art; a clip is drawn only
- * while the door plays one. Resting on the idle clip, an opaque
- * rectangle wider than the door, left a seam beside the door. */
-TEST(main_menu_door_rests_on_its_sheet_and_plays_from_its_clip) {
+/* A door with clips is drawn from a clip in every state. At rest that
+ * is clip 4's still, which the original's resting doors match to the
+ * pixel. The sheet is a larger render and sat 2 to 3 px off. */
+TEST(main_menu_door_rests_on_its_still_and_plays_from_its_clip) {
     TAK_Platform platform;
     if (open_menu_with_door_clips(&platform) != 0) return;
     const float dt = 1.0f / 60.0f;
     MainMenu_Tick(&platform, dt);
     ASSERT_EQ_INT(2, MainMenu_DebugCharacterState(0));
-    ASSERT_EQ_INT(0, MainMenu_DebugCharacterDrawsClip(0));
+    ASSERT_EQ_INT(1, MainMenu_DebugCharacterDrawsClip(0));
     MainMenu_DebugForceHover(0);
     int ticks = 0;
     while (MainMenu_DebugCharacterState(0) != 6 && ticks++ < 900)
@@ -17212,7 +17212,7 @@ TEST(main_menu_door_rests_on_its_sheet_and_plays_from_its_clip) {
     while (MainMenu_DebugCharacterState(0) != 2 && ticks++ < 900)
         MainMenu_Tick(&platform, dt);
     ASSERT_EQ_INT(2, MainMenu_DebugCharacterState(0));
-    ASSERT_EQ_INT(0, MainMenu_DebugCharacterDrawsClip(0));
+    ASSERT_EQ_INT(1, MainMenu_DebugCharacterDrawsClip(0));
     close_menu_with_door_clips(&platform);
 }
 
@@ -26896,7 +26896,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(bink_clip_lookup_forgives_the_names_case);
     RUN_UI_TEST(main_menu_door_clips_open_once_a_session);
     RUN_UI_TEST(main_menu_door_reopens_when_the_cursor_returns_during_the_leave_clip);
-    RUN_UI_TEST(main_menu_door_rests_on_its_sheet_and_plays_from_its_clip);
+    RUN_UI_TEST(main_menu_door_rests_on_its_still_and_plays_from_its_clip);
     RUN_UI_TEST(an_allied_unit_is_not_an_attack_target);
     RUN_UI_TEST(the_sweep_button_sends_a_builder_to_clear_a_map_feature);
     RUN_UI_TEST(the_sweep_button_sends_a_builder_to_clear_a_building);

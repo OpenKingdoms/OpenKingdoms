@@ -1201,18 +1201,17 @@ pull request, not here.
   string, not a rule.
 - Citation: Manual §II, the main menu, names the door Exit to Windows.
 
-## D-013: Two main menu doors rest a few pixels off their hit rect anchor
+## D-013: Withdrawn
 
-- Change: the machine door's sheet is drawn 2 px left and 3 px up of the
-  hit rect anchor, and the knight's 3 px right and 1 px up. The girl's
-  sits on the anchor.
-- Why: the hover clips are drawn where the original draws them
-  (legacy:35248, legacy:147846), but where it rests a sheet is not
-  known. The offsets fit each sheet to its clips, so a hover does not
-  move the door. If the original's doors jump the same way, this is
-  where ours differ.
-- Citation: issue #212. The manual does not describe the menu at this
-  level.
+- Change: none. This entry nudged the machine's and the knight's
+  resting sheets a few pixels off the hit rect anchor so they met the
+  door's clips.
+- Why: withdrawn. The original never rests a door on its sheet when
+  the clips can play. It rests on clip 4's still, so the door and its
+  clips are one picture and nothing needs nudging. See
+  docs/notes/ui.md, Menu clips and cut scenes. A build without
+  the decoder draws the sheet on the anchor unmoved.
+- Citation: none.
 
 ## D-014: Sight reads the eye fresh at every stamp
 
@@ -1941,5 +1940,21 @@ pull request, not here.
 - Citation: legacy:173086-173338, legacy:206542-206576, legacy:173375.
   `a_scripted_map_plays_its_script_in_a_match_and_through_a_snapshot`.
   The manual is silent.
+
+## D-059: The dragon's snort is laid onto the K as a change
+
+- Change: while the Credits door plays, each frame of the snort's clip
+  is drawn as its difference from the clip's resting still, added to
+  the page beneath. Where the clip shows what its still shows, the
+  page's K stays. The glow in the eye and the smoke are what change.
+- Why: the snort's clips are an opaque 124 by 101 render whose K is
+  redder and darker than the page's. The gold stroke is 199,131,10 in
+  the clip and 221,185,20 on the page. Drawn as it is, the clip put a
+  red rectangle around the dragon's head with hard edges on the K, and
+  the original shows no such square. What it does during the snort has
+  not been captured, so this is recorded as ours until it is.
+- Citation: `blit_change` and the Credits door in
+  `src/render/main_menu.c`. The manual does not describe the menu at
+  this level.
 
 *(More entries added as deviations land.)*
