@@ -629,8 +629,8 @@ pull request, not here.
   note `docs/notes/2026-09-04-legacy-ai.md`, "Water and transports". The
   code is the ferry section of `src/game/ai.c`, the crossing rows of the
   army domain in `src/game/ai_htn.c` and the ferry goal and its two
-  actions in `src/game/ai_plan.c`. A-015 adds warships and A-016 a
-  builder's ride.
+  actions in `src/game/ai_plan.c`. A-015 adds warships, A-016 a
+  builder's ride and A-019 waders, covered crossings and safer flights.
 
 ## A-014: The computer's base keeps the original's spacing, with a fallback for small ground
 
@@ -728,6 +728,26 @@ pull request, not here.
   a Shaman going up asks more mana a second than a seat earns, so an
   unpaced Zhon seat sat on an empty pool and never started the troops
   its walking producers train only at 0.7.
+- Citation: The manual describes no AI rule at this level.
+
+## A-019: A computer cut off by water crosses with its army and its fleet
+
+- Change: Under `TAK_AI_TACTIC_LANDING`, on a map with water, a seat
+  whose walkers reach its target only by wading, as a Swamp Beast or a
+  Mer Warrior does, is cut off (A-013) while the waders are under half
+  its walkers by strength, and the rest are ferried. Any other class that
+  walks there leaves it not cut off, as before. An armed transport
+  crosses holding its ground with its fire on, where it used to hold its
+  fire, so it shoots back as it sails, and its move or unload is not
+  broken off. The seat's warships of A-015 sail with a wave crossing in a
+  ship, after enemy ships off home, keep within 576 px of it and go at
+  enemy ships within 768 px of it. A flying transport of a cut off seat,
+  carrying a wave or a builder, lands where the enemy arms at the landing
+  and the most it flies over on the way cost least.
+- Why: Issue #454 asks that a player on an island not be safe from the
+  computer. One wader that could cross left a seat not cut off, and
+  transports that held their fire or flew over defences were lost on the
+  way. The original's skirmish AI never loads a transport (A-013).
 - Citation: The manual describes no AI rule at this level.
 
 ## T-001: Flying transports load and unload by the ground rules

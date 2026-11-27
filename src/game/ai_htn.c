@@ -359,21 +359,25 @@ AiTask AI_Htn_GroupTask(const AiGroupState *s, const char **reason) {
     }
 }
 
-/* A seat's warships: a domain of their own. Enemy ships off home are
- * answered whatever they weigh, a fleet a fifth stronger goes out to the
- * enemy's, and with no ships to fight it stands off a shore and shells it.
- * Otherwise it waits (A-015). */
-enum { S_SHIPS = 0, S_VALUE, S_ENEMY_SHIPS, S_ENEMY_VALUE, S_NEAR_HOME, S_MARK_KNOWN, S_COUNT };
-enum { T_FLEET = 0, P_HUNT, P_SHELL, P_STAND, ST_COUNT };
+/* A seat's warships (A-015): enemy ships off home are answered, a wave at
+ * sea in a ship is sailed with (A-019), a fleet a fifth stronger hunts the
+ * enemy's, and with no ships to fight it shells a shore. Else it waits. */
+enum { S_SHIPS = 0, S_VALUE, S_ENEMY_SHIPS, S_ENEMY_VALUE, S_NEAR_HOME, S_MARK_KNOWN,
+       S_CROSSING, S_COUNT };
+enum { T_FLEET = 0, P_HUNT, P_SHELL, P_STAND, P_COVER, ST_COUNT };
 
 static const HtnTask k_fleet_tasks[ST_COUNT] = {
     [T_FLEET] = {
-        .name = "fleet", .compound = 1, .method_count = 4,
+        .name = "fleet", .compound = 1, .method_count = 5,
         .methods = {
             { .name = "answer ships off home",
               .pre = { AI_COND(S_SHIPS, AI_OP_GT, 0),
                        AI_COND(S_NEAR_HOME, AI_OP_NE, 0) },
               .subtasks = { P_HUNT }, .subtask_count = 1 },
+            { .name = "sail with the crossing",
+              .pre = { AI_COND(S_SHIPS, AI_OP_GT, 0),
+                       AI_COND(S_CROSSING, AI_OP_NE, 0) },
+              .subtasks = { P_COVER }, .subtask_count = 1 },
             { .name = "hunt the enemy's ships",
               .pre = { AI_COND(S_SHIPS, AI_OP_GE, AI_FLEET_SORTIE),
                        AI_COND(S_ENEMY_SHIPS, AI_OP_GT, 0),
@@ -391,6 +395,7 @@ static const HtnTask k_fleet_tasks[ST_COUNT] = {
     [P_HUNT]  = { .name = "hunt" },
     [P_SHELL] = { .name = "shell" },
     [P_STAND] = { .name = "stand" },
+    [P_COVER] = { .name = "cover" },
 };
 
 static const HtnDomain k_fleet = { k_fleet_tasks, ST_COUNT, S_COUNT };
@@ -405,6 +410,7 @@ AiTask AI_Htn_FleetTask(const AiFleetState *s, const char **reason) {
     w[S_ENEMY_VALUE] = s->enemy_value;
     w[S_NEAR_HOME]   = s->near_home ? 1 : 0;
     w[S_MARK_KNOWN]  = s->mark_known ? 1 : 0;
+    w[S_CROSSING]    = s->crossing ? 1 : 0;
     HtnPlan plan;
     if (!Htn_Plan(&k_fleet, T_FLEET, w, &plan) || plan.step_count <= 0) return AI_TASK_STAND;
     if (reason && plan.via_count > 0)
@@ -412,6 +418,7 @@ AiTask AI_Htn_FleetTask(const AiFleetState *s, const char **reason) {
     switch (plan.steps[0]) {
     case P_HUNT:  return AI_TASK_HUNT;
     case P_SHELL: return AI_TASK_SHELL;
+    case P_COVER: return AI_TASK_ESCORT;
     default:      return AI_TASK_STAND;
     }
 }
