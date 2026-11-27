@@ -29,8 +29,9 @@ int  InGameMenu_TakeRestart(BattleConfig *out_cfg,
                             char *out_map, size_t map_cap,
                             char *out_kingdom, size_t kingdom_cap);
 
-/* Load the dialog for the battle's mode. 0 on success. */
-int  InGameMenu_Open(void);
+/* Load the dialog for the battle's mode. 0 on success. The platform is
+ * what its Options page sizes. */
+int  InGameMenu_Open(TAK_Platform *platform);
 
 /* Handle input and paint over the battle. Returns GAMESTATE_IN_GAME
  * while the menu stays up, else the state a button chose. */

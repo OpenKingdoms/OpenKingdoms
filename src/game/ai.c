@@ -5,6 +5,8 @@
 #include "tak_ai_htn.h"
 #include "tak_ai_plan.h"
 #include "tak_economy.h"
+#include "tak_mission.h"
+#include "tak_mission_script.h"
 #include "tak_battle_config.h"
 #include "tak_fog.h"
 #include "tak_unit.h"
@@ -38,6 +40,8 @@ static int32_t g_ai_limit[AI_MAX_DEFS];
 static uint8_t g_ai_listed[AI_MAX_DEFS];
 static float   g_ai_peer_weight[AI_MAX_DEFS];
 static int     g_ai_profile_loaded = 0;
+/* The profile loaded, the mission's aiprofile or "default". */
+static char    g_ai_profile_name[64];
 static uint32_t g_ai_rng = 0x2A5F19C7u;
 
 /* Seats told to fight without some of A-007 to A-012, for measuring. */
@@ -55,6 +59,40 @@ static int ai_monarch_ground(int p, int32_t x, int32_t y, int32_t reach);
 static uint32_t ai_rand(uint32_t n) {
     g_ai_rng = g_ai_rng * 1664525u + 1013904223u;   /* deterministic LCG */
     return n ? (g_ai_rng >> 8) % n : 0;
+}
+
+/* A campaign mission's map. */
+static int ai_on_mission(const GameWorld *w) {
+    return w && (w->mission.objective_count > 0 || w->mission.placement_count > 0);
+}
+
+/* A battle counts one of the two clocks and leaves the other at nought. */
+static int ai_clock(const GameWorld *w) {
+    return w ? w->skirmish_elapsed_ticks + w->mission_elapsed_ticks : 0;
+}
+
+/* A seat the computer plays. On a mission map that is a seat the file
+ * calls strategic, which the original gives the full share of its
+ * brain (legacy:177742, legacy:19335, legacy:23721). */
+static int ai_seat_plays(const GameWorld *w, int p) {
+    if (!w || p < 1 || p > TAK_MAX_PLAYERS) return 0;
+    if (w->cfg.players[p - 1].kind != TAK_SLOT_AI) return 0;
+    if (!ai_on_mission(w)) return 1;
+    const MissionSeat *s = p < TAK_MISSION_PLAYER_LINES ? &w->mission.seats[p] : NULL;
+    return s && s->present && s->strategic;
+}
+
+/* A unit a mission's order list keeps from the computer player, as the
+ * original's lists clear the flag its brain recruits by (legacy:228755,
+ * legacy:15594, legacy:16227). */
+static int ai_held(const GameWorld *w, int i) {
+    return ai_on_mission(w) && MissionOrders_Holds(i);
+}
+
+/* A seat the computer fights. A mission's neutral seat is every seat's
+ * ally in the original (legacy:177720-177727), so no wave goes for it. */
+static int ai_foe(int p, int q) {
+    return Units_PlayersAreEnemies(p, q) && !Units_HoldsFireOn(p, q);
 }
 
 static int ai_stricmp(const char *a, const char *b) {
@@ -104,9 +142,23 @@ static void ai_profile_peers(void) {
     }
 }
 
+/* A mission's own profile, ai\<aiprofile>.txt, else the default
+ * (legacy:169124-169128, legacy:206363). A skirmish keeps the default. */
+static int ai_profile_read(const char *name, void **data, uint32_t *size) {
+    char path[96];
+    snprintf(path, sizeof(path), "data/ai/%s.txt", name);
+    if (VFS_ReadFile(path, data, size) == 0 && *data) return 1;
+    snprintf(path, sizeof(path), "ai/%s.txt", name);
+    return VFS_ReadFile(path, data, size) == 0 && *data;
+}
+
 static void ai_profile_load(void) {
-    if (g_ai_profile_loaded) return;
+    const GameWorld *w = World_Get();
+    const char *want = ai_on_mission(w) && w->mission.ai_profile[0]
+                     ? w->mission.ai_profile : "default";
+    if (g_ai_profile_loaded && ai_stricmp(g_ai_profile_name, want) == 0) return;
     g_ai_profile_loaded = 1;
+    snprintf(g_ai_profile_name, sizeof(g_ai_profile_name), "%s", want);
     for (int i = 0; i < AI_MAX_DEFS; i++) {
         g_ai_weight[i] = 50.0f;
         g_ai_limit[i]  = -1;
@@ -114,8 +166,9 @@ static void ai_profile_load(void) {
     }
     void *data = NULL;
     uint32_t size = 0;
-    if (VFS_ReadFile("data/ai/default.txt", &data, &size) != 0 || !data) {
-        if (VFS_ReadFile("ai/default.txt", &data, &size) != 0 || !data) {
+    if (!ai_profile_read(want, &data, &size)) {
+        data = NULL;
+        if (!ai_profile_read("default", &data, &size)) {
             ai_profile_peers();
             return;
         }
@@ -966,7 +1019,7 @@ static int ai_find_clear_site(const Unit *units, int actor_idx, int build_def,
     s.units = units;
     s.actor_idx = actor_idx;
     s.build_def = build_def;
-    s.now = world ? world->skirmish_elapsed_ticks : 0;
+    s.now = ai_clock(world);
     s.checks = AI_SITE_REACH_CHECKS;
     int unit_count = 0;
     (void)Units_GetActive(&unit_count);
@@ -1279,7 +1332,7 @@ static int ai_pad_site(const GameWorld *world, const Unit *units,
             ai_within(wx, wy, on_way->x[k], on_way->y[k], 128))
             return 0;
     }
-    if (ai_site_failed(p, wx, wy, world->skirmish_elapsed_ticks)) return 0;
+    if (ai_site_failed(p, wx, wy, ai_clock(world))) return 0;
     if (ai_ride_bound_for(p, wx, wy)) return 0;
     /* A site the enemy is standing on in more strength than we are is
      * not one to send a builder to, and not a free one to plan on. The
@@ -1354,10 +1407,9 @@ static int ai_try_expand_to_sacred_site(const GameWorld *world,
         if (walks && best_d2 <= (int64_t)AI_RIDE_FAR_PX * AI_RIDE_FAR_PX)
             return ai_begin_building(actor_idx, lode, best_x, best_y);
         if (ai_ride_start(world, units, unit_count, actor_idx, best_x, best_y, walks,
-                          world->skirmish_elapsed_ticks)) return 1;
+                          ai_clock(world))) return 1;
         if (walks) return ai_begin_building(actor_idx, lode, best_x, best_y);
-        ai_remember_failed_site(actor->player_id, best_x, best_y,
-                                world->skirmish_elapsed_ticks);
+        ai_remember_failed_site(actor->player_id, best_x, best_y, ai_clock(world));
     }
     return 0;
 }
@@ -1467,7 +1519,7 @@ static int ai_monarch_ground(int p, int32_t x, int32_t y, int32_t reach) {
     const GameWorld *world = World_Get();
     for (int q = 1; q <= TAK_MAX_PLAYERS; q++) {
         const AiPlayer *e = &g_ai_players[q];
-        if (q == p || !e->base_known || !Units_PlayersAreEnemies(p, q)) continue;
+        if (q == p || !e->base_known || !ai_foe(p, q)) continue;
         /* A seat out of the game threatens nothing from its home. */
         if (world && (world->stats[q].eliminated || world->resigned[q])) continue;
         int64_t ex = (int64_t)x - e->base_x, ey = (int64_t)y - e->base_y;
@@ -2205,9 +2257,13 @@ void TAK_AI_DebugSetWaveTarget(int player_id, int handle) {
     ap->target_reachable = 1;
 }
 
+/* A seat in the battle. A mission's seats are the ones its lines name,
+ * whatever the lobby's slots say. */
 static int ai_valid_player(const GameWorld *world, int p) {
-    return world && p >= 1 && p <= TAK_MAX_PLAYERS &&
-           world->cfg.players[p - 1].kind != TAK_SLOT_CLOSED;
+    if (!world || p < 1 || p > TAK_MAX_PLAYERS) return 0;
+    if (world->cfg.players[p - 1].kind != TAK_SLOT_CLOSED) return 1;
+    return ai_on_mission(world) && p < TAK_MISSION_PLAYER_LINES &&
+           world->mission.seats[p].present;
 }
 
 static int ai_players_allied(int a, int b) {
@@ -2276,7 +2332,7 @@ int TAK_AI_DebugFindSite(int actor_idx, int build_def, int32_t *x, int32_t *y) {
 int TAK_AI_DebugFailedSites(int player_id) {
     if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return 0;
     const GameWorld *w = World_Get();
-    int now = w ? w->skirmish_elapsed_ticks : 0;
+    int now = ai_clock(w);
     int n = 0;
     for (int k = 0; k < AI_FAILED_SITES; k++) {
         if (g_ai_players[player_id].fail_until[k] > now) n++;
@@ -2308,13 +2364,51 @@ static int ai_def_is_mobile_combat(const UnitDef *def) {
 /* Home is the start position: the map datum the AI builds around.
  * Without one (mission maps) fall back to the monarch, then any
  * structure. */
+/* A mission seat's home is among its buildings, as a campaign brain never
+ * sends its builders to a start position (legacy:18774-18777): the one
+ * that trains nearest the middle of them, else the nearest. Ours. */
+static int ai_mission_home(const Unit *units, int unit_count, int p,
+                           int32_t *x, int32_t *y) {
+    int64_t sx = 0, sy = 0;
+    int n = 0;
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *u = &units[i];
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p || u->under_construction ||
+            !d || d->is_feature || d->max_velocity > 0.0f) continue;
+        sx += u->world_x;
+        sy += u->world_y;
+        n++;
+    }
+    if (n == 0) return 0;
+    int64_t cx = sx / n, cy = sy / n, best_d = 0;
+    int best = -1, best_trains = 0;
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *u = &units[i];
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p || u->under_construction ||
+            !d || d->is_feature || d->max_velocity > 0.0f) continue;
+        int trains = (d->cap_flags & UNIT_CAP_BUILDER) != 0;
+        int64_t dx = u->world_x - cx, dy = u->world_y - cy, d2 = dx * dx + dy * dy;
+        if (best >= 0 && (trains < best_trains || (trains == best_trains && d2 >= best_d)))
+            continue;
+        best = i;
+        best_trains = trains;
+        best_d = d2;
+    }
+    *x = units[best].world_x;
+    *y = units[best].world_y;
+    return 1;
+}
+
 static void ai_update_bases(const GameWorld *world, const Unit *units,
                             int unit_count) {
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
         AiPlayer *ap = &g_ai_players[p];
-        ap->active = world->cfg.players[p - 1].kind == TAK_SLOT_AI;
+        ap->active = ai_seat_plays(world, p);
         if (!ai_valid_player(world, p)) { ap->base_known = 0; continue; }
-        int found = 0;
+        int found = ai_on_mission(world) &&
+                    ai_mission_home(units, unit_count, p, &ap->base_x, &ap->base_y);
         for (int s = 0; s < world->num_start_positions && !found; s++) {
             const StartPos *sp = &world->start_positions[s];
             if (sp->player != p) continue;
@@ -2378,21 +2472,19 @@ void TAK_AI_NotifyDamage(int victim_handle, int shooter_handle) {
     int p = v->player_id;
     if (p < 1 || p > TAK_MAX_PLAYERS) return;
     if (s->player_id < 1 || s->player_id > TAK_MAX_PLAYERS) return;
-    if (!Units_PlayersAreEnemies(p, s->player_id)) return;
+    if (!ai_foe(p, s->player_id)) return;
     AiPlayer *ap = &g_ai_players[p];
     const UnitDef *vd = Units_GetDef(v->def_idx);
     /* The seat is read from the world, never from a record an earlier
-     * skirmish left behind: a mission map runs no AI tick. */
+     * battle left behind. */
     const GameWorld *w = World_Get();
-    int ai_seat = w && w->loaded && w->mission.objective_count == 0 &&
-                  w->mission.placement_count == 0 &&
-                  w->cfg.players[p - 1].kind == TAK_SLOT_AI;
+    int ai_seat = w && w->loaded && ai_seat_plays(w, p);
     if (ai_seat && vd && vd->commander) {
         ap->freeze_pending = 1;
         /* With the build dropped, the return fire that follows answers
          * the shooter (legacy:15113-15170). A monarch that would not
          * answer keeps building rather than stand idle. */
-        if (v->cmd_kind == UNIT_CMD_BUILD &&
+        if (v->cmd_kind == UNIT_CMD_BUILD && !ai_held(w, victim_handle) &&
             Units_CanAnswer(victim_handle, shooter_handle))
             Units_StopUnit(victim_handle);
     }
@@ -2421,10 +2513,8 @@ void TAK_AI_NotifyGiveUp(int handle) {
     int p = u->player_id;
     if (p < 1 || p > TAK_MAX_PLAYERS) return;
     const GameWorld *w = World_Get();
-    if (!w || !w->loaded || w->mission.objective_count != 0 ||
-        w->mission.placement_count != 0 ||
-        w->cfg.players[p - 1].kind != TAK_SLOT_AI) return;
-    ai_remember_failed_site(p, u->cmd_x, u->cmd_y, w->skirmish_elapsed_ticks);
+    if (!w || !w->loaded || !ai_seat_plays(w, p)) return;
+    ai_remember_failed_site(p, u->cmd_x, u->cmd_y, ai_clock(w));
 }
 
 /* Map-driven threat (A-002): the most exposed cell, one where seen
@@ -2449,7 +2539,7 @@ static int ai_map_threat(const GameWorld *world, const Unit *units,
         const Unit *t = &units[i];
         if (t->alive != UNIT_ALIVE_ACTIVE) continue;
         if (!ai_valid_player(world, t->player_id)) continue;
-        if (!Units_PlayersAreEnemies(p, t->player_id)) continue;
+        if (!ai_foe(p, t->player_id)) continue;
         int cx, cy;
         if (!AI_Influence_CellOf(t->world_x, t->world_y, &cx, &cy)) continue;
         if (cx != bcx || cy != bcy) continue;
@@ -2482,7 +2572,7 @@ static void ai_promote_threat(const GameWorld *world, const Unit *units,
     int live = h >= 0 && h < unit_count &&
                units[h].alive == UNIT_ALIVE_ACTIVE &&
                units[h].stable_id == ap->threat_stable_id &&
-               Units_PlayersAreEnemies(p, units[h].player_id);
+               ai_foe(p, units[h].player_id);
     if (!live || now - ap->threat_tick > AI_THREAT_TTL) {
         ap->threat_tick = -1;
         ap->threat_handle = -1;
@@ -2600,7 +2690,7 @@ static int ai_score_targets(const GameWorld *world, const Unit *units,
         const Unit *t = &units[i];
         if (t->alive != UNIT_ALIVE_ACTIVE) continue;
         int q = t->player_id;
-        if (!ai_valid_player(world, q) || !Units_PlayersAreEnemies(p, q)) continue;
+        if (!ai_valid_player(world, q) || !ai_foe(p, q)) continue;
         const UnitDef *td = Units_GetDef(t->def_idx);
         if (!td) continue;
         /* A wall scores nothing (legacy:20042). */
@@ -2719,7 +2809,7 @@ static void ai_update_wave_target(const GameWorld *world, const Unit *units,
     int live = h >= 0 && h < unit_count &&
                units[h].alive == UNIT_ALIVE_ACTIVE &&
                units[h].stable_id == ap->target_stable_id &&
-               Units_PlayersAreEnemies(p, units[h].player_id);
+               ai_foe(p, units[h].player_id);
     if (live && ai_rand(30) != 0) {
         ap->target_x = units[h].world_x;
         ap->target_y = units[h].world_y;
@@ -2830,7 +2920,7 @@ static int ai_engage_nearby(const GameWorld *world, const Unit *units,
         const Unit *t = &units[i];
         if (i == actor_idx || t->alive != UNIT_ALIVE_ACTIVE) continue;
         if (!ai_valid_player(world, t->player_id)) continue;
-        if (!Units_PlayersAreEnemies(u->player_id, t->player_id)) continue;
+        if (!ai_foe(u->player_id, t->player_id)) continue;
         int64_t d2 = ai_dist2_units(u, t);
         if (d2 > best_d2 || (d2 == best_d2 && i > best)) continue;
         if (d2 == best_d2 && best >= 0 && i == best) continue;
@@ -3064,7 +3154,7 @@ static int ai_find_raid(const GameWorld *world, const Unit *units,
         const Unit *t = &units[i];
         if (t->alive != UNIT_ALIVE_ACTIVE) continue;
         if (!ai_valid_player(world, t->player_id) ||
-            !Units_PlayersAreEnemies(p, t->player_id)) continue;
+            !ai_foe(p, t->player_id)) continue;
         const UnitDef *td = Units_GetDef(t->def_idx);
         if (!td || td->is_feature || td->max_velocity > 0.0f) continue;
         if (AI_UnitAssetValue(td, world->cfg.monarch_expendable) <= 0) continue;
@@ -3264,6 +3354,7 @@ static int ai_ship_in_fleet(int p, int i, const Unit *u) {
 static int ai_is_spare(const AiPlayer *ap, const Unit *units, int i, int p) {
     const Unit *u = &units[i];
     if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) return 0;
+    if (ai_held(World_Get(), i)) return 0;
     if (ai_in_ferry(p, i)) return 0;
     if (ai_transport_kept(p, i, u) || ai_ship_in_fleet(p, i, u)) return 0;
     if (g_ai_member[i] || u->under_construction) return 0;
@@ -3407,7 +3498,7 @@ static int ai_groups_update(const GameWorld *world, const Unit *units,
                       g_ai_groups[p][slot].kind == AI_GROUP_FERRY;
         if ((u->alive != UNIT_ALIVE_ACTIVE && !carried) || u->under_construction ||
             slot >= AI_GROUPS || g_ai_groups[p][slot].mode == AI_GROUP_FREE ||
-            !ai_def_is_mobile_combat(d) ||
+            !ai_def_is_mobile_combat(d) || ai_held(world, i) ||
             ai_transport_kept(p, i, u) || ai_ship_in_fleet(p, i, u)) {
             g_ai_member[i] = 0;
             continue;
@@ -3770,6 +3861,7 @@ static int ai_ferry_transport(const GameWorld *world, const Unit *units, int uni
         if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) continue;
         if (u->under_construction || u->carried_by >= 0 || u->cargo_count > 0) continue;
         if (!ai_naval_is((int)u->def_idx, AI_NAVAL_TRANSPORT) || ai_in_ferry(p, i)) continue;
+        if (ai_held(World_Get(), i)) continue;
         /* Nor does a fight hold it, one of its own or left from a strike it
          * went on before the seat knew it was cut off. */
         if (u->cmd_kind != UNIT_CMD_NONE && u->cmd_kind != UNIT_CMD_MOVE &&
@@ -3898,7 +3990,7 @@ static void ai_ship_clear_way(const GameWorld *world, const Unit *units, int uni
         const Unit *o = &units[i];
         if (i == t || o->alive != UNIT_ALIVE_ACTIVE || o->player_id != p) continue;
         if (o->cmd_kind != UNIT_CMD_NONE || o->under_construction) continue;
-        if (!ai_def_is_ship(Units_GetDef(o->def_idx))) continue;
+        if (!ai_def_is_ship(Units_GetDef(o->def_idx)) || ai_held(world, i)) continue;
         if (!ai_within(o->world_x, o->world_y, tu->world_x, tu->world_y, AI_SAIL_CLEAR_PX))
             continue;
         ai_ship_to_berth(world, units, unit_count, p, i, t);
@@ -3921,7 +4013,7 @@ static void ai_guard_build(const GameWorld *world, const Unit *units,
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE || u->under_construction) continue;
         if (!ai_valid_player(world, u->player_id) ||
-            !Units_PlayersAreEnemies(p, u->player_id)) continue;
+            !ai_foe(p, u->player_id)) continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (!d || d->num_weapons <= 0) continue;
         int32_t v = AI_UnitCombatValue(d);
@@ -3979,7 +4071,7 @@ static void ai_ferry_aim(const GameWorld *world, const Unit *units,
         const Unit *t = &units[i];
         if (t->alive != UNIT_ALIVE_ACTIVE) continue;
         if (!ai_valid_player(world, t->player_id) ||
-            !Units_PlayersAreEnemies(p, t->player_id)) continue;
+            !ai_foe(p, t->player_id)) continue;
         const UnitDef *td = Units_GetDef(t->def_idx);
         if (!td || td->is_feature) continue;
         int32_t asset = AI_UnitAssetValue(td, world->cfg.monarch_expendable);
@@ -4092,7 +4184,8 @@ static void ai_ferry_end(int p, AiFerry *f, int now, int cooldown) {
     const Unit *units = Units_GetActive(&count);
     if (units && f->transport >= 0 && f->transport < count &&
         units[f->transport].alive == UNIT_ALIVE_ACTIVE &&
-        units[f->transport].stable_id == f->transport_id)
+        units[f->transport].stable_id == f->transport_id &&
+        !ai_held(World_Get(), f->transport))
         Units_OrderSetAggro(f->transport, f->aggro);
     if (!f->rider_id && f->slot >= 0 && f->slot < AI_GROUPS &&
         g_ai_groups[p][f->slot].kind == AI_GROUP_FERRY)
@@ -4136,7 +4229,7 @@ static int ai_ferry_stray(const Unit *units, int unit_count, int p) {
         if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p || u->cargo_count <= 0) continue;
         if (u->cmd_kind != UNIT_CMD_NONE || !ai_naval_is((int)u->def_idx, AI_NAVAL_TRANSPORT))
             continue;
-        if (ai_in_ferry(p, i)) continue;
+        if (ai_in_ferry(p, i) || ai_held(World_Get(), i)) continue;
         return i;
     }
     return -1;
@@ -4288,6 +4381,7 @@ static int ai_ride_transport(const Unit *units, int unit_count, int p, int b) {
         if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) continue;
         if (u->under_construction || u->carried_by >= 0 || u->cargo_count > 0) continue;
         if (!ai_naval_is((int)u->def_idx, AI_NAVAL_TRANSPORT) || ai_in_ferry(p, i)) continue;
+        if (ai_held(World_Get(), i)) continue;
         if (u->cmd_kind != UNIT_CMD_NONE && u->cmd_kind != UNIT_CMD_MOVE) continue;
         if (ai_unit_hurt(u) || !Units_CanCarry(i, b)) continue;
         int64_t d = ai_dist2_units(u, &units[b]);
@@ -4360,7 +4454,7 @@ static int ai_ride_start(const GameWorld *world, const Unit *units, int unit_cou
 static void ai_ride_step(const Unit *units, int unit_count, int p, AiFerry *f, int now) {
     int t = f->transport, b = f->rider;
     if (t < 0 || t >= unit_count || units[t].alive != UNIT_ALIVE_ACTIVE ||
-        units[t].stable_id != f->transport_id) {
+        units[t].stable_id != f->transport_id || ai_held(World_Get(), t)) {
         ai_ferry_end(p, f, now, AI_FERRY_LOST_RETRY);
         return;
     }
@@ -4430,7 +4524,8 @@ static void ai_ferry_step(const GameWorld *world, const Unit *units,
     int t = f->transport;
     const AiGroup *g = f->slot >= 0 && f->slot < AI_GROUPS ? &g_ai_groups[p][f->slot] : NULL;
     if (!g || g->kind != AI_GROUP_FERRY || t < 0 || t >= unit_count ||
-        units[t].alive != UNIT_ALIVE_ACTIVE || units[t].stable_id != f->transport_id) {
+        units[t].alive != UNIT_ALIVE_ACTIVE || units[t].stable_id != f->transport_id ||
+        ai_held(world, t)) {
         /* A crossing lost with its transport waits longer to try again. */
         int lost = g && g->kind == AI_GROUP_FERRY;
         ai_ferry_end(p, f, now, lost ? AI_FERRY_LOST_RETRY : AI_FERRY_RETRY);
@@ -4741,8 +4836,7 @@ static int ai_try_start_on_shore(int actor_idx, int def_idx, int p) {
     if (!ai_shore_site(units, actor_idx, p, def_idx, ship_def, &x, &y)) {
         /* A kept monarch's ground is not the seat's, so the rest still look. */
         if (!g_ai_site_kept)
-            g_ai_ferry[p][0].build_until = (world ? world->skirmish_elapsed_ticks : 0) +
-                                        AI_FERRY_RETRY;
+            g_ai_ferry[p][0].build_until = ai_clock(world) + AI_FERRY_RETRY;
         return 0;
     }
     return ai_begin_building(actor_idx, def_idx, x, y);
@@ -4802,7 +4896,7 @@ static void ai_read_wave(const GameWorld *world, const Unit *units,
     for (int i = 0; i < unit_count; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) continue;
-        if (u->under_construction) continue;
+        if (u->under_construction || ai_held(world, i)) continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (!ai_def_is_mobile_combat(d)) continue;
         ws->members++;
@@ -5609,7 +5703,7 @@ static void ai_plan_read_naval(const GameWorld *world, const Unit *units, int un
             const Unit *t = &units[i];
             if (t->alive != UNIT_ALIVE_ACTIVE || t->under_construction) continue;
             if (!ai_valid_player(world, t->player_id) ||
-                !Units_PlayersAreEnemies(p, t->player_id)) continue;
+                !ai_foe(p, t->player_id)) continue;
             seen += ai_naval_is((int)t->def_idx, AI_NAVAL_WARSHIP) && ai_visible_to(world, p, t);
         }
         s->fleet_want = AI_FLEET_BASE + seen;
@@ -5798,7 +5892,7 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
         const Unit *t = &units[i];
         if (t->alive != UNIT_ALIVE_ACTIVE || t->under_construction) continue;
         if (!ai_valid_player(world, t->player_id)) continue;
-        if (!Units_PlayersAreEnemies(p, t->player_id)) continue;
+        if (!ai_foe(p, t->player_id)) continue;
         if (!ai_visible_to(world, p, t)) continue;
         s->threat_total += AI_UnitCombatValue(Units_GetDef(t->def_idx));
     }
@@ -6043,7 +6137,7 @@ static AiTask ai_fleet_read(const GameWorld *world, const Unit *units, int unit_
         const Unit *t = &units[i];
         if (t->alive != UNIT_ALIVE_ACTIVE || t->under_construction) continue;
         if (!ai_valid_player(world, t->player_id) ||
-            !Units_PlayersAreEnemies(p, t->player_id)) continue;
+            !ai_foe(p, t->player_id)) continue;
         const UnitDef *td = Units_GetDef(t->def_idx);
         if (!td || td->is_feature) continue;
         int64_t dx = (int64_t)t->world_x - cx, dy = (int64_t)t->world_y - cy;
@@ -6190,7 +6284,7 @@ static int ai_monarch_keep_home(const GameWorld *world, const Unit *units, int u
     if (u->hit_by && Units_SimTick() - u->hit_tick <= AI_MONARCH_FIRE_TICKS)
         shooter = Units_FindByStableId(u->hit_by);
     if (shooter >= 0 && shooter < unit_count && units[shooter].alive == UNIT_ALIVE_ACTIVE &&
-        Units_PlayersAreEnemies(p, units[shooter].player_id) &&
+        ai_foe(p, units[shooter].player_id) &&
         !(u->cmd_kind == UNIT_CMD_ATTACK && u->target == shooter)) {
         const Unit *sh = &units[shooter];
         ms.under_fire = !ai_visible_to(world, p, sh) ||
@@ -6258,7 +6352,7 @@ static int ai_arms_wanted(const GameWorld *world, const Unit *units, int unit_co
             continue;
         }
         const UnitDef *od = Units_GetDef(o->def_idx);
-        if (!od || od->is_feature || !Units_PlayersAreEnemies(p, o->player_id)) continue;
+        if (!od || od->is_feature || !ai_foe(p, o->player_id)) continue;
         if (ai_visible_to(world, p, o)) enemies++;
     }
     if (aoe < AI_ARMS_WIDE_AOE) return friends * 5 < enemies || hurt;
@@ -6283,7 +6377,7 @@ static void ai_pick_arms(const GameWorld *world, const Unit *units, int unit_cou
                 u->cmd_kind != UNIT_CMD_REPAIR && u->cmd_kind != UNIT_CMD_RECLAIM &&
                 u->cmd_kind != UNIT_CMD_LOAD && u->cmd_kind != UNIT_CMD_BOARD &&
                 units[t].alive == UNIT_ALIVE_ACTIVE && !units[t].under_construction &&
-                Units_PlayersAreEnemies(p, units[t].player_id);
+                ai_foe(p, units[t].player_id);
     if (ws.target) {
         int hurt = (def->commander || ai_unit_is_monarch(def)) &&
                    u->health < u->max_health / 3;
@@ -6594,7 +6688,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     int ai_cat = 5;
     for (int i = 0; i < unit_count; i++) {
         const Unit *u = &units[i];
-        if (u->player_id != p) continue;
+        if (u->player_id != p || ai_held(world, i)) continue;
         const UnitDef *def = Units_GetDef(u->def_idx);
         if (!ai_unit_can_fight_or_move(u, def)) continue;
         ai_pick_arms(world, units, unit_count, i, p, def);
@@ -6847,7 +6941,7 @@ static int ai_seat_phase(const GameWorld *world, int p) {
     if (!g_ai_stagger) return 0;
     int before = 0, seats = 0;
     for (int q = 1; q <= TAK_MAX_PLAYERS; q++) {
-        if (world->cfg.players[q - 1].kind != TAK_SLOT_AI) continue;
+        if (!ai_seat_plays(world, q)) continue;
         if (q < p) before++;
         seats++;
     }
@@ -6856,11 +6950,10 @@ static int ai_seat_phase(const GameWorld *world, int p) {
 
 void TAK_AI_TickSkirmish(GameWorld *world) {
     if (!world || !world->loaded || world->skirmish_game_over) return;
-    if (world->mission.objective_count > 0 || world->mission.placement_count > 0) return;
 
     /* A new match resets through TAK_AI_BeginMatch. Guessing one from a
      * tick count that stopped climbing threw the session seed away. */
-    int now = world->skirmish_elapsed_ticks;
+    int now = ai_clock(world);
     g_ai_last_tick = now;
 
     /* Re-plan at a low cadence. Unit locomotion and combat remain in
@@ -6869,8 +6962,7 @@ void TAK_AI_TickSkirmish(GameWorld *world) {
     int shared = (now % 60) == 0;
     int due = 0;
     for (int p = 1; p <= TAK_MAX_PLAYERS && !due; p++)
-        if (world->cfg.players[p - 1].kind == TAK_SLOT_AI &&
-            (now % 60) == ai_seat_phase(world, p)) due = 1;
+        if (ai_seat_plays(world, p) && (now % 60) == ai_seat_phase(world, p)) due = 1;
     if (!shared && !due) return;
     ai_profile_load();
 
@@ -6894,7 +6986,7 @@ void TAK_AI_TickSkirmish(GameWorld *world) {
         }
     }
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
-        if (world->cfg.players[p - 1].kind != TAK_SLOT_AI) continue;
+        if (!ai_seat_plays(world, p)) continue;
         if ((now % 60) != ai_seat_phase(world, p)) continue;
         g_ai_thinks[p]++;
         ai_tick_player(world, units, unit_count, p, now);

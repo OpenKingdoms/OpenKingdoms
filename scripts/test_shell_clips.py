@@ -50,6 +50,9 @@ def main():
     want = [
         'Movies/logo.bik', 'Movies/Intro.bik', 'Movies/Credits.bik',
         'Movies/Gui/Aramon.bik',
+        # Each kingdom's shield, before a campaign mission (legacy:241643).
+        'Movies/Aramon.bik', 'Movies/Taros.bik', 'Movies/Veruna.bik',
+        'Movies/Zhon.bik', 'Movies/Creon.bik',
         # Before a mission (legacy:168662), both campaigns, mixed case.
         'Movies/takmission01_mt.bik', 'Movies/TakMission02_mt.bik',
         'Movies/takmission39a_mt.bik', 'Movies/takmission48_dh.bik',
@@ -60,7 +63,7 @@ def main():
     leave = [
         'Movies/readme.txt', 'Movies/Gui/notes.txt',
         'Movies/Gui/deeper/Aramon.bik', 'Music/takmission01_mt.bik',
-        'takmission01_mt.bik',
+        'takmission01_mt.bik', 'Movies/Lifeforms.bik',
     ]
     failed = 0
     for rel in want:

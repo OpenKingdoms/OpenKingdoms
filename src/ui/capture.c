@@ -72,7 +72,8 @@ int Capture_Check(const TAK_CaptureArgs *a, int skirmish, int screenshot,
 
 int Capture_FogCell(const GameWorld *w, int cx, int cy) {
     if (!w) return TAK_FOG_UNEXPLORED;
-    int st = Fog_StateAt(w, cx * 16 + 8, cy * 16 + 8);
+    /* The overlay over this picture cell is drawn TAK_FOG_LIFT_PX up. */
+    int st = Fog_StateAt(w, cx * 16 + 8, cy * 16 + 8 + TAK_FOG_LIFT_PX);
     if (st == TAK_FOG_EXPLORED && !w->cfg.line_of_sight) st = TAK_FOG_VISIBLE;
     return st;
 }

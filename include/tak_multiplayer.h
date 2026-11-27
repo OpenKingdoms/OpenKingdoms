@@ -37,6 +37,9 @@ int  Multiplayer_HostSide(void);
  * mouse would have to be. Returns 1 when the room consumed it. */
 int  Multiplayer_HandleClick(const char *name, int widget_index);
 
+/* The Options dialog is up over the room. */
+int  Multiplayer_OptionsOpen(void);
+
 /* The map chooser, choosemap.gui for the host and viewmap.gui for
  * everyone else (legacy:136832-136851). It sits over the room, takes
  * the frame while it is up, and OK on the host's tells the server the
@@ -74,6 +77,8 @@ void        Multiplayer_StartPointer(int x, int y, int down);
 /* For the tests: the rows and the selection, and OK by name. */
 int         Multiplayer_MapChooserRowCount(void);
 const char *Multiplayer_MapChooserRowKey(int row);
+/* The selection's row, -1 when the query hides it. */
+int         Multiplayer_MapChooserSelected(void);
 void        Multiplayer_MapChooserSelect(int row);
 void        Multiplayer_MapChooserPress(const char *name);
 /* Test seams for the chooser's list and its bar: the top row showing,

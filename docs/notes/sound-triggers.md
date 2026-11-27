@@ -191,16 +191,20 @@ The tail of each unit's attack update raises the alarms
 belongs to the local player, bit 7 of its mission flags is clear, and
 it has a recorded attacker: the attacker's player slot, stamped on the
 unit when damage lands (legacy:227214-227216), differs from the unit's
-own, or the unit's under-attack flag is set. It acts again on every
-update while that record stands, so the timers alone decide how often
-an alarm sounds.
+own, or the kind of the hit before was 1 (legacy:233764). The damage
+handler runs that update for each hit but two kinds
+(legacy:233751-233762), so the timers alone decide how often an alarm
+sounds. Both timers read the clock, not the
+battle's ticks (legacy:221306, legacy:221333), so a faster game speed
+does not sound them more often.
 
 - A commander, a unit whose FBI has `commander = 1`
   (legacy:163074-163075), plays `AlarmMon` flat at priority 7 and
   volume 0x7f, at most once in 15000 ms on one timer for the whole
   game (legacy:221328-221340, legacy:221336), on screen or off.
-- Any other unit plays its side's `underattack_sound` flat, only while
-  the unit is off screen, at most once in `underattack_delay` seconds
+- Any other unit plays the `underattack_sound` of the side its FBI
+  names (legacy:221309, legacy:162574) flat, only while the unit is off
+  screen, selected or not, at most once in `underattack_delay` seconds
   on one global timer (legacy:221298-221325, legacy:221319,
   legacy:221324). Off screen means missing from the list of units drawn
   inside the battle viewport, the list a box select reads
@@ -216,8 +220,9 @@ and reads `underattack_sound` (legacy:164683) and `underattack_delay`,
 `ALARMMON.WAV` under `english/Sounds`. There is no separate sting for
 first contact. This pair is the sound of a fight beginning.
 
-The engine raises an alarm on each hit rather than from the attack
-update, which sounds the same under the two timers.
+The engine checks on each hit by another player. The original reads
+the attacker recorded by the hit before (legacy:233764-233768), which
+the engine does not keep.
 
 ## Interface
 

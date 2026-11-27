@@ -133,6 +133,8 @@ static struct {
      * how long it is readable. */
     uint32_t view3d_notice_until;
     TAK_Platform *platform;
+    /* The play area the last frame had, 0 before the first. */
+    int32_t last_view_w, last_view_h;
 } ig;
 
 /* A battle asked to open in the 3D view (the --view3d flag). */
@@ -1508,6 +1510,20 @@ static void ig_scroll_dir(const Uint8 *keys, int *out_dx, int *out_dy) {
 }
 
 /* Move the camera through the active view, which keeps it on the map. */
+/* A play area grown by a Resolution step or a resized window keeps the
+ * view inside the far edges, where every scroll keeps it. */
+static void ig_keep_view_on_map(GameWorld *world) {
+    int grew = ig.last_view_w && (world->viewport_w > ig.last_view_w ||
+                                  world->viewport_h > ig.last_view_h);
+    ig.last_view_w = world->viewport_w;
+    ig.last_view_h = world->viewport_h;
+    if (!grew) return;
+    int32_t max_x = world->map_pixels_w - world->viewport_w;
+    int32_t max_y = world->map_pixels_h - world->viewport_h;
+    if (max_x >= 0 && world->cam_x > max_x) world->cam_x = max_x;
+    if (max_y >= 0 && world->cam_y > max_y) world->cam_y = max_y;
+}
+
 static void ig_move_camera(GameWorld *world, int32_t dx, int32_t dy) {
     if (!world || (!dx && !dy)) return;
     ig_view()->scroll(world, dx, dy);
@@ -1555,7 +1571,7 @@ int  InGame_IsPaused(void) { return ig.paused; }
 
 void InGame_DebugToggleMenu(void) {
     if (InGameMenu_IsOpen()) InGameMenu_Close();
-    else (void)InGameMenu_Open();
+    else (void)InGameMenu_Open(ig.platform);
 }
 
 void InGame_DebugEscape(int down) {
@@ -2209,7 +2225,7 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
 }
 
 /* The unit, else the shown feature, under the pointer over the world,
- * for the info panel. A feature on ground never seen is not named. */
+ * for the info panel. A feature is named only where it is drawn. */
 static void ig_info_pointer(TAK_Platform *platform, GameWorld *world) {
     int unit = -1, feature = -1, mx = 0, my = 0;
     int32_t x = 0, y = 0;
@@ -2227,8 +2243,9 @@ static void ig_info_pointer(TAK_Platform *platform, GameWorld *world) {
         if (unit < 0) {
             int32_t gx = x, gy = y;
             Units_GroundUnderPoint(x, y, &gx, &gy);
-            if (Fog_StateAt(world, gx, gy) != TAK_FOG_UNEXPLORED)
-                feature = Features_InfoAt(world, gx, gy);
+            feature = Features_InfoAt(world, gx, gy);
+            if (feature >= 0 && !Features_InstanceShown(world, feature))
+                feature = -1;
         }
     }
     HUD_SetPointerInfo(unit, feature);
@@ -2269,6 +2286,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     /* HUD reserves the right sidebar + bottom strip; viewport_w/h
      * shrink to the visible game area for camera bounds + math. */
     HUD_Init(platform, world);
+    ig_keep_view_on_map(world);
 
     /* A match hears the wire before it runs a tick: the turns that
      * arrived this frame are what the next ticks are allowed to be.
@@ -2488,7 +2506,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
                                                        platform->text_in);
     if (platform->has_focus && !console_keys && InGame_MenuKey(keys, ig.prev_keys) &&
         !InGameMenu_IsOpen() && !ig.sd_ask) {
-        (void)InGameMenu_Open();
+        (void)InGameMenu_Open(platform);
     }
     if (InGameMenu_IsOpen()) {
         int next = InGameMenu_Tick(platform);

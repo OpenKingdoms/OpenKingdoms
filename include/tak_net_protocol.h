@@ -208,8 +208,10 @@
  * drag lays a line of buildings, and a summons without end refuses Shift
  * orders. 82: Ctrl+Shift puts an order in front of the queue. 83: a unit
  * stays cloaked by a neutral seat's units. 84: a build frame's Create sees
- * it is a frame, so the frame holds the pose Create gives it. */
-#define TAK_ENGINE_BUILD_ID           84
+ * it is a frame, so the frame holds the pose Create gives it. 85: height
+ * buys sight, up to twice sightdistance. 86: the computer plays a
+ * mission's strategic second seat once order lists let its units go. */
+#define TAK_ENGINE_BUILD_ID           86
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

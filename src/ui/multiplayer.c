@@ -44,6 +44,7 @@
 #include "tak_web_stats.h"
 #include "tak_savegame.h"
 #include "tak_loading.h"
+#include "tak_options.h"
 #include "tak_sim_hash.h"
 #include "tak_obj3d.h"
 #include "tak_map_scenario.h"
@@ -67,6 +68,12 @@ static Font          *mp_font;
  * choice and the expansion (legacy:134048-134052). */
 static int            mp_host_side = 0;
 static int            mp_allow_creon = 0;
+/* Options is up over the room, which keeps talking to the server. */
+static int            mp_options_open;
+/* An Escape that closed a dialog over the room, still down. */
+static int            mp_esc_held;
+/* Enter and Backspace as the chat line last saw them. */
+static int            mp_prev_enter, mp_prev_back;
 
 static const SimpleScreenClick mp_routes[] = {
     { NULL, 0 }
@@ -493,6 +500,14 @@ static int mp_on_click(SimpleScreen *s, const char *name, int widget_index) {
     (void)s;
     TAK_NetClient *c = NetSession_Client();
 
+    /* Options opens over the room and closes back onto it, as it does
+     * over the skirmish lobby (legacy:137340-137347). */
+    if (tak_stricmp(name, "Options") == 0) {
+        Options_SetReturnState(GAMESTATE_MULTIPLAYER);
+        if (Options_Init(mp_platform) == 0) mp_options_open = 1;
+        return 1;
+    }
+
     if (c && c->room.room_id != 0) {
         if (tak_stricmp(name, "Play") == 0) {
             (void)TAK_NetClient_Start(c);
@@ -799,6 +814,7 @@ static void mp_add_rows(SimpleScreen *s) {
 
 int Multiplayer_Init(TAK_Platform *platform) {
     memset(&mp, 0, sizeof(mp));
+    mp_platform = platform;
     mp_kept_options = 0xffffffffu;
     mp_kept_cap = 0xffffffffu;
     Translate_Free(&mp_tt);
@@ -1102,12 +1118,11 @@ static int mp_take_events(TAK_Platform *platform) {
  * appears under the last line and Enter sends it (legacy:136856). Text
  * input is on for the whole of the room so a player can just type. */
 static void mp_chat_keys(TAK_Platform *platform) {
-    static int prev_enter, prev_back;
     const Uint8 *keys = SDL_GetKeyboardState(NULL);
     int focus = platform && platform->has_focus;
     int enter = focus && (keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER]);
     int back  = focus && keys[SDL_SCANCODE_BACKSPACE];
-    if ((back && !prev_back) || (focus && platform->pressed_backspace)) {
+    if ((back && !mp_prev_back) || (focus && platform->pressed_backspace)) {
         size_t n = strlen(mp_chat.typing);
         if (n) mp_chat.typing[n - 1] = '\0';
     }
@@ -1119,9 +1134,9 @@ static void mp_chat_keys(TAK_Platform *platform) {
             mp_chat.typing[n + 1] = '\0';
         }
     }
-    if ((enter && !prev_enter) || (focus && platform->pressed_enter)) mp_chat_send();
-    prev_enter = enter;
-    prev_back = back;
+    if ((enter && !mp_prev_enter) || (focus && platform->pressed_enter)) mp_chat_send();
+    mp_prev_enter = enter;
+    mp_prev_back = back;
 }
 
 static void mp_draw_chat(SimpleScreen *s) {
@@ -1171,19 +1186,59 @@ static void mp_draw_chat(SimpleScreen *s) {
     }
 }
 
+/* A dialog over the room closed. The keys that closed it are still down
+ * for a few frames and are not the room's presses. */
+static void mp_dialog_closed(void) {
+    mp_esc_held = 1;
+    mp_prev_enter = mp_prev_back = 1;
+}
+
+/* Options over the room as it stands, which the events above keep live. */
+static int mp_options_tick(TAK_Platform *platform) {
+    SDL_Surface *off = UI_Offscreen();
+    if (off) {
+        SDL_Rect full = { 0, 0, 640, 480 };
+        SDL_FillRect(off, &full, SDL_MapRGBA(off->format, 12, 12, 18, 255));
+    }
+    GUIRuntime_Render(mp.rt);
+    mp_draw_button_text(&mp);
+    if (Options_Tick(platform, 0.0f) != GAMESTATE_OPTIONS) {
+        Options_Shutdown();
+        mp_options_open = 0;
+        mp_dialog_closed();
+    }
+    return GAMESTATE_MULTIPLAYER;
+}
+
 int Multiplayer_Tick(TAK_Platform *platform, float frame_dt) {
     mp_platform = platform;
     NetSession_Tick(SDL_GetTicks64());
     int next = mp_take_events(platform);
     if (next != GAMESTATE_MULTIPLAYER) return next;
+    if (!SDL_GetKeyboardState(NULL)[SDL_SCANCODE_ESCAPE]) mp_esc_held = 0;
+    if (mp_options_open) return mp_options_tick(platform);
     if (Multiplayer_MapChooserOpen()) {
-        return Multiplayer_MapChooserTick(platform, frame_dt);
+        next = Multiplayer_MapChooserTick(platform, frame_dt);
+        if (!Multiplayer_MapChooserOpen()) mp_dialog_closed();
+        return next;
     }
     mp_chat_keys(platform);
-    return SimpleScreen_Tick(&mp, platform, frame_dt);
+    next = SimpleScreen_Tick(&mp, platform, frame_dt);
+    /* The screen leaves while Escape is down, and this Escape closed a dialog. */
+    if (mp_esc_held && next == mp.default_return) next = GAMESTATE_MULTIPLAYER;
+    return next;
 }
 
+int Multiplayer_OptionsOpen(void) { return mp_options_open; }
+
 void Multiplayer_Shutdown(void) {
+    /* A launch or a lost room takes the player on from under Options,
+     * which is put away as Cancel would, so only Ok keeps a change. */
+    if (mp_options_open) {
+        (void)Options_ClickWidget("Cancel");
+        Options_Shutdown();
+    }
+    mp_options_open = 0;
     SDL_StopTextInput();
     Multiplayer_CloseMapChooser();
     mp_free_logos();
@@ -1501,6 +1556,9 @@ int Multiplayer_MapChooserWidgetHidden(const char *name) {
     return (mc.open && mc.rt) ? GUIRuntime_WidgetHidden(mc.rt, name) : 0;
 }
 int         Multiplayer_MapChooserRowCount(void)  { return mc.browser.shown_count; }
+int         Multiplayer_MapChooserSelected(void)  {
+    return mc.open ? MapBrowser_ShownAt(&mc.browser, mc.selected) : -1;
+}
 const char *Multiplayer_MapChooserRowKey(int row) {
     return (row >= 0 && row < mc.browser.shown_count)
            ? mc.browser.rows[mc.browser.shown[row]].key : NULL;
@@ -1806,14 +1864,25 @@ int Multiplayer_MapChooserTick(TAK_Platform *platform, float dt) {
         mc.prev_back = back;
     }
 
-    /* The wheel over the list or its bar scrolls it. */
-    SDL_Event ev;
-    while (SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_MOUSEWHEEL, SDL_MOUSEWHEEL) > 0) {
+    /* The wheel over the list or its bar scrolls it. The pump has the wheel. */
+    if (platform && platform->wheel_dy) {
         SDL_Rect lr = mc_list_rect(), track = { 0, 0, 0, 0 };
         if (mc.idx_track >= 0) mc_draw_rect(mc.idx_track, &track);
         SDL_Point pt = { mx, my };
         if (SDL_PointInRect(&pt, &lr) || SDL_PointInRect(&pt, &track)) {
-            mc.scroll -= ev.wheel.y;
+            mc.scroll -= platform->wheel_dy;
+            mc_clamp_scroll();
+        }
+    }
+    /* The list keys move the selection as a click on a row does. */
+    if (mc.idx_list >= 0) {
+        int top = mc.scroll;
+        int at = MapBrowser_ListKeys(&mc.browser, platform,
+                                     MapBrowser_ShownAt(&mc.browser, mc.selected),
+                                     mc_rows_visible(), &top);
+        if (at >= 0) {
+            Multiplayer_MapChooserSelect(at);
+            mc.scroll = top;
             mc_clamp_scroll();
         }
     }
