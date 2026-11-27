@@ -132,6 +132,8 @@ set(TAK_UI_SOURCES
     ui/battle_setup.c
     ui/map_browser.c
     ui/options.c
+    ui/keybinds_screen.c
+    ui/keybinds_view.c
     ui/loading.c
     ui/credits.c
     ui/story.c
@@ -144,6 +146,8 @@ set(TAK_UI_SOURCES
     ui/hud_info.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
+    ui/keybinds.c
+    ui/keybinds_store.c
     ui/capture.c
     ui/save_browser.c
     ui/build_line.c
@@ -435,6 +439,8 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/select_game.c
     ui/translate.c
     ui/options.c
+    ui/keybinds_screen.c
+    ui/keybinds_view.c
     ui/loading.c
     ui/credits.c
     ui/story.c
@@ -444,6 +450,8 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/hud_info.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
+    ui/keybinds.c
+    ui/keybinds_store.c
     ui/capture.c
     ui/save_browser.c
     ui/build_line.c
@@ -728,6 +736,8 @@ add_executable(test_unit_stall
     net/net_socket.c
     ui/translate.c
     ui/options.c
+    ui/keybinds_screen.c
+    ui/keybinds_view.c
     ui/loading.c
     ui/credits.c
     ui/story.c
@@ -737,6 +747,8 @@ add_executable(test_unit_stall
     ui/hud_info.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
+    ui/keybinds.c
+    ui/keybinds_store.c
     ui/capture.c
     ui/save_browser.c
     ui/build_line.c
@@ -2203,6 +2215,7 @@ add_executable(test_game_speed
     game/sim_rand.c
     core/game_loop.c
     ui/ingame_keys.c
+    ui/keybinds.c
 )
 target_include_directories(test_game_speed PRIVATE
     ${CMAKE_SOURCE_DIR}/include
@@ -2236,6 +2249,25 @@ target_include_directories(test_ingame_keys_shipped PRIVATE
 )
 target_compile_definitions(test_ingame_keys_shipped PRIVATE SDL_MAIN_HANDLED)
 target_link_libraries(test_ingame_keys_shipped PRIVATE SDL2::SDL2)
+
+# The key table: the built in schemes, a player's own and its file,
+# pressed through the decoders. Data free.
+add_executable(test_keybinds
+    ui/test_keybinds.c
+    ui/keybinds.c
+    ui/keybinds_store.c
+    ui/ingame_keys.c
+    core/settings.c
+    core/paths.c
+    core/util.c
+    core/memory.c
+)
+target_include_directories(test_keybinds PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_compile_definitions(test_keybinds PRIVATE SDL_MAIN_HANDLED)
+target_link_libraries(test_keybinds PRIVATE SDL2::SDL2)
 
 add_executable(test_fog
     game/test_fog.c
@@ -2672,6 +2704,7 @@ if(BUILD_TESTING)
     add_test(NAME test_game_speed  COMMAND test_game_speed)
     add_test(NAME test_ingame_debug_keys COMMAND test_ingame_debug_keys)
     add_test(NAME test_ingame_keys_shipped COMMAND test_ingame_keys_shipped)
+    add_test(NAME test_keybinds COMMAND test_keybinds)
     add_test(NAME test_sound       COMMAND test_sound)
     add_test(NAME test_palette     COMMAND test_palette)
     add_test(NAME test_tnt         COMMAND test_tnt)

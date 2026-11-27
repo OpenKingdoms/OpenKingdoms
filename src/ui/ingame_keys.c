@@ -7,26 +7,19 @@
 
 #include "tak_ingame_keys.h"
 #include "tak_game_speed.h"
+#include "tak_keybinds.h"
 
 #include <SDL.h>
+#include <string.h>
 
-#define IG_KEY_PRESSED(sc) (keys[sc] && !prev[sc])
-
-/* Cmd or the Windows key, which a browser on a Mac sends for its own
- * shortcuts. */
-static int ig_gui(const uint8_t *keys) {
-    return keys[SDL_SCANCODE_LGUI] || keys[SDL_SCANCODE_RGUI];
-}
+/* Every key here is asked of the table in keybinds.c, which holds the
+ * modifiers each one takes. Alt is the debug modifier, and the table
+ * lets it through to nothing a player orders with. */
 
 InGameSpeedKey InGame_SpeedKey(const uint8_t *keys, const uint8_t *prev) {
     if (!keys || !prev) return IG_SPEED_KEY_NONE;
-    /* Alt is the debug modifier, and nothing bound here answers it. */
-    if (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT])
-        return IG_SPEED_KEY_NONE;
-    if (IG_KEY_PRESSED(SDL_SCANCODE_EQUALS) || IG_KEY_PRESSED(SDL_SCANCODE_KP_PLUS))
-        return IG_SPEED_KEY_UP;
-    if (IG_KEY_PRESSED(SDL_SCANCODE_MINUS) || IG_KEY_PRESSED(SDL_SCANCODE_KP_MINUS))
-        return IG_SPEED_KEY_DOWN;
+    if (Keybinds_Pressed(KA_SPEED_UP, keys, prev)) return IG_SPEED_KEY_UP;
+    if (Keybinds_Pressed(KA_SPEED_DOWN, keys, prev)) return IG_SPEED_KEY_DOWN;
     return IG_SPEED_KEY_NONE;
 }
 
@@ -41,51 +34,66 @@ void InGame_ApplySpeedKeys(const uint8_t *keys, const uint8_t *prev) {
 
 int InGame_TurnKey(const uint8_t *keys, const uint8_t *prev, int view3d) {
     if (!keys || !prev || !view3d) return 0;
-    if (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT]) return 0;
-    int shift = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
-    if (IG_KEY_PRESSED(SDL_SCANCODE_R)) return shift ? -1 : 1;
-    if (IG_KEY_PRESSED(SDL_SCANCODE_RIGHTBRACKET)) return 1;
-    if (IG_KEY_PRESSED(SDL_SCANCODE_LEFTBRACKET)) return -1;
+    if (Keybinds_Pressed(KA_TURN_BUILDING_CW, keys, prev)) return 1;
+    if (Keybinds_Pressed(KA_TURN_BUILDING_CCW, keys, prev)) return -1;
     return 0;
 }
 
 int InGame_WatchKey(const uint8_t *keys, const uint8_t *prev) {
     if (!keys || !prev) return 0;
-    if (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT]) return 0;
-    return IG_KEY_PRESSED(SDL_SCANCODE_TAB) ? 1 : 0;
+    return Keybinds_Pressed(KA_RADAR, keys, prev);
+}
+
+int InGame_ViewKey(const uint8_t *keys, const uint8_t *prev) {
+    if (!keys || !prev) return 0;
+    return Keybinds_Pressed(KA_VIEW_3D, keys, prev);
+}
+
+int InGame_DamageBarsKey(const uint8_t *keys, const uint8_t *prev) {
+    if (!keys || !prev) return 0;
+    return Keybinds_Pressed(KA_DAMAGE_BARS, keys, prev);
+}
+
+void InGame_PanKeys(const uint8_t *keys, int *dx, int *dy) {
+    int x = 0, y = 0;
+    if (keys) {
+        if (Keybinds_Held(KA_PAN_LEFT, keys))  x -= 1;
+        if (Keybinds_Held(KA_PAN_RIGHT, keys)) x += 1;
+        if (Keybinds_Held(KA_PAN_UP, keys))    y -= 1;
+        if (Keybinds_Held(KA_PAN_DOWN, keys))  y += 1;
+    }
+    if (dx) *dx = x;
+    if (dy) *dy = y;
 }
 
 /* Keys.TDF's CTRL_ and CTRLSHIFT_ select bindings. CTRL_T names TROOPS
  * and CTRLSHIFT_N names NAVAL, categories no unit carries, so they are
  * left out. CTRL_M also tracks the monarch, which is not here yet. */
 static const struct {
-    SDL_Scancode key;
+    KeyAction action;
     InGameSelectKind kind;
     const char *category;
 } k_select_keys[] = {
-    { SDL_SCANCODE_Z, IG_SELECT_SAME_TYPE, NULL },
-    { SDL_SCANCODE_A, IG_SELECT_ALL, NULL },
-    { SDL_SCANCODE_U, IG_SELECT_ON_SCREEN, NULL },
-    { SDL_SCANCODE_B, IG_SELECT_CATEGORY, "BUILDER" },
-    { SDL_SCANCODE_E, IG_SELECT_CATEGORY, "MELEE" },
-    { SDL_SCANCODE_F, IG_SELECT_CATEGORY, "FACTORY" },
-    { SDL_SCANCODE_G, IG_SELECT_CATEGORY, "MAGIC" },
-    { SDL_SCANCODE_M, IG_SELECT_CATEGORY, "MONARCH" },
-    { SDL_SCANCODE_N, IG_SELECT_CATEGORY, "BOAT" },
-    { SDL_SCANCODE_R, IG_SELECT_CATEGORY, "BALLISTIC" },
-    { SDL_SCANCODE_W, IG_SELECT_CATEGORY, "ATTACK" },
-    { SDL_SCANCODE_Y, IG_SELECT_CATEGORY, "FLY" },
+    { KA_SELECT_SAME_TYPE, IG_SELECT_SAME_TYPE, NULL },
+    { KA_SELECT_ALL,       IG_SELECT_ALL, NULL },
+    { KA_SELECT_ON_SCREEN, IG_SELECT_ON_SCREEN, NULL },
+    { KA_SELECT_BUILDER,   IG_SELECT_CATEGORY, "BUILDER" },
+    { KA_SELECT_MELEE,     IG_SELECT_CATEGORY, "MELEE" },
+    { KA_SELECT_FACTORY,   IG_SELECT_CATEGORY, "FACTORY" },
+    { KA_SELECT_MAGIC,     IG_SELECT_CATEGORY, "MAGIC" },
+    { KA_SELECT_MONARCH,   IG_SELECT_CATEGORY, "MONARCH" },
+    { KA_SELECT_BOAT,      IG_SELECT_CATEGORY, "BOAT" },
+    { KA_SELECT_BALLISTIC, IG_SELECT_CATEGORY, "BALLISTIC" },
+    { KA_SELECT_ATTACK,    IG_SELECT_CATEGORY, "ATTACK" },
+    { KA_SELECT_FLY,       IG_SELECT_CATEGORY, "FLY" },
 };
 
 InGameSelectKey InGame_SelectKey(const uint8_t *keys, const uint8_t *prev) {
     InGameSelectKey none = { IG_SELECT_NONE, NULL, 0 };
     if (!keys || !prev) return none;
-    if (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT]) return none;
-    if (!keys[SDL_SCANCODE_LCTRL] && !keys[SDL_SCANCODE_RCTRL]) return none;
     int shift = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
     for (size_t i = 0; i < sizeof(k_select_keys) / sizeof(k_select_keys[0]); i++) {
-        if (!IG_KEY_PRESSED(k_select_keys[i].key)) continue;
-        if (shift && k_select_keys[i].key == SDL_SCANCODE_N) return none;
+        if (!Keybinds_Pressed(k_select_keys[i].action, keys, prev)) continue;
         InGameSelectKey k = { k_select_keys[i].kind, k_select_keys[i].category,
                               shift && k_select_keys[i].kind == IG_SELECT_CATEGORY };
         return k;
@@ -95,94 +103,74 @@ InGameSelectKey InGame_SelectKey(const uint8_t *keys, const uint8_t *prev) {
 
 int InGame_BoxSkipsMonarchKey(const uint8_t *keys) {
     if (!keys) return 0;
-    if (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT]) return 0;
-    if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL]) return 0;
-    return keys[SDL_SCANCODE_M] ? 1 : 0;
+    /* Cmd or the Windows key does not stop the box, as it stops Move. */
+    uint8_t held[SDL_NUM_SCANCODES];
+    memcpy(held, keys, sizeof(held));
+    held[SDL_SCANCODE_LGUI] = held[SDL_SCANCODE_RGUI] = 0;
+    return Keybinds_Held(KA_ORDER_MOVE, held);
 }
 
 int InGame_CloakKey(const uint8_t *keys, const uint8_t *prev) {
     if (!keys || !prev) return 0;
-    if (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT]) return 0;
-    if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL] || ig_gui(keys)) return 0;
-    return IG_KEY_PRESSED(SDL_SCANCODE_K) ? 1 : 0;
+    return Keybinds_Pressed(KA_ORDER_CLOAK, keys, prev);
 }
 
-/* Keys.TDF's LOWER_ and UPPER_ letters that name a UnitCommand, but
- * Attack and Stop sit on B and N, as A and S pan (D-050). K is the
- * cloak and has its own decoder above. */
+/* Keys.TDF's LOWER_ and UPPER_ letters that name a UnitCommand. The
+ * cloak has its own decoder above. */
 static const struct {
-    SDL_Scancode key;
+    KeyAction action;
     InGameOrderKey order;
 } k_order_keys[] = {
-    { SDL_SCANCODE_M, IG_ORDER_MOVE },
-    { SDL_SCANCODE_B, IG_ORDER_ATTACK },
-    { SDL_SCANCODE_G, IG_ORDER_GUARD },
-    { SDL_SCANCODE_P, IG_ORDER_PATROL },
-    { SDL_SCANCODE_L, IG_ORDER_LOAD },
-    { SDL_SCANCODE_U, IG_ORDER_UNLOAD },
-    { SDL_SCANCODE_H, IG_ORDER_HEAL },
-    { SDL_SCANCODE_C, IG_ORDER_CLEAR },
-    { SDL_SCANCODE_N, IG_ORDER_STOP },
-    { SDL_SCANCODE_O, IG_ORDER_GATE },
+    { KA_ORDER_MOVE,   IG_ORDER_MOVE },
+    { KA_ORDER_ATTACK, IG_ORDER_ATTACK },
+    { KA_ORDER_GUARD,  IG_ORDER_GUARD },
+    { KA_ORDER_PATROL, IG_ORDER_PATROL },
+    { KA_ORDER_LOAD,   IG_ORDER_LOAD },
+    { KA_ORDER_UNLOAD, IG_ORDER_UNLOAD },
+    { KA_ORDER_HEAL,   IG_ORDER_HEAL },
+    { KA_ORDER_CLEAR,  IG_ORDER_CLEAR },
+    { KA_ORDER_STOP,   IG_ORDER_STOP },
+    { KA_ORDER_GATE,   IG_ORDER_GATE },
+    { KA_ORDER_RESURRECT, IG_ORDER_RESURRECT },
 };
 
 InGameOrderKey InGame_OrderKey(const uint8_t *keys, const uint8_t *prev) {
     if (!keys || !prev) return IG_ORDER_NONE;
-    if (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT]) return IG_ORDER_NONE;
-    if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL]) return IG_ORDER_NONE;
-    if (ig_gui(keys)) return IG_ORDER_NONE;
     for (size_t i = 0; i < sizeof(k_order_keys) / sizeof(k_order_keys[0]); i++)
-        if (IG_KEY_PRESSED(k_order_keys[i].key)) return k_order_keys[i].order;
+        if (Keybinds_Pressed(k_order_keys[i].action, keys, prev))
+            return k_order_keys[i].order;
     return IG_ORDER_NONE;
 }
 
-static int ig_alt(const uint8_t *keys) {
-    return keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT];
-}
-
-static int ig_ctrl(const uint8_t *keys) {
-    return keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL];
-}
-
-static int ig_shift(const uint8_t *keys) {
-    return keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
-}
-
 int InGame_MenuKey(const uint8_t *keys, const uint8_t *prev) {
-    if (!keys || !prev || ig_alt(keys) || ig_ctrl(keys) || ig_shift(keys) || ig_gui(keys))
-        return 0;
-    return IG_KEY_PRESSED(SDL_SCANCODE_F1) ? 1 : 0;
+    if (!keys || !prev) return 0;
+    return Keybinds_Pressed(KA_MENU, keys, prev);
 }
 
 InGameFnKey InGame_FnKey(const uint8_t *keys, const uint8_t *prev) {
-    if (!keys || !prev || ig_alt(keys) || ig_gui(keys)) return IG_FN_NONE;
-    if (ig_ctrl(keys)) {
-        if (IG_KEY_PRESSED(SDL_SCANCODE_S)) return IG_FN_SAVE;
-        if (IG_KEY_PRESSED(SDL_SCANCODE_L)) return IG_FN_LOAD;
-        return IG_FN_NONE;
-    }
-    /* Shift with these does nothing in the original. */
-    if (ig_shift(keys)) return IG_FN_NONE;
-    if (IG_KEY_PRESSED(SDL_SCANCODE_PAUSE)) return IG_FN_PAUSE;
-    if (IG_KEY_PRESSED(SDL_SCANCODE_F2)) return IG_FN_BRIEFING;
-    if (IG_KEY_PRESSED(SDL_SCANCODE_F12)) return IG_FN_CLEAR_CHAT;
+    if (!keys || !prev) return IG_FN_NONE;
+    if (Keybinds_Pressed(KA_SAVE, keys, prev)) return IG_FN_SAVE;
+    if (Keybinds_Pressed(KA_LOAD, keys, prev)) return IG_FN_LOAD;
+    if (Keybinds_Pressed(KA_PAUSE, keys, prev)) return IG_FN_PAUSE;
+    if (Keybinds_Pressed(KA_BRIEFING, keys, prev)) return IG_FN_BRIEFING;
+    if (Keybinds_Pressed(KA_CLEAR_CHAT, keys, prev)) return IG_FN_CLEAR_CHAT;
     return IG_FN_NONE;
 }
 
 int InGame_WeaponKey(const uint8_t *keys, const uint8_t *prev) {
-    if (!keys || !prev || ig_alt(keys) || ig_gui(keys) || !ig_ctrl(keys)) return -1;
-    if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) return -1;
+    if (!keys || !prev) return -1;
     for (int i = 0; i < 3; i++)
-        if (IG_KEY_PRESSED(SDL_SCANCODE_F1 + i)) return i;
+        if (Keybinds_Pressed((KeyAction)(KA_WEAPON_1 + i), keys, prev)) return i;
     return -1;
 }
 
 int InGame_BookmarkKey(const uint8_t *keys, const uint8_t *prev, int *store) {
-    if (!keys || !prev || ig_alt(keys) || ig_gui(keys)) return -1;
-    if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) return -1;
+    if (!keys || !prev) return -1;
     for (int i = 0; i < 4; i++) {
-        if (!IG_KEY_PRESSED(SDL_SCANCODE_F5 + i)) continue;
-        if (store) *store = ig_ctrl(keys) ? 1 : 0;
+        int put = Keybinds_Pressed((KeyAction)(KA_BOOKMARK_STORE_1 + i), keys, prev);
+        if (!put && !Keybinds_Pressed((KeyAction)(KA_BOOKMARK_1 + i), keys, prev))
+            continue;
+        if (store) *store = put;
         return i;
     }
     return -1;
@@ -190,9 +178,7 @@ int InGame_BookmarkKey(const uint8_t *keys, const uint8_t *prev, int *store) {
 
 int InGame_SelfDestructKey(const uint8_t *keys, const uint8_t *prev) {
     if (!keys || !prev) return 0;
-    if (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT]) return 0;
-    if (!keys[SDL_SCANCODE_LCTRL] && !keys[SDL_SCANCODE_RCTRL]) return 0;
-    return IG_KEY_PRESSED(SDL_SCANCODE_D) ? 1 : 0;
+    return Keybinds_Pressed(KA_SELF_DESTRUCT, keys, prev);
 }
 
 int InGame_WatchNextView(uint32_t open, int current) {
@@ -201,5 +187,3 @@ int InGame_WatchNextView(uint32_t open, int current) {
         if (open & (1u << p)) return p;
     return 0;
 }
-
-#undef IG_KEY_PRESSED
