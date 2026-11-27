@@ -955,6 +955,7 @@ int main(int argc, char *argv[]) {
         if (sw >= HUD_AUTHORED_W && sh >= HUD_AUTHORED_H) {
             cfg.window_w = sw;
             cfg.window_h = sh;
+            cfg.hold_size = 1;
         }
     }
 

@@ -353,8 +353,7 @@ static void settings_snapshot(void) {
     if (opts.platform) {
         opts.snap_scale_mode = opts.platform->scale_mode;
         opts.snap_pixel_size = opts.platform->pixel_size;
-        opts.snap_win_w      = opts.platform->window_w;
-        opts.snap_win_h      = opts.platform->window_h;
+        TAK_Platform_HeldSize(opts.platform, &opts.snap_win_w, &opts.snap_win_h);
     }
 }
 
@@ -384,7 +383,9 @@ static void settings_revert(void) {
     if (p && (p->scale_mode != opts.snap_scale_mode ||
               p->pixel_size != opts.snap_pixel_size))
         TAK_Platform_SetScaleMode(p, opts.snap_scale_mode, opts.snap_pixel_size);
-    if (p && (p->window_w != opts.snap_win_w || p->window_h != opts.snap_win_h))
+    int hw = 0, hh = 0;
+    TAK_Platform_HeldSize(p, &hw, &hh);
+    if (p && (hw != opts.snap_win_w || hh != opts.snap_win_h))
         (void)TAK_Platform_SetWindowSize(p, opts.snap_win_w, opts.snap_win_h);
     /* Only the key dialog's Ok writes the file while this one is up, and
      * options_cancel writes these back after it. */
@@ -465,7 +466,7 @@ static int volume_slider_live(void) {
  * screen stretched over the window, and the rest are the sizes the
  * Original scale can run at: the desktop's modes, which size the window,
  * or in a browser the page at one, two, three or four screen pixels to
- * a game pixel. */
+ * a game pixel, and the desktop's usual sizes, scaled to fit the page. */
 
 static int res_live(void) {
     return opts.sub_rt && opts.active_tab == TAB_VISUAL && opts.idx_res_track >= 0;
@@ -473,16 +474,21 @@ static int res_live(void) {
 
 static int res_stops(void) { return opts.res_n + 1; }
 
+/* A stop is current when the platform stands on it: a page stop by its
+ * pixel size, any other by the size it asked for. */
+static int res_is_current(const TAK_Resolution *r) {
+    TAK_Platform *p = opts.platform;
+    int hw = 0, hh = 0;
+    TAK_Platform_HeldSize(p, &hw, &hh);
+    return r->pixel_size > 0 ? r->pixel_size == TAK_Platform_PixelSize(p)
+                             : (r->w == hw && r->h == hh);
+}
+
 static int res_current_stop(void) {
     TAK_Platform *p = opts.platform;
     if (!p || p->scale_mode == HUD_SCALE_FIT || opts.res_n <= 0) return 0;
-    int k = TAK_Platform_PixelSize(p);
-    for (int i = 0; i < opts.res_n; i++) {
-        const TAK_Resolution *r = &opts.res[i];
-        if (r->pixel_size > 0 ? r->pixel_size == k
-                              : (r->w == p->window_w && r->h == p->window_h))
-            return i + 1;
-    }
+    for (int i = 0; i < opts.res_n; i++)
+        if (res_is_current(&opts.res[i])) return i + 1;
     return 1;
 }
 
@@ -527,11 +533,18 @@ static void res_apply(int stop) {
     }
     if (stop > opts.res_n) return;
     const TAK_Resolution r = opts.res[stop - 1];
-    TAK_Platform_SetScaleMode(p, HUD_SCALE_ORIGINAL, r.pixel_size);
+    TAK_Platform_SetScaleMode(p, HUD_SCALE_ORIGINAL,
+                              r.pixel_size > 0 ? r.pixel_size : p->pixel_size);
     Settings_SetStr(TAK_SETTING_SCALE, HUD_ScaleModeName(HUD_SCALE_ORIGINAL));
     if (r.pixel_size > 0) {
+        /* A browser page stop: the page's size again, not a held one. */
+        int hw = 0, hh = 0;
+        TAK_Platform_HeldSize(p, &hw, &hh);
+        if (hw > 0) (void)TAK_Platform_SetWindowSize(p, 0, 0);
         Settings_SetInt(TAK_SETTING_PIXEL_SIZE, r.pixel_size);
-    } else if ((p->window_w == r.w && p->window_h == r.h) ||
+        Settings_SetInt(TAK_SETTING_SCREEN_W, 0);
+        Settings_SetInt(TAK_SETTING_SCREEN_H, 0);
+    } else if (res_is_current(&r) ||
                TAK_Platform_SetWindowSize(p, r.w, r.h) == 0) {
         Settings_SetInt(TAK_SETTING_SCREEN_W, r.w);
         Settings_SetInt(TAK_SETTING_SCREEN_H, r.h);
