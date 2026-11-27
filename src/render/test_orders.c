@@ -19,6 +19,7 @@
 #include "tak_fog.h"
 #include "tak_hud.h"
 #include "tak_cob.h"
+#include "tak_cob_vm.h"
 #include "tak_ingame.h"
 #include "tak_ingame_keys.h"
 #include "tak_memory.h"
@@ -1523,6 +1524,35 @@ TEST(a_right_click_drops_the_hall_in_hand_and_leaves_its_frame) {
     oq_end();
 }
 
+/* A frame is one before its Create runs, as in the original, so a Create
+ * that waits on BUILD_PERCENT_LEFT holds its pose until it is finished. */
+TEST(a_frames_create_waits_until_it_is_finished) {
+    ASSERT_NOT_NULL(oq_world());
+    static const uint32_t code[] = {
+        0x10021001u, 17u, 0x10042000u,                 /* BUILD_PERCENT_LEFT */
+        0x10066000u, 10u,                              /* while it is not 0 */
+        0x10021001u, 100u, 0x10013000u,                /* sleep 100 */
+        0x10064000u, 0u,
+        0x10021001u, 0u, 0x10065000u,                  /* return 0 */
+    };
+    static const char *const names[] = { "Create" };
+    static const uint32_t offsets[] = { 0 };
+    ASSERT_EQ_INT(0, Units_DebugSetDefScript(OQ_HALL, code, 13, names,
+                                             offsets, 1));
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    int f = Units_BeginBuildingForUnit(bd, OQ_HALL, OQ_CX + 8, OQ_CY + 8);
+    ASSERT(f >= 0);
+    ASSERT_EQ_INT(1, Cob_AliveThreadCount(oq_unit(f)->cob));
+    oq_ticks(60);
+    ASSERT_EQ_INT(1, (int)oq_unit(f)->under_construction);
+    ASSERT_EQ_INT(1, Cob_AliveThreadCount(oq_unit(f)->cob));
+    for (int t = 0; t < 3000 && oq_unit(f)->under_construction; t++) oq_ticks(1);
+    ASSERT_EQ_INT(0, (int)oq_unit(f)->under_construction);
+    oq_ticks(60);
+    ASSERT_EQ_INT(0, Cob_AliveThreadCount(oq_unit(f)->cob));
+    oq_end();
+}
+
 /* ── the Shift overlay ────────────────────────────────────────────── */
 
 /* A move in hand, then an attack, a building, a move, two patrol points
@@ -2902,6 +2932,7 @@ int main(int argc, char **argv) {
     RUN(a_dequeue_takes_a_builders_build_orders_of_the_def);
     RUN(a_right_click_on_a_builders_button_drops_that_kind);
     RUN(a_right_click_drops_the_hall_in_hand_and_leaves_its_frame);
+    RUN(a_frames_create_waits_until_it_is_finished);
     RUN(the_shift_overlay_plans_a_mixed_queue);
     RUN(a_patrol_in_hand_closes_through_its_start);
     RUN(the_shift_overlay_shows_a_barracks_rally);

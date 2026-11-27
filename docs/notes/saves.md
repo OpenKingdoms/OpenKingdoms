@@ -471,11 +471,12 @@ the line of sight test read layers the human never sees. Player one's
 layer is an alias and is pointed again on load rather than stored
 twice.
 
-A unit's revealed cells are worked out once and stamped again until the
-unit has moved 16 px from where they were worked out, so the ground it
-lights follows that anchor rather than its exact position. The anchor,
-with the sight and the lit flag it was taken with, is state: it is
-hashed and saved. The cell list is a cache, a function of the anchor.
+A unit's revealed cells are worked out once and stamped again on each
+fog update. The anchor moves only when the unit enters a new 32 px fog
+cell, so the ground it lights follows that anchor rather than its exact
+position. The anchor, with the sight and the lit flag it was taken with,
+is state: it is hashed and saved. The cell list is a cache, a function
+of the anchor and the unit's eye.
 
 ### State that looks derived
 
@@ -496,7 +497,8 @@ different step within a few ticks.
 | Terrain passability cache per move class | Dropped | Terrain only, rebuilt on the next plan |
 | Clearance map version | Bumped, never written or hashed | A clearance map from the previous session must not be believed |
 | Unit occupancy layer | Restored | A contested cell belongs to whichever unit claimed it first |
-| Per-unit fog reveal cell list | Rebuilt | A function of the anchor |
+| Per-unit fog reveal cell list | Rebuilt | A function of the anchor and the unit's eye |
+| Fog ground record | Rebuilt | A function of the heightmap and the water height |
 | Fog reveal anchor | Restored | Where the unit stood when the scan last ran |
 | Mana cap and regeneration rate | Restored | Adjusted in place on every capture, loss and monarch spawn, never recomputed from the world |
 | A wedged unit's rungs on the unsticking ladder, its route serial and the stall fields beside them | Restored | A function of nothing else the unit carries, and in the hash too |
