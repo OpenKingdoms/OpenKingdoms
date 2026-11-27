@@ -342,6 +342,8 @@ TEST(a_received_map_is_kept_as_a_pack_and_read_from_it) {
     ASSERT(memcmp(fp2, got, sizeof fp2) != 0);
     ASSERT(TAK_Maps_FindFile("Player Isle", "crt", path, sizeof path) != 0);
     ASSERT_EQ_INT(1, TAK_MapShare_HasOwn("Player Isle"));
+    /* Windows keeps an open archive from being removed. */
+    VFS_Shutdown();
     remove("test_maps_tmp/Maps/Player Isle.kmp");
     share_fixture_end();
 }
