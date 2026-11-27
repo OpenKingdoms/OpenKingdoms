@@ -1524,34 +1524,32 @@ TEST(a_right_click_drops_the_hall_in_hand_and_leaves_its_frame) {
     oq_end();
 }
 
-/* A frame keeps the pose Create left it in: its threads wait until it is
- * finished, as in the original, and a frame that dies still plays out. */
-TEST(a_frame_runs_no_scripts_until_it_is_finished) {
+/* A frame is one before its Create runs, as in the original, so a Create
+ * that waits on BUILD_PERCENT_LEFT holds its pose until it is finished. */
+TEST(a_frames_create_waits_until_it_is_finished) {
     ASSERT_NOT_NULL(oq_world());
     static const uint32_t code[] = {
-        0x10061000u, 1u, 0u,                           /* Create: start Spin */
-        0x10021001u, 0u, 0x10065000u,                  /* return 0 */
-        0x10021001u, 100u, 0x10013000u,                /* Spin: sleep 100 */
+        0x10021001u, 17u, 0x10042000u,                 /* BUILD_PERCENT_LEFT */
+        0x10066000u, 10u,                              /* while it is not 0 */
+        0x10021001u, 100u, 0x10013000u,                /* sleep 100 */
+        0x10064000u, 0u,
         0x10021001u, 0u, 0x10065000u,                  /* return 0 */
     };
-    static const char *const names[] = { "Create", "Spin" };
-    static const uint32_t offsets[] = { 0, 6 };
-    ASSERT_EQ_INT(0, Units_DebugSetDefScript(OQ_SOLDIER, code, 12, names,
-                                             offsets, 2));
-    int a = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX, OQ_CY);
-    int b = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX + 40, OQ_CY);
-    ASSERT(a >= 0 && b >= 0);
-    ((Unit *)oq_unit(a))->under_construction = 1;
-    ((Unit *)oq_unit(b))->under_construction = 1;
-    ASSERT_EQ_INT(1, Cob_AliveThreadCount(oq_unit(a)->cob));
+    static const char *const names[] = { "Create" };
+    static const uint32_t offsets[] = { 0 };
+    ASSERT_EQ_INT(0, Units_DebugSetDefScript(OQ_HALL, code, 13, names,
+                                             offsets, 1));
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    int f = Units_BeginBuildingForUnit(bd, OQ_HALL, OQ_CX + 8, OQ_CY + 8);
+    ASSERT(f >= 0);
+    ASSERT_EQ_INT(1, Cob_AliveThreadCount(oq_unit(f)->cob));
     oq_ticks(60);
-    ASSERT_EQ_INT(1, Cob_AliveThreadCount(oq_unit(a)->cob));
-    ((Unit *)oq_unit(a))->under_construction = 0;
+    ASSERT_EQ_INT(1, (int)oq_unit(f)->under_construction);
+    ASSERT_EQ_INT(1, Cob_AliveThreadCount(oq_unit(f)->cob));
+    for (int t = 0; t < 3000 && oq_unit(f)->under_construction; t++) oq_ticks(1);
+    ASSERT_EQ_INT(0, (int)oq_unit(f)->under_construction);
     oq_ticks(60);
-    ASSERT_EQ_INT(0, Cob_AliveThreadCount(oq_unit(a)->cob));
-    ASSERT_EQ_INT(b, Units_DebugKillHandle(b));
-    oq_ticks(60);
-    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, (int)oq_unit(b)->alive);
+    ASSERT_EQ_INT(0, Cob_AliveThreadCount(oq_unit(f)->cob));
     oq_end();
 }
 
@@ -2934,7 +2932,7 @@ int main(int argc, char **argv) {
     RUN(a_dequeue_takes_a_builders_build_orders_of_the_def);
     RUN(a_right_click_on_a_builders_button_drops_that_kind);
     RUN(a_right_click_drops_the_hall_in_hand_and_leaves_its_frame);
-    RUN(a_frame_runs_no_scripts_until_it_is_finished);
+    RUN(a_frames_create_waits_until_it_is_finished);
     RUN(the_shift_overlay_plans_a_mixed_queue);
     RUN(a_patrol_in_hand_closes_through_its_start);
     RUN(the_shift_overlay_shows_a_barracks_rally);
