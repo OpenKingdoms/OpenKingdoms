@@ -2601,6 +2601,19 @@ TEST(a_summons_snaps_to_its_move_class_footprint) {
     /* The 3x3 cell block from 59 to 61, centred at 59 * 16 + 24. */
     ASSERT_EQ_INT(59 * 16 + 24, x);
     ASSERT_EQ_INT(59 * 16 + 24, y);
+    /* A mission places a walker at its point and a building on the
+     * cells, and a script's square is the top-left cell
+     * (legacy:169600-169615, legacy:178380-178385, legacy:219464-219481). */
+    x = y = 60 * 16;
+    Units_MissionPlacePoint(OQ_ARCHER, 0, &x, &y);
+    ASSERT_EQ_INT(60 * 16, x);
+    Units_MissionPlacePoint(OQ_ARCHER, 1, &x, &y);
+    ASSERT_EQ_INT(60 * 16 + 24, x);
+    ASSERT_EQ_INT(60 * 16 + 24, y);
+    x = y = 60 * 16;
+    Units_MissionPlacePoint(OQ_HALL, 0, &x, &y);
+    ASSERT_EQ_INT(59 * 16 + 24, x);
+    ASSERT_EQ_INT(60 * 16 + 8, y);
     oq_end();
 }
 

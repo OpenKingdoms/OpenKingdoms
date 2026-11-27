@@ -854,7 +854,9 @@ static void loading_advance_step(TAK_Platform *platform) {
                         p->unitname, p->section);
                     continue;
                 }
-                int handle = Units_Spawn(def, p->player, color, p->x * 16, p->z * 16);
+                int32_t px = p->x * 16, pz = p->z * 16;
+                Units_MissionPlacePoint(def, 0, &px, &pz);
+                int handle = Units_Spawn(def, p->player, color, px, pz);
                 if (handle >= 0) {
                     if (handles) handles[i] = handle;
                     float heading = Mission_AngleToHeading(p->angle);

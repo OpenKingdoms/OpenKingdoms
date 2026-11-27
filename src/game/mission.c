@@ -771,6 +771,11 @@ int Mission_LoadOTA(const char *vfs_path, MissionData *out) {
     out->mapping = TDF_ReadInt(tdf, "mapping", 0);
     if (parse_objectives(tdf, out) != 0) goto done;
 
+    if (TDF_PushSection(tdf, "Map Data") == 0) {
+        copy_str(out->ai_profile, sizeof(out->ai_profile),
+                 TDF_ReadString(tdf, "aiprofile", ""));
+        TDF_PopSection(tdf);
+    }
     if (TDF_PushSection(tdf, "Map Data") == 0 &&
         TDF_PushSection(tdf, "units") == 0) {
         const char *section = TDF_GetFirstSection(tdf);

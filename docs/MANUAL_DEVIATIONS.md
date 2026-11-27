@@ -1243,8 +1243,11 @@ pull request, not here.
   - A patrol list sends the unit's patrol order to each point in turn,
     going on within 64 pixels or once it turns for the next. The
     original queues the patrol orders on the unit.
-  - `w N` is N seconds, as Total Annihilation documented it. The
-    original's time unit is inferred.
+  - `w N` is N seconds, read as the original reads it
+    (legacy:228719-228732). A wait with a distance ends on an enemy its
+    side sees within that straight-line reach, never a neutral seat's,
+    and the original also counts the seat's sighted buildings when its
+    brain weighs defence.
   - `wa` ends when the watched unit's health drops, where the original
     also wakes on a miss that does no damage.
   - `a TYPE` takes the nearest unit of the type, where the original
@@ -1254,8 +1257,17 @@ pull request, not here.
   - `i NAME` boards at once and the list waits until the unit is set
     down, though a `w` runs out aboard. The original runs the list
     aboard (legacy:182203-182225, legacy:184105-184124).
-  - `c`, `s` and `v` are read and dropped. Nothing makes a unit
-    unselectable for `s` to undo, and the speed `v` sets has no field.
+  - `v` is read and dropped, as the speed it sets has no field. `s` gives the unit back to the computer player, but only once its
+    list has ended, so one hand at a time moves it. The original hands it
+    over at the `s`.
+  - The computer plays the second seat when its line calls it strategic,
+    as every shipped chapter does, with the units no list holds. The
+    original plays every seat a line names. A strategic ally, the third
+    seat in 18 chapters, is not played yet, and a passive seat is not
+    played, where the original gives it a fifth of the brain's share.
+  - A mission seat's home is its building that trains nearest the middle
+    of its buildings, else the nearest of them, as a campaign brain is
+    never sent to its start position (legacy:18774-18777).
   - `SetAttribute` sets health, mana and the scales of D-020.
     `ReadValue` and `WriteValue` are not in, and no shipped script of
     the first campaign calls them.
@@ -1266,7 +1278,9 @@ pull request, not here.
   `o N` is the unit's standing orders, not a change of owner.
 - Citation: legacy:228246-228770 the order list, legacy:8920-8958 the
   wait, legacy:8963-9031 the attack on a type, legacy:233216 the
-  standing orders. The map script's engine is made at legacy:177876,
+  standing orders, legacy:228755-228765 and legacy:8911 the hold a list
+  puts on its unit, legacy:177733-177742 and legacy:19335 the seats the
+  computer plays. The map script's engine is made at legacy:177876,
   its command host is legacy:178336-178652, its value ports
   legacy:178722-178822, its created and trigger events
   legacy:178218-178250, its destroyed event legacy:177932 and its
