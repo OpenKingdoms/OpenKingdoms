@@ -58,16 +58,17 @@ typedef struct TAK_RelayClient {
     uint64_t     heard_ms;        /* the last frame of any kind from it */
     uint32_t     ping_seq;
     TAK_MsgHello hello;
-    /* The room's map coming to this player from the host, protocol 11.
-     * Only who asked for which piece is kept here, never the map: a
-     * piece goes on to the player who asked for it as it arrives. */
+    /* The room's map coming to this player, protocol 11: who asked for
+     * which piece, never the map, which goes straight on as it arrives. */
     struct {
         uint8_t  fingerprint[TAK_NET_FINGERPRINT_BYTES];
         uint32_t offset[TAK_RELAY_MAP_WINDOW];
         uint8_t  state[TAK_RELAY_MAP_WINDOW];      /* 0 free, 1 held, 2 with the host */
         uint64_t since_ms[TAK_RELAY_MAP_WINDOW];
         uint64_t passed_ms;                        /* the last asked of the host */
-        uint32_t bytes;                            /* passed on for this map */
+        uint32_t giver;                            /* the host they were asked of */
+        uint64_t minute_ms;                        /* this minute's budget began */
+        uint32_t minute_bytes;                     /* asked of a host since */
     } map;
 } TAK_RelayClient;
 
@@ -168,6 +169,9 @@ typedef struct TAK_Relay {
     /* Map pieces passed on from a host, and asked for and turned away. */
     uint32_t         map_pieces;
     uint32_t         map_refused;
+    /* Map pieces asked of hosts this second, every room together. */
+    uint64_t         map_second_ms;
+    uint32_t         map_second_bytes;
 } TAK_Relay;
 
 /* The turn logs' storage is the caller's, split evenly between rooms. */

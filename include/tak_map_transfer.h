@@ -6,17 +6,9 @@
 
 #include "tak_net_client.h"
 
-/*
- * The room's map on its way from the host to a player without it, both
- * ends of it, over the session's client (protocol 11).
- *
- * As host it says whether the room's map may be sent (tak_map_share.h)
- * and answers each piece a player asks for. As a player without the map
- * it asks for the pieces a few at a time, says how far it has come,
- * checks what came, keeps it and mounts it, and tells the room it has
- * the map. A map that may not be sent is never asked for, and the room
- * says what the player needs instead.
- */
+/* The room's map on its way, both ends of it (protocol 11): the host says
+ * whether it may be sent and answers each piece, and a player without it
+ * asks, checks, keeps and mounts it, and tells the room. */
 
 /* Every frame the room is up. */
 void MapTransfer_Tick(TAK_NetClient *c, uint64_t now_ms);

@@ -488,10 +488,9 @@ typedef enum TAK_NetEditField {
     TAK_EDIT_MAP_SHARE
 } TAK_NetEditField;
 
-/* What the host's client says of the room's map, protocol 11. Only a
- * map a player made is sent. One that ships with the game, the
- * expansion or Cavedog's own map packs never is, and the room names
- * what a player without it needs. */
+/* What the host's client says of the room's map, protocol 11. Only a map
+ * a player made is sent, and for a map the original's releases ship the
+ * room names what a player without it needs. */
 typedef enum TAK_NetMapShare {
     TAK_MAPSHARE_UNKNOWN = 0,   /* not said yet, or a host before 11 */
     TAK_MAPSHARE_OFFERED,       /* sent to anyone who asks */
@@ -769,9 +768,8 @@ typedef struct TAK_MsgMapRequest {
     uint32_t offset;
 } TAK_MsgMapRequest;
 
-/* One piece, the host's answer to one request: client_id is the player
- * it is for, the piece is the whole of the one at offset, and a total
- * of 0 is the host saying it cannot send this map. Decode points `data`
+/* The host's answer to one request, for client_id: the whole piece at
+ * offset, or a total of 0 for a map it cannot send. Decode points `data`
  * into the caller's frame and copies nothing. */
 typedef struct TAK_MsgMapData {
     uint32_t       client_id;

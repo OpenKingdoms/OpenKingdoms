@@ -276,8 +276,8 @@ TEST(a_sent_map_reads_back_whole_and_any_other_bundle_is_refused) {
 TEST(a_received_map_is_kept_as_a_pack_and_read_from_it) {
     fixture_begin();
     tak_test_mkdir(RECV_DIR);
-    TestHPIEntry base[] = { { "maps/Alpha Field.ota", "[GlobalHeader]", 100 },
-                            { "maps/Alpha Field.tnt", "tnt", 100 } };
+    TestHPIEntry base[] = { { "maps/Alpha Field.ota", "[GlobalHeader]", 100, 0 },
+                            { "maps/Alpha Field.tnt", "tnt", 100, 0 } };
     int w = test_write_hpi(BASE_HPI, base, 2);
     if (w != 0) { share_fixture_end(); ASSERT_EQ_INT(0, w); return; }
     VFS_SetReceivedMapDir(RECV_DIR);
@@ -317,6 +317,18 @@ TEST(a_received_map_is_kept_as_a_pack_and_read_from_it) {
     for (int i = 0; i < count; i++) if (tak_stricmp(maps[i].key, "player isle") == 0) listed = 1;
     TAK_Maps_Free(maps);
     ASSERT_EQ_INT(1, listed);
+
+    /* A copy of that name the player adds later is the one read, whole. */
+    VFS_Shutdown();
+    TestHPIEntry own[] = { { "kmap/Player Isle.ota", ISLE_OTA, 1, 0 },
+                           { "kmap/Player Isle.tnt", "the player's own island", 1, 0 } };
+    ASSERT_EQ_INT(0, test_write_hpi("test_maps_tmp/Maps/Player Isle.kmp", own, 2));
+    ASSERT_EQ_INT(0, VFS_Init(GAME_DIR, NULL));
+    ASSERT_EQ_INT(0, TAK_MapFingerprint_FromName("Player Isle", got));
+    ASSERT(memcmp(fp2, got, sizeof fp2) != 0);
+    ASSERT(TAK_Maps_FindFile("Player Isle", "crt", path, sizeof path) != 0);
+    ASSERT_EQ_INT(1, TAK_MapShare_HasOwn("Player Isle"));
+    remove("test_maps_tmp/Maps/Player Isle.kmp");
     share_fixture_end();
 }
 
@@ -332,12 +344,12 @@ static void from_hex(const char *hex, uint8_t *out, int n) {
  * archives, or one the original's releases ship, is named instead. */
 TEST(only_a_map_a_player_made_is_offered) {
     fixture_begin();
-    TestHPIEntry base[] = { { "maps/Alpha Field.ota", "[GlobalHeader]", 100 },
-                            { "maps/Alpha Field.tnt", "base tnt", 100 } };
-    TestHPIEntry ip[] = { { "maps/Creon Pass.ota", "[GlobalHeader]", 100 },
-                          { "maps/Creon Pass.tnt", "ip tnt", 100 } };
-    TestHPIEntry own[] = { { "kmap/Home Made.ota", "[GlobalHeader]\n{\nnumplayers=2;\n}\n", 100 },
-                           { "kmap/Home Made.tnt", "a player's terrain", 100 } };
+    TestHPIEntry base[] = { { "maps/Alpha Field.ota", "[GlobalHeader]", 100, 0 },
+                            { "maps/Alpha Field.tnt", "base tnt", 100, 0 } };
+    TestHPIEntry ip[] = { { "maps/Creon Pass.ota", "[GlobalHeader]", 100, 0 },
+                          { "maps/Creon Pass.tnt", "ip tnt", 100, 0 } };
+    TestHPIEntry own[] = { { "kmap/Home Made.ota", "[GlobalHeader]\n{\nnumplayers=2;\n}\n", 100, 0 },
+                           { "kmap/Home Made.tnt", "a player's terrain", 100, 0 } };
     int w = test_write_hpi(BASE_HPI, base, 2);
     w |= test_write_hpi(IP_HPI, ip, 2);
     w |= test_write_hpi(OWN_KMP, own, 2);
@@ -346,13 +358,14 @@ TEST(only_a_map_a_player_made_is_offered) {
 
     uint8_t fp[TAK_MAP_FINGERPRINT_BYTES];
     ASSERT_EQ_INT(0, TAK_MapFingerprint_FromName("Alpha Field", fp));
-    ASSERT_EQ_INT(TAK_MAPSHARE_GAME, TAK_MapShare_Status("Alpha Field", fp, NULL, NULL));
+    ASSERT_EQ_INT(TAK_MAPSHARE_GAME, TAK_MapShare_Status("Alpha Field", fp));
     ASSERT_EQ_INT(0, TAK_MapFingerprint_FromName("Creon Pass", fp));
-    ASSERT_EQ_INT(TAK_MAPSHARE_EXPANSION, TAK_MapShare_Status("Creon Pass", fp, NULL, NULL));
+    ASSERT_EQ_INT(TAK_MAPSHARE_EXPANSION, TAK_MapShare_Status("Creon Pass", fp));
     ASSERT_EQ_INT(0, TAK_MapFingerprint_FromName("Home Made", fp));
+    ASSERT_EQ_INT(TAK_MAPSHARE_OFFERED, TAK_MapShare_Status("Home Made", fp));
     uint8_t *bundle = NULL;
     uint32_t len = 0;
-    ASSERT_EQ_INT(TAK_MAPSHARE_OFFERED, TAK_MapShare_Status("Home Made", fp, &bundle, &len));
+    ASSERT_EQ_INT(0, TAK_MapShare_PackInstalled("Home Made", fp, &bundle, &len));
     ASSERT(bundle != NULL);
     TAK_MapShareFiles back;
     ASSERT_EQ_INT(0, TAK_MapShare_Unpack(bundle, len, fp, &back));
@@ -360,7 +373,8 @@ TEST(only_a_map_a_player_made_is_offered) {
     tak_free(bundle);
     /* A print that is not this copy's cannot be sent as it. */
     fp[0] ^= 1;
-    ASSERT_EQ_INT(TAK_MAPSHARE_UNREADABLE, TAK_MapShare_Status("Home Made", fp, NULL, NULL));
+    ASSERT_EQ_INT(TAK_MAPSHARE_UNREADABLE, TAK_MapShare_Status("Home Made", fp));
+    ASSERT_EQ_INT(-3, TAK_MapShare_PackInstalled("Home Made", fp, &bundle, &len));
     share_fixture_end();
 
     /* By fingerprint, wherever a copy came from: the game's Ground War,
@@ -373,6 +387,10 @@ TEST(only_a_map_a_player_made_is_offered) {
     ASSERT_EQ_INT(TAK_MAPSHARE_MAP_PACK, TAK_MapShare_Shipped(fp));
     fp[5] ^= 1;
     ASSERT_EQ_INT(0, TAK_MapShare_Shipped(fp));
+    /* A copy edited by a byte keeps a shipped name, and so is not sent. */
+    ASSERT_EQ_INT(TAK_MAPSHARE_MAP_PACK, TAK_MapShare_ShippedName("Adamantine Gate"));
+    ASSERT_EQ_INT(TAK_MAPSHARE_EXPANSION, TAK_MapShare_ShippedName("rival hill"));
+    ASSERT_EQ_INT(0, TAK_MapShare_ShippedName("Home Made"));
 }
 
 /* A received map is written under the room's map name, so only a name

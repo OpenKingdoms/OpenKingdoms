@@ -321,17 +321,15 @@ static void snap_tick(TAK_Relay *r, TAK_RelayRoom *rr) {
 
 /* ── A map from the host ──────────────────────────────────────────────── */
 
-/* A player missing the room's map asks for it a piece at a time. The
- * relay keeps who asked for which piece and nothing of the map: a piece
- * the host sends goes straight on to the one player who asked for it,
- * and anything else the host sends is turned away. One player has at
- * most TAK_RELAY_MAP_WINDOW pieces asked for, each asked of the host no
- * more often than MAP_PASS_MS, and no more than MAP_BUDGET passed on
- * for one map. */
-#define MAP_PASS_MS      25u
-#define MAP_ASK_MS       10000u
-#define MAP_QUEUE_BYTES  (96u * 1024u)
-#define MAP_BUDGET       (2u * TAK_NET_MAP_MAX)
+/* Who asked for which piece is kept, never the map. A player has at most
+ * TAK_RELAY_MAP_WINDOW asked, passed one each MAP_PASS_MS within its own
+ * MAP_MINUTE_BYTES and the relay's MAP_SECOND_BYTES, or held till then. */
+#define MAP_PASS_MS       25u
+#define MAP_ASK_MS        10000u
+#define MAP_QUEUE_BYTES   (96u * 1024u)
+#define MAP_MINUTE_MS     60000u
+#define MAP_MINUTE_BYTES  (2u * TAK_NET_MAP_MAX)
+#define MAP_SECOND_BYTES  (2u << 20)
 
 /* From protocol 11 a client asks for a map and answers for one. */
 static int shares_maps(const TAK_RelayClient *cl) {
@@ -357,13 +355,25 @@ static void map_forget_asks(TAK_RelayClient *cl) {
 }
 
 /* Ask the host for the next piece held for this player, when its turn
- * has come. */
+ * has come and both budgets have room for it. */
 static void map_pass(TAK_Relay *r, TAK_RelayClient *cl) {
     if (r->now - cl->map.passed_ms < MAP_PASS_MS) return;
     TAK_RelayClient *host = map_giver(r, cl);
-    if (!host) { map_forget_asks(cl); return; }
+    if (!host || host->id != cl->map.giver) { map_forget_asks(cl); return; }
+    if (r->now - cl->map.minute_ms >= MAP_MINUTE_MS) {
+        cl->map.minute_ms = r->now;
+        cl->map.minute_bytes = 0;
+    }
+    if (r->now - r->map_second_ms >= 1000u) {
+        r->map_second_ms = r->now;
+        r->map_second_bytes = 0;
+    }
+    if (cl->map.minute_bytes + TAK_NET_MAP_CHUNK > MAP_MINUTE_BYTES ||
+        r->map_second_bytes + TAK_NET_MAP_CHUNK > MAP_SECOND_BYTES) return;
     for (int k = 0; k < TAK_RELAY_MAP_WINDOW; k++) {
         if (cl->map.state[k] != 1) continue;
+        cl->map.minute_bytes += TAK_NET_MAP_CHUNK;
+        r->map_second_bytes += TAK_NET_MAP_CHUNK;
         TAK_MsgMapRequest m;
         m.client_id = cl->id;
         memcpy(m.fingerprint, cl->map.fingerprint, TAK_NET_FINGERPRINT_BYTES);
@@ -382,21 +392,21 @@ static void on_map_request(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgMapRe
         r->map_refused++;
         return;
     }
-    if (memcmp(cl->map.fingerprint, m->fingerprint, TAK_NET_FINGERPRINT_BYTES) != 0) {
-        /* The room's map changed: what was asked for the last one is gone. */
-        memset(&cl->map, 0, sizeof cl->map);
+    /* What was asked of another map, or of a host since gone, is gone.
+     * The minute's budget is not: it is the player's, whatever the map. */
+    uint32_t host_id = r->room[cl->room].room.host_client_id;
+    if (memcmp(cl->map.fingerprint, m->fingerprint, TAK_NET_FINGERPRINT_BYTES) != 0 ||
+        cl->map.giver != host_id) {
+        map_forget_asks(cl);
         memcpy(cl->map.fingerprint, m->fingerprint, TAK_NET_FINGERPRINT_BYTES);
+        cl->map.giver = host_id;
     }
     int free_k = -1;
-    uint32_t asked = 0;
     for (int k = 0; k < TAK_RELAY_MAP_WINDOW; k++) {
         if (cl->map.state[k] && cl->map.offset[k] == m->offset) return;
-        if (cl->map.state[k]) asked++;
-        else if (free_k < 0) free_k = k;
+        if (!cl->map.state[k] && free_k < 0) free_k = k;
     }
-    /* What is already asked for counts against the budget too. */
-    if (free_k < 0 || !map_giver(r, cl) ||
-        cl->map.bytes + (asked + 1u) * TAK_NET_MAP_CHUNK > MAP_BUDGET) {
+    if (free_k < 0 || !map_giver(r, cl)) {
         r->map_refused++;
         return;
     }
@@ -425,7 +435,6 @@ static void on_map_data(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgMapData 
         r->map_refused++;
         return;
     }
-    to->map.bytes += m->len;
     r->map_pieces++;
     send_frame(r, to, frame, len);
     map_pass(r, to);

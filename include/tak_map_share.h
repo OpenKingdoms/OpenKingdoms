@@ -6,21 +6,14 @@
 
 #include "tak_map_fingerprint.h"
 
-/* A room's map sent from the host to a player who lacks it, protocol 11.
- *
- * What goes is a bundle of the map's own files, the four its fingerprint
- * covers and the blurb beside it, compressed. The player it comes to
- * checks the fingerprint of what came against the room's before anything
- * is written, then keeps it as a map pack of its own in
- * Paths_ReceivedMapDir, which the VFS mounts after the game's own packs.
- *
- * Only a map a player made is sent. One the game, the expansion or
- * Cavedog's map packs ship is known by its fingerprint, or by coming out
- * of one of the game folder's own .hpi archives, and a player without it
- * is told what they need instead. */
+/* A room's map as one bundle of its own files, checked by fingerprint
+ * before it is kept as a map pack in Paths_ReceivedMapDir. Only a map a
+ * player made is sent (docs/MULTIPLAYER.md, "Sending a map", N-011). */
 
-/* The blurb is the one part the fingerprint leaves out, so it stays small. */
+/* The blurb is the one part the fingerprint leaves out, so it stays small,
+ * and the parts the fingerprint parses stay well past any real map's. */
 #define TAK_MAP_SHARE_TXT_MAX  4096u
+#define TAK_MAP_SHARE_TDF_MAX  (256u << 10)
 /* The most a bundle may inflate to. */
 #define TAK_MAP_SHARE_RAW_MAX  (16u << 20)
 
@@ -41,24 +34,23 @@ int  TAK_MapShare_PackInstalled(const char *map_key,
                                 const uint8_t want[TAK_MAP_FINGERPRINT_BYTES],
                                 uint8_t **out, uint32_t *out_len);
 
-/* Read a bundle that came over the wire: inflate it, read its parts and
- * check they are the map `want`. 0 with *out filled, freed with
- * TAK_MapShare_FreeFiles. -1 for a bundle that does not read, -2 for one
- * that is some other map. */
+/* Read a bundle off the wire and check it is the map `want`: 0 with *out
+ * filled, freed by TAK_MapShare_FreeFiles, -1 for one that does not read
+ * and -2 for some other map. */
 int  TAK_MapShare_Unpack(const uint8_t *wire, uint32_t len,
                          const uint8_t want[TAK_MAP_FINGERPRINT_BYTES],
                          TAK_MapShareFiles *out);
 void TAK_MapShare_FreeFiles(TAK_MapShareFiles *f);
 
-/* What a host says of a map it has, a TAK_NetMapShare. Builds the bundle
- * to learn its size, and hands it over in *bundle when the answer is
- * TAK_MAPSHARE_OFFERED and bundle is not NULL. */
-int  TAK_MapShare_Status(const char *map_key, const uint8_t fp[TAK_MAP_FINGERPRINT_BYTES],
-                         uint8_t **bundle, uint32_t *bundle_len);
+/* What a host says of a map it has, a TAK_NetMapShare. It reads the map
+ * but builds no bundle, which waits for the first player who asks. */
+int  TAK_MapShare_Status(const char *map_key, const uint8_t fp[TAK_MAP_FINGERPRINT_BYTES]);
 
-/* Which of the original's releases ships the map with this fingerprint:
- * TAK_MAPSHARE_GAME, _EXPANSION or _MAP_PACK, or 0 for none. */
+/* Which of the original's releases ships the map with this fingerprint,
+ * or with this name whatever its print: TAK_MAPSHARE_GAME, _EXPANSION or
+ * _MAP_PACK, or 0 for none. */
 int  TAK_MapShare_Shipped(const uint8_t fp[TAK_MAP_FINGERPRINT_BYTES]);
+int  TAK_MapShare_ShippedName(const char *map_key);
 
 /* Whether a room's map name can name a file: ASCII letters, digits,
  * spaces and a few marks, no separators, no device names. */

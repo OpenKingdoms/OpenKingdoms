@@ -205,15 +205,23 @@ static void emit_section(FPBuf *out, FPNode *section) {
         int n = 0;
         for (FPNode *c = section->first; c; c = c->next)
             if (c->value) keys[n++] = c;
-        for (int i = 1; i < n; i++) {              /* stable insertion sort */
-            FPNode *item = keys[i];
-            int j = i - 1;
-            while (j >= 0 && name_cmp(keys[j]->name, item->name) > 0) {
-                keys[j + 1] = keys[j];
-                j--;
+        /* A stable merge sort, so a file of a great many keys, which a
+         * map from another player can be, costs n log n. */
+        FPNode **tmp = (FPNode **)tak_malloc(sizeof(FPNode *) * (size_t)key_count);
+        if (!tmp) { tak_free(keys); out->failed = 1; return; }
+        for (int width = 1; width < n; width *= 2) {
+            for (int lo = 0; lo < n; lo += 2 * width) {
+                int mid = lo + width < n ? lo + width : n;
+                int hi = lo + 2 * width < n ? lo + 2 * width : n;
+                int a = lo, b = mid, k = lo;
+                while (a < mid && b < hi)
+                    tmp[k++] = name_cmp(keys[b]->name, keys[a]->name) < 0 ? keys[b++] : keys[a++];
+                while (a < mid) tmp[k++] = keys[a++];
+                while (b < hi) tmp[k++] = keys[b++];
             }
-            keys[j + 1] = item;
+            memcpy(keys, tmp, sizeof(FPNode *) * (size_t)n);
         }
+        tak_free(tmp);
         for (int i = 0; i < n; i++) {
             fpbuf_str(out, keys[i]->name);
             fpbuf_str(out, "=");

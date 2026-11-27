@@ -1,10 +1,6 @@
 /*
- * map_transfer.c -- the room's map on its way, both ends of it.
- *
- * See tak_map_transfer.h. The relay holds who asked for which piece and
- * nothing more, so everything about the map itself happens here: the
- * host's word on it, the pieces, the check, the copy kept and mounted.
- * None of it touches the simulation.
+ * map_transfer.c -- the room's map on its way, both ends of it. See
+ * tak_map_transfer.h. None of it touches the simulation.
  */
 
 #include "tak_map_transfer.h"
@@ -58,9 +54,12 @@ static struct {
     unsigned serial;
     /* As host: the map said of, what was said, and its bundle. */
     int      declared;
+    uint64_t declared_ms;
     uint32_t declared_room;
     uint8_t  declared_fp[TAK_NET_FINGERPRINT_BYTES];
     uint8_t  share;
+    int      weighed;
+    uint8_t  weighed_fp[TAK_NET_FINGERPRINT_BYTES];
     uint8_t *bundle;
     uint32_t bundle_len;
     /* Each seat as last seen, for the room's chat lines. */
@@ -140,22 +139,30 @@ static void fail(TAK_NetClient *c, const char *why) {
 
 /* ── The host's end ─────────────────────────────────────────────────── */
 
-static void host_tick(TAK_NetClient *c) {
+static void host_tick(TAK_NetClient *c, uint64_t now_ms) {
     const TAK_MsgRoomState *rs = &c->room;
     if (!fp_set(rs->map_fingerprint)) return;
+    /* Said and not heard, as when the word crossed a map change. */
+    if (mt.declared && rs->map_share == TAK_MAPSHARE_UNKNOWN && now_ms - mt.declared_ms > 3000)
+        mt.declared = 0;
     if (!mt.declared || mt.declared_room != rs->room_id ||
         memcmp(mt.declared_fp, rs->map_fingerprint, sizeof mt.declared_fp) != 0) {
-        drop_bundle();
-        mt.share = (uint8_t)TAK_MapShare_Status(rs->map_name, rs->map_fingerprint,
-                                                &mt.bundle, &mt.bundle_len);
+        /* Worked out once a map, however often the word has to be sent. */
+        if (!mt.weighed || memcmp(mt.weighed_fp, rs->map_fingerprint, sizeof mt.weighed_fp) != 0) {
+            drop_bundle();
+            mt.share = (uint8_t)TAK_MapShare_Status(rs->map_name, rs->map_fingerprint);
+            mt.weighed = 1;
+            memcpy(mt.weighed_fp, rs->map_fingerprint, sizeof mt.weighed_fp);
+        }
         TAK_MsgRoomEdit e;
         memset(&e, 0, sizeof e);
         e.field = TAK_EDIT_MAP_SHARE;
         e.seat = TAK_NET_SEAT_NONE;
         e.value = mt.share;
         memcpy(e.fingerprint, rs->map_fingerprint, sizeof e.fingerprint);
-        if (TAK_NetClient_EditRoom(c, &e) != 0) { drop_bundle(); return; }
+        if (TAK_NetClient_EditRoom(c, &e) != 0) return;
         mt.declared = 1;
+        mt.declared_ms = now_ms;
         mt.declared_room = rs->room_id;
         memcpy(mt.declared_fp, rs->map_fingerprint, sizeof mt.declared_fp);
     }
@@ -168,6 +175,15 @@ static void host_tick(TAK_NetClient *c) {
         d.client_id = a.client_id;
         memcpy(d.fingerprint, a.fingerprint, sizeof d.fingerprint);
         d.offset = a.offset;
+        /* Built for the first player who asks, not for every map picked. */
+        if (mt.share == TAK_MAPSHARE_OFFERED && !mt.bundle) {
+            int rc = TAK_MapShare_PackInstalled(rs->map_name, mt.declared_fp,
+                                                &mt.bundle, &mt.bundle_len);
+            if (rc != 0) {
+                mt.share = rc == -2 ? TAK_MAPSHARE_TOO_BIG : TAK_MAPSHARE_UNREADABLE;
+                mt.declared = 0;
+            }
+        }
         if (mt.share == TAK_MAPSHARE_OFFERED && mt.bundle && a.offset < mt.bundle_len) {
             uint32_t left = mt.bundle_len - a.offset;
             d.total = mt.bundle_len;
@@ -184,6 +200,7 @@ static void begin(TAK_NetClient *c, uint64_t now_ms) {
     const TAK_MsgRoomState *rs = &c->room;
     char why[256];
     int shipped = TAK_MapShare_Shipped(mt.fp);
+    if (!shipped) shipped = TAK_MapShare_ShippedName(mt.name);
     if (shipped) {
         TAK_MapShare_Advice(shipped, NULL, mt.name, why, sizeof why);
         mt.state = MT_REFUSED;
@@ -380,7 +397,7 @@ static void seat_lines(const TAK_NetClient *c) {
 
 void MapTransfer_Tick(TAK_NetClient *c, uint64_t now_ms) {
     if (!c || c->state != TAK_NC_ROOM || c->room.room_id == 0) {
-        if (mt.room_id || mt.declared || mt.text[0]) MapTransfer_Reset();
+        if (mt.room_id || mt.declared || mt.weighed || mt.text[0]) MapTransfer_Reset();
         return;
     }
     if (c->room.status != TAK_ROOM_OPEN) return;
@@ -388,9 +405,9 @@ void MapTransfer_Tick(TAK_NetClient *c, uint64_t now_ms) {
     if (host) {
         /* Hosting now: whatever was coming to this end has no sender. */
         if (c->map_in_on) TAK_NetClient_MapDrop(c);
-        host_tick(c);
+        host_tick(c, now_ms);
     } else {
-        if (mt.declared) { mt.declared = 0; drop_bundle(); }
+        if (mt.declared || mt.weighed) { mt.declared = mt.weighed = 0; drop_bundle(); }
         c->map_ask_count = 0;
         player_tick(c, now_ms);
     }

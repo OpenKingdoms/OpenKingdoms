@@ -537,6 +537,9 @@ int TAK_Room_Edit(TAK_Room *r, uint32_t client_id,
     }
     case TAK_EDIT_MAP: {
         if (!e->text[0]) return TAK_REJECT_NOT_ALLOWED;
+        /* The same map again keeps who has it: nobody reports it twice. */
+        int same = strcmp(r->cfg.map_name, e->text) == 0 &&
+                   memcmp(r->cfg.map_fingerprint, e->fingerprint, TAK_NET_FINGERPRINT_BYTES) == 0;
         copy_str(r->cfg.map_name, TAK_NET_MAP_NAME_MAX, e->text);
         /* The fingerprint travels beside the name, computed from the map
          * itself. A host that sends a name with no fingerprint leaves the
@@ -544,7 +547,7 @@ int TAK_Room_Edit(TAK_Room *r, uint32_t client_id,
          * than starting on a guess. */
         memcpy(r->cfg.map_fingerprint, e->fingerprint,
                TAK_NET_FINGERPRINT_BYTES);
-        reset_map_flags(r);
+        if (!same) reset_map_flags(r);
         /* Another map has other starts. */
         for (int i = 0; i < TAK_NET_SEATS; i++) r->slot[i].start_pos = 0;
         break;

@@ -675,17 +675,21 @@ and the blurb, as one compressed bundle of at most 4 MB, in pieces of
 16 KB. The player asks for four pieces at a time. The relay keeps who
 asked for which piece and nothing of the map: it passes a request to the
 host no more often than once in 25 ms for each player, passes a piece on
-only to the player who asked for it and only once, lets a request the
-host never answers go after 10 s, and stops passing pieces to a player
-who has had twice the largest map for this one. A piece it would queue
-behind a player who is not reading is dropped, and the player asks again.
+only to the player who asked for it and only once, and lets a request the
+host never answers go after 10 s. A player is asked for no more than
+twice the largest map in a minute, whatever map the room is on, and all
+the rooms together no more than 2 MB a second. A request past either
+waits its turn. A piece it would queue behind a player who is not
+reading is dropped, and the player asks again.
 
 The player checks the fingerprint of what came against the room's before
 anything is written, keeps it as a `.kmp` map pack in a folder of its own,
 `maps` under the preference directory or, in a browser, beside the game
-files the page keeps, and mounts it at once after the game's own packs.
-It is never put over a map of that name the player has from anywhere
-else. Then it tells the room it has the map, and the host may start.
+files the page keeps, and mounts it at once. It is never put over a map
+of that name the player has from anywhere else, and any copy of that
+name the player adds later is read in its place. Then it tells the room
+it has the map, and the host may start. A map whose name is a shipped
+map's is not sent either, so a shipped map edited by a byte stays home.
 
 ---
 

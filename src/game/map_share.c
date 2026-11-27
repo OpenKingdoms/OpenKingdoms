@@ -1,13 +1,7 @@
 /*
  * map_share.c -- a room's map as one bundle, and the folder it is kept in.
- *
- * The rules are in tak_map_share.h. A bundle is
- *
- *     "OKMS" u8 version u8 count, then per part u8 part u32 size bytes
- *
- * compressed whole behind "OKMZ" and its inflated size, so a bundle that
- * says it is bigger than TAK_MAP_SHARE_RAW_MAX is refused before anything
- * is inflated, and one that inflates to anything else is refused after.
+ * A bundle is "OKMS" u8 version u8 count, then u8 part u32 size bytes per
+ * part, compressed whole behind "OKMZ" and the size it inflates to.
  */
 
 #include "tak_map_share.h"
@@ -21,7 +15,6 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -55,6 +48,7 @@ int TAK_MapShare_Pack(const TAK_MapShareFiles *f, uint8_t **out, uint32_t *out_l
     size_t n[PARTS];
     parts_of(f, p, n);
     if (!p[PART_TNT] || !p[PART_OTA]) return -1;
+    if (n[PART_OTA] > TAK_MAP_SHARE_TDF_MAX || n[PART_TDF] > TAK_MAP_SHARE_TDF_MAX) return -1;
     if (n[PART_TXT] > TAK_MAP_SHARE_TXT_MAX) { p[PART_TXT] = NULL; n[PART_TXT] = 0; }
 
     size_t raw = BUNDLE_HEAD;
@@ -131,7 +125,8 @@ int TAK_MapShare_Unpack(const uint8_t *wire, uint32_t len,
         uint32_t size = tak_get_u32(bundle + at + 1);
         at += PART_HEAD;
         if (k >= PARTS || p[k] || size > raw - at ||
-            (k == PART_TXT && size > TAK_MAP_SHARE_TXT_MAX)) { ok = 0; break; }
+            (k == PART_TXT && size > TAK_MAP_SHARE_TXT_MAX) ||
+            ((k == PART_OTA || k == PART_TDF) && size > TAK_MAP_SHARE_TDF_MAX)) { ok = 0; break; }
         p[k] = bundle + at;
         n[k] = size;
         at += size;
@@ -164,15 +159,11 @@ static int game_archive_share(const char *archive) {
     return tak_strnicmp(archive, "ip", 2) == 0 ? TAK_MAPSHARE_EXPANSION : TAK_MAPSHARE_GAME;
 }
 
-int TAK_MapShare_PackInstalled(const char *map_key,
-                               const uint8_t want[TAK_MAP_FINGERPRINT_BYTES],
-                               uint8_t **out, uint32_t *out_len) {
-    if (!out || !out_len) return -1;
-    *out = NULL;
-    *out_len = 0;
-    if (!map_key || !want) return -1;
-    void *data[PARTS] = { NULL, NULL, NULL, NULL, NULL };
-    uint32_t size[PARTS] = { 0, 0, 0, 0, 0 };
+/* The installed map's parts as its fingerprint reads them, in buffers
+ * the caller frees with VFS_FreeBuffer. 0 when they are the map want. */
+static int read_installed(const char *map_key, const uint8_t want[TAK_MAP_FINGERPRINT_BYTES],
+                          void *data[PARTS], uint32_t size[PARTS], TAK_MapShareFiles *f) {
+    for (int k = 0; k < PARTS; k++) { data[k] = NULL; size[k] = 0; }
     for (int k = 0; k < PARTS; k++) {
         char path[512], archive[128];
         if (TAK_Maps_FindFile(map_key, part_ext[k], path, sizeof path) != 0) continue;
@@ -181,30 +172,38 @@ int TAK_MapShare_PackInstalled(const char *map_key,
             continue;
         if (VFS_ReadFile(path, &data[k], &size[k]) != 0) { data[k] = NULL; size[k] = 0; }
     }
-    TAK_MapShareFiles f;
-    memset(&f, 0, sizeof f);
-    f.map.tnt = data[PART_TNT]; f.map.tnt_size = size[PART_TNT];
-    f.map.ota = data[PART_OTA]; f.map.ota_size = size[PART_OTA];
-    f.map.crt = data[PART_CRT]; f.map.crt_size = size[PART_CRT];
-    f.map.tdf = data[PART_TDF]; f.map.tdf_size = size[PART_TDF];
-    if (size[PART_TXT] <= TAK_MAP_SHARE_TXT_MAX) { f.txt = data[PART_TXT]; f.txt_size = size[PART_TXT]; }
-
+    memset(f, 0, sizeof *f);
+    f->map.tnt = data[PART_TNT]; f->map.tnt_size = size[PART_TNT];
+    f->map.ota = data[PART_OTA]; f->map.ota_size = size[PART_OTA];
+    f->map.crt = data[PART_CRT]; f->map.crt_size = size[PART_CRT];
+    f->map.tdf = data[PART_TDF]; f->map.tdf_size = size[PART_TDF];
+    if (size[PART_TXT] <= TAK_MAP_SHARE_TXT_MAX) { f->txt = data[PART_TXT]; f->txt_size = size[PART_TXT]; }
     uint8_t fp[TAK_MAP_FINGERPRINT_BYTES];
-    int rc = -1;
-    if (TAK_MapFingerprint_FromFiles(&f.map, fp) != 0) rc = -1;
-    else if (memcmp(fp, want, sizeof fp) != 0) rc = -3;
-    else rc = TAK_MapShare_Pack(&f, out, out_len);
+    if (TAK_MapFingerprint_FromFiles(&f->map, fp) != 0) return -1;
+    return memcmp(fp, want, sizeof fp) == 0 ? 0 : -3;
+}
+
+int TAK_MapShare_PackInstalled(const char *map_key,
+                               const uint8_t want[TAK_MAP_FINGERPRINT_BYTES],
+                               uint8_t **out, uint32_t *out_len) {
+    if (!out || !out_len) return -1;
+    *out = NULL;
+    *out_len = 0;
+    if (!map_key || !want) return -1;
+    void *data[PARTS];
+    uint32_t size[PARTS];
+    TAK_MapShareFiles f;
+    int rc = read_installed(map_key, want, data, size, &f);
+    if (rc == 0) rc = TAK_MapShare_Pack(&f, out, out_len);
     for (int k = 0; k < PARTS; k++) VFS_FreeBuffer(data[k]);
     return rc;
 }
 
-int TAK_MapShare_Status(const char *map_key, const uint8_t fp[TAK_MAP_FINGERPRINT_BYTES],
-                        uint8_t **bundle, uint32_t *bundle_len) {
-    if (bundle) *bundle = NULL;
-    if (bundle_len) *bundle_len = 0;
+int TAK_MapShare_Status(const char *map_key, const uint8_t fp[TAK_MAP_FINGERPRINT_BYTES]) {
     if (!map_key || !fp) return TAK_MAPSHARE_UNREADABLE;
     int shipped = TAK_MapShare_Shipped(fp);
     if (shipped) return shipped;
+    if (TAK_MapShare_ShippedName(map_key)) return TAK_MapShare_ShippedName(map_key);
     /* Out of the game's own archives is the game's, whatever its print. */
     for (int k = PART_TNT; k <= PART_TDF; k++) {
         char path[512], archive[128];
@@ -213,17 +212,17 @@ int TAK_MapShare_Status(const char *map_key, const uint8_t fp[TAK_MAP_FINGERPRIN
             return game_archive_share(archive);
     }
     if (!TAK_MapShare_NameOk(map_key)) return TAK_MAPSHARE_UNREADABLE;
-    uint8_t *wire = NULL;
-    uint32_t len = 0;
-    int rc = TAK_MapShare_PackInstalled(map_key, fp, &wire, &len);
-    if (rc == 0 && bundle && bundle_len) {
-        *bundle = wire;
-        *bundle_len = len;
-        return TAK_MAPSHARE_OFFERED;
-    }
-    tak_free(wire);
-    if (rc == 0) return TAK_MAPSHARE_OFFERED;
-    return rc == -2 ? TAK_MAPSHARE_TOO_BIG : TAK_MAPSHARE_UNREADABLE;
+    void *data[PARTS];
+    uint32_t size[PARTS];
+    TAK_MapShareFiles f;
+    int rc = read_installed(map_key, fp, data, size, &f);
+    uint64_t raw = 0;
+    for (int k = 0; k < PARTS; k++) raw += size[k];
+    int text_ok = size[PART_OTA] <= TAK_MAP_SHARE_TDF_MAX && size[PART_TDF] <= TAK_MAP_SHARE_TDF_MAX;
+    for (int k = 0; k < PARTS; k++) VFS_FreeBuffer(data[k]);
+    if (rc != 0 || !text_ok) return TAK_MAPSHARE_UNREADABLE;
+    /* Compressed it may still be too big, which the first piece finds. */
+    return raw > TAK_MAP_SHARE_RAW_MAX ? TAK_MAPSHARE_TOO_BIG : TAK_MAPSHARE_OFFERED;
 }
 
 /* ── Where a received map is kept ───────────────────────────────────── */
@@ -362,7 +361,8 @@ int TAK_MapShare_Keep(const char *dir, const char *map_key, const TAK_MapShareFi
     int w = snprintf(final_path, sizeof final_path, "%s%s.kmp", dir, map_key);
     if (w <= 0 || (size_t)w >= sizeof final_path) return -1;
     snprintf(part_path, sizeof part_path, "%s.part", final_path);
-    if (TAK_MapShare_WritePack(part_path, map_key, files, (uint32_t)time(NULL)) != 0) {
+    /* Dated 0, so any other copy of that name a player adds wins a tie. */
+    if (TAK_MapShare_WritePack(part_path, map_key, files, 0) != 0) {
         remove(part_path);
         return -1;
     }

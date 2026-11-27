@@ -2384,9 +2384,17 @@ TEST(the_relay_passes_on_only_the_pieces_a_player_asked_the_host_for) {
     ASSERT_EQ_INT(0, host->stream_errors);
 }
 
-/* A player who asks without end is stopped at twice the largest map, and
- * a host too old to answer for a map is never asked. */
-TEST(a_player_asking_without_end_is_stopped_and_an_old_host_is_never_asked) {
+static void map_ask_until(Client *c, const uint8_t *fp, uint64_t until) {
+    while (g_now < until) {
+        for (uint32_t k = 0; k < 4; k++) map_ask(c, fp, k * TAK_NET_MAP_CHUNK);
+        run_for(250);
+    }
+}
+
+/* A player who asks without end gets twice the largest map a minute,
+ * whatever map the room is on, and a host too old to answer for a map
+ * is never asked. */
+TEST(a_player_asking_without_end_is_held_back_and_an_old_host_is_never_asked) {
     setup(20, 0, 93);
     Client *joiner = NULL;
     Client *host = map_room(&joiner, 0);
@@ -2397,12 +2405,57 @@ TEST(a_player_asking_without_end_is_stopped_and_an_old_host_is_never_asked) {
     send_edit(host, TAK_EDIT_MAP_SHARE, TAK_NET_SEAT_NONE, TAK_MAPSHARE_OFFERED, MAP_FP);
     run_for(300);
     uint32_t budget = 2u * TAK_NET_MAP_MAX / TAK_NET_MAP_CHUNK;
-    for (uint32_t round = 0; round < budget / 4 + 8; round++) {
-        for (uint32_t k = 0; k < 4; k++) map_ask(joiner, MAP_FP, k * TAK_NET_MAP_CHUNK);
-        run_for(250);
-    }
+    map_ask_until(joiner, MAP_FP, 50000);
     ASSERT_EQ_INT((int)budget, joiner->map_pieces);
     ASSERT_EQ_INT((int)budget, host->map_asks);
+
+    /* Another map does not start the minute over. */
+    uint8_t other_fp[TAK_NET_FINGERPRINT_BYTES];
+    memcpy(other_fp, MAP_FP, sizeof other_fp);
+    other_fp[3] ^= 0x55;
+    TAK_MsgRoomEdit e;
+    memset(&e, 0, sizeof(e));
+    e.field = TAK_EDIT_MAP;
+    e.seat = TAK_NET_SEAT_NONE;
+    strcpy(e.text, "Second Map");
+    memcpy(e.fingerprint, other_fp, sizeof other_fp);
+    up(host, TAK_Msg_RoomEditEncode(&e, tx, sizeof(tx)));
+    run_for(200);
+    send_edit(host, TAK_EDIT_MAP_SHARE, TAK_NET_SEAT_NONE, TAK_MAPSHARE_OFFERED, other_fp);
+    run_for(200);
+    ASSERT_EQ_INT(TAK_MAPSHARE_OFFERED, joiner->room.map_share);
+    map_ask_until(joiner, other_fp, 58000);
+    ASSERT_EQ_INT((int)budget, host->map_asks);
+    /* The next minute it comes again. */
+    map_ask_until(joiner, other_fp, 66000);
+    ASSERT(host->map_asks > (int)budget);
+    ASSERT(joiner->map_pieces > (int)budget);
+
+    /* Six players at once share the relay's own budget a second. */
+    setup(20, 0, 95);
+    host = map_room(&joiner, 0);
+    ASSERT(host != NULL);
+    host->map_serve = bundle;
+    host->map_serve_len = sizeof bundle;
+    Client *many[6];
+    many[0] = joiner;
+    for (int i = 1; i < 6; i++) {
+        many[i] = new_client(0);
+        join_code(many[i], host->room.code, 0);
+    }
+    run_for(500);
+    send_edit(host, TAK_EDIT_MAP_SHARE, TAK_NET_SEAT_NONE, TAK_MAPSHARE_OFFERED, MAP_FP);
+    run_for(300);
+    int before = host->map_asks;
+    uint64_t until = g_now + 3000;
+    while (g_now < until) {
+        for (int i = 0; i < 6; i++)
+            for (uint32_t k = 0; k < 4; k++) map_ask(many[i], MAP_FP, k * TAK_NET_MAP_CHUNK);
+        run_for(100);
+    }
+    int per_second = (int)((2u << 20) / TAK_NET_MAP_CHUNK);
+    ASSERT(host->map_asks - before <= 4 * per_second);
+    ASSERT(host->map_asks - before >= 2 * per_second);
 
     setup(20, 0, 94);
     host = map_room(&joiner, 10);
@@ -2465,7 +2518,7 @@ int main(void) {
     RUN(a_game_under_way_names_a_data_mismatch_to_a_newer_lobby);
     RUN(a_player_without_the_map_gets_the_hosts_copy_piece_by_piece);
     RUN(the_relay_passes_on_only_the_pieces_a_player_asked_the_host_for);
-    RUN(a_player_asking_without_end_is_stopped_and_an_old_host_is_never_asked);
+    RUN(a_player_asking_without_end_is_held_back_and_an_old_host_is_never_asked);
     RUN(a_resigning_player_leaves_the_game_and_keeps_watching);
     RUN(a_seat_that_left_before_the_verdict_is_recorded_where_it_fell);
     RUN(a_seat_beaten_before_it_left_is_recorded_where_it_was_beaten);

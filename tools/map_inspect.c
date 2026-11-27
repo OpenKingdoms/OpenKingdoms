@@ -570,10 +570,9 @@ static void shipped_add(ShippedRow *rows, int *n, int cap, uint64_t print,
     (*n)++;
 }
 
-/* Run against a clean install, with no map of anyone else's in its Maps
- * folder: every map the chooser offers as the full mount reads it, then
- * each of Cavedog's packs on its own, so one shadowed by another still
- * counts. Prints the table's rows. */
+/* The rows of src/game/shipped_maps.c, from a clean install: every map
+ * the chooser offers, then each of Cavedog's packs alone, so one that
+ * another shadows still counts. */
 static int shipped_table(void) {
     static ShippedRow rows[2048];
     int n = 0;
@@ -637,7 +636,7 @@ static int shipped_table(void) {
     }
     qsort(rows, (size_t)n, sizeof rows[0], shipped_cmp);
     for (int i = 0; i < n; i++)
-        printf("    { 0x%016llxull, %s },  /* %s */\n", (unsigned long long)rows[i].print,
+        printf("    { 0x%016llxull, %s, \"%s\" },\n", (unsigned long long)rows[i].print,
                rows[i].share, rows[i].name);
     fprintf(stderr, "map_inspect: %d shipped maps\n", n);
     return 0;

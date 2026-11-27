@@ -576,9 +576,16 @@ TEST(the_host_says_whether_its_map_may_be_sent_and_a_new_host_speaks_for_itself)
     TAK_Room_Snapshot(&r, &rs);
     ASSERT_EQ_INT(TAK_MAPSHARE_OFFERED, rs.map_share);
 
-    /* Another map has said nothing yet. */
+    /* The same map chosen again keeps its word and who has it, since
+     * nobody says either twice. */
+    ASSERT_EQ_INT(0, have_map(&r, 2, 1, test_fingerprint));
     ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_MAP, TAK_NET_SEAT_NONE, 0, "Vain Blessings", NULL));
+    ASSERT_EQ_INT(TAK_MAPSHARE_OFFERED, TAK_Room_MapShare(&r));
+    ASSERT(r.slot[1].flags & TAK_SLOTF_HAS_MAP);
+    /* Another map has said nothing yet. */
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_MAP, TAK_NET_SEAT_NONE, 0, "Bleak Hollow", NULL));
     ASSERT_EQ_INT(TAK_MAPSHARE_UNKNOWN, TAK_Room_MapShare(&r));
+    ASSERT(!(r.slot[1].flags & TAK_SLOTF_HAS_MAP));
     ASSERT_EQ_INT(0, share(&r, HOST_ID, TAK_MAPSHARE_EXPANSION, test_fingerprint));
     ASSERT_EQ_INT(TAK_MAPSHARE_EXPANSION, TAK_Room_MapShare(&r));
 
@@ -612,10 +619,13 @@ TEST(a_seat_says_how_far_the_map_has_come_and_keeps_its_ready) {
     ASSERT_EQ_INT(0, r.slot[1].map_state);
     /* A new map, and nothing said of it. */
     ASSERT_EQ_INT(0, edit(&r, 2, TAK_EDIT_MAP_STATE, 1, 60, NULL, NULL));
-    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_MAP, TAK_NET_SEAT_NONE, 0, "Vain Blessings", NULL));
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_MAP, TAK_NET_SEAT_NONE, 0, "Bleak Hollow", NULL));
     ASSERT_EQ_INT(0, r.slot[1].map_state);
-    /* Still waiting on a player receiving the map, it refuses to start. */
+    /* The same map chosen again leaves how far it has come. */
     ASSERT_EQ_INT(0, edit(&r, 2, TAK_EDIT_MAP_STATE, 1, 70, NULL, NULL));
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_MAP, TAK_NET_SEAT_NONE, 0, "Bleak Hollow", NULL));
+    ASSERT_EQ_INT(70, r.slot[1].map_state);
+    /* Still waiting on a player receiving the map, it refuses to start. */
     ASSERT_EQ_INT(0, edit(&r, 2, TAK_EDIT_READY, 1, 0, NULL, NULL));
     ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_READY, 0, 0, NULL, NULL));
     ASSERT_EQ_INT(TAK_REJECT_MAP_MISSING, TAK_Room_CanStart(&r, HOST_ID));

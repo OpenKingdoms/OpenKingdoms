@@ -732,6 +732,67 @@ TEST(two_clients_reach_a_room_together) {
     ASSERT_EQ_STR("two castles", g_c.room.map_name);
 }
 
+/* The host's map crosses the real relay to a joiner without it, the
+ * joiner's client holding pieces in any order and the host's answering
+ * only while its out queue has room for one. */
+TEST(the_hosts_map_crosses_the_relay_to_a_joiner_a_piece_at_a_time) {
+    ASSERT_EQ_INT(0, two_in_a_room());
+    static uint8_t bundle[3 * TAK_NET_MAP_CHUNK + 999];
+    for (uint32_t i = 0; i < sizeof bundle; i++) bundle[i] = (uint8_t)(i * 31u + 7u);
+    TAK_MsgRoomEdit ed;
+    memset(&ed, 0, sizeof ed);
+    ed.field = TAK_EDIT_MAP_SHARE;
+    ed.seat = TAK_NET_SEAT_NONE;
+    ed.value = TAK_MAPSHARE_OFFERED;
+    memcpy(ed.fingerprint, MAPFP, sizeof MAPFP);
+    ASSERT_EQ_INT(0, TAK_NetClient_EditRoom(&g_c, &ed));
+    settle2(1400);
+    ASSERT_EQ_INT(TAK_MAPSHARE_OFFERED, g_c2.room.map_share);
+
+    /* Asking needs a map named first. */
+    ASSERT(TAK_NetClient_MapAsk(&g_c2, 0) != 0);
+    TAK_NetClient_MapBegin(&g_c2, MAPFP, 1400);
+    uint64_t now = 1400;
+    uint32_t pieces = (sizeof bundle + TAK_NET_MAP_CHUNK - 1) / TAK_NET_MAP_CHUNK;
+    /* The last first, then the rest, which is any order. */
+    ASSERT_EQ_INT(0, TAK_NetClient_MapAsk(&g_c2, (pieces - 1) * TAK_NET_MAP_CHUNK));
+    for (uint32_t k = 0; k + 1 < pieces; k++)
+        ASSERT_EQ_INT(0, TAK_NetClient_MapAsk(&g_c2, k * TAK_NET_MAP_CHUNK));
+    int answered = 0;
+    for (int round = 0; round < 40 && g_c2.map_in_got < sizeof bundle; round++) {
+        now += 30;
+        TAK_Relay_Tick(&g_relay, now);
+        settle2(now);
+        TAK_MsgMapRequest a;
+        while (TAK_NetClient_MapCanSend(&g_c) && TAK_NetClient_MapTakeAsk(&g_c, &a)) {
+            ASSERT_EQ_INT((int)g_c2.session_id, (int)a.client_id);
+            TAK_MsgMapData d;
+            memset(&d, 0, sizeof d);
+            d.client_id = a.client_id;
+            memcpy(d.fingerprint, a.fingerprint, sizeof d.fingerprint);
+            d.total = sizeof bundle;
+            d.offset = a.offset;
+            uint32_t left = (uint32_t)sizeof bundle - a.offset;
+            d.len = (uint16_t)(left < TAK_NET_MAP_CHUNK ? left : TAK_NET_MAP_CHUNK);
+            d.data = bundle + a.offset;
+            ASSERT_EQ_INT(0, TAK_NetClient_MapSend(&g_c, &d));
+            answered++;
+        }
+        settle2(now);
+    }
+    ASSERT_EQ_INT((int)pieces, answered);
+    ASSERT_EQ_INT((int)sizeof bundle, (int)g_c2.map_in_total);
+    ASSERT_EQ_INT((int)sizeof bundle, (int)g_c2.map_in_got);
+    ASSERT_EQ_INT(0, memcmp(g_c2.map_in, bundle, sizeof bundle));
+    for (uint32_t k = 0; k < pieces; k++)
+        ASSERT_EQ_INT(1, TAK_NetClient_MapHave(&g_c2, k * TAK_NET_MAP_CHUNK));
+    ASSERT_EQ_INT(0, g_c2.map_in_bad);
+    ASSERT_EQ_INT(0, g_c2.map_in_refused);
+    /* Leaving the room lets go of it. */
+    ASSERT_EQ_INT(0, TAK_NetClient_LeaveRoom(&g_c2));
+    ASSERT(g_c2.map_in == NULL);
+}
+
 TEST(a_match_starts_and_both_worlds_are_asked_for) {
     ASSERT_EQ_INT(0, two_in_a_room());
     ASSERT_EQ_INT(0, TAK_NetClient_Start(&g_c));
@@ -2572,6 +2633,7 @@ int main(void) {
 
     TEST_SUITE("A match between two of them");
     RUN(two_clients_reach_a_room_together);
+    RUN(the_hosts_map_crosses_the_relay_to_a_joiner_a_piece_at_a_time);
     RUN(the_room_list_carries_the_hosts_ping);
     RUN(a_match_starts_and_both_worlds_are_asked_for);
     RUN(loading_progress_reaches_the_other_seat);

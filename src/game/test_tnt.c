@@ -621,8 +621,9 @@ TEST(every_shipped_tnt_loads_with_minimap) {
 
 /* ── main ────────────────────────────────────────────────────────────── */
 
-/* A map pack can come from anywhere, so a .tnt too short to hold a
- * header has to be refused rather than read past the end of it. */
+/* A map pack can come from anywhere, another player included, so a .tnt
+ * too short to hold a header is refused, and one whose pointers run off
+ * its end, wrapping past 4 GB, is read no further than its end. */
 TEST(a_stub_tnt_is_refused) {
     const uint32_t *rgba = ensure_rgba_table();
     VFS_Shutdown();
@@ -638,16 +639,29 @@ TEST(a_stub_tnt_is_refused) {
     /* The right magic and nothing else, so only a length check can
      * stop the loader reading past the end of it. */
     static const char stub_tnt[4] = { 0x00, 0x40, 0x00, 0x00 };
+    static char wrap_tnt[0x40];
+    memset(wrap_tnt, 0, sizeof wrap_tnt);
+    wrap_tnt[1] = 0x40;
+    wrap_tnt[4] = 2;
+    wrap_tnt[8] = 2;
+    for (int at = 0x10; at <= 0x30; at += 4)
+        if (at != 0x1C) memcpy(wrap_tnt + at, "\xf8\xff\xff\xff", 4);
+    wrap_tnt[0x1C] = 1;
     TestHPIEntry pack[] = {
         { "kmap/Stub.ota", "[GlobalHeader]", 1, 0 },
         { "kmap/Stub.tnt", stub_tnt, 1, sizeof(stub_tnt) },
+        { "kmap/Wrap.tnt", wrap_tnt, 1, sizeof(wrap_tnt) },
     };
     int w = test_write_hpi("test_tnt_stub_tmp/base.hpi", base, 1);
-    w |= test_write_hpi("test_tnt_stub_tmp/Maps/Stub.kmp", pack, 2);
-    int rc = -1;
+    w |= test_write_hpi("test_tnt_stub_tmp/Maps/Stub.kmp", pack, 3);
+    int rc = -1, wrap_rc = -1, wrap_read = 1;
     if (w == 0 && VFS_Init("test_tnt_stub_tmp", NULL) == 0) {
         TNTFile tnt;
         rc = TNT_Load(&tnt, "kmap/Stub.tnt", rgba);
+        TNT_Close(&tnt);
+        wrap_rc = TNT_Load(&tnt, "kmap/Wrap.tnt", rgba);
+        wrap_read = tnt.tile_map || tnt.feature_layer || tnt.feature_names ||
+                    tnt.block_chunk_ids || tnt.ingame_minimap_bg || tnt.minimap_rgba;
         TNT_Close(&tnt);
         VFS_Shutdown();
     }
@@ -662,6 +676,8 @@ TEST(a_stub_tnt_is_refused) {
 #endif
     ASSERT_EQ_INT(0, w);
     ASSERT(rc < 0);
+    ASSERT_EQ_INT(0, wrap_rc);
+    ASSERT_EQ_INT(0, wrap_read);
 }
 
 int main(int argc, char *argv[]) {
