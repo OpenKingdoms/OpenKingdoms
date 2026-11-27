@@ -274,10 +274,12 @@ void FogMist_Render(const GameWorld *world, TAK_Platform *plat, uint32_t clock_m
     }
     const uint8_t *layer = world->fog_layers[viewer];
     const int cell = TAK_FOG_CELL_PX, half = cell / 2;
+    /* Drawn TAK_FOG_LIFT_PX up, as the overlay is. */
+    const int top = world->cam_y + TAK_FOG_LIFT_PX;
     const int c0x = (world->cam_x - half) / cell - 1;
-    const int c0y = (world->cam_y - half) / cell - 1;
+    const int c0y = (top - half) / cell - 1;
     const int c1x = (world->cam_x + world->viewport_w + half) / cell + 1;
-    const int c1y = (world->cam_y + world->viewport_h + half) / cell + 1;
+    const int c1y = (top + world->viewport_h + half) / cell + 1;
     /* Corners run c0..c1+1, and the blur reads MIST_PAD more each way. */
     const int gw = c1x - c0x + 2, gh = c1y - c0y + 2;
     const int fw = gw + 2 * MIST_PAD, fh = gh + 2 * MIST_PAD;
@@ -353,7 +355,7 @@ void FogMist_Render(const GameWorld *world, TAK_Platform *plat, uint32_t clock_m
                 float v0 = SDL_fmodf((float)wy / texel + dv, P);
                 if (u0 < 0.0f) u0 += P;
                 if (v0 < 0.0f) v0 += P;
-                mist_quad(&d, (float)(wx - world->cam_x), (float)(wy - world->cam_y),
+                mist_quad(&d, (float)(wx - world->cam_x), (float)(wy - top),
                           (float)(run * cell), a, u0, v0, texel, tint);
                 x += run;
             }

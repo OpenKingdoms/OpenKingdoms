@@ -1438,6 +1438,9 @@ void              Units_ClearInstances(void);
  * it is state a save has to carry. */
 void              Units_FogAnchor(int handle, int sight,
                                   int32_t *out_x, int32_t *out_y);
+/* Where a unit's sight is measured from: its eye, the height of its
+ * base plus its model's whole span, and that span (at least 1). */
+void              Units_FogEye(int handle, int32_t *out_eye, int32_t *out_tall);
 
 /* ── Restoring a battle from a save ──────────────────────────────
  *

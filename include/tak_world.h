@@ -254,6 +254,9 @@ typedef struct GameWorld {
     int        fog_w;
     int        fog_h;
     int        fog_cell_px;
+    /* The lowest ground in each fog cell, built from the heightmap at
+     * the first Fog_Update. NULL reads as level ground. */
+    int16_t   *fog_ground;
 
     /* 1 when this battle is played over the network. Zero for skirmish
      * and story, which is every battle today: the multiplayer lobby has

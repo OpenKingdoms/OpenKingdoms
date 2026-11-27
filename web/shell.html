@@ -848,12 +848,13 @@
   }
   /* The clips carried into the engine's filesystem: the logo, the
      intro, the credits, the menu and loading screen pieces under Gui,
-     and the campaign's. A mission whose clip is not to hand goes
-     straight to loading. */
+     each kingdom's shield and the campaign's. A mission whose clips
+     are not to hand goes straight to loading. */
   function isClip(rel) {
     var r = rel.toLowerCase();
     return /^movies\/gui\/[^\/]+\.bik$/.test(r) ||
            /^movies\/(logo|intro|credits|posttakcredits)\.bik$/.test(r) ||
+           /^movies\/(aramon|taros|veruna|zhon|creon)\.bik$/.test(r) ||
            isMissionClip(r);
   }
   /* A clip's place in the engine's filesystem. The name is lower

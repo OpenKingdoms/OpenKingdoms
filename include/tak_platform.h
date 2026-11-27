@@ -53,6 +53,10 @@ typedef struct TAK_Platform {
     uint8_t  pressed_enter;
     uint8_t  pressed_escape;
     uint8_t  pressed_backspace;
+    /* The list keys, counted with the key's own repeats, the way a
+     * list box takes them (legacy:268347-268372). Cleared by the next pump. */
+    uint8_t  pressed_up, pressed_down, pressed_page_up, pressed_page_down;
+    uint8_t  pressed_home, pressed_end;
     /* The left mouse button went down since the last pump, and where,
      * in window pixels. A click that was over before the frame saw it
      * is in here and nowhere else. */
