@@ -757,6 +757,66 @@ TEST(battle_setup_lists_every_installed_map) {
     ASSERT_EQ_INT(-1, find_map_by_key("takmission23_ph"));
     ASSERT_EQ_INT(-1, find_map_by_key("takx01_dh"));
 
+    /* The list keys pick a map the way a click on its row does and keep
+     * it in view, as the original's list box takes them
+     * (legacy:319494-319530). */
+    int vis = BattleSetup_MapRowsVisible(), shown = BattleSetup_ShownCount();
+    ASSERT(shown > 2 * vis);
+    BattleSetup_SelectMap(BattleSetup_ShownRow(0));
+    uint8_t *const keys[] = { &platform.pressed_down, &platform.pressed_up,
+                              &platform.pressed_end, &platform.pressed_home,
+                              &platform.pressed_page_down, &platform.pressed_page_up };
+    const int want_row[] = { 1, 0, shown - 1, 0, vis, 0 };
+    const int want_top[] = { 0, 0, shown - vis, 0, vis, 0 };
+    for (int k = 0; k < 6; k++) {
+        *keys[k] = 1;
+        ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, BattleSetup_Tick(&platform, 1.0f / 60.0f));
+        *keys[k] = 0;
+        ASSERT_EQ_STR(BattleSetup_MapKey(BattleSetup_ShownRow(want_row[k])),
+                      BattleSetup_Config()->map_name);
+        ASSERT_EQ_INT(want_top[k], BattleSetup_MapScroll());
+    }
+    /* Down off the last row in view brings the next one in. */
+    BattleSetup_SelectMap(BattleSetup_ShownRow(vis - 1));
+    platform.pressed_down = 1;
+    (void)BattleSetup_Tick(&platform, 1.0f / 60.0f);
+    platform.pressed_down = 0;
+    ASSERT_EQ_STR(BattleSetup_MapKey(BattleSetup_ShownRow(vis)), BattleSetup_Config()->map_name);
+    ASSERT_EQ_INT(1, BattleSetup_MapScroll());
+    /* The wheel over the list scrolls it, through the pump that takes it. */
+    GUIRuntime *brt = BattleSetup_Runtime();
+    const GUIWidget *list = NULL;
+    for (int i = 0; i < GUIRuntime_NumWidgets(brt) && !list; i++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(brt, i);
+        if (w && tak_stricmp(w->name, "MapList") == 0) list = w;
+    }
+    ASSERT_NOT_NULL(list);
+    SDL_WarpMouseInWindow(platform.window, list->rect.x + 20, list->rect.y + 10);
+    SDL_Event wheel;
+    memset(&wheel, 0, sizeof wheel);
+    wheel.type = SDL_MOUSEWHEEL;
+    wheel.wheel.y = -2;
+    wheel.wheel.preciseY = -2.0f;
+    ASSERT_EQ_INT(1, SDL_PushEvent(&wheel));
+    ASSERT_EQ_INT(1, TAK_Platform_PumpEvents(&platform));
+    (void)BattleSetup_Tick(&platform, 1.0f / 60.0f);
+    platform.wheel_dy = 0;
+    ASSERT_EQ_INT(3, BattleSetup_MapScroll());
+    /* The search still takes typing, and the keys walk what it shows. */
+    snprintf(platform.text_in, sizeof platform.text_in, "%s", "castle");
+    platform.text_in_len = 6;
+    platform.pressed_home = 1;
+    (void)BattleSetup_Tick(&platform, 1.0f / 60.0f);
+    platform.text_in_len = 0;
+    platform.text_in[0] = '\0';
+    platform.pressed_home = 0;
+    ASSERT(BattleSetup_ShownCount() >= 2 && BattleSetup_ShownCount() < shown);
+    ASSERT_EQ_STR(BattleSetup_MapKey(BattleSetup_ShownRow(0)), BattleSetup_Config()->map_name);
+    platform.pressed_down = 1;
+    (void)BattleSetup_Tick(&platform, 1.0f / 60.0f);
+    platform.pressed_down = 0;
+    ASSERT_EQ_STR(BattleSetup_MapKey(BattleSetup_ShownRow(1)), BattleSetup_Config()->map_name);
+
     BattleSetup_Shutdown();
     UI_Shutdown();
     teardown_platform(&platform);
@@ -2573,6 +2633,15 @@ TEST(mp_room_builds_the_world_the_server_described) {
     n = mp_encode_room(msg, sizeof msg, 1, 2, 606);
     (void)TAK_NetClient_OnMessage(c, msg, n, 1100);
     (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    /* The host launches while this player is in Options, with a change
+     * made there and not kept. */
+    ASSERT_EQ_INT(1, Multiplayer_HandleClick("Options", -1));
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, Multiplayer_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(1, Multiplayer_OptionsOpen());
+    int bars = Settings_GetInt("DisplayDamageBars", 0) != 0;
+    ASSERT_EQ_INT(1, Options_ClickWidget("Visual"));
+    ASSERT_EQ_INT(1, Options_ClickWidget("ShowDamage"));
+    ASSERT_EQ_INT(!bars, Settings_GetInt("DisplayDamageBars", 0) != 0);
 
     /* A match on a real map, with two seats the server has already
      * decided everything about. */
@@ -2650,6 +2719,10 @@ TEST(mp_room_builds_the_world_the_server_described) {
 
     World_End(&platform);
     Multiplayer_Shutdown();
+    /* Leaving the room put Options away as Cancel would. */
+    ASSERT_EQ_INT(0, Multiplayer_OptionsOpen());
+    ASSERT_EQ_INT(0, Options_ClickWidget("Ok"));
+    ASSERT_EQ_INT(bars, Settings_GetInt("DisplayDamageBars", 0) != 0);
     NetSession_Disconnect();
     UI_Shutdown();
     teardown_platform(&platform);
@@ -3273,6 +3346,64 @@ TEST(mp_room_map_chooser_scrolls_by_its_bar) {
     ASSERT_EQ_INT(1, Multiplayer_MapChooserThumbRect(&thumb));
     ASSERT_EQ_INT(track.y, thumb.y);
 
+    /* The list keys pick a row the way a click does and keep it in view
+     * (legacy:319494-319530). */
+    uint8_t *const keys[] = { &platform.pressed_down, &platform.pressed_up,
+                              &platform.pressed_end, &platform.pressed_home,
+                              &platform.pressed_page_down, &platform.pressed_page_up };
+    const int want_row[] = { 1, 0, count - 1, 0, vis, 0 };
+    const int want_top[] = { 0, 0, count - vis, 0, vis, 0 };
+    for (int k = 0; k < 6; k++) {
+        *keys[k] = 1;
+        ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, Multiplayer_Tick(&platform, 1.0f / 60.0f));
+        *keys[k] = 0;
+        ASSERT_EQ_INT(want_row[k], Multiplayer_MapChooserSelected());
+        ASSERT_EQ_INT(want_top[k], Multiplayer_MapChooserScroll());
+    }
+    Multiplayer_MapChooserSelect(vis - 1);
+    platform.pressed_down = 1;
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    platform.pressed_down = 0;
+    ASSERT_EQ_INT(vis, Multiplayer_MapChooserSelected());
+    ASSERT_EQ_INT(1, Multiplayer_MapChooserScroll());
+    /* The search still takes typing, and the keys walk what it shows. */
+    snprintf(platform.text_in, sizeof platform.text_in, "%s", "castle");
+    platform.text_in_len = 6;
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    platform.text_in_len = 0;
+    platform.text_in[0] = '\0';
+    int found = Multiplayer_MapChooserRowCount();
+    ASSERT(found >= 2 && found < count);
+    platform.pressed_home = 1;
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    platform.pressed_home = 0;
+    platform.pressed_down = 1;
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    platform.pressed_down = 0;
+    ASSERT_EQ_INT(1, Multiplayer_MapChooserSelected());
+    /* OK sends the row the keys chose. */
+    char picked[96];
+    snprintf(picked, sizeof picked, "%s", Multiplayer_MapChooserRowKey(1));
+    mp_drain(c);
+    Multiplayer_MapChooserPress("OK");
+    TAK_MsgRoomEdit ed[2];
+    ASSERT_EQ_INT(1, mp_take_edits(c, ed, 2));
+    ASSERT_EQ_INT(TAK_EDIT_MAP, ed[0].field);
+    ASSERT_EQ_STR(picked, ed[0].text);
+    /* Escape puts the chooser away and stays with it, though it is still
+     * down on the room's next frames. The test sets SDL's own key array. */
+    (void)Multiplayer_HandleClick("Map", widget_index_named(rt, "Map"));
+    ASSERT_EQ_INT(1, Multiplayer_MapChooserOpen());
+    Uint8 *held = (Uint8 *)SDL_GetKeyboardState(NULL);
+    held[SDL_SCANCODE_ESCAPE] = 1;
+    int closing = Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    int still_open = Multiplayer_MapChooserOpen();
+    int after = Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    held[SDL_SCANCODE_ESCAPE] = 0;
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, closing);
+    ASSERT_EQ_INT(0, still_open);
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, after);
+
     Multiplayer_CloseMapChooser();
     Multiplayer_Shutdown();
     NetSession_Disconnect();
@@ -3782,6 +3913,47 @@ TEST(mp_room_chat_goes_out_and_comes_in) {
     (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
     ASSERT_EQ_INT(1, Multiplayer_ChatLineCount());
     ASSERT_EQ_STR("player 1: welcome", Multiplayer_ChatLine(0));
+
+    /* Options opens over the room (legacy:137340-137347) and the room
+     * stays live under it: a line said meanwhile comes in, and what is
+     * typed meanwhile is not chat. */
+    GUIRuntime *rt = Multiplayer_Runtime();
+    ASSERT_EQ_INT(1, Multiplayer_HandleClick("Options", widget_index_named(rt, "Options")));
+    ASSERT_EQ_INT(1, Multiplayer_OptionsOpen());
+    memcpy(cm.text, "still here", 11);
+    n = TAK_Msg_ChatEncode(&cm, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1400));
+    snprintf(platform.text_in, sizeof platform.text_in, "%s", "typed");
+    platform.text_in_len = 5;
+    platform.pressed_up = 1;
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, Multiplayer_Tick(&platform, 1.0f / 60.0f));
+    platform.text_in_len = 0;
+    platform.text_in[0] = '\0';
+    platform.pressed_up = 0;
+    ASSERT_EQ_INT(1, Multiplayer_OptionsOpen());
+    ASSERT_EQ_INT(2, Multiplayer_ChatLineCount());
+    ASSERT_EQ_STR("player 1: still here", Multiplayer_ChatLine(1));
+    ASSERT_EQ_STR("", Multiplayer_ChatTyping());
+    /* Cancel puts it away onto the room. An Escape that cancels is still
+     * down on the room's next frames, and leaves the room only once it
+     * has come up and gone down again. The test sets SDL's own key array. */
+    ASSERT_EQ_INT(1, Options_ClickWidget("Cancel"));
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, Multiplayer_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(0, Multiplayer_OptionsOpen());
+    Uint8 *held = (Uint8 *)SDL_GetKeyboardState(NULL);
+    int got[4];
+    held[SDL_SCANCODE_ESCAPE] = 1;
+    got[0] = Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    got[1] = Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    held[SDL_SCANCODE_ESCAPE] = 0;
+    got[2] = Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    held[SDL_SCANCODE_ESCAPE] = 1;
+    got[3] = Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    held[SDL_SCANCODE_ESCAPE] = 0;
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, got[0]);
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, got[1]);
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, got[2]);
+    ASSERT_EQ_INT(GAMESTATE_MENU, got[3]);
 
     Multiplayer_Shutdown();
     ASSERT_EQ_INT(0, (int)SDL_IsTextInputActive());
