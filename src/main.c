@@ -984,6 +984,8 @@ int main(int argc, char *argv[]) {
         tak_mem_shutdown();
         return 0;
     }
+    /* Maps other players sent, beside the game's own map packs. */
+    VFS_SetReceivedMapDir(Paths_ReceivedMapDir());
     if (VFS_Init(game_dir, data_dir) != 0) {
         fprintf(stderr, "Failed to initialize VFS\n");
         tak_mem_shutdown();

@@ -158,6 +158,30 @@ int  VFS_ModArchiveCount(void);
 typedef int (*VFSMountFilter)(const char *file_name);
 void VFS_SetMountFilter(VFSMountFilter keep);
 
+// The folder map packs other players sent are kept in. The next
+// VFS_Init mounts its *.kmp after the game folder's own, serving kmap/
+// alone the same way. NULL or "" for none.
+void VFS_SetReceivedMapDir(const char *dir);
+// Mount one received map pack now, or mount it again when it is
+// mounted already. 0 on success.
+int  VFS_AddMapPack(const char *path);
+// Close a received map pack and take it out of the mount, so its file
+// can be replaced. 0 when it was mounted.
+int  VFS_DropMapPack(const char *path);
+
+// Where the copy of a path VFS_ReadFile would read comes from, with the
+// archive's own file name in `archive` when it is in one.
+typedef enum {
+    VFS_ORIGIN_NONE = 0,     // not there
+    VFS_ORIGIN_GAME,         // an .hpi in the game folder
+    VFS_ORIGIN_ADDED,        // a .ufo in the game folder
+    VFS_ORIGIN_MAP_PACK,     // a .kmp in the game folder's Maps
+    VFS_ORIGIN_RECEIVED,     // a map pack another player sent
+    VFS_ORIGIN_MOD,          // a mod's archive or folder
+    VFS_ORIGIN_LOOSE         // the loose data folder
+} VFSOrigin;
+int VFS_FileOrigin(const char *path, char *archive, size_t cap);
+
 // Shut down the VFS. Closes all archives, frees all memory.
 void VFS_Shutdown(void);
 

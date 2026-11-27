@@ -36,6 +36,7 @@
 
 static char s_pref[PATHS_DIR_MAX];
 static char s_save[PATHS_SUB_MAX];
+static char s_maps[PATHS_SUB_MAX];
 
 static int is_sep(char c) { return c == '/' || c == '\\'; }
 
@@ -113,6 +114,20 @@ const char *Paths_SaveDir(void) {
     snprintf(s_save, sizeof(s_save), "%ssaves%c", pref, sep);
     make_dirs(s_save);
     return s_save;
+}
+
+const char *Paths_ReceivedMapDir(void) {
+    if (s_maps[0]) return s_maps;
+#ifdef __EMSCRIPTEN__
+    /* Beside the game files the page keeps, so it is kept with them. */
+    snprintf(s_maps, sizeof(s_maps), "/game/Received/");
+#else
+    const char *pref = Paths_PrefDir();
+    char sep = dir_sep(pref);
+    snprintf(s_maps, sizeof(s_maps), "%smaps%c", pref, sep);
+#endif
+    make_dirs(s_maps);
+    return s_maps;
 }
 
 int Paths_SaveFile(const char *slug, char *out, size_t cap) {
@@ -231,6 +246,7 @@ void Paths_SetOverride(const char *dir) {
         s_pref[0] = '\0';
     }
     s_save[0] = '\0';
+    s_maps[0] = '\0';
 }
 
 #ifdef __EMSCRIPTEN__

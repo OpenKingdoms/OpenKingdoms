@@ -26,6 +26,7 @@
 #include "tak_sides.h"
 #include "tak_dataset.h"
 #include "tak_map_fingerprint.h"
+#include "tak_map_transfer.h"
 #include "tak_net_session.h"
 #include "tak_net_match.h"
 #include "tak_net_room.h"
@@ -1038,6 +1039,12 @@ static int mp_take_events(TAK_Platform *platform) {
              * with a seat not ready, a map someone lacks, everyone on
              * one team: each has words, and the strip is where they go.
              * Silence here is what made Go look broken. */
+            if (c->reject.reason == TAK_REJECT_MAP_MISSING) {
+                char why[256];
+                MapTransfer_WhyNotStart(&c->room, why, sizeof why);
+                mp_say(why);
+                break;
+            }
             mp_say(c->reject.text[0] ? c->reject.text : "The server said no.");
             break;
         case TAK_NC_EV_CHAT:
@@ -1148,11 +1155,24 @@ static void mp_draw_chat(SimpleScreen *s) {
     }
 }
 
+/* The room's map on its way to whoever lacks it, and what it says. */
+static void mp_map_transfer(uint64_t now_ms) {
+    static unsigned shown;
+    MapTransfer_Tick(NetSession_Client(), now_ms);
+    if (MapTransfer_TextSerial() != shown) {
+        shown = MapTransfer_TextSerial();
+        if (MapTransfer_Text()[0]) mp_say(MapTransfer_Text());
+    }
+    char said[192];
+    while (MapTransfer_TakeLine(said, sizeof said)) mp_chat_push(NULL, said);
+}
+
 int Multiplayer_Tick(TAK_Platform *platform, float frame_dt) {
     mp_platform = platform;
     NetSession_Tick(SDL_GetTicks64());
     int next = mp_take_events(platform);
     if (next != GAMESTATE_MULTIPLAYER) return next;
+    mp_map_transfer(SDL_GetTicks64());
     if (Multiplayer_MapChooserOpen()) {
         return Multiplayer_MapChooserTick(platform, frame_dt);
     }

@@ -436,6 +436,10 @@ size_t TAK_Msg_RoomStateEncodeV(const TAK_MsgRoomState *m, uint16_t version,
         for (uint8_t i = 0; i < m->watchers; i++)
             TAK_BW_Str(&w, m->watcher_name[i], TAK_NET_NAME_MAX);
     }
+    if (version >= 11) {
+        for (uint8_t i = 0; i < m->seat_count; i++) TAK_BW_U8(&w, m->slot[i].map_state);
+        TAK_BW_U8(&w, m->map_share);
+    }
     return finish(&w);
 }
 
@@ -472,16 +476,25 @@ int TAK_Msg_RoomStateDecode(TAK_MsgRoomState *m, const void *p, size_t len) {
         s->client_id = TAK_BR_U32(&r);
         TAK_BR_Str(&r, s->name, TAK_NET_NAME_MAX);
     }
-    /* Protocol 2 adds one start a seat, and 4 a name for each watcher. */
+    /* Protocol 2 adds one start a seat, 5 a name for each watcher, and
+     * 11 each seat's map state and the map's share. */
     size_t rest = TAK_BR_Remaining(&r);
+    size_t seats = m->seat_count;
     size_t names = m->watchers <= TAK_NET_WATCHERS_MAX
                  ? (size_t)m->watchers * TAK_NET_NAME_MAX : 0;
-    if (rest == m->seat_count || (names && rest == m->seat_count + names)) {
+    int v11 = rest == seats + names + seats + 1;
+    int v5 = v11 || (names && rest == seats + names);
+    if (v5 || rest == seats) {
         for (uint8_t i = 0; i < m->seat_count; i++)
             m->slot[i].start_pos = TAK_BR_U8(&r);
-        if (rest > m->seat_count)
-            for (uint8_t i = 0; i < m->watchers; i++)
+        if (v5)
+            for (uint8_t i = 0; names && i < m->watchers; i++)
                 TAK_BR_Str(&r, m->watcher_name[i], TAK_NET_NAME_MAX);
+        if (v11) {
+            for (uint8_t i = 0; i < m->seat_count; i++)
+                m->slot[i].map_state = TAK_BR_U8(&r);
+            m->map_share = TAK_BR_U8(&r);
+        }
     }
     return done(&r);
 }
@@ -649,6 +662,73 @@ int TAK_Msg_GoDecode(TAK_MsgGo *m, const void *p, size_t len) {
     memset(m, 0, sizeof(*m));
     TAK_BR_Init(&r, p, len);
     m->first_turn = TAK_BR_U32(&r);
+    return done(&r);
+}
+
+/* ── A map from the host ────────────────────────────────────────────── */
+
+static int map_offset_ok(uint32_t offset) {
+    return offset % TAK_NET_MAP_CHUNK == 0 && offset < TAK_NET_MAP_MAX;
+}
+
+/* The piece at offset is the whole of it, and a refusal carries none. */
+static int map_piece_ok(uint32_t total, uint32_t offset, uint16_t len) {
+    if (total > TAK_NET_MAP_MAX || len > TAK_NET_MAP_CHUNK || !map_offset_ok(offset))
+        return 0;
+    if (total == 0) return len == 0;
+    if (offset >= total) return 0;
+    uint32_t left = total - offset;
+    return len == (left < TAK_NET_MAP_CHUNK ? left : TAK_NET_MAP_CHUNK);
+}
+
+size_t TAK_Msg_MapRequestEncode(const TAK_MsgMapRequest *m, void *out, size_t cap) {
+    if (!map_offset_ok(m->offset)) return 0;
+    TAK_ByteWriter w;
+    begin(&w, out, cap, TAK_MSG_MAP_REQUEST);
+    TAK_BW_U32(&w, m->client_id);
+    TAK_BW_Bytes(&w, m->fingerprint, TAK_NET_FINGERPRINT_BYTES);
+    TAK_BW_U32(&w, m->offset);
+    return finish(&w);
+}
+
+int TAK_Msg_MapRequestDecode(TAK_MsgMapRequest *m, const void *p, size_t len) {
+    TAK_ByteReader r;
+    memset(m, 0, sizeof(*m));
+    TAK_BR_Init(&r, p, len);
+    m->client_id = TAK_BR_U32(&r);
+    TAK_BR_Bytes(&r, m->fingerprint, TAK_NET_FINGERPRINT_BYTES);
+    m->offset = TAK_BR_U32(&r);
+    if (!TAK_BR_Ok(&r) || !map_offset_ok(m->offset)) return -1;
+    return done(&r);
+}
+
+size_t TAK_Msg_MapDataEncode(const TAK_MsgMapData *m, void *out, size_t cap) {
+    if (!map_piece_ok(m->total, m->offset, m->len) || (m->len && !m->data)) return 0;
+    TAK_ByteWriter w;
+    begin(&w, out, cap, TAK_MSG_MAP_DATA);
+    TAK_BW_U32(&w, m->client_id);
+    TAK_BW_Bytes(&w, m->fingerprint, TAK_NET_FINGERPRINT_BYTES);
+    TAK_BW_U32(&w, m->total);
+    TAK_BW_U32(&w, m->offset);
+    TAK_BW_U16(&w, m->len);
+    if (m->len) TAK_BW_Bytes(&w, m->data, m->len);
+    return finish(&w);
+}
+
+int TAK_Msg_MapDataDecode(TAK_MsgMapData *m, const void *p, size_t len) {
+    TAK_ByteReader r;
+    memset(m, 0, sizeof(*m));
+    TAK_BR_Init(&r, p, len);
+    m->client_id = TAK_BR_U32(&r);
+    TAK_BR_Bytes(&r, m->fingerprint, TAK_NET_FINGERPRINT_BYTES);
+    m->total = TAK_BR_U32(&r);
+    m->offset = TAK_BR_U32(&r);
+    m->len = TAK_BR_U16(&r);
+    if (!TAK_BR_Ok(&r) || !map_piece_ok(m->total, m->offset, m->len)) return -1;
+    if (m->len) {
+        m->data = TAK_BR_Take(&r, m->len);
+        if (!m->data) return -1;
+    }
     return done(&r);
 }
 
@@ -1105,6 +1185,8 @@ int TAK_Net_Validate(const void *data, size_t len) {
         TAK_MsgLoadState loadstate;
         TAK_MsgLoaded loaded;
         TAK_MsgGo go;
+        TAK_MsgMapRequest mapreq;
+        TAK_MsgMapData mapdata;
         TAK_MsgSnapRequest snapreq;
         TAK_MsgSnapData snapdata;
         TAK_MsgSnapResult snapres;
@@ -1137,6 +1219,8 @@ int TAK_Net_Validate(const void *data, size_t len) {
     case TAK_MSG_LOAD_STATE:    return TAK_Msg_LoadStateDecode(&m.loadstate, p, n);
     case TAK_MSG_LOADED:        return TAK_Msg_LoadedDecode(&m.loaded, p, n);
     case TAK_MSG_GO:            return TAK_Msg_GoDecode(&m.go, p, n);
+    case TAK_MSG_MAP_REQUEST:   return TAK_Msg_MapRequestDecode(&m.mapreq, p, n);
+    case TAK_MSG_MAP_DATA:      return TAK_Msg_MapDataDecode(&m.mapdata, p, n);
     case TAK_MSG_SNAP_REQUEST:  return TAK_Msg_SnapRequestDecode(&m.snapreq, p, n);
     case TAK_MSG_SNAP_DATA:     return TAK_Msg_SnapDataDecode(&m.snapdata, p, n);
     case TAK_MSG_SNAP_RESULT:   return TAK_Msg_SnapResultDecode(&m.snapres, p, n);

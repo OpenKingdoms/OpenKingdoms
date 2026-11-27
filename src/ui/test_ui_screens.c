@@ -35,6 +35,8 @@
 #include "tak_select_game.h"
 #include "tak_net_session.h"
 #include "tak_map_fingerprint.h"
+#include "tak_map_share.h"
+#include "tak_map_transfer.h"
 #include "tak_net_match.h"
 #include "tak_options.h"
 #include "tak_music.h"
@@ -2389,6 +2391,244 @@ TEST(mp_room_says_whether_it_has_the_rooms_map) {
     if (!saw_have_map) printf("(nothing said whether we have the map) ");
     ASSERT_EQ_INT(1, saw_have_map);
 
+    Multiplayer_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A map a player made, big enough to come in several pieces, with no
+ * name any install already has. */
+static uint8_t mp_share_tnt[50000];
+static const char MP_SHARE_OTA[] =
+    "[GlobalHeader]\n{\nmissionname=Shared Isle Test;\nnumplayers=2;\n}\n";
+
+static void mp_share_files(TAK_MapShareFiles *f, uint8_t fp[TAK_MAP_FINGERPRINT_BYTES]) {
+    uint32_t x = 12345u;
+    for (size_t i = 0; i < sizeof mp_share_tnt; i++) {
+        x = x * 1103515245u + 12345u;
+        mp_share_tnt[i] = (uint8_t)(x >> 16);
+    }
+    memset(f, 0, sizeof *f);
+    f->map.tnt = mp_share_tnt;  f->map.tnt_size = sizeof mp_share_tnt;
+    f->map.ota = MP_SHARE_OTA;  f->map.ota_size = sizeof MP_SHARE_OTA - 1;
+    (void)TAK_MapFingerprint_FromFiles(&f->map, fp);
+}
+
+static void mp_share_forget(const char *name) {
+    char path[1200];
+    snprintf(path, sizeof path, "%s%s.kmp", Paths_ReceivedMapDir(), name);
+    (void)VFS_DropMapPack(path);
+    remove(path);
+}
+
+/* What the session queued, read for the edits and requests in it. */
+typedef struct MpSent {
+    int asks, share_edits, have_map, state_edits;
+    uint32_t ask_offset[16];
+    uint32_t share_value;
+    uint8_t have_fp[TAK_NET_FINGERPRINT_BYTES];
+    TAK_MsgMapData piece;
+    uint8_t piece_bytes[TAK_NET_MAP_CHUNK];
+    int pieces;
+} MpSent;
+
+static void mp_read_sent(TAK_NetClient *c, MpSent *out) {
+    static uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n;
+    while ((n = TAK_NetClient_TakeMessage(c, msg, sizeof msg)) > 0) {
+        TAK_NetFrame f;
+        if (TAK_Net_Split(msg, n, &f) != 0) continue;
+        if (f.type == TAK_MSG_MAP_REQUEST) {
+            TAK_MsgMapRequest q;
+            if (TAK_Msg_MapRequestDecode(&q, f.payload, f.payload_len) == 0 && out->asks < 16)
+                out->ask_offset[out->asks++] = q.offset;
+        } else if (f.type == TAK_MSG_MAP_DATA) {
+            if (TAK_Msg_MapDataDecode(&out->piece, f.payload, f.payload_len) == 0) {
+                memcpy(out->piece_bytes, out->piece.data, out->piece.len);
+                out->piece.data = out->piece_bytes;
+                out->pieces++;
+            }
+        } else if (f.type == TAK_MSG_ROOM_EDIT) {
+            TAK_MsgRoomEdit e;
+            if (TAK_Msg_RoomEditDecode(&e, f.payload, f.payload_len) != 0) continue;
+            if (e.field == TAK_EDIT_MAP_SHARE) { out->share_edits++; out->share_value = e.value; }
+            if (e.field == TAK_EDIT_MAP_STATE) out->state_edits++;
+            /* The word that it came, not the first one saying it had not. */
+            int some = 0;
+            for (int i = 0; i < TAK_NET_FINGERPRINT_BYTES; i++) some |= e.fingerprint[i];
+            if (e.field == TAK_EDIT_HAVE_MAP && some) {
+                out->have_map++;
+                memcpy(out->have_fp, e.fingerprint, sizeof out->have_fp);
+            }
+        }
+    }
+}
+
+/* The reporter's room: the host has a map this player lacks, and the
+ * host's copy comes to them before the battle, a few pieces at a time,
+ * is checked and kept, and the room is told they have it. */
+TEST(mp_room_takes_a_map_a_player_made_from_the_host) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    mp_share_forget("Shared Isle Test");
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    static uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 41);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1000);
+
+    TAK_MapShareFiles files;
+    uint8_t fp[TAK_MAP_FINGERPRINT_BYTES], got[TAK_MAP_FINGERPRINT_BYTES];
+    mp_share_files(&files, fp);
+    ASSERT(TAK_MapFingerprint_FromName("Shared Isle Test", got) != 0);
+    uint8_t *bundle = NULL;
+    uint32_t len = 0;
+    ASSERT_EQ_INT(0, TAK_MapShare_Pack(&files, &bundle, &len));
+    ASSERT(len > TAK_NET_MAP_CHUNK);
+
+    TAK_MsgRoomState rs;
+    memset(&rs, 0, sizeof rs);
+    rs.room_id = 6;
+    rs.revision = 1;
+    rs.seat_count = TAK_NET_SEATS;
+    memcpy(rs.map_name, "Shared Isle Test", 17);
+    memcpy(rs.map_fingerprint, fp, sizeof fp);
+    rs.host_client_id = 40;
+    rs.map_share = TAK_MAPSHARE_OFFERED;
+    rs.slot[0].kind = 1; rs.slot[0].connected = 1; rs.slot[0].client_id = 40;
+    rs.slot[1].kind = 1; rs.slot[1].connected = 1; rs.slot[1].client_id = 41;
+    n = TAK_Msg_RoomStateEncode(&rs, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+
+    /* The host answers every request with the piece it names. */
+    MpSent sent;
+    memset(&sent, 0, sizeof sent);
+    int answered = 0, most_asked = 0;
+    for (int frame = 0; frame < 60 && !sent.have_map; frame++) {
+        ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, Multiplayer_Tick(&platform, 1.0f / 60.0f));
+        sent.asks = 0;
+        mp_read_sent(c, &sent);
+        if (sent.asks > most_asked) most_asked = sent.asks;
+        for (int k = 0; k < sent.asks; k++) {
+            TAK_MsgMapData d;
+            memset(&d, 0, sizeof d);
+            d.client_id = 41;
+            memcpy(d.fingerprint, fp, sizeof fp);
+            d.total = len;
+            d.offset = sent.ask_offset[k];
+            uint32_t left = len - d.offset;
+            d.len = (uint16_t)(left < TAK_NET_MAP_CHUNK ? left : TAK_NET_MAP_CHUNK);
+            d.data = bundle + d.offset;
+            n = TAK_Msg_MapDataEncode(&d, msg, sizeof msg);
+            ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1200 + (uint64_t)frame));
+            answered++;
+        }
+    }
+    tak_free(bundle);
+    int pieces = (int)((len + TAK_NET_MAP_CHUNK - 1) / TAK_NET_MAP_CHUNK);
+    if (!sent.have_map) printf("(no word that the map came: \"%s\") ", MapTransfer_Text());
+    ASSERT_EQ_INT(1, sent.have_map);
+    ASSERT_EQ_INT(0, memcmp(sent.have_fp, fp, sizeof fp));
+    ASSERT_EQ_INT(pieces, answered);
+    ASSERT(most_asked <= 4);
+    ASSERT(sent.state_edits >= 1);
+    /* It is this install's map now, kept where received maps go. */
+    ASSERT_EQ_INT(0, TAK_MapFingerprint_FromName("Shared Isle Test", got));
+    ASSERT_EQ_INT(0, memcmp(got, fp, sizeof fp));
+    char path[512];
+    ASSERT_EQ_INT(0, TAK_Maps_FindFile("Shared Isle Test", "ota", path, sizeof path));
+    ASSERT_EQ_INT(VFS_ORIGIN_RECEIVED, VFS_FileOrigin(path, NULL, 0));
+    ASSERT(strstr(MapTransfer_Text(), "has come from the host") != NULL);
+
+    mp_share_forget("Shared Isle Test");
+    Multiplayer_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* As host: a map the game ships is said not to be sent, and a map a
+ * player made is offered and its pieces go to whoever asks. */
+TEST(mp_room_host_offers_only_a_map_a_player_made) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    mp_share_forget("Shared Isle Test");
+    NetSession_BeginWithoutLink("Host");
+    TAK_NetClient *c = NetSession_Client();
+    static uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 40);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1000);
+
+    TAK_MsgRoomState rs;
+    memset(&rs, 0, sizeof rs);
+    rs.room_id = 7;
+    rs.revision = 1;
+    rs.seat_count = TAK_NET_SEATS;
+    memcpy(rs.map_name, "two castles", 12);
+    ASSERT_EQ_INT(0, TAK_MapFingerprint_FromName("two castles", rs.map_fingerprint));
+    rs.host_client_id = 40;
+    rs.slot[0].kind = 1; rs.slot[0].connected = 1; rs.slot[0].client_id = 40;
+    rs.slot[1].kind = 1; rs.slot[1].connected = 1; rs.slot[1].client_id = 41;
+    n = TAK_Msg_RoomStateEncode(&rs, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+    MpSent sent;
+    memset(&sent, 0, sizeof sent);
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, Multiplayer_Tick(&platform, 1.0f / 60.0f));
+    mp_read_sent(c, &sent);
+    ASSERT_EQ_INT(1, sent.share_edits);
+    ASSERT_EQ_INT(TAK_MAPSHARE_GAME, (int)sent.share_value);
+    /* Asked anyway, it says no and sends nothing of it. */
+    TAK_MsgMapRequest q;
+    memset(&q, 0, sizeof q);
+    q.client_id = 41;
+    memcpy(q.fingerprint, rs.map_fingerprint, sizeof q.fingerprint);
+    n = TAK_Msg_MapRequestEncode(&q, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1150));
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, Multiplayer_Tick(&platform, 1.0f / 60.0f));
+    memset(&sent, 0, sizeof sent);
+    mp_read_sent(c, &sent);
+    ASSERT_EQ_INT(1, sent.pieces);
+    ASSERT_EQ_INT(0, (int)sent.piece.total);
+    ASSERT_EQ_INT(0, sent.share_edits);
+
+    /* A map a player made, kept from an earlier room. */
+    TAK_MapShareFiles files;
+    uint8_t fp[TAK_MAP_FINGERPRINT_BYTES];
+    mp_share_files(&files, fp);
+    ASSERT_EQ_INT(0, TAK_MapShare_Keep(Paths_ReceivedMapDir(), "Shared Isle Test", &files));
+    memcpy(rs.map_name, "Shared Isle Test", 17);
+    memcpy(rs.map_fingerprint, fp, sizeof fp);
+    rs.revision = 2;
+    n = TAK_Msg_RoomStateEncode(&rs, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1200));
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, Multiplayer_Tick(&platform, 1.0f / 60.0f));
+    memset(&sent, 0, sizeof sent);
+    mp_read_sent(c, &sent);
+    ASSERT_EQ_INT(1, sent.share_edits);
+    ASSERT_EQ_INT(TAK_MAPSHARE_OFFERED, (int)sent.share_value);
+    memcpy(q.fingerprint, fp, sizeof fp);
+    q.offset = TAK_NET_MAP_CHUNK;
+    n = TAK_Msg_MapRequestEncode(&q, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1250));
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, Multiplayer_Tick(&platform, 1.0f / 60.0f));
+    memset(&sent, 0, sizeof sent);
+    mp_read_sent(c, &sent);
+    ASSERT_EQ_INT(1, sent.pieces);
+    ASSERT_EQ_INT(41, (int)sent.piece.client_id);
+    ASSERT_EQ_INT((int)TAK_NET_MAP_CHUNK, (int)sent.piece.offset);
+    ASSERT(sent.piece.total > TAK_NET_MAP_CHUNK);
+    ASSERT_EQ_INT(0, memcmp(sent.piece.fingerprint, fp, sizeof fp));
+
+    mp_share_forget("Shared Isle Test");
     Multiplayer_Shutdown();
     NetSession_Disconnect();
     UI_Shutdown();
@@ -25970,6 +26210,8 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(select_game_hosting_a_game_gives_it_a_map);
     RUN_UI_TEST(select_game_hosting_a_game_names_the_rules_it_plays_by);
     RUN_UI_TEST(mp_room_says_whether_it_has_the_rooms_map);
+    RUN_UI_TEST(mp_room_takes_a_map_a_player_made_from_the_host);
+    RUN_UI_TEST(mp_room_host_offers_only_a_map_a_player_made);
     RUN_UI_TEST(a_game_this_build_cannot_join_is_listed_rather_than_hidden);
     RUN_UI_TEST(a_room_the_server_puts_us_in_opens_the_room_screen);
     RUN_UI_TEST(select_game_with_no_address_says_what_to_do);

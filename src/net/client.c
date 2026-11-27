@@ -78,6 +78,8 @@ void TAK_NetClient_Free(TAK_NetClient *c) {
     c->snap_out = NULL;
     c->snap_out_len = c->snap_out_sent = 0;
     TAK_NetClient_SnapshotDrop(c);
+    TAK_NetClient_MapDrop(c);
+    c->map_ask_count = 0;
 }
 
 void TAK_NetClient_SnapshotDrop(TAK_NetClient *c) {
@@ -345,6 +347,41 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
         return 0;
     }
 
+    case TAK_MSG_MAP_REQUEST: {
+        TAK_MsgMapRequest m;
+        if (TAK_Msg_MapRequestDecode(&m, f.payload, f.payload_len) != 0) return -1;
+        if (c->state != TAK_NC_ROOM || c->room.host_client_id != c->session_id) return 0;
+        for (int i = 0; i < c->map_ask_count; i++)
+            if (c->map_asks[i].client_id == m.client_id && c->map_asks[i].offset == m.offset)
+                return 0;
+        /* A full list drops the request, and the relay lets the player
+         * ask again. */
+        if (c->map_ask_count < TAK_NC_MAP_ASKS) c->map_asks[c->map_ask_count++] = m;
+        return 0;
+    }
+
+    case TAK_MSG_MAP_DATA: {
+        TAK_MsgMapData m;
+        if (TAK_Msg_MapDataDecode(&m, f.payload, f.payload_len) != 0) return -1;
+        if (c->state != TAK_NC_ROOM || !c->map_in_on || c->map_in_bad ||
+            memcmp(m.fingerprint, c->map_in_fp, sizeof m.fingerprint) != 0) return 0;
+        c->map_in_heard_ms = now_ms ? now_ms : 1;
+        if (m.total == 0) { c->map_in_refused = 1; return 0; }
+        if (!c->map_in) {
+            c->map_in = (uint8_t *)tak_malloc(m.total);
+            if (!c->map_in) { c->map_in_bad = 1; return 0; }
+            c->map_in_total = m.total;
+        }
+        if (m.total != c->map_in_total) { c->map_in_bad = 1; return 0; }
+        uint32_t piece = m.offset / TAK_NET_MAP_CHUNK;
+        uint8_t bit = (uint8_t)(1u << (piece & 7u));
+        if (c->map_in_have[piece >> 3] & bit) return 0;
+        memcpy(c->map_in + m.offset, m.data, m.len);
+        c->map_in_have[piece >> 3] |= bit;
+        c->map_in_got += m.len;
+        return 0;
+    }
+
     case TAK_MSG_TURN: {
         TAK_MsgTurn m;
         if (TAK_Msg_TurnDecode(&m, f.payload, f.payload_len) != 0) return -1;
@@ -441,8 +478,63 @@ int TAK_NetClient_LeaveRoom(TAK_NetClient *c) {
     c->state = TAK_NC_LOBBY;
     /* A match left behind holds turns nobody will take. */
     turns_reset(c);
+    TAK_NetClient_MapDrop(c);
+    c->map_ask_count = 0;
     raise_event(c, TAK_NC_EV_LEFT_ROOM);
     return 0;
+}
+
+/* ── The room's map ─────────────────────────────────────────────────── */
+
+void TAK_NetClient_MapDrop(TAK_NetClient *c) {
+    tak_free(c->map_in);
+    c->map_in = NULL;
+    c->map_in_total = c->map_in_got = 0;
+    c->map_in_on = c->map_in_refused = c->map_in_bad = 0;
+    c->map_in_heard_ms = 0;
+    memset(c->map_in_have, 0, sizeof c->map_in_have);
+    memset(c->map_in_fp, 0, sizeof c->map_in_fp);
+}
+
+void TAK_NetClient_MapBegin(TAK_NetClient *c, const uint8_t fp[TAK_NET_FINGERPRINT_BYTES],
+                            uint64_t now_ms) {
+    TAK_NetClient_MapDrop(c);
+    memcpy(c->map_in_fp, fp, sizeof c->map_in_fp);
+    c->map_in_on = 1;
+    c->map_in_heard_ms = now_ms ? now_ms : 1;
+}
+
+int TAK_NetClient_MapAsk(TAK_NetClient *c, uint32_t offset) {
+    if (c->state != TAK_NC_ROOM || !c->map_in_on) return -1;
+    TAK_MsgMapRequest m;
+    memset(&m, 0, sizeof m);
+    memcpy(m.fingerprint, c->map_in_fp, sizeof m.fingerprint);
+    m.offset = offset;
+    QUEUE_ENCODED(c, TAK_Msg_MapRequestEncode(&m, _f, sizeof _f));
+}
+
+int TAK_NetClient_MapHave(const TAK_NetClient *c, uint32_t offset) {
+    uint32_t piece = offset / TAK_NET_MAP_CHUNK;
+    if (!c->map_in || offset >= c->map_in_total) return 0;
+    return (c->map_in_have[piece >> 3] >> (piece & 7u)) & 1u;
+}
+
+int TAK_NetClient_MapTakeAsk(TAK_NetClient *c, TAK_MsgMapRequest *out) {
+    if (c->map_ask_count == 0) return 0;
+    *out = c->map_asks[0];
+    c->map_ask_count--;
+    memmove(&c->map_asks[0], &c->map_asks[1], sizeof(c->map_asks[0]) * c->map_ask_count);
+    return 1;
+}
+
+int TAK_NetClient_MapCanSend(const TAK_NetClient *c) {
+    return c->state == TAK_NC_ROOM &&
+           c->out_len + TAK_NET_FRAME_HEADER + 64u + TAK_NET_MAP_CHUNK <= sizeof c->out / 2;
+}
+
+int TAK_NetClient_MapSend(TAK_NetClient *c, const TAK_MsgMapData *m) {
+    if (!TAK_NetClient_MapCanSend(c)) return -1;
+    QUEUE_ENCODED(c, TAK_Msg_MapDataEncode(m, _f, sizeof _f));
 }
 
 /* The fields that change your own row rather than the room. The server
@@ -460,6 +552,7 @@ static int own_row_field(uint8_t field) {
     case TAK_EDIT_READY:
     case TAK_EDIT_HAVE_MAP:
     case TAK_EDIT_START:
+    case TAK_EDIT_MAP_STATE:
         return 1;
     default:
         return 0;

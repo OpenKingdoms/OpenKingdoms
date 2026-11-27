@@ -319,6 +319,134 @@ static void snap_tick(TAK_Relay *r, TAK_RelayRoom *rr) {
     if (!rr->snap.targets) snap_release(rr);
 }
 
+/* ── A map from the host ──────────────────────────────────────────────── */
+
+/* A player missing the room's map asks for it a piece at a time. The
+ * relay keeps who asked for which piece and nothing of the map: a piece
+ * the host sends goes straight on to the one player who asked for it,
+ * and anything else the host sends is turned away. One player has at
+ * most TAK_RELAY_MAP_WINDOW pieces asked for, each asked of the host no
+ * more often than MAP_PASS_MS, and no more than MAP_BUDGET passed on
+ * for one map. */
+#define MAP_PASS_MS      25u
+#define MAP_ASK_MS       10000u
+#define MAP_QUEUE_BYTES  (96u * 1024u)
+#define MAP_BUDGET       (2u * TAK_NET_MAP_MAX)
+
+/* From protocol 11 a client asks for a map and answers for one. */
+static int shares_maps(const TAK_RelayClient *cl) {
+    return cl->hello.protocol_version >= 11;
+}
+
+/* The host a player in an open room would get the room's map from, or
+ * NULL when nobody is offering it to them. */
+static TAK_RelayClient *map_giver(TAK_Relay *r, const TAK_RelayClient *cl) {
+    if (cl->room < 0) return NULL;
+    TAK_RelayRoom *rr = &r->room[cl->room];
+    if (rr->room.status != TAK_ROOM_OPEN) return NULL;
+    if (TAK_Room_MapShare(&rr->room) != TAK_MAPSHARE_OFFERED) return NULL;
+    if (memcmp(cl->map.fingerprint, rr->room.cfg.map_fingerprint,
+               TAK_NET_FINGERPRINT_BYTES) != 0) return NULL;
+    TAK_RelayClient *host = TAK_Relay_FindClient(r, rr->room.host_client_id);
+    if (!host || host == cl || host->room != cl->room || !shares_maps(host)) return NULL;
+    return host;
+}
+
+static void map_forget_asks(TAK_RelayClient *cl) {
+    memset(cl->map.state, 0, sizeof cl->map.state);
+}
+
+/* Ask the host for the next piece held for this player, when its turn
+ * has come. */
+static void map_pass(TAK_Relay *r, TAK_RelayClient *cl) {
+    if (r->now - cl->map.passed_ms < MAP_PASS_MS) return;
+    TAK_RelayClient *host = map_giver(r, cl);
+    if (!host) { map_forget_asks(cl); return; }
+    for (int k = 0; k < TAK_RELAY_MAP_WINDOW; k++) {
+        if (cl->map.state[k] != 1) continue;
+        TAK_MsgMapRequest m;
+        m.client_id = cl->id;
+        memcpy(m.fingerprint, cl->map.fingerprint, TAK_NET_FINGERPRINT_BYTES);
+        m.offset = cl->map.offset[k];
+        send_frame(r, host, r->out, TAK_Msg_MapRequestEncode(&m, r->out, sizeof(r->out)));
+        cl->map.state[k] = 2;
+        cl->map.since_ms[k] = r->now;
+        cl->map.passed_ms = r->now;
+        return;
+    }
+}
+
+static void on_map_request(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgMapRequest *m) {
+    if (cl->room < 0 || memcmp(m->fingerprint, r->room[cl->room].room.cfg.map_fingerprint,
+                               TAK_NET_FINGERPRINT_BYTES) != 0) {
+        r->map_refused++;
+        return;
+    }
+    if (memcmp(cl->map.fingerprint, m->fingerprint, TAK_NET_FINGERPRINT_BYTES) != 0) {
+        /* The room's map changed: what was asked for the last one is gone. */
+        memset(&cl->map, 0, sizeof cl->map);
+        memcpy(cl->map.fingerprint, m->fingerprint, TAK_NET_FINGERPRINT_BYTES);
+    }
+    int free_k = -1;
+    uint32_t asked = 0;
+    for (int k = 0; k < TAK_RELAY_MAP_WINDOW; k++) {
+        if (cl->map.state[k] && cl->map.offset[k] == m->offset) return;
+        if (cl->map.state[k]) asked++;
+        else if (free_k < 0) free_k = k;
+    }
+    /* What is already asked for counts against the budget too. */
+    if (free_k < 0 || !map_giver(r, cl) ||
+        cl->map.bytes + (asked + 1u) * TAK_NET_MAP_CHUNK > MAP_BUDGET) {
+        r->map_refused++;
+        return;
+    }
+    cl->map.state[free_k] = 1;
+    cl->map.offset[free_k] = m->offset;
+    cl->map.since_ms[free_k] = r->now;
+    map_pass(r, cl);
+}
+
+/* A piece from the host, the frame passed on as it came. */
+static void on_map_data(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgMapData *m,
+                        const uint8_t *frame, size_t len) {
+    TAK_RelayClient *to = TAK_Relay_FindClient(r, m->client_id);
+    if (!to || to->room < 0 || to->room != cl->room || map_giver(r, to) != cl ||
+        memcmp(m->fingerprint, to->map.fingerprint, TAK_NET_FINGERPRINT_BYTES) != 0) {
+        r->map_refused++;
+        return;
+    }
+    int k = 0;
+    while (k < TAK_RELAY_MAP_WINDOW &&
+           !(to->map.state[k] == 2 && to->map.offset[k] == m->offset)) k++;
+    if (k == TAK_RELAY_MAP_WINDOW) { r->map_refused++; return; }
+    to->map.state[k] = 0;
+    /* A player whose queue is this deep is not reading, and asks again. */
+    if (r->tx.queued && r->tx.queued(r->tx.ctx, to->conn) > MAP_QUEUE_BYTES) {
+        r->map_refused++;
+        return;
+    }
+    to->map.bytes += m->len;
+    r->map_pieces++;
+    send_frame(r, to, frame, len);
+    map_pass(r, to);
+}
+
+/* Pieces the host never answered are let go, and the player asks
+ * again. Held ones go to the host as their turn comes. */
+static void map_tick(TAK_Relay *r) {
+    for (int i = 0; i < TAK_RELAY_CLIENTS_MAX; i++) {
+        TAK_RelayClient *cl = &r->client[i];
+        if (!cl->in_use) continue;
+        int held = 0;
+        for (int k = 0; k < TAK_RELAY_MAP_WINDOW; k++) {
+            if (cl->map.state[k] && r->now - cl->map.since_ms[k] > MAP_ASK_MS)
+                cl->map.state[k] = 0;
+            if (cl->map.state[k] == 1) held = 1;
+        }
+        if (held) map_pass(r, cl);
+    }
+}
+
 /* ── Leaving and closing ──────────────────────────────────────────────── */
 
 static void tell_lobby(TAK_Relay *r);
@@ -341,6 +469,7 @@ static void leave_room(TAK_Relay *r, TAK_RelayClient *cl, int on_purpose) {
     TAK_RelayRoom *rr = &r->room[cl->room];
     uint32_t id = cl->id;
     cl->room = -1;
+    map_forget_asks(cl);
 
     if (rr->room.status == TAK_ROOM_IN_PROGRESS) {
         int sim = TAK_TurnClock_SimOf(&rr->clock, id);
@@ -1186,8 +1315,11 @@ static void on_join(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgJoinRoom *m)
 static void on_edit(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgRoomEdit *m) {
     if (cl->room < 0) { send_reject(r, cl, TAK_REJECT_NOT_ALLOWED, 0); return; }
     TAK_RelayRoom *rr = &r->room[cl->room];
+    /* A word on a map the room has moved on from is dropped quietly. */
+    int map_word = m->field == TAK_EDIT_MAP_STATE || m->field == TAK_EDIT_MAP_SHARE;
 
     if (rr->room.status == TAK_ROOM_IN_PROGRESS) {
+        if (map_word) return;
         int rc = TAK_REJECT_GAME_CLOSED;
         if (m->field == TAK_EDIT_WATCH) {
             /* Resigning, then staying on to watch as a defeated player. */
@@ -1204,7 +1336,10 @@ static void on_edit(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgRoomEdit *m)
 
     TAK_RoomEffect fx;
     int rc = TAK_Room_Edit(&rr->room, cl->id, m, &fx);
-    if (rc) { send_reject(r, cl, (uint8_t)rc, 0); return; }
+    if (rc) { if (!map_word) send_reject(r, cl, (uint8_t)rc, 0); return; }
+    /* How far a map has come shows with the next heartbeat's state. Its
+     * start and its end show at once. */
+    if (m->field == TAK_EDIT_MAP_STATE && m->value >= 2 && m->value < 100) return;
     if (fx.removed_client_id) {
         TAK_RelayClient *gone = TAK_Relay_FindClient(r, fx.removed_client_id);
         TAK_Room_Leave(&rr->room, fx.removed_client_id, NULL);
@@ -1443,6 +1578,18 @@ void TAK_Relay_OnFrame(TAK_Relay *r, TAK_ConnId conn,
         on_pace(r, cl, &m);
         break;
     }
+    case TAK_MSG_MAP_REQUEST: {
+        TAK_MsgMapRequest m;
+        if (TAK_Msg_MapRequestDecode(&m, p, n)) { bad = 1; break; }
+        on_map_request(r, cl, &m);
+        break;
+    }
+    case TAK_MSG_MAP_DATA: {
+        TAK_MsgMapData m;
+        if (TAK_Msg_MapDataDecode(&m, p, n)) { bad = 1; break; }
+        on_map_data(r, cl, &m, frame, len);
+        break;
+    }
     case TAK_MSG_SNAP_DATA: {
         TAK_MsgSnapData m;
         if (TAK_Msg_SnapDataDecode(&m, p, n)) { bad = 1; break; }
@@ -1482,6 +1629,7 @@ void TAK_Relay_OnFrame(TAK_Relay *r, TAK_ConnId conn,
 
 void TAK_Relay_Tick(TAK_Relay *r, uint64_t now_ms) {
     r->now = now_ms;
+    map_tick(r);
     for (int i = 0; i < TAK_RELAY_ROOMS_MAX; i++) {
         TAK_RelayRoom *rr = &r->room[i];
         if (!rr->in_use || rr->room.status != TAK_ROOM_IN_PROGRESS) continue;

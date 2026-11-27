@@ -211,6 +211,22 @@ pull request, not here.
   the original's drop (docs/notes/2026-09-04-multiplayer-hapinet.md,
   legacy:194242).
 
+## N-011: A map a player made goes to those without it
+
+- Change: When the host's map is one a player made and another player
+  lacks it, the host's copy is sent to them through the server before
+  the battle, checked against the room's map fingerprint and kept as a
+  map pack of their own. The room shows how far it has come, and Play
+  waits until everyone has it. A map the game, the expansion or
+  Cavedog's map packs ship is never sent, and the room says which
+  release or file the player needs.
+- Why: The original's room only refused to start while a player lacked
+  the map. It carried files only through Boneyards
+  (docs/notes/2026-09-04-multiplayer-hapinet.md), which is gone, and
+  players now share maps the way GameRanger rooms do. Issue #544.
+- Citation: Manual section on the multiplayer battle room, which asks
+  every player to have the chosen map.
+
 ## D-003: Raising the dead always works at full supply
 
 - Change: A resurrection or animation takes one frame's work per frame

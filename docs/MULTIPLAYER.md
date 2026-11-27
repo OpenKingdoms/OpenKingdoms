@@ -275,6 +275,11 @@ can skip it.
   class of drift bugs. From protocol 5 it names the watchers after the
   starts, 16 bytes each, which is what tells the players who is watching.
 - CHAT with a scope of room, everyone, team or one player.
+- From protocol 11 the host's client says in a ROOM_EDIT whether the
+  room's map may be sent, and the room state carries that word and each
+  seat's word on how much of the map has come to it. A player without
+  the map asks for it with MAP_REQUEST, a 16 KB piece at a time, and the
+  host answers each with MAP_DATA. See "Sending a map" below.
 - START from the host, which the server gates on the original's rules.
 
 ### Match start
@@ -374,13 +379,17 @@ has TAK_ROOMF_DROP_IN, and adds the seat takeover to the turn stream. It
 changes the layout of no message. The relay honours drop in only from a
 host and a joiner of 6, and an older client is refused a seat in a
 match under way and sees such a room greyed, byte for byte as before.
-The relay speaks 1 to 10 and writes every client the version its HELLO
+Version 11 added the map's share and each seat's map state to the end of
+ROOM_STATE, and MAP_REQUEST and MAP_DATA. The relay asks the host for a
+map only when the host said hello with 11, so an older host is never
+sent a message it does not know.
+The relay speaks 1 to 11 and writes every client the version its HELLO
 named, so a relay deployed before the clients that use it still serves
 the older ones, and it must be deployed first. A room holds clients that
 read a room the same way. Versions 3 to 6 changed nothing a simulation
 reads, so 2 to 6 share a room and 1 has rooms of its own. Versions 7 to
 10 are told where they are used: 7 and 9 with desyncs, 8 with the data
-fingerprint and 10 with rejoining. 2 to 10 share a room. A player
+fingerprint and 10 with rejoining. 2 to 11 share a room. A player
 returning to a match must come back on the
 build and class the match is playing, and on a protocol that reads its
 room, or it is a new session rather than a rejoin.
@@ -649,6 +658,34 @@ the native suite uses.
 The relay never computes a fingerprint. It carries the 32 bytes the host's
 client computed, in the room state and in START_GAME, and a room cannot
 start until it has one.
+
+### Sending a map
+
+A player who lacks the room's map gets the host's copy before the battle
+when the host's copy is a map a player made (N-011). A map the game, The
+Iron Plague or Cavedog's own map packs ship is never sent. The host's
+client knows one by its fingerprint, from a table of the shipped maps'
+fingerprints in `src/game/shipped_maps.c`, or by its files coming out of
+one of the game folder's own `.hpi` archives, and the room names what a
+player without it needs instead. `map_inspect --shipped-table` makes the
+table from a clean install.
+
+What goes is the map's own files, the `.tnt`, `.ota`, `.crt` and `.tdf`
+and the blurb, as one compressed bundle of at most 4 MB, in pieces of
+16 KB. The player asks for four pieces at a time. The relay keeps who
+asked for which piece and nothing of the map: it passes a request to the
+host no more often than once in 25 ms for each player, passes a piece on
+only to the player who asked for it and only once, lets a request the
+host never answers go after 10 s, and stops passing pieces to a player
+who has had twice the largest map for this one. A piece it would queue
+behind a player who is not reading is dropped, and the player asks again.
+
+The player checks the fingerprint of what came against the room's before
+anything is written, keeps it as a `.kmp` map pack in a folder of its own,
+`maps` under the preference directory or, in a browser, beside the game
+files the page keeps, and mounts it at once after the game's own packs.
+It is never put over a map of that name the player has from anywhere
+else. Then it tells the room it has the map, and the host may start.
 
 ---
 

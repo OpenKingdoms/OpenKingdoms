@@ -545,6 +545,104 @@ static void print_json(const MapInspect *m) {
     printf("]\n}\n");
 }
 
+/* ── The maps the original ships, for src/game/shipped_maps.c ──────── */
+
+typedef struct ShippedRow { uint64_t print; const char *share; char name[96]; } ShippedRow;
+
+static int shipped_cmp(const void *a, const void *b) {
+    uint64_t x = ((const ShippedRow *)a)->print, y = ((const ShippedRow *)b)->print;
+    return x < y ? -1 : x > y;
+}
+
+static uint64_t print_of(const uint8_t fp[TAK_MAP_FINGERPRINT_BYTES]) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v = (v << 8) | fp[i];
+    return v;
+}
+
+static void shipped_add(ShippedRow *rows, int *n, int cap, uint64_t print,
+                        const char *share, const char *name) {
+    for (int i = 0; i < *n; i++) if (rows[i].print == print) return;
+    if (*n >= cap) return;
+    rows[*n].print = print;
+    rows[*n].share = share;
+    snprintf(rows[*n].name, sizeof rows[*n].name, "%s", name);
+    (*n)++;
+}
+
+/* Run against a clean install, with no map of anyone else's in its Maps
+ * folder: every map the chooser offers as the full mount reads it, then
+ * each of Cavedog's packs on its own, so one shadowed by another still
+ * counts. Prints the table's rows. */
+static int shipped_table(void) {
+    static ShippedRow rows[2048];
+    int n = 0;
+    VFS_Shutdown();
+    if (VFS_Init(TAK_GAME_DIR, NULL) != 0) return 1;
+    TAK_MapEntry *entries = NULL;
+    int count = 0;
+    if (TAK_Maps_Scan(&entries, &count) != 0) return 1;
+    for (int i = 0; i < count; i++) {
+        uint8_t fp[TAK_MAP_FINGERPRINT_BYTES];
+        char path[512], archive[128];
+        if (TAK_MapFingerprint_FromName(entries[i].key, fp) != 0) continue;
+        if (TAK_Maps_FindFile(entries[i].key, "ota", path, sizeof path) != 0) continue;
+        int origin = VFS_FileOrigin(path, archive, sizeof archive);
+        const char *share = origin == VFS_ORIGIN_MAP_PACK ? "TAK_MAPSHARE_MAP_PACK"
+                          : origin != VFS_ORIGIN_GAME ? NULL
+                          : tak_strnicmp(archive, "ip", 2) == 0 ? "TAK_MAPSHARE_EXPANSION"
+                          : "TAK_MAPSHARE_GAME";
+        if (share) shipped_add(rows, &n, 2048, print_of(fp), share, entries[i].key);
+    }
+    TAK_Maps_Free(entries);
+
+    char **packs = NULL;
+    int npacks = 0;
+    if (VFS_ListGameFiles("Maps", ".kmp", &packs, &npacks) == 0) {
+        for (int i = 0; i < npacks; i++) {
+            char full[1024];
+            snprintf(full, sizeof full, "%s/Maps/%s", TAK_GAME_DIR, packs[i]);
+            HPIArchive *a = HPI_OpenArchive(full);
+            char **otas = NULL;
+            int nota = 0;
+            if (a && HPI_ListFiles(a, "kmap/*.ota", &otas, &nota) == 0) {
+                for (int k = 0; k < nota; k++) {
+                    char stem[256];
+                    snprintf(stem, sizeof stem, "%s", otas[k]);
+                    char *dot = strrchr(stem, '.');
+                    if (dot) *dot = '\0';
+                    static const char *const ext[4] = { "tnt", "ota", "crt", "tdf" };
+                    void *data[4] = { NULL, NULL, NULL, NULL };
+                    uint32_t size[4] = { 0, 0, 0, 0 };
+                    for (int e = 0; e < 4; e++) {
+                        char p[300];
+                        snprintf(p, sizeof p, "%s.%s", stem, ext[e]);
+                        if (HPI_ReadFile(a, p, &data[e], &size[e]) != 0) data[e] = NULL;
+                    }
+                    TAK_MapFiles f = { data[0], size[0], data[1], size[1],
+                                       data[2], size[2], data[3], size[3] };
+                    uint8_t fp[TAK_MAP_FINGERPRINT_BYTES];
+                    if (TAK_MapFingerprint_FromFiles(&f, fp) == 0)
+                        shipped_add(rows, &n, 2048, print_of(fp), "TAK_MAPSHARE_MAP_PACK",
+                                    stem + 5);
+                    for (int e = 0; e < 4; e++) HPI_FreeBuffer(data[e]);
+                    tak_free(otas[k]);
+                }
+                tak_free(otas);
+            }
+            if (a) HPI_CloseArchive(a);
+            tak_free(packs[i]);
+        }
+        tak_free(packs);
+    }
+    qsort(rows, (size_t)n, sizeof rows[0], shipped_cmp);
+    for (int i = 0; i < n; i++)
+        printf("    { 0x%016llxull, %s },  /* %s */\n", (unsigned long long)rows[i].print,
+               rows[i].share, rows[i].name);
+    fprintf(stderr, "map_inspect: %d shipped maps\n", n);
+    return 0;
+}
+
 static int selftest(void) {
     MapInspect m;
     if (inspect_map("maps/Maps/Ground War.ota", &m) != 0) return 1;
@@ -593,6 +691,12 @@ int main(int argc, char **argv) {
         TAK_Maps_Free(entries);
         VFS_Shutdown();
         return 0;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "--shipped-table") == 0) {
+        rc = shipped_table();
+        VFS_Shutdown();
+        return rc;
     }
 
     if (argc > 1 && strcmp(argv[1], "--selftest") == 0) {

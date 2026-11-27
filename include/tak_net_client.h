@@ -72,6 +72,9 @@ typedef struct {
 #define TAK_NC_CMDS_MAX   65536
 #define TAK_NC_TURN_ARENA (4u << 20)
 
+/* Requests for the room's map a host holds until it answers them. */
+#define TAK_NC_MAP_ASKS   32
+
 /* How often a client measures its own round trip, the relay's own
  * heartbeat cadence. */
 #define TAK_NC_PING_MS    2000u
@@ -149,6 +152,19 @@ typedef struct TAK_NetClient {
     uint8_t  snap_in_whole;
     /* Told its world is being replaced: it stops until the GO. */
     uint8_t  snap_waiting;
+    /* The room's map, protocol 11. As host, the pieces players asked
+     * for and not yet answered. As a player without it, the one coming
+     * down, its pieces in any order, once MapBegin names it. */
+    TAK_MsgMapRequest map_asks[TAK_NC_MAP_ASKS];
+    uint8_t  map_ask_count;
+    uint8_t  map_in_fp[TAK_NET_FINGERPRINT_BYTES];
+    uint8_t  map_in_on;
+    uint8_t  map_in_refused;   /* the host said it cannot send it */
+    uint8_t  map_in_bad;       /* pieces that disagree on its size */
+    uint8_t *map_in;
+    uint32_t map_in_total, map_in_got;
+    uint8_t  map_in_have[TAK_NET_MAP_MAX / TAK_NET_MAP_CHUNK / 8];
+    uint64_t map_in_heard_ms;  /* the last piece, or the begin */
     /* Ours and rising. It is not what orders the commands, the turn
      * is, but it lets the server see a gap. */
     uint32_t cmd_seq;
@@ -213,6 +229,23 @@ size_t TAK_NetClient_SnapshotPump(TAK_NetClient *c, size_t budget);
 int  TAK_NetClient_SnapshotResult(TAK_NetClient *c, int ok);
 /* Drop the snapshot that came down. */
 void TAK_NetClient_SnapshotDrop(TAK_NetClient *c);
+
+/* ── The room's map, protocol 11 ───────────────────────────────────── */
+
+/* Start taking the map with this fingerprint, dropping any other. */
+void TAK_NetClient_MapBegin(TAK_NetClient *c, const uint8_t fp[TAK_NET_FINGERPRINT_BYTES],
+                            uint64_t now_ms);
+void TAK_NetClient_MapDrop(TAK_NetClient *c);
+/* Ask the host, through the relay, for the piece at offset. */
+int  TAK_NetClient_MapAsk(TAK_NetClient *c, uint32_t offset);
+/* Whether the piece at offset has come. */
+int  TAK_NetClient_MapHave(const TAK_NetClient *c, uint32_t offset);
+/* As host: the oldest request held, 1 with *out filled and taken. */
+int  TAK_NetClient_MapTakeAsk(TAK_NetClient *c, TAK_MsgMapRequest *out);
+/* As host: whether a whole piece fits in the out queue now, leaving
+ * room for everything else the room says. */
+int  TAK_NetClient_MapCanSend(const TAK_NetClient *c);
+int  TAK_NetClient_MapSend(TAK_NetClient *c, const TAK_MsgMapData *m);
 
 /* Bytes the host should send, and how many of them it managed. Every
  * message is whole, so a host that frames them can take one at a time

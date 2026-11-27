@@ -683,6 +683,7 @@
   var STORE = 'game';                 /* OPFS directory holding the archives */
   var MUSIC = 'Music';                /* subfolder for the music tracks */
   var MAPS = 'Maps';                  /* subfolder for the .kmp map packs */
+  var RECEIVED = 'Received';          /* map packs other players sent (Paths_ReceivedMapDir) */
   var MOVIES = 'Movies';              /* subfolder for the .bik clips */
   var GUI = 'Gui';                    /* Movies/Gui: the menu and loading pieces */
   var MODELS = 'models3d';            /* an artist's .glb models for the 3D view */
@@ -964,6 +965,9 @@
       showPicker(); say('The engine stopped: ' + what, true);
     },
     okOfferLeaderboard: offerLeaderboard,
+    /* A map another player sent, checked and mounted by the engine,
+       kept beside the game files so a reload still has it. */
+    okKeepReceived: function (rel) { keepReceived(rel); },
     /* A battle starting or ending, or an engine error (tak_web_stats.h). */
     okStats: function (kind, data) { count('game', kind, data); },
     /* Join in the game's own lobby on a room that plays a mod we lack:
@@ -1100,6 +1104,7 @@
     try { FS.mkdir('/game'); } catch (e) {}
     try { FS.mkdir('/game/' + MUSIC); } catch (e) {}
     try { FS.mkdir('/game/' + MAPS); } catch (e) {}
+    try { FS.mkdir('/game/' + RECEIVED); } catch (e) {}
     try { FS.mkdir('/game/' + MOVIES); } catch (e) {}
     try { FS.mkdir('/game/' + MOVIES + '/' + GUI); } catch (e) {}
     mkdirp(FS, DATA + '/' + MODELS);
@@ -1977,7 +1982,7 @@
   }
 
   /* Lists {rel, handle} for the archives at the root, the wavs in Music/,
-   * the map packs in Maps/ and the clips under Movies/. */
+   * the map packs in Maps/ and Received/ and the clips under Movies/. */
   function cacheEntries(dir) {
     var out = [];
     function sub(path, want) {
@@ -2013,6 +2018,7 @@
       if (h.kind === 'file' && isArchive(name)) out.push({ rel: name, handle: h });
     }).then(function () { return sub([MUSIC], isWav); })
       .then(function () { return sub([MAPS], isKmp); })
+      .then(function () { return sub([RECEIVED], isKmp); })
       .then(function () { return sub([MODELS], isModel); })
       .then(function () { return sub([OBJECTS], isObject); })
       .then(function () { return sub([MOVIES], isBik); })
@@ -2067,6 +2073,22 @@
       }
       return next();
     }).catch(function (e) { console.warn('[openkingdoms] cache write failed', e); return false; });
+  }
+
+  /* Only where the game's files are kept already: without them a
+     reload starts from the picker, and the map would wait unread. */
+  function keepReceived(rel) {
+    if (!/^Received\/[^\/]+\.kmp$/i.test(rel)) return;
+    var FS = Module.FS || window.FS;
+    var bytes;
+    try { bytes = FS.readFile('/game/' + rel); } catch (e) { return; }
+    opfsDir(false).then(function (dir) {
+      if (!dir) return;
+      return dir.getDirectoryHandle(RECEIVED, { create: true })
+        .then(function (d) { return d.getFileHandle(rel.slice(RECEIVED.length + 1), { create: true }); })
+        .then(function (h) { return h.createWritable(); })
+        .then(function (w) { return w.write(bytes).then(function () { return w.close(); }); });
+    }).catch(function (e) { console.warn('[openkingdoms] a received map was not kept', e); });
   }
 
   function clearCache() {
