@@ -148,9 +148,13 @@ newly snaps to (legacy:243846-243868). There are no doubles, since
 placing one clears the valid flag for its cell.
 
 A placing click gives the order to every selected builder that can
-build the def (legacy:39143-39258, 39194-39256), as a build order for a
-walking builder or a flying one, or as help to build. The engine gives
-it to the first that can take the site, see M-013.
+build the def, a limited one only for a def on its own list
+(legacy:39198-39256), as a build order for a walking builder or a flying
+one. The build menu shows only while one unit is selected
+(legacy:153423-153437), and a change of selection ends the placement
+(legacy:242517-242527), so in the original that is one builder. The
+engine shows the first selected unit's menu for a group and sends each
+builder of it whose own list holds the def, see M-013.
 
 ## A build order
 
@@ -180,10 +184,10 @@ neither counts a flyer in the air or one that never lands, and a
 summons or a building goes up under a Harpy overhead without waiting
 for it. A flyer that has landed holds its cells like any walker.
 
-The engine waits and gives up in silence, see M-015. A later builder of
-the same player that finds a frame of the same building on its site
-joins it in the engine, where the original's reports the target
-blocked, see M-013.
+The engine waits and gives up in silence, see M-015. A builder of the
+same player sent to the same site joins the frame in the engine once
+another raises it, where the original's reports the target blocked, see
+M-013.
 
 ## Helping build
 

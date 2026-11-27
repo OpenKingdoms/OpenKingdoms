@@ -117,6 +117,11 @@ typedef struct BattleConfig {
      * hurts, and a wall's or a building's rubble blocks until swept.
      * A room option, off by default. */
     int remastered;
+
+    /* 1 runs a scripted map's .crt, the room's Use Map Script
+     * (legacy:139234). Only a match sets it: the original runs one in a
+     * multiplayer game alone (legacy:177664). */
+    int map_script;
 } BattleConfig;
 
 /* The lobby row that turns them on, and its help line. */

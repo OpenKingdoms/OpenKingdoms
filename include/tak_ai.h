@@ -47,7 +47,7 @@ enum {
     TAK_AI_COUNT_REGROUPED, TAK_AI_COUNT_FERRIES, TAK_AI_COUNT_LANDINGS,
     TAK_AI_COUNT_RIDES, TAK_AI_COUNT_ASHORE, TAK_AI_COUNT_MONARCH_HOME,
     TAK_AI_COUNT_ARMED_SECONDARY, TAK_AI_COUNT_ARMED_SPECIAL,
-    TAK_AI_COUNT_KINDS
+    TAK_AI_COUNT_FERRIES_SUNK, TAK_AI_COUNT_KINDS
 };
 int  TAK_AI_DebugCount(int player_id, int kind);
 /* Where a seat's ferry stands: 0 none, 1 gathering at the shore, 2
@@ -57,6 +57,11 @@ int  TAK_AI_DebugFerryStage(int player_id);
 int  TAK_AI_DebugFirstLanding(int player_id);
 /* The unit a seat cut off by water would ferry a wave to, -1 when not. */
 int  TAK_AI_DebugFerryAim(int player_id);
+/* Where the seat's first ferry under way sets its wave down, 0 for none. */
+int  TAK_AI_DebugFerryLanding(int player_id, int32_t *x, int32_t *y);
+/* Whether a walker stands on ground that walks to (ex, ey) and not to
+ * (hx, hy), its own class asked: over the water from home. */
+int  TAK_AI_DebugOverWater(int handle, int32_t hx, int32_t hy, int32_t ex, int32_t ey);
 /* The method the seat's army was last planned by, "" before any. */
 const char *TAK_AI_DebugWaveReason(int player_id);
 /* Which of the army's behaviours of A-007 a seat uses, for measuring
@@ -78,7 +83,8 @@ const char *TAK_AI_DebugWaveReason(int player_id);
 #define TAK_AI_TACTIC_RIDE      8192 /* a builder rides to a hard pad (A-016) */
 #define TAK_AI_TACTIC_MONARCH   16384 /* a monarch the game rides on keeps home (A-017) */
 #define TAK_AI_TACTIC_WEAPONS   32768 /* the original's choice of attack (legacy:19008) */
-#define TAK_AI_TACTIC_ALL       65535
+#define TAK_AI_TACTIC_LANDING   65536 /* a crossing that lands in force (A-019) */
+#define TAK_AI_TACTIC_ALL       131071
 void TAK_AI_DebugSetTactics(int player_id, int mask);
 /* The attack choice a computer's unit makes, run for one unit whatever
  * seat owns it, for a measuring run. */

@@ -1,9 +1,10 @@
 /*
  * credits.c -- Full-screen clip playback (GAMESTATE_CREDITS).
  *
- * Plays one clip out of the game folder, centred on the 640x480 canvas,
- * then goes to the state it was asked for. A key that types a character
- * or an Alt key ends it early, a click does not (legacy:34816-34849).
+ * Plays one clip out of the game folder, or two in a row, centred on
+ * the 640x480 canvas, then goes to the state it was asked for. A key
+ * that types a character or an Alt key ends it early, a click does not
+ * (legacy:34816-34849).
  * The music is paused while it plays (legacy:140736).
  */
 
@@ -31,21 +32,29 @@ static struct {
     BinkPlayer  *player;
     int          return_state;
     int          prev_key_down;
+    char         then[128];     /* the clip after this one, "" for none */
 } cr;
 
 /* What the next entry to the screen plays, and where it goes after. */
 static char s_request[128] = CREDITS_CLIP;
+static char s_then[128];
 static int  s_request_state = GAMESTATE_MENU;
 
 void Credits_Request(const char *rel_path, int next_state) {
+    Credits_RequestPair(rel_path, NULL, next_state);
+}
+
+void Credits_RequestPair(const char *first, const char *then, int next_state) {
     snprintf(s_request, sizeof(s_request), "%s",
-             (rel_path && rel_path[0]) ? rel_path : CREDITS_CLIP);
+             (first && first[0]) ? first : CREDITS_CLIP);
+    snprintf(s_then, sizeof(s_then), "%s", then ? then : "");
     s_request_state = next_state;
 }
 
 int Credits_ReturnState(void) { return cr.return_state; }
 
 const char *Credits_RequestedClip(void) { return s_request; }
+const char *Credits_RequestedThen(void) { return s_then; }
 int Credits_RequestedState(void) { return s_request_state; }
 
 /* A key the original's player would have seen as a character or an
@@ -61,31 +70,43 @@ static int dismissing_key_down(void) {
            keys[SDL_SCANCODE_F10];
 }
 
+/* Opens a clip and says so, the line the browser smoke waits for. */
+static BinkPlayer *open_clip(const char *rel) {
+    BinkPlayer *bp = BinkPlayer_OpenClip(rel);
+    if (bp)
+        fprintf(stderr, "Credits: playing %s %dx%d @ %.3fs/frame, %d frames\n",
+                rel, BinkPlayer_GetWidth(bp), BinkPlayer_GetHeight(bp),
+                BinkPlayer_GetFrameDuration(bp), BinkPlayer_GetFrameCount(bp));
+    return bp;
+}
+
 int Credits_Init(TAK_Platform *platform) {
     (void)platform;
     memset(&cr, 0, sizeof(cr));
     cr.return_state = s_request_state;
     char rel[sizeof(s_request)];
     snprintf(rel, sizeof(rel), "%s", s_request);
+    snprintf(cr.then, sizeof(cr.then), "%s", s_then);
     /* The request is spent: the door's own entry plays the credits. */
     snprintf(s_request, sizeof(s_request), "%s", CREDITS_CLIP);
+    s_then[0] = '\0';
     s_request_state = GAMESTATE_MENU;
 
-    cr.player = BinkPlayer_OpenClip(rel);
+    cr.player = open_clip(rel);
     if (!cr.player && strcmp(rel, CREDITS_CLIP) == 0) {
         /* Some installs carry one credits file and not the other. */
-        cr.player = BinkPlayer_OpenClip("Movies/PostTakCredits.bik");
+        cr.player = open_clip("Movies/PostTakCredits.bik");
+    }
+    /* A first clip the install lacks leaves the second to play. */
+    if (!cr.player && cr.then[0]) {
+        snprintf(rel, sizeof(rel), "%s", cr.then);
+        cr.then[0] = '\0';
+        cr.player = open_clip(rel);
     }
     if (!cr.player) {
         fprintf(stderr, "Credits: could not open %s\n", rel);
         return -1;
     }
-    fprintf(stderr, "Credits: playing %s %dx%d @ %.3fs/frame, %d frames\n",
-            rel,
-            BinkPlayer_GetWidth(cr.player),
-            BinkPlayer_GetHeight(cr.player),
-            BinkPlayer_GetFrameDuration(cr.player),
-            BinkPlayer_GetFrameCount(cr.player));
     /* A key still held from the screen before does not count. */
     cr.prev_key_down = dismissing_key_down();
     TAK_Music_Pause(1);
@@ -114,6 +135,9 @@ int Credits_Tick(TAK_Platform *platform, float frame_dt) {
     if (!cr.initialized) return GAMESTATE_MENU;
     if (!cr.player)      return cr.return_state;
 
+    /* A key ends the pair, not just the clip on show: the original
+     * skips a mission's clip when its shield was cut short
+     * (legacy:241646-241649). */
     int key_down = dismissing_key_down();
     int key_edge = key_down && !cr.prev_key_down;
     cr.prev_key_down = key_down;
@@ -136,6 +160,12 @@ int Credits_Tick(TAK_Platform *platform, float frame_dt) {
 
     UI_Present(platform);
 
-    if (BinkPlayer_IsFinished(cr.player)) return cr.return_state;
+    if (BinkPlayer_IsFinished(cr.player)) {
+        if (!cr.then[0]) return cr.return_state;
+        BinkPlayer_Close(cr.player);
+        cr.player = open_clip(cr.then);
+        cr.then[0] = '\0';
+        if (!cr.player) return cr.return_state;
+    }
     return GAMESTATE_CREDITS;
 }

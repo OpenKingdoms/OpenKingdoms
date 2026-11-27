@@ -499,7 +499,10 @@ static void host_game(void) {
         (defaults.power_codes            ? TAK_ROOMOPT_POWER_CODES      : 0u) |
         (defaults.slow_game              ? TAK_ROOMOPT_SLOW_GAME        : 0u) |
         (defaults.crusades_balance       ? TAK_ROOMOPT_CRUSADES_BALANCE : 0u) |
-        (defaults.remastered             ? TAK_ROOMOPT_REMASTERED       : 0u);
+        (defaults.remastered             ? TAK_ROOMOPT_REMASTERED       : 0u) |
+        /* On, as the original turns it on for a scripted map
+         * (legacy:138696). It changes nothing on any other. */
+        TAK_ROOMOPT_MAP_SCRIPT;
     if (first_map(cr.map_name, sizeof cr.map_name, cr.map_fingerprint) != 0) {
         /* Without a map the server would take the room and then refuse
          * every attempt to start it, which is a worse answer than this. */

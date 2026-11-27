@@ -24,6 +24,7 @@
 #include "tak_sim_rand.h"
 #include "tak_ai.h"
 #include "tak_mission_script.h"
+#include "tak_map_scenario.h"
 #include "tak_obj3d.h"
 #include <string.h>
 
@@ -141,6 +142,7 @@ void World_End(TAK_Platform *plat) {
     TNT_Close(&g_world->tnt);
     Mission_Free(&g_world->mission);
     MissionScript_End();
+    MapScenario_End();
     tak_free(g_world);
     g_world = NULL;
 }

@@ -1517,18 +1517,24 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
         int press = (back && !bs.prev_back) || platform->pressed_backspace;
         if (MapBrowser_Type(&bs.browser, platform, press)) bs_query_changed();
         bs.prev_back = back;
+        int at = MapBrowser_ListKeys(&bs.browser, platform,
+                                     MapBrowser_ShownAt(&bs.browser, bs.selected_map),
+                                     maplist_rows_visible(), &bs.map_scroll);
+        if (at >= 0) {
+            BattleSetup_SelectMap(bs.browser.shown[at]);
+            clamp_map_scroll();
+        }
     }
 
-    /* Also accept mouse-wheel over the map list. */
-    SDL_Event e;
-    while (SDL_PeepEvents(&e, 1, SDL_GETEVENT, SDL_MOUSEWHEEL, SDL_MOUSEWHEEL) > 0) {
+    /* Also accept mouse-wheel over the map list. The pump has the wheel. */
+    if (platform->wheel_dy) {
         SDL_Rect maplist = maplist_rect();
         SDL_Rect track;
         int thumb_h = 1;
         maplist_thumb_travel(&track, &thumb_h);
         SDL_Point pt = { mx, my };
         if (SDL_PointInRect(&pt, &maplist) || SDL_PointInRect(&pt, &track)) {
-            BattleSetup_ScrollMapList(-e.wheel.y);
+            BattleSetup_ScrollMapList(-platform->wheel_dy);
         }
     }
 

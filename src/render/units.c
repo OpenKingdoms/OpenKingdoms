@@ -46,6 +46,7 @@
 #include "tak_sound.h"
 #include "tak_battle_config.h"  /* TAK_MAX_PLAYERS */
 #include "tak_ai.h"
+#include "tak_mission_script.h"
 #include "tak_terrain.h"
 #include "tak_click_map.h"
 #include "tak_fog.h"
@@ -54,6 +55,7 @@
 #include "tak_palette.h"
 #include "tak_ui.h"
 #include "tak_view_shake.h"
+#include "tak_map_scenario.h"
 #include "tak_gl3d.h"
 #include <limits.h>
 #include <stdio.h>
@@ -421,6 +423,8 @@ static void occ_refresh(int handle);
 static void occ_sync_mobile(int handle);
 static int  unit_spawn_facing(int def_idx, int player_id, int color_idx,
                               int32_t x, int32_t y, int facing);
+/* Set around one call that makes a build frame, so its Create sees one. */
+static int  g_spawn_frame;
 static void unit_half_extent(const Unit *u, const UnitDef *d, int dflt,
                              int *hx, int *hz);
 
@@ -2185,6 +2189,7 @@ static void credit_kill_tally(Unit *shooter, int killer_player, const Unit *vict
     if (victim->player_id == killer_player) return;
     const UnitDef *vdef = Units_GetDef(victim->def_idx);
     if (!vdef) return;
+    MapScenario_NoteKill(killer_player, victim->def_idx);
     /* An unfinished victim earns nothing: no rank, no tally, and no
      * kill, score or bounty for the player (legacy:227307-227326). */
     if (victim->under_construction) return;
@@ -2618,70 +2623,37 @@ static void play_projectile_hit_sound(const Projectile *p, const Unit *victim) {
     }
 }
 
-/* Alarm cues for the local player (legacy:15218-15235). A unit of the
- * viewer hit by another player raises the kingdom's underattack_sound
- * from sidedata, held off for underattack_delay seconds after each
- * play (legacy:221298-221325). A commander raises AlarmMon instead,
- * fifteen seconds apart, selected or not (legacy:221328-221340). A
- * selected unit stays quiet: the player is looking at it. */
-static uint32_t g_sound_tick;             /* advances once per Units_TickEngines */
-static uint32_t g_alarm_next_tick;        /* side alarm may play again at this tick */
-static uint32_t g_alarm_mon_next_tick;
-static int      g_alarm_side_loaded = -1; /* TakSide the cached sidedata row is for */
-static char     g_alarm_wav[32];
-static uint32_t g_alarm_delay_ticks = 30 * 60;
+/* Alarm cues for the local player (legacy:15223-15234). A commander
+ * of the viewer hit by another player raises AlarmMon, at most once in
+ * fifteen seconds, on screen or off (legacy:221328-221340). Any other
+ * unit raises the underattack_sound of its own side's sidedata while it
+ * is off screen, at most once in that side's underattack_delay seconds
+ * (legacy:221298-221325). Both timers run on the clock, as the
+ * original's do, not on battle ticks (legacy:221306, legacy:221333). */
+static uint64_t g_alarm_next_ms;
+static uint64_t g_alarm_mon_next_ms;
 
-static void copy_bounded(char *dst, size_t cap, const char *src);
-
-static void load_side_alarm(int side) {
-    g_alarm_side_loaded = side;
-    g_alarm_wav[0] = '\0';
-    g_alarm_delay_ticks = 30 * 60;
-    static const char *const paths[] = {
-        "data/gamedata/sidedata.tdf", "gamedata/sidedata.tdf"
-    };
-    for (int p = 0; p < 2; p++) {
-        TDFFile *tdf = TDF_Open(paths[p]);
-        if (!tdf) continue;
-        if (TDF_Load(tdf) != 0) { TDF_Close(tdf); continue; }
-        char section[16];
-        snprintf(section, sizeof(section), "SIDE%d", side);
-        if (TDF_PushSection(tdf, section) == 0) {
-            copy_bounded(g_alarm_wav, sizeof(g_alarm_wav),
-                         TDF_ReadString(tdf, "underattack_sound", ""));
-            float delay = TDF_ReadFloat(tdf, "underattack_delay", 30.0f);
-            if (delay < 0.0f) delay = 0.0f;
-            g_alarm_delay_ticks = (uint32_t)(delay * 60.0f + 0.5f);
-            TDF_PopSection(tdf);
-        }
-        TDF_Close(tdf);
-        return;
-    }
-}
-
-/* Bodies follow the selection state they read. */
-static int  unit_is_selected(const Unit *u);
+static int unit_on_screen(const GameWorld *w, const Unit *u);
 static void unit_alarm_on_damage(const Unit *victim, int shooter_handle);
 
 static void unit_alarm_on_damage_impl(const Unit *victim, int shooter_handle) {
-    if (!victim || victim->player_id != 1) return;
+    if (!victim || (int)victim->player_id != Units_LocalPlayer()) return;
     if (shooter_handle < 0 || shooter_handle >= g_unit_count) return;
     if (g_units[shooter_handle].player_id == victim->player_id) return;
     const UnitDef *d = Units_GetDef(victim->def_idx);
+    const uint64_t now = SDL_GetTicks64();
     if (d && d->commander) {
-        if (g_sound_tick < g_alarm_mon_next_tick) return;
-        g_alarm_mon_next_tick = g_sound_tick + 15 * 60;
+        if (now < g_alarm_mon_next_ms) return;
+        g_alarm_mon_next_ms = now + 15000;
         GameSound_PlayUI("AlarmMon");
         return;
     }
-    if (unit_is_selected(victim)) return;
-    const GameWorld *world = World_Get();
-    int side = world ? Units_PlayerSide(Units_LocalPlayer()) : 0;
-    if (side != g_alarm_side_loaded) load_side_alarm(side);
-    if (!g_alarm_wav[0]) return;
-    if (g_sound_tick < g_alarm_next_tick) return;
-    g_alarm_next_tick = g_sound_tick + g_alarm_delay_ticks;
-    GameSound_PlayUI(g_alarm_wav);
+    if (unit_on_screen(World_Get(), victim)) return;
+    const TakSideInfo *side = d ? Sides_Get(Sides_FindByPrefix(d->side)) : NULL;
+    if (!side || !side->underattack_sound[0]) return;
+    if (now < g_alarm_next_ms) return;
+    g_alarm_next_ms = now + (uint64_t)(side->underattack_delay * 1000.0f + 0.5f);
+    GameSound_PlayUI(side->underattack_sound);
 }
 
 int Units_CaptureThreshold(int veteran_level) {
@@ -4411,13 +4383,6 @@ int   Units_GetShadowsOn(void)           { return g_shadows_on; }
 static int g_selection[UNITS_SELECTION_MAX];
 static int g_selection_count = 0;
 
-static int unit_is_selected(const Unit *u) {
-    for (int s = 0; s < g_selection_count; s++) {
-        if (g_selection[s] >= 0 && &g_units[g_selection[s]] == u) return 1;
-    }
-    return 0;
-}
-
 static void unit_alarm_on_damage(const Unit *victim, int shooter_handle) {
     unit_alarm_on_damage_impl(victim, shooter_handle);
 }
@@ -4549,6 +4514,15 @@ int Units_GetVeteranLevel(int handle) {
     return lvl;
 }
 
+void Units_SetVeteranLevel(int handle, int level) {
+    if (handle < 0 || handle >= g_unit_count) return;
+    Unit *u = &g_units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d || d->noveteran || d->kill_xp_value <= 0) return;
+    if (level < 0) level = 0;
+    u->experience_pts = (int32_t)(((int64_t)level * 2 + 1) * d->kill_xp_value / 2);
+}
+
 void Units_DebugSetVeteranLevel(int handle, int level) {
     if (handle < 0 || handle >= g_unit_count) return;
     Unit *u = &g_units[handle];
@@ -4623,6 +4597,23 @@ static int32_t unit_drawn_y(const GameWorld *world, const Unit *u) {
     return ClickMap_DrawnY(u->world_y,
                            (float)Terrain_SampleHeight(world, u->world_x, u->world_y)
                                + Units_DrawnAlt(world, u), g_tan_tilt);
+}
+
+/* Off screen: the model's box, drawn where the unit stands, misses the
+ * battle view, the test the original's on screen list is made by
+ * (legacy:237270-237333, legacy:237338-237356). */
+static int unit_on_screen(const GameWorld *w, const Unit *u) {
+    int lo, hi;
+    def_body_span(u->def_idx, &lo, &hi);
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!w || !d) return 0;
+    const int32_t ay = unit_drawn_y(w, u);
+    const int32_t x0 = u->world_x + d->body_min_x_px;
+    const int32_t x1 = u->world_x + d->body_max_x_px;
+    const int32_t y0 = ay + d->body_min_z_px - (int32_t)((float)hi * g_tan_tilt);
+    const int32_t y1 = ay + d->body_max_z_px - (int32_t)((float)lo * g_tan_tilt);
+    return x0 <= w->cam_x + w->viewport_w && x1 >= w->cam_x &&
+           y0 <= w->cam_y + w->viewport_h && y1 >= w->cam_y;
 }
 
 void Units_GroundUnderPoint(int32_t flat_x, int32_t flat_y,
@@ -7175,6 +7166,19 @@ void Units_SnapBuildSiteFacing(int def_idx, int facing,
     *world_y = floor_div16(*world_y - fz * 8 + 8) * 16 + fz * 8;
 }
 
+void Units_MissionPlacePoint(int def_idx, int corner, int32_t *world_x,
+                             int32_t *world_y) {
+    const UnitDef *d = Units_GetDef(def_idx);
+    if (!d || !world_x || !world_y) return;
+    if (corner) {
+        int fx, fz;
+        build_site_cells(d, 0, &fx, &fz);
+        *world_x += fx * 8;
+        *world_y += fz * 8;
+    }
+    if (!build_def_walks(d)) Units_SnapBuildSiteFacing(def_idx, 0, world_x, world_y);
+}
+
 /* The def's water-depth window. The move class owns it when the def
  * names one, else the def's own keys do (legacy:163199-163202). */
 static void unit_water_depth_window(const GameWorld *w, const UnitDef *def,
@@ -7607,10 +7611,12 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
     /* A product leaves the yard as a unit and never stands turned. */
     facing = factory_production ? 0 : Units_DefFacing(building_def_idx, facing);
 
+    g_spawn_frame = 1;
     int new_handle = unit_spawn_facing(building_def_idx,
                                        u->player_id,
                                        u->team_color_idx,
                                        world_x, world_y, facing);
+    g_spawn_frame = 0;
     if (new_handle < 0) return -1;
 
     Unit *bu = &g_units[new_handle];
@@ -7736,6 +7742,22 @@ static int builder_takes_site(const Unit *u, const UnitDef *d, int def_idx,
     if (!build_def_walks(d) || Units_IsBuildSiteFree(def_idx, x, y)) return 1;
     return !Fog_IsVisibleForPlayer(World_Get(), u->player_id, x, y) ||
            unit_spot_clear(d, x, y, 1);
+}
+
+static int unit_def_on_build_list(int builder_def, int def);
+
+int Units_BuildOrderTaker(int handle, int def_idx, int own_list) {
+    if (handle < 0 || handle >= g_unit_count || !Units_GetDef(def_idx)) return 0;
+    const Unit *u = &g_units[handle];
+    const UnitDef *ud = Units_GetDef(u->def_idx);
+    if (u->alive != UNIT_ALIVE_ACTIVE || u->under_construction || !ud ||
+        !(ud->cap_flags & UNIT_CAP_BUILDER))
+        return 0;
+    if ((own_list || ud->builder_limited) &&
+        !unit_def_on_build_list(u->def_idx, def_idx))
+        return 0;
+    return ud->max_velocity > 0.0f ? UNITS_BUILD_TAKER_WALKS
+                                   : UNITS_BUILD_TAKER_STRUCTURE;
 }
 
 int Units_OrderBuild(int builder_handle, int def_idx, int32_t world_x,
@@ -10820,10 +10842,8 @@ void Units_ClearInstances(void) {
     g_transport_sounds[0] = g_transport_sounds[1] = 0;
     g_sim_tick = 0;
     Cob_SetTick(1u);
-    g_sound_tick = 0;
-    g_alarm_next_tick = 0;
-    g_alarm_mon_next_tick = 0;
-    g_alarm_side_loaded = -1;
+    g_alarm_next_ms = 0;
+    g_alarm_mon_next_ms = 0;
     uid_reset();
 }
 
@@ -10953,6 +10973,22 @@ void Units_FogAnchor(int handle, int sight, int32_t *out_x, int32_t *out_y) {
     }
     if (out_x) *out_x = u->fog_x;
     if (out_y) *out_y = u->fog_y;
+}
+
+/* Eye = base + the model's whole span, as measured against the original
+ * (docs/notes/fog.md). */
+void Units_FogEye(int handle, int32_t *out_eye, int32_t *out_tall) {
+    if (handle < 0 || handle >= g_unit_count) return;
+    int base, bottom, top;
+    unit_body_span(&g_units[handle], &base, &bottom, &top);
+    int tall = top - bottom;
+    if (tall < 1) tall = 1;
+    /* Under water the eye counts from the surface, as the ground does, so a
+     * wader keeps its plain sight as in the original. */
+    const GameWorld *w = World_Get();
+    if (w && base < w->water_height) base = w->water_height;
+    if (out_eye) *out_eye = base + tall;
+    if (out_tall) *out_tall = tall;
 }
 
 int Units_LoadBegin(int slot_count, uint32_t next_stable_id) {
@@ -11180,6 +11216,12 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->carry_seq = 0;
     u->carry_next = 0;
     u->under_construction = 0;
+    /* A frame is one before its Create runs, so a script waiting on
+     * BUILD_PERCENT_LEFT waits (legacy:226599-226608, legacy:226779). */
+    if (g_spawn_frame) {
+        u->under_construction = 1;
+        u->health = 1;
+    }
     u->build_hp_accum = 0.0f;
     u->heal_frac_256 = 0;
     u->attack_pct = 100;
@@ -12126,6 +12168,47 @@ int Units_DebugKillHandle(int handle) {
     return handle;
 }
 
+int Units_ScriptKill(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return 0;
+    u->health = 0;
+    apply_killed(u, handle);
+    return 1;
+}
+
+/* The script's heal is capped at full health and its harm has no
+ * attacker, both by a 16 bit amount (legacy:233751-233761). */
+int Units_ScriptHeal(int handle, int amount) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return 0;
+    int64_t hp = (int64_t)u->health + (amount & 0xffff);
+    u->health = hp < u->max_health ? (int32_t)hp : u->max_health;
+    return 1;
+}
+
+int Units_ScriptHarm(int handle, int amount) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return 0;
+    u->health -= amount & 0xffff;
+    if (u->health <= 0) {
+        u->health = 0;
+        apply_killed(u, handle);
+    }
+    return 1;
+}
+
+void Units_ScaleHealth(int handle, int pct) {
+    if (handle < 0 || handle >= g_unit_count) return;
+    Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE || pct < 0) return;
+    int64_t hp = (int64_t)u->health * pct / 100;
+    if (hp > 0x7fffffff) hp = 0x7fffffff;
+    u->health = hp < 1 ? 1 : (int32_t)hp;
+}
+
 /* ── Combat + animation tick ──────────────────────────────────────
  *
  * Per recon (the legacy reference):
@@ -12645,6 +12728,8 @@ static void unit_record_ends(const Unit *u) {
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (w && d && w->mission.objective_count > 0)
         Mission_NoteUnitGone(&w->mission, d->unitname, u->player_id);
+    /* A scripted map's loss tally, at the same moment (legacy:227287). */
+    MapScenario_NoteLoss(u->player_id, u->def_idx);
 }
 
 /* Take a unit off the map with no death sequence: the original's death
@@ -16769,7 +16854,8 @@ static void cloak_hold(Unit *u, const UnitDef *def, int ticks) {
 static int g_cloak_near[TAK_MAX_UNITS];
 
 /* An enemy its side sees, built and not cloaked itself, inside
- * mincloakdistance (legacy:20826-20845, legacy:20536-20540). */
+ * mincloakdistance (legacy:20826-20845, legacy:20536-20540). A neutral
+ * seat is none, since every seat counts it an ally (legacy:177727-177734). */
 static int cloak_enemy_near(const Unit *u, const UnitDef *def) {
     int r = def->min_cloak_distance;
     if (r <= 0) return 0;
@@ -16781,7 +16867,9 @@ static int cloak_enemy_near(const Unit *u, const UnitDef *def) {
         const Unit *t = &g_units[n < 0 ? k : g_cloak_near[k]];
         if (t->alive != UNIT_ALIVE_ACTIVE || t->under_construction || t->cloaked)
             continue;
-        if (!unit_players_are_enemies(u->player_id, t->player_id)) continue;
+        if (!unit_players_are_enemies(u->player_id, t->player_id) ||
+            Units_HoldsFireOn(u->player_id, t->player_id))
+            continue;
         int64_t dx = (int64_t)t->world_x - u->world_x;
         int64_t dy = (int64_t)t->world_y - u->world_y;
         if (dx * dx + dy * dy > r2) continue;
@@ -17158,6 +17246,34 @@ static int builder_site_frame(int h, int def, int32_t x, int32_t y, int facing) 
     return -1;
 }
 
+/* Its player's frame found on its site: the builder joins it and keeps
+ * its order's def and summons. 1 when it did. */
+static int builder_join_frame(int h, int frame, int def, int endless) {
+    g_leg_taking = 1;
+    int took = Units_OrderRepair(h, frame);
+    g_leg_taking = 0;
+    if (!took) return 0;
+    g_units[h].build_endless = (uint8_t)endless;
+    g_units[h].build_def = (int16_t)def;
+    return 1;
+}
+
+/* Its player's other builders still walking to the same site join the
+ * frame h has just raised there, so a group sent with one click builds
+ * it together, which is ours (M-013). */
+static void builder_site_joiners(int h, int def) {
+    int frame = g_units[h].build_target;
+    for (int j = 0; frame >= 0 && j < g_unit_count; j++) {
+        const Unit *o = &g_units[j];
+        if (j == h || o->alive != UNIT_ALIVE_ACTIVE ||
+            o->player_id != g_units[h].player_id || o->cmd_kind != UNIT_CMD_BUILD ||
+            o->build_target >= 0 || !o->build_held || o->build_def != def)
+            continue;
+        if (builder_site_frame(j, def, o->cmd_x, o->cmd_y, o->build_facing) == frame)
+            builder_join_frame(j, frame, def, o->build_endless);
+    }
+}
+
 /* A builder at its site starts the frame once no unit stands on it. A
  * site only units hold is waited for and the looks counted, anything else
  * in the way, or no room for one more unit, ends the order
@@ -17177,20 +17293,12 @@ static void builder_summon_next(Unit *u, int h, int in_reach) {
             u->build_def = (int16_t)def;
             u->build_tries = 0;
             u->build_wait = 0;
+            builder_site_joiners(h, def);
             return;
         }
     } else {
         int frame = builder_site_frame(h, def, x, y, facing);
-        if (frame >= 0) {
-            g_leg_taking = 1;
-            int took = Units_OrderRepair(h, frame);
-            g_leg_taking = 0;
-            if (took) {
-                u->build_endless = (uint8_t)endless;
-                u->build_def = (int16_t)def;
-                return;
-            }
-        }
+        if (frame >= 0 && builder_join_frame(h, frame, def, endless)) return;
         if (u->build_tries <= SUMMON_LOOKS &&
             (build_def_walks(d) ? unit_spot_clear(d, x, y, 1)
                                 : build_site_test(def, x, y, facing, 0, 0))) {
@@ -17772,11 +17880,11 @@ static void Units_TickCombat(void) {
              * enemy monarchs do not idle forever. A placeholder until
              * the full AIBrain (legacy:15241+) lands. A human's idle
              * army is that human's to order, so this never moves one,
-             * whichever seat this machine plays. */
+             * whichever seat this machine plays, nor one a mission's list holds. */
             if (u->target < 0 && u->cmd_kind == UNIT_CMD_NONE &&
                 u->post_set == UNIT_POST_NONE &&
                 !unit_seat_is_human(u->player_id) &&
-                def->max_velocity > 0.0f)
+                def->max_velocity > 0.0f && !MissionOrders_Holds(i))
             {
                 int weapon_range = (def->num_weapons > 0)
                     ? weapon_effective_range(&def->weapons[0]) : 0;
@@ -18937,7 +19045,6 @@ static void tick_auras(void) {
 void Units_TickEngines(void) {
     g_sim_tick++;
     Cob_SetTick(g_sim_tick);
-    g_sound_tick++;
     /* Sprint 1: per-tick simulation step.
      *   1. Combat: auto-target + damage + movement.
      *   2. Projectiles: advance + hit-test.
@@ -22807,8 +22914,7 @@ static void submit_corpse_models(TAK_Platform *plat,
         if (!fd || !fd->object[0]) continue;
         if (mf->world_x < left || mf->world_x > right) continue;
         if (mf->world_y < top  || mf->world_y > bottom) continue;
-        if (Fog_StateAt(world, mf->world_x, mf->world_y) == TAK_FOG_UNEXPLORED)
-            continue;
+        if (!Features_InstanceShown(world, i)) continue;
         int c = (mf->color_idx >= 0 && mf->color_idx <= 11) ? mf->color_idx : 0;
         g_proj_draw[n] = i;
         g_proj_key[n]  = mf->global_idx * 12 + c;
@@ -23891,7 +23997,7 @@ static int feature_screen_anchor(const struct GameWorld *world, int i,
     if (sx < -128 || sy < -128 ||
         sx > world->viewport_w + 128 ||
         sy > world->viewport_h + 128) return 0;
-    if (Fog_StateAt(world, wx, wy) == TAK_FOG_UNEXPLORED) return 0;
+    if (!Features_InstanceShown(world, i)) return 0;
     *out_sx = sx;
     *out_sy = sy;
     return 1;
@@ -24856,7 +24962,7 @@ static void render_feature_shadows(const struct GameWorld *world, TAK_Platform *
             mf->world_x > world->cam_x + world->viewport_w + margin) continue;
         if (mf->world_y < world->cam_y - margin ||
             mf->world_y > world->cam_y + world->viewport_h + margin) continue;
-        if (Fog_StateAt(world, mf->world_x, mf->world_y) == TAK_FOG_UNEXPLORED) continue;
+        if (!Features_InstanceShown(world, i)) continue;
         const int c = (mf->color_idx >= 0 && mf->color_idx <= 11) ? mf->color_idx : 0;
         const UnitMesh *m = corpse_model_mesh(mf->global_idx, c);
         if (!m || m->vert_count == 0 || ensure_scratch(m->vert_count, m->tri_count * 3) != 0)

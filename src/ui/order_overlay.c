@@ -1,12 +1,13 @@
 /*
  * order_overlay.c -- a selection's orders, drawn while Shift is held.
  *
- * The owner's rule, as in Beyond All Reason: with Shift down each
- * selected unit shows a thin line through the orders it holds, a marker
- * at each and a ghost for each building it has queued. Without Shift
- * nothing is drawn. The route is read through Units_OrdersOf, the same
- * read the remaster's order lines use, and nothing here writes to a
- * unit.
+ * With Shift down each selected unit shows a thin line through the
+ * orders it holds, a marker at each and a ghost for each building it has
+ * queued, and with a builder in focus every unit of yours shows its
+ * queued buildings, as the original draws them (legacy:210741-210744,
+ * legacy:238278-238350). Without Shift nothing is drawn. The route is
+ * read through Units_OrdersOf, the same read the remaster's order lines
+ * use, and nothing here writes to a unit.
  */
 
 #include "tak_order_overlay.h"
@@ -20,8 +21,12 @@
 #include <string.h>
 
 static int g_shift;
+static int g_hover = -1;
+static int g_ghosts_drawn;
 
 void OrderOverlay_SetShift(int held) { g_shift = held ? 1 : 0; }
+void OrderOverlay_SetHover(int handle) { g_hover = handle; }
+int  OrderOverlay_DebugGhosts(void) { return g_ghosts_drawn; }
 
 /* ── the route ────────────────────────────────────────────────────── */
 
@@ -244,68 +249,143 @@ static void overlay_marker(SDL_Renderer *r, const OrderStop *st, float x,
     }
 }
 
+/* A live unit whose type has a build list. */
+static int overlay_has_build_list(const Unit *units, int count, int h) {
+    int menu[1];
+    return h >= 0 && h < count && units[h].alive == UNIT_ALIVE_ACTIVE &&
+           Units_GetBuildMenu(units[h].def_idx, menu, 1) > 0;
+}
+
+/* Whether a builder is in focus: the one unit of yours selected or the
+ * unit under the pointer (legacy:238305-238307, the lone unit counted at
+ * legacy:153469-153475). */
+static int overlay_builder_in_focus(const int *sel, int n_sel,
+                                    const Unit *units, int count, int me) {
+    int lone = -1, own = 0;
+    for (int s = 0; s < n_sel; s++) {
+        int h = sel[s];
+        if (h < 0 || h >= count || units[h].alive != UNIT_ALIVE_ACTIVE ||
+            units[h].player_id != me)
+            continue;
+        lone = h;
+        own++;
+    }
+    return (own == 1 && overlay_has_build_list(units, count, lone)) ||
+           overlay_has_build_list(units, count, g_hover);
+}
+
+static int overlay_selected(const int *sel, int n_sel, int h) {
+    for (int s = 0; s < n_sel; s++)
+        if (sel[s] == h) return 1;
+    return 0;
+}
+
+typedef struct OverlayFrame {
+    const GameWorld *world;
+    TAK_Platform *plat;
+    const Unit *units;
+    int count;
+    float tilt;
+    int ghosts, drawn;
+    OrderStop stops[ORDER_OVERLAY_STOPS_MAX];
+} OverlayFrame;
+
+/* One unit's queued buildings, and with route its line and markers too. */
+static void overlay_unit(OverlayFrame *f, int h, int route) {
+    const GameWorld *world = f->world;
+    const Unit *u = &f->units[h];
+    const int vw = world->viewport_w, vh = world->viewport_h;
+    int n = OrderOverlay_Plan(h, f->stops, ORDER_OVERLAY_STOPS_MAX);
+    if (n > ORDER_OVERLAY_STOPS_MAX) n = ORDER_OVERLAY_STOPS_MAX;
+    if (n <= 0) return;
+
+    /* Ghosts first, so the route reads over them. */
+    for (int i = 0; i < n && f->ghosts < OVERLAY_GHOSTS_MAX; i++) {
+        const OrderStop *st = &f->stops[i];
+        if (!st->ghost) continue;
+        float gx, gy;
+        overlay_screen(world, f->tilt, st->x, st->y, 0.0f, &gx, &gy);
+        if (gx < -OVERLAY_GHOST_MARGIN || gy < -OVERLAY_GHOST_MARGIN ||
+            gx > vw + OVERLAY_GHOST_MARGIN || gy > vh + OVERLAY_GHOST_MARGIN)
+            continue;
+        Units_RenderBuildGhostFacing(f->plat, world, st->def, u->team_color_idx,
+                                     st->x, st->y, 110, UNITS_GHOST_QUEUED,
+                                     st->facing);
+        f->ghosts++;
+    }
+    if (!route) return;
+
+    SDL_Renderer *r = f->plat->renderer;
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+    float ax, ay;
+    overlay_screen(world, f->tilt, u->world_x, u->world_y, Units_DrawnAlt(world, u),
+                   &ax, &ay);
+    for (int i = 0; i < n; i++) {
+        const OrderStop *st = &f->stops[i];
+        const Unit *t = st->target >= 0 && st->target < f->count
+                      ? &f->units[st->target] : NULL;
+        float bx, by;
+        overlay_screen(world, f->tilt, st->x, st->y,
+                       t ? Units_DrawnAlt(world, t) : 0.0f, &bx, &by);
+        if (!overlay_off(ax, ay, bx, by, vw, vh)) {
+            overlay_color(r, st->mark, OVERLAY_LINE_ALPHA);
+            SDL_RenderDrawLineF(r, ax, ay, bx, by);
+            overlay_marker(r, st, bx, by, t);
+            f->drawn++;
+        }
+        ax = bx;
+        ay = by;
+    }
+}
+
 int OrderOverlay_Draw(const GameWorld *world, TAK_Platform *plat) {
+    g_ghosts_drawn = 0;
     if (!g_shift || !world || !plat || !plat->renderer) return 0;
     int n_sel = 0, count = 0;
     const int *sel = Units_GetSelection(&n_sel);
     const Unit *units = Units_GetActive(&count);
-    if (!sel || n_sel <= 0 || !units) return 0;
+    if (!units || count <= 0) return 0;
+    if (!sel) n_sel = 0;
     SDL_Renderer *r = plat->renderer;
     SDL_BlendMode old_blend = SDL_BLENDMODE_NONE;
     SDL_GetRenderDrawBlendMode(r, &old_blend);
-    const float tilt = Units_GetTanTilt();
+    OverlayFrame f;
+    f.world = world;
+    f.plat = plat;
+    f.units = units;
+    f.count = count;
+    f.tilt = Units_GetTanTilt();
+    f.ghosts = 0;
+    f.drawn = 0;
     const int me = Units_LocalPlayer();
-    const int vw = world->viewport_w, vh = world->viewport_h;
-    int drawn = 0, ghosts = 0;
-    OrderStop stops[ORDER_OVERLAY_STOPS_MAX];
     Units_GhostFrameBegin();
 
+    /* The selection and the unit under the pointer show their routes.
+     * Another player's orders are their own business. */
     for (int s = 0; s < n_sel; s++) {
         int h = sel[s];
         if (h < 0 || h >= count) continue;
-        const Unit *u = &units[h];
-        /* Another player's orders are their own business. */
-        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != me) continue;
-        int n = OrderOverlay_Plan(h, stops, ORDER_OVERLAY_STOPS_MAX);
-        if (n > ORDER_OVERLAY_STOPS_MAX) n = ORDER_OVERLAY_STOPS_MAX;
-        if (n <= 0) continue;
-
-        /* Ghosts first, so the route reads over them. */
-        for (int i = 0; i < n && ghosts < OVERLAY_GHOSTS_MAX; i++) {
-            const OrderStop *st = &stops[i];
-            if (!st->ghost) continue;
-            float gx, gy;
-            overlay_screen(world, tilt, st->x, st->y, 0.0f, &gx, &gy);
-            if (gx < -OVERLAY_GHOST_MARGIN || gy < -OVERLAY_GHOST_MARGIN ||
-                gx > vw + OVERLAY_GHOST_MARGIN || gy > vh + OVERLAY_GHOST_MARGIN)
-                continue;
-            Units_RenderBuildGhostFacing(plat, world, st->def, u->team_color_idx,
-                                         st->x, st->y, 110, UNITS_GHOST_QUEUED,
-                                         st->facing);
-            ghosts++;
-        }
-
-        SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
-        float ax, ay;
-        overlay_screen(world, tilt, u->world_x, u->world_y, Units_DrawnAlt(world, u),
-                       &ax, &ay);
-        for (int i = 0; i < n; i++) {
-            const OrderStop *st = &stops[i];
-            const Unit *t = st->target >= 0 && st->target < count
-                          ? &units[st->target] : NULL;
-            float bx, by;
-            overlay_screen(world, tilt, st->x, st->y, t ? Units_DrawnAlt(world, t) : 0.0f,
-                           &bx, &by);
-            if (!overlay_off(ax, ay, bx, by, vw, vh)) {
-                overlay_color(r, st->mark, OVERLAY_LINE_ALPHA);
-                SDL_RenderDrawLineF(r, ax, ay, bx, by);
-                overlay_marker(r, st, bx, by, t);
-                drawn++;
-            }
-            ax = bx;
-            ay = by;
+        if (units[h].alive != UNIT_ALIVE_ACTIVE || units[h].player_id != me) continue;
+        overlay_unit(&f, h, 1);
+    }
+    int hover = g_hover;
+    int hover_own = hover >= 0 && hover < count &&
+                    units[hover].alive == UNIT_ALIVE_ACTIVE &&
+                    units[hover].player_id == me &&
+                    !overlay_selected(sel, n_sel, hover);
+    if (hover_own) overlay_unit(&f, hover, 1);
+    /* With a builder in focus the rest of yours show their buildings. */
+    if (overlay_builder_in_focus(sel, n_sel, units, count, me)) {
+        for (int h = 0; h < count && f.ghosts < OVERLAY_GHOSTS_MAX; h++) {
+            const Unit *u = &units[h];
+            if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != me) continue;
+            const UnitDef *d = Units_GetDef(u->def_idx);
+            if (!d || !(d->cap_flags & UNIT_CAP_BUILDER)) continue;
+            if ((hover_own && h == hover) || overlay_selected(sel, n_sel, h)) continue;
+            overlay_unit(&f, h, 0);
         }
     }
     SDL_SetRenderDrawBlendMode(r, old_blend);
-    return drawn;
+    g_ghosts_drawn = f.ghosts;
+    return f.drawn;
 }

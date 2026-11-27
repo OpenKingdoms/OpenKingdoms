@@ -55,8 +55,10 @@ pull request, not here.
   slider on the Visual page lists the display's sizes plus Fit, which
   stretches the 640x480 battle screen over the window, and in fullscreen
   a size below the desktop's is a real mode change, as in the original.
-  In a browser the sizes are one to four screen pixels per game pixel,
-  by default the page's devicePixelRatio rounded. A new install starts
+  In a browser the sizes are the page at one to four screen pixels per
+  game pixel, by default the page's devicePixelRatio rounded, and the
+  usual desktop sizes up to the screen's, drawn at that size and scaled
+  to fit the page. A new install starts
   on Original, an options file from before the setting keeps Fit, and on
   Windows a switch from Fit to Original takes effect from the next
   start.
@@ -643,8 +645,8 @@ pull request, not here.
   note `docs/notes/2026-09-04-legacy-ai.md`, "Water and transports". The
   code is the ferry section of `src/game/ai.c`, the crossing rows of the
   army domain in `src/game/ai_htn.c` and the ferry goal and its two
-  actions in `src/game/ai_plan.c`. A-015 adds warships and A-016 a
-  builder's ride.
+  actions in `src/game/ai_plan.c`. A-015 adds warships, A-016 a
+  builder's ride and A-019 waders, covered crossings and safer flights.
 
 ## A-014: The computer's base keeps the original's spacing, with a fallback for small ground
 
@@ -742,6 +744,26 @@ pull request, not here.
   a Shaman going up asks more mana a second than a seat earns, so an
   unpaced Zhon seat sat on an empty pool and never started the troops
   its walking producers train only at 0.7.
+- Citation: The manual describes no AI rule at this level.
+
+## A-019: A computer cut off by water crosses with its army and its fleet
+
+- Change: Under `TAK_AI_TACTIC_LANDING`, on a map with water, a seat
+  whose walkers reach its target only by wading, as a Swamp Beast or a
+  Mer Warrior does, is cut off (A-013) while the waders are under half
+  its walkers by strength, and the rest are ferried. Any other class that
+  walks there leaves it not cut off, as before. An armed transport
+  crosses holding its ground with its fire on, where it used to hold its
+  fire, so it shoots back as it sails, and its move or unload is not
+  broken off. The seat's warships of A-015 sail with a wave crossing in a
+  ship, after enemy ships off home, keep within 576 px of it and go at
+  enemy ships within 768 px of it. A flying transport of a cut off seat,
+  carrying a wave or a builder, lands where the enemy arms at the landing
+  and the most it flies over on the way cost least.
+- Why: Issue #454 asks that a player on an island not be safe from the
+  computer. One wader that could cross left a seat not cut off, and
+  transports that held their fire or flew over defences were lost on the
+  way. The original's skirmish AI never loads a transport (A-013).
 - Citation: The manual describes no AI rule at this level.
 
 ## T-001: Flying transports load and unload by the ground rules
@@ -1023,19 +1045,21 @@ pull request, not here.
 - Citation: docs/notes/pathing.md, "Ship hulls". The manual describes no
   rule for spacing.
 
-## M-013: A build order goes to one of the builders it names
+## M-013: Several builders take one building together
 
-- Change: a placing click with several builders selected gives the
-  building, or the summons, to the first of them that can take its site,
-  and the others keep what they were doing. A builder given the same
-  order before the frame is up joins it there, where the original's
-  reports the target blocked (legacy:12096-12116).
-- Why: the original gives the order to every builder that can build it
-  (legacy:39200-39248), and the latecomers help the first frame up. Here
-  more builders are sent with a click on the frame.
-- Citation: the walkthrough in manual section III sends a second builder
-  with a click on the frame, which still works. docs/notes/economy.md,
-  "A summons without end", has the original's rule.
+- Change: with several units selected the build menu is the first
+  selected unit's. A placing click sends every selected builder that
+  walks and has the type on its own build list, and a right click on the
+  button takes that kind from each of them. Once one of them raises the
+  frame, the others of its player sent to that site join it, where the
+  original's latecomer reports the target blocked (legacy:12096-12116).
+- Why: the original's placing click orders every selected builder that
+  can build the type (legacy:39198-39256), but it shows the build menu
+  only while one unit is selected (legacy:153423-153437) and a change of
+  selection ends the placement (legacy:242517-242527), so its builders
+  never share one from a placing click. Here a group sent with one click
+  builds it together.
+- Citation: issue #544. docs/notes/economy.md, "A build order".
 
 ## M-014: Flyers in the air count each other in pairs
 
@@ -1190,23 +1214,16 @@ pull request, not here.
 - Citation: issue #212. The manual does not describe the menu at this
   level.
 
-## D-014: Sight does not grow or shrink with the ground it falls on
+## D-014: Sight reads the eye fresh at every stamp
 
-- Change: a unit reveals every fog cell inside its sightdistance, plus
-  the nine cells around it, whatever the ground's height, and stamps
-  again only on a fog cell change. The original scales the radius by the
-  eye's height over each cell's lowest ground, seeing further downhill
-  and less uphill, lighting no cell above the eye and reaching at most
-  twice sightdistance (legacy:167413-167423), and stamps again when the
-  eye moves by more than 5 (legacy:167455-167456). On level ground the
-  two agree.
-- Why: the height term needs each unit's model height and a record of the
-  ground under each fog cell, which the original builds from the
-  heightmap (legacy:224395-224470), and that record and its stamp are
-  still to be written.
-- Citation: docs/notes/2026-09-04-combat-mechanics.md on the simulation
-  reading a unit's model. The manual is silent on sight at this level of
-  detail.
+- Change: a unit's sight grows and shrinks with the ground it falls on,
+  as the original's does, but the engine reads the eye at every stamp
+  and stamps again when it has moved at all. The original stamps again
+  once the eye has moved by more than 5 (legacy:167455-167456).
+- Why: a stale eye would have to be kept on the unit and in a save, for
+  a few px of height between two stamps.
+- Citation: the stamp's height term (legacy:167413-167423) and the
+  ground record (legacy:224395-224470). docs/notes/fog.md.
 
 ## D-015: The sweep clears a building you own
 
@@ -1259,8 +1276,8 @@ pull request, not here.
   - A patrol list sends the unit's patrol order to each point in turn,
     going on within 64 pixels or once it turns for the next. The
     original queues the patrol orders on the unit.
-  - `w N` is N seconds, as Total Annihilation documented it. The
-    original's time unit is inferred.
+  - `w N D` ends early on an enemy unit its side sees within D, where
+    the original also counts the buildings the seat sees.
   - `wa` ends when the watched unit's health drops, where the original
     also wakes on a miss that does no damage.
   - `a TYPE` takes the nearest unit of the type, where the original
@@ -1270,8 +1287,16 @@ pull request, not here.
   - `i NAME` boards at once and the list waits until the unit is set
     down, though a `w` runs out aboard. The original runs the list
     aboard (legacy:182203-182225, legacy:184105-184124).
-  - `c`, `s` and `v` are read and dropped. Nothing makes a unit
-    unselectable for `s` to undo, and the speed `v` sets has no field.
+  - `v` is read and dropped, as the speed it sets has no field. `s`
+    gives the unit back to the computer player only once its list has
+    ended. The original hands it over at the `s`.
+  - The computer plays the second seat when its line calls it strategic,
+    as every shipped chapter does. The original plays every seat a line
+    names, a passive one on a fifth of the brain's share. A strategic
+    ally, the third seat in 18 chapters, is not played yet.
+  - A mission seat's home is its building that trains nearest the middle
+    of its buildings, as a campaign brain is never sent to its start
+    position (legacy:18774-18777).
   - `SetAttribute` sets health, mana and the scales of D-020.
     `ReadValue` and `WriteValue` are not in, and no shipped script of
     the first campaign calls them.
@@ -1282,7 +1307,9 @@ pull request, not here.
   `o N` is the unit's standing orders, not a change of owner.
 - Citation: legacy:228246-228770 the order list, legacy:8920-8958 the
   wait, legacy:8963-9031 the attack on a type, legacy:233216 the
-  standing orders. The map script's engine is made at legacy:177876,
+  standing orders, legacy:228755-228765 and legacy:8911 the hold a list
+  puts on its unit, legacy:177733-177742 and legacy:19335 the seats the
+  computer plays. The map script's engine is made at legacy:177876,
   its command host is legacy:178336-178652, its value ports
   legacy:178722-178822, its created and trigger events
   legacy:178218-178250, its destroyed event legacy:177932 and its
@@ -1394,8 +1421,8 @@ pull request, not here.
   patrol, also lets go of a picked target out of reach or inside its
   minrange.
 - Why: shots stop on what they fly into, and the original fires into a
-  hill without looking. With sight not yet shrinking uphill (D-014), an
-  archer in a clearing would shoot the trees until its target died.
+  hill without looking, so an archer in a clearing would shoot the trees
+  until its target died.
 - Citation: the original's fire gate looks only at range, reload, mana
   and facing (legacy:249328-249420), and a unit with no mover has no
   leash (legacy:15125). docs/notes/2026-09-04-combat-mechanics.md. The
@@ -1474,14 +1501,19 @@ pull request, not here.
 ## D-031: Shift shows the selection's orders
 
 - Change: while Shift is held, the classic view draws a line from each
-  of your selected units through its orders, with a marker for each
-  move, attack target, patrol and its way round, and rally point, and a
-  queued building as a ghost at its spot and facing. Other players'
-  units show nothing, and a target you cannot see gives nothing away.
+  of your selected units, and from your unit under the pointer, through
+  its orders, with a marker for each move, attack target, patrol and its
+  way round, and rally point. The look of the lines and markers is ours.
+  Other players' units show nothing, and a target you cannot see gives
+  nothing away.
 - Why: Shift queues orders (manual section IV), and a player cannot tell
   what is lined up without a picture, as Beyond All Reason draws one.
-- Citation: no such drawing was found in the original.
-  docs/notes/ui.md, "Shift orders".
+- Citation: the original draws the orders of the same units while Shift
+  is held, with each queued building as a ghost, and every unit's queued
+  buildings when a builder is in focus (legacy:210741-210744,
+  legacy:238278-238350). The manual's Conjuring Structures says Shift
+  shows the summoning unit's queued tasks as ghosts. docs/notes/ui.md,
+  "Shift orders".
 
 ## D-032: Battles are recorded, and the main menu plays them back
 
@@ -1892,5 +1924,22 @@ pull request, not here.
   can edit, and has no dialog for them. The file leaves E empty, though
   E arms Resurrect in the original. `test_keybinds`. The manual is
   silent.
+
+## D-058: A scripted map's rules run on every machine
+
+- Change: every seat's rules run on every machine in seat order, as
+  part of the lockstep simulation. A win the rules call for a seat
+  beats each seat at war with it, so the match ends. A kill is tallied
+  when the blow lands and a loss when the unit's record ends. The
+  chance condition draws from the simulation's generator. A health,
+  armour or attack scale of 0 leaves the unit as authored. Use Map
+  Script is on when a room opens and keeps the host's choice from map
+  to map.
+- Why: the original ran each machine's own seats, let the network carry
+  what they did, and ended only the winner's game. Lockstep needs one
+  result on every machine.
+- Citation: legacy:173086-173338, legacy:206542-206576, legacy:173375.
+  `a_scripted_map_plays_its_script_in_a_match_and_through_a_snapshot`.
+  The manual is silent.
 
 *(More entries added as deviations land.)*

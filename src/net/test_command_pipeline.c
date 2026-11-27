@@ -1245,21 +1245,43 @@ static void cp_file_tick(void) {
 /* Set, the recording is made as a match world reads its models. */
 static int g_cp_record_match_models;
 
+/* Three builders seat 1 sends to one spot with one click. */
+static void cp_replay_builders(int *out) {
+    const int walker = CP_DEF_WALKER;
+    Units_DebugSetBuildables(CP_DEF_BUILDER, &walker, 1);
+    for (int k = 0; k < 3; k++)
+        out[k] = Units_Spawn(CP_DEF_BUILDER, 1, 0, 800 + k * 48, 1040);
+}
+
+/* Builders of the click above that hold its order a few ticks on. */
+static int g_cp_group_builders;
+
 /* The same clicks as the session above, from two seats, recorded to a
  * file as the battle screen records one. */
 static int cp_file_record(uint32_t *out) {
     if (!cp_world()) return 0;
     if (g_cp_record_match_models) Obj3D_SetGameFolderModels(0);
-    int h[8];
+    int h[8], b[3];
     cp_replay_spawn(h);
+    cp_replay_builders(b);
     char err[TAK_REPLAY_ERR_MAX];
     if (Replay_RecordOpen(CP_FILE_PATH, err, sizeof err) != 0) return 0;
+    g_cp_group_builders = 0;
     for (int t = 0; t < CP_FILE_TICKS; t++) {
         if (t == 10) {
             Units_SelectSingle(h[0]);
             Units_SelectAdd(h[1]);
             InGame_WorldClick(1500, 1100, 0);
         }
+        if (t == 20) {
+            Units_SelectSingle(b[0]);
+            Units_SelectAdd(b[1]);
+            Units_SelectAdd(b[2]);
+            TAK_Cmd_EmitSelection(TAK_CMD_BUILD, 1000, 1200, -1, CP_DEF_WALKER, 0);
+        }
+        if (t == 30)
+            for (int k = 0; k < 3; k++)
+                g_cp_group_builders += cp_unit(b[k])->cmd_kind == UNIT_CMD_BUILD;
         if (t == 200) {
             Units_SetLocalPlayer(2);
             Units_SelectSingle(h[5]);
@@ -1293,8 +1315,9 @@ static int cp_file_play(uint32_t *out, int nudge) {
         return 0;
     }
     if (!cp_world()) return 0;
-    int h[8];
+    int h[8], b[3];
     cp_replay_spawn(h);
+    cp_replay_builders(b);
     Replay_Attach();
     int t = 0;
     for (; Replay_CanAdvance(); t++) {
@@ -1322,7 +1345,9 @@ TEST(a_replay_file_plays_back_to_the_same_hash_every_turn) {
     ASSERT_NOT_NULL(hdr);
     ASSERT_EQ_INT((int)g_cp_seed, (int)hdr->cfg.seed);
     ASSERT_EQ_INT(CP_FILE_TICKS, (int)hdr->end_tick);
-    ASSERT_EQ_INT(4, (int)hdr->command_count);
+    ASSERT_EQ_INT(5, (int)hdr->command_count);
+    /* One click sent every builder it named (legacy:39198-39256). */
+    ASSERT_EQ_INT(3, g_cp_group_builders);
     ASSERT_EQ_INT(0, (int)Replay_DriftTick());
     /* Outside a match the folder's models count only when it has some. */
     int archive = (hdr->flags & TAK_REPLAYF_ARCHIVE_MODELS) != 0;

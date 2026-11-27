@@ -313,6 +313,15 @@ int TAK_AI_LoadState(const unsigned char *in, unsigned int len) {
  * number over a real world. */
 /* No mission runs here, so its section is never written or read. */
 uint32_t TAK_SimHash_Mission(uint32_t h) { return h; }
+uint32_t TAK_SimHash_Scenario(uint32_t h) { return h; }
+unsigned MapScenario_SaveSize(void) { return 0; }
+void MapScenario_SaveState(unsigned char *out) { (void)out; }
+int MapScenario_LoadState(const unsigned char *in, unsigned len) {
+    (void)in; (void)len;
+    return -1;
+}
+int MapScenario_Active(void) { return 0; }
+void MapScenario_End(void) {}
 unsigned MissionScript_SaveSize(void) { return 0; }
 void MissionScript_SaveState(unsigned char *out) { (void)out; }
 int MissionScript_LoadState(const unsigned char *in, unsigned len) {

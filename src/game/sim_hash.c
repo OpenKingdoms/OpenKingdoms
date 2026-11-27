@@ -4,6 +4,7 @@
 #include "tak_cob_vm.h"
 #include "tak_economy.h"
 #include "tak_mission_script.h"
+#include "tak_map_scenario.h"
 #include "tak_sim_rand.h"
 #include "tak_unit.h"
 #include "tak_world.h"
@@ -664,5 +665,6 @@ uint32_t TAK_SimHash(void) {
     h = hash_economy(h, w);
     h = TAK_SimHash_AI(h);
     h = TAK_SimHash_Mission(h);
+    h = TAK_SimHash_Scenario(h);
     return h;
 }

@@ -277,6 +277,46 @@ int MapBrowser_Type(TAK_MapBrowser *b, const TAK_Platform *p, int backspace) {
     return changed;
 }
 
+/* The original's list box (legacy:319494-319530): Up and Down step and stop
+ * at the ends, Home and End take the ends, the selection kept in view
+ * (legacy:318988). Page keys move a page and put it on top (legacy:319013). */
+int MapBrowser_ListKeys(const TAK_MapBrowser *b, const TAK_Platform *p,
+                        int at, int visible, int *top) {
+    int n = b->shown_count;
+    if (!p || n <= 0 || !top) return -1;
+    if (!(p->pressed_up || p->pressed_down || p->pressed_page_up ||
+          p->pressed_page_down || p->pressed_home || p->pressed_end)) return -1;
+    if (visible < 1) visible = 1;
+    int sel = at, paged = 0;
+    if (sel < 0 || sel >= n) {
+        /* A hidden selection comes back on the first row the keys reach. */
+        sel = p->pressed_end ? n - 1 : 0;
+    } else {
+        sel -= p->pressed_up;
+        sel += p->pressed_down;
+        if (p->pressed_page_up || p->pressed_page_down) {
+            sel += (p->pressed_page_down - p->pressed_page_up) * visible;
+            paged = 1;
+        }
+        if (p->pressed_home) { sel = 0; paged = 0; }
+        if (p->pressed_end)  { sel = n - 1; paged = 0; }
+        if (sel < 0) sel = 0;
+        if (sel > n - 1) sel = n - 1;
+    }
+    if (sel == at) return -1;
+    int t = *top;
+    if (paged) {
+        t = sel;
+        if (t + visible > n) t = n - visible;
+    } else {
+        if (sel < t) t = sel;
+        if (sel > t + visible - 1) t = sel - visible + 1;
+    }
+    if (t < 0) t = 0;
+    *top = t;
+    return sel;
+}
+
 static void frame_box(SDL_Surface *off, const SDL_Rect *r) {
     SDL_FillRect(off, r, SDL_MapRGBA(off->format, 16, 12, 8, 255));
     uint32_t edge = SDL_MapRGBA(off->format, 90, 70, 40, 255);
