@@ -1539,7 +1539,7 @@ int  InGame_IsPaused(void) { return ig.paused; }
 
 void InGame_DebugToggleMenu(void) {
     if (InGameMenu_IsOpen()) InGameMenu_Close();
-    else (void)InGameMenu_Open();
+    else (void)InGameMenu_Open(ig.platform);
 }
 
 void InGame_DebugEscape(int down) {
@@ -2472,7 +2472,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
                                                        platform->text_in);
     if (platform->has_focus && !console_keys && InGame_MenuKey(keys, ig.prev_keys) &&
         !InGameMenu_IsOpen() && !ig.sd_ask) {
-        (void)InGameMenu_Open();
+        (void)InGameMenu_Open(platform);
     }
     if (InGameMenu_IsOpen()) {
         int next = InGameMenu_Tick(platform);

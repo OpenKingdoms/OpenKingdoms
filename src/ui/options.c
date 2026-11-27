@@ -605,6 +605,30 @@ static void options_cancel(void) {
     opts.pending_nextstate = opts.return_state;
 }
 
+/* The placeholder travels with the shell, so a tab does too. */
+static void place_sub(void) {
+    if (!opts.sub_rt) return;
+    int dx = 0, dy = 0;
+    GUIWidget *slot = GUIDialog_FindByName(&opts.shell,
+                                           "PlaceHolderForOptionPages");
+    if (slot) {
+        dx = slot->rect.x - opts.sub.root.rect.x;
+        dy = slot->rect.y - opts.sub.root.rect.y;
+    }
+    GUIRuntime_SetOffset(opts.sub_rt, dx + opts.off_x, dy + opts.off_y);
+}
+
+/* Opened from a battle the panel stands in the middle of the play area,
+ * opened from the menu in the middle of the screen. The play area moves
+ * with the battle's size, so every frame places it again. */
+static void place_dialog(void) {
+    SDL_Rect area;
+    HUD_DialogArea(&area);
+    GUI_CenterOffset(&opts.shell, area, &opts.off_x, &opts.off_y);
+    GUIRuntime_SetOffset(opts.shell_rt, opts.off_x, opts.off_y);
+    place_sub();
+}
+
 /* Load the sub-dialog for the given tab. Replaces any previous sub.
  * The sub uses coordinates relative to its own root (e.g. its widgets
  * live at x=52..363 with root at (52,49)). Shift them so they draw
@@ -632,17 +656,7 @@ static int load_tab(int tab) {
      * Observed in the shipped data: the placeholder is at 165,187 and the
      * roots are Interface 52,49 / Music 167,148 / Sound 88,119, which is
      * why a fixed offset cannot serve them all. */
-    if (opts.sub_rt) {
-        int dx = 0, dy = 0;
-        GUIWidget *slot = GUIDialog_FindByName(&opts.shell,
-                                               "PlaceHolderForOptionPages");
-        if (slot) {
-            dx = slot->rect.x - opts.sub.root.rect.x;
-            dy = slot->rect.y - opts.sub.root.rect.y;
-        }
-        /* The placeholder travels with the shell, so a tab does too. */
-        GUIRuntime_SetOffset(opts.sub_rt, dx + opts.off_x, dy + opts.off_y);
-    }
+    place_sub();
 
     opts.active_tab = tab;
 
@@ -700,12 +714,7 @@ int Options_Init(TAK_Platform *platform) {
     opts.shell_rt = GUIRuntime_Create(&opts.shell);
     if (!opts.shell_rt) { GUIDialog_Free(&opts.shell); return -1; }
 
-    /* Opened from a battle the panel stands in the middle of the play
-     * area, opened from the menu in the middle of the screen. */
-    SDL_Rect area;
-    HUD_DialogArea(&area);
-    GUI_CenterOffset(&opts.shell, area, &opts.off_x, &opts.off_y);
-    GUIRuntime_SetOffset(opts.shell_rt, opts.off_x, opts.off_y);
+    place_dialog();
 
     settings_snapshot();
 
@@ -743,6 +752,7 @@ void Options_Shutdown(void) {
 int Options_Tick(TAK_Platform *platform, float frame_dt) {
     (void)frame_dt;
     if (!opts.initialized) return GAMESTATE_OPTIONS;
+    place_dialog();
 
     int wx, wy, mx, my;
     SDL_GetMouseState(&wx, &wy);
