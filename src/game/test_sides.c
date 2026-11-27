@@ -29,7 +29,8 @@
     "[SIDE0]{name=ARAMON;nameprefix=ARA;commander=ARAKING;" \
     "logogaf=colorlogos2;logoart=arateam;buildsparklygaf=aramonbuild;" \
     "buildsparklyanim=aramonbuild;resurrectsparklygaf=aramonbuild;" \
-    "resurrectsparklyanim=aramonbuild;buildpalette=arabipal.pcx;}" \
+    "resurrectsparklyanim=aramonbuild;buildpalette=arabipal.pcx;" \
+    "underattack_sound=AlarmAra;underattack_delay=12.5;}" \
     "[SIDE1]{name=TAROS;nameprefix=TAR;commander=TARNECRO;}" \
     "[SIDE2]{name=VERUNA;nameprefix=VER;commander=VERMAGE;}" \
     "[SIDE3]{name=ZHON;nameprefix=ZON;commander=ZONHUNT;}"
@@ -130,6 +131,13 @@ TEST(base_sides_offer_the_four_kingdoms) {
     ASSERT_EQ_STR("aramonbuild", ara->resurrectsparkle);
     ASSERT_EQ_STR("arabipal.pcx", ara->buildpalette);
     ASSERT_EQ_STR("", Sides_Get(1)->buildpalette);
+    /* The off screen alarm, and its 30 seconds when a side names none
+     * (legacy:164683-164710). */
+    ASSERT_EQ_STR("AlarmAra", ara->underattack_sound);
+    ASSERT(ara->underattack_delay > 12.49f && ara->underattack_delay < 12.51f);
+    ASSERT_EQ_STR("", Sides_Get(1)->underattack_sound);
+    ASSERT(Sides_Get(1)->underattack_delay > 29.99f &&
+           Sides_Get(1)->underattack_delay < 30.01f);
     sd_cleanup();
 }
 

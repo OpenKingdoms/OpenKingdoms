@@ -42,7 +42,7 @@ static int g_leg_calls, g_last_leg_kind, g_ground_calls;
 static int32_t g_last_leg_x, g_last_leg_y;
 static int g_last_move_handle, g_last_attack_handle, g_last_attack_target;
 static int32_t g_last_move_x, g_last_move_y;
-static int g_factory_orders;
+static int g_factory_orders, g_factory_left;
 
 static void mock_reset(void) {
     memset(g_defs, 0, sizeof(g_defs));
@@ -54,6 +54,7 @@ static void mock_reset(void) {
     g_last_leg_x = g_last_leg_y = 0;
     g_last_move_handle = g_last_attack_handle = g_last_attack_target = -1;
     g_factory_orders = 0;
+    g_factory_left = 0;
 }
 
 static int mock_def(const char *name, float speed) {
@@ -174,12 +175,30 @@ int Units_CanAttackTarget(int handle, int target) {
     return 1;
 }
 
-int Units_PlayersAreEnemies(int a, int b) { return a != b && a != 10 && b != 10; }
+/* Seat 10 is a mission's neutral seat: an enemy no seat fights. A
+ * cloaked unit is seen by its own side alone. */
+int Units_PlayersAreEnemies(int a, int b) { return a != b; }
+int Units_HoldsFireOn(int a, int b) { return a != b && b == 10; }
+int Units_SideSees(int player_id, int handle) {
+    return !g_units[handle].cloaked || g_units[handle].player_id == player_id;
+}
+
+/* Every footprint is 2x2 here and no building comes up. */
+void Units_MissionPlacePoint(int def_idx, int corner, int32_t *x, int32_t *y) {
+    (void)def_idx;
+    if (corner) { *x += 16; *y += 16; }
+}
 
 int Units_FactoryEnqueue(int factory, int def) {
     (void)factory; (void)def;
     g_factory_orders++;
     return 0;
+}
+
+/* What is still to make of a run. */
+int Units_FactoryQueuedCountForDef(int factory, int def) {
+    (void)factory; (void)def;
+    return g_factory_left;
 }
 
 int Units_OrderBuild(int builder, int def, int32_t x, int32_t y, int facing,
@@ -242,6 +261,8 @@ TEST(a_list_is_worked_through_one_order_at_a_time) {
     int u = Units_Spawn(sword, 2, 1, 100, 100);
     ASSERT_EQ_INT(3, MissionOrders_Give(u, "w 2, m 10 20, o 1, m 30 40,"));
     ASSERT_EQ_INT(1, MissionOrders_Running(u));
+    /* The computer player may not use it while the list runs. */
+    ASSERT_EQ_INT(1, MissionOrders_Holds(u));
     /* o 1 is the standing orders, set as the list is read. */
     ASSERT_EQ_INT(UNIT_AGGRO_DEFENSIVE, (int)g_units[u].aggro_mode);
 
@@ -264,7 +285,47 @@ TEST(a_list_is_worked_through_one_order_at_a_time) {
     mock_arrive(u);
     ticks(2);
     ASSERT_EQ_INT(0, MissionOrders_Running(u));
+    ASSERT_EQ_INT(0, MissionOrders_Holds(u));
     ASSERT_EQ_INT(3, MissionOrders_DebugDone());
+
+    /* Standing orders alone take nothing. A patrol or a self destruct
+     * keeps the unit for good, and an `s` gives it back
+     * (legacy:228755-228765, legacy:8911). */
+    int v = Units_Spawn(sword, 2, 1, 300, 100);
+    ASSERT_EQ_INT(0, MissionOrders_Give(v, "o 2"));
+    ASSERT_EQ_INT(0, MissionOrders_Holds(v));
+    ASSERT_EQ_INT(1, MissionOrders_Give(v, "p 5 5"));
+    ticks(2);
+    ASSERT_EQ_INT(0, MissionOrders_Running(v));
+    ASSERT_EQ_INT(1, MissionOrders_Holds(v));
+    /* And through a save. */
+    unsigned size = MissionScript_SaveSize();
+    unsigned char *blob = (unsigned char *)malloc(size);
+    ASSERT_NOT_NULL(blob);
+    MissionScript_SaveState(blob);
+    ASSERT_EQ_INT(0, MissionScript_Begin(NULL, 1, 0));
+    ASSERT_EQ_INT(0, MissionOrders_Holds(v));
+    ASSERT_EQ_INT(0, MissionScript_LoadState(blob, size));
+    free(blob);
+    ASSERT_EQ_INT(1, MissionOrders_Holds(v));
+    ASSERT_EQ_INT(2, MissionOrders_Give(v, "w 1, s"));
+    ticks(30);
+    ASSERT_EQ_INT(1, MissionOrders_Holds(v));
+    ticks(40);
+    ASSERT_EQ_INT(0, MissionOrders_Holds(v));
+
+    /* A factory's run lasts until it is made, and the next waits for it
+     * (legacy:9323-9328). */
+    int keep = Units_Spawn(mock_def("ARAKEEP", 0.0f), 2, 1, 600, 600);
+    ASSERT_EQ_INT(2, MissionOrders_Give(keep, "b ARASWORD 2, b ARASWORD 1"));
+    g_factory_left = 1;
+    ticks(3);
+    ASSERT_EQ_INT(2, g_factory_orders);
+    ASSERT_EQ_INT(1, MissionOrders_Holds(keep));
+    g_factory_left = 0;
+    ticks(3);
+    ASSERT_EQ_INT(3, g_factory_orders);
+    ASSERT_EQ_INT(0, MissionOrders_Holds(keep));
     MissionScript_End();
 }
 
@@ -277,8 +338,15 @@ TEST(a_wait_ends_early_when_an_enemy_comes_near) {
     int friend_ = Units_Spawn(sword, 2, 1, 1600, 1616);
     (void)friend_;
     ASSERT_EQ_INT(2, MissionOrders_Give(guard, "w 3600 30, m 5 5"));
+    /* A neutral seat's unit, and an enemy its side cannot see, are
+     * nothing to it (legacy:20511-20520). */
+    int deer = Units_Spawn(sword, 10, 9, 1600 + 64, 1600);
+    int spy = Units_Spawn(sword, 1, 0, 1600, 1600 + 64);
+    g_units[spy].cloaked = 1;
     ticks(600);
     ASSERT_EQ_INT(0, g_move_calls);
+    g_units[deer].alive = UNIT_ALIVE_DEAD;
+    g_units[spy].alive = UNIT_ALIVE_DEAD;
     /* Thirty squares is 480 pixels. */
     g_units[foe].world_x = 1600 - 600;
     g_units[foe].world_y = 1600;
@@ -323,6 +391,12 @@ TEST(an_attack_on_a_type_hunts_every_one_of_it) {
     ASSERT_EQ_INT(1, g_ground_calls);
     ASSERT_EQ_INT(UNIT_CMD_ATTACK_GROUND, g_units[u].cmd_kind);
     ASSERT_EQ_INT(10 * 16, g_units[u].cmd_x);
+    /* Once it has fired on a place it is the mission's for good
+     * (legacy:228367, legacy:228671). */
+    g_units[u].cmd_kind = UNIT_CMD_NONE;
+    ticks(2);
+    ASSERT_EQ_INT(0, MissionOrders_Running(u));
+    ASSERT_EQ_INT(1, MissionOrders_Holds(u));
     ASSERT_EQ_INT(own, g_last_move_handle);
     ASSERT_EQ_INT(2 * 16, g_last_move_x);
     g_defs[sword].num_weapons = 0;
@@ -454,13 +528,14 @@ TEST(a_map_script_creates_triggers_orders_and_calls_the_mission) {
     int mine = Units_Spawn(sword, 1, 0, 800, 800);
     ticks(1);
 
-    /* Start: the hero for the first seat at 72,172, whose number the
+    /* Start: the hero for the first seat with the top-left cell of his
+     * footprint at 72,172 (legacy:178380-178385), whose number the
      * script keeps, and a box from 10,10 to 20,20. */
     ASSERT_EQ_INT(2, g_unit_count);
     ASSERT_EQ_INT(emen, (int)g_units[1].def_idx);
     ASSERT_EQ_INT(1, (int)g_units[1].player_id);
-    ASSERT_EQ_INT(72 * 16, g_units[1].world_x);
-    ASSERT_EQ_INT(172 * 16, g_units[1].world_y);
+    ASSERT_EQ_INT(72 * 16 + 16, g_units[1].world_x);
+    ASSERT_EQ_INT(172 * 16 + 16, g_units[1].world_y);
     int32_t kept = 0, type = 0;
     ASSERT_EQ_INT(1, MissionScript_DebugStatic(0, &kept));
     ASSERT_EQ_INT(2, kept);
@@ -691,7 +766,7 @@ TEST(the_first_mission_makes_emen_and_loses_with_him) {
     /* Nothing in the .ota places Emen. The script does, at 72,172. */
     ASSERT_EQ_INT(2, g_unit_count);
     ASSERT_EQ_INT(emen, (int)g_units[1].def_idx);
-    ASSERT_EQ_INT(72 * 16, g_units[1].world_x);
+    ASSERT_EQ_INT(72 * 16 + 16, g_units[1].world_x);
     int x, z, x2, z2, r;
     ASSERT_EQ_INT(1, MissionScript_DebugTrigger(0, &x, &z, &x2, &z2, &r));
     ASSERT_EQ_INT(130, x);
