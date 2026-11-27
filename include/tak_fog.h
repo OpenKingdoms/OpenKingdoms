@@ -45,6 +45,10 @@ int  Fog_SeatSeesAt(const struct GameWorld *world, int player_id,
                     int32_t world_x, int32_t world_y);
 /* Fog_SeatSeesAt for the seat the screen shows. */
 int  Fog_ShowsAt(const struct GameWorld *world, int32_t world_x, int32_t world_y);
+/* Whether the screen draws a feature at a point: never on unexplored
+ * ground, and only in sight when its def says nodrawundergray. */
+int  Fog_ShowsFeatureAt(const struct GameWorld *world, int no_draw_under_gray,
+                       int32_t x, int32_t y);
 void Fog_RenderOverlay(const struct GameWorld *world, struct TAK_Platform *plat);
 /* The overlay's black over ground never seen, alone, for the mist. */
 void Fog_RenderShroud(const struct GameWorld *world, struct TAK_Platform *plat);

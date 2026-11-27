@@ -384,6 +384,15 @@ int Fog_ShowsAt(const GameWorld *world, int32_t world_x, int32_t world_y) {
     return Fog_SeatSeesAt(world, Fog_Viewer(), world_x, world_y);
 }
 
+/* Whether the screen draws a feature at a point: never on ground not
+ * yet explored, and not under the FoW when its def says nodrawundergray
+ * (legacy:127367, legacy:210620-210624). */
+int Fog_ShowsFeatureAt(const GameWorld *world, int no_draw_under_gray,
+                       int32_t x, int32_t y) {
+    if (Fog_StateAt(world, x, y) == TAK_FOG_UNEXPLORED) return 0;
+    return !no_draw_under_gray || Fog_ShowsAt(world, x, y);
+}
+
 /* Legacy-exact fog overlay (legacy:130167-130436):
  * the quad lattice is shifted by half a fog cell so each quad's four
  * corners land on the CENTRES of the four surrounding fog cells. Each
