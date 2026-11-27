@@ -16769,7 +16769,8 @@ static void cloak_hold(Unit *u, const UnitDef *def, int ticks) {
 static int g_cloak_near[TAK_MAX_UNITS];
 
 /* An enemy its side sees, built and not cloaked itself, inside
- * mincloakdistance (legacy:20826-20845, legacy:20536-20540). */
+ * mincloakdistance (legacy:20826-20845, legacy:20536-20540). A neutral
+ * seat is none, since every seat counts it an ally (legacy:177727-177734). */
 static int cloak_enemy_near(const Unit *u, const UnitDef *def) {
     int r = def->min_cloak_distance;
     if (r <= 0) return 0;
@@ -16781,7 +16782,9 @@ static int cloak_enemy_near(const Unit *u, const UnitDef *def) {
         const Unit *t = &g_units[n < 0 ? k : g_cloak_near[k]];
         if (t->alive != UNIT_ALIVE_ACTIVE || t->under_construction || t->cloaked)
             continue;
-        if (!unit_players_are_enemies(u->player_id, t->player_id)) continue;
+        if (!unit_players_are_enemies(u->player_id, t->player_id) ||
+            Units_HoldsFireOn(u->player_id, t->player_id))
+            continue;
         int64_t dx = (int64_t)t->world_x - u->world_x;
         int64_t dy = (int64_t)t->world_y - u->world_y;
         if (dx * dx + dy * dy > r2) continue;

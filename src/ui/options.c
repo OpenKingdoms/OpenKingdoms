@@ -28,6 +28,7 @@
 #include "tak_memory.h"
 #include "tak_util.h"
 #include "tak_hud_layout.h"
+#include "tak_keybinds_screen.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -77,6 +78,15 @@ static struct {
     int          snap_sound_on, snap_unit_voices;
     int          snap_damage_bars, snap_shadows;
     Font        *tooltip_font;
+    /* The Key Binds plate on the Interface page, and the dialog it
+     * opens, which takes the frame while it is up (D-057). */
+    Font        *line_font;
+    int          keys_open;
+    int          keys_saved;
+    /* Enter, Escape and the button as the last frame left them. */
+    int          prev_enter, prev_esc, prev_mouse;
+    /* A press began here, so its release is a click on the plate. */
+    int          press_seen;
     int          return_state;
     int          pending_nextstate;
     /* The main screen the dialog sits on when opened from the menu: the
@@ -376,8 +386,8 @@ static void settings_revert(void) {
         TAK_Platform_SetScaleMode(p, opts.snap_scale_mode, opts.snap_pixel_size);
     if (p && (p->window_w != opts.snap_win_w || p->window_h != opts.snap_win_h))
         (void)TAK_Platform_SetWindowSize(p, opts.snap_win_w, opts.snap_win_h);
-    /* Nothing was written while the dialog was up, so there is nothing to
-     * undo on disk: the file still holds what these five now hold. */
+    /* Only the key dialog's Ok writes the file while this one is up, and
+     * options_cancel writes these back after it. */
 }
 
 /* Cache the slider's widgets for the page just loaded. */
@@ -589,6 +599,9 @@ static void options_confirm(void) {
 
 static void options_cancel(void) {
     settings_revert();
+    /* The key dialog's Ok wrote the file with this dialog's changes in
+     * it, so what was put back has to be written too. */
+    if (opts.keys_saved) Settings_Save();
     opts.pending_nextstate = opts.return_state;
 }
 
@@ -651,6 +664,27 @@ static int load_tab(int tab) {
     return 0;
 }
 
+/* Where the Key Binds plate stands: on the parchment under the pane,
+ * right of the Interface page's shield. A dark plate, since the game's
+ * small fonts are all light. */
+#define KEY_LINE_TEXT "Key Binds"
+
+static int key_line_rect(SDL_Rect *out) {
+    if (opts.active_tab != TAB_INTERFACE || !opts.line_font) return 0;
+    const GUIWidget *slot = GUIDialog_FindByName(&opts.shell,
+                                                 "PlaceHolderForOptionPages");
+    if (!slot) return 0;
+    out->x = slot->rect.x + opts.off_x + 198;
+    out->y = slot->rect.y + opts.off_y + 136;
+    out->w = Font_MeasureString(opts.line_font, KEY_LINE_TEXT) + 16;
+    out->h = 18;
+    return 1;
+}
+
+static void open_key_binds(void) {
+    if (KeyScreen_Open() == 0) opts.keys_open = 1;
+}
+
 int Options_Init(TAK_Platform *platform) {
     int prev_return = opts.return_state;
     memset(&opts, 0, sizeof(opts));
@@ -677,6 +711,9 @@ int Options_Init(TAK_Platform *platform) {
 
     opts.tooltip_font = Font_Load("data/fonts/b_times new roman (100b)",
                                    UI_RGBAFormat());
+    opts.line_font = Font_Load("data/fonts/b_times new roman (100)", UI_RGBAFormat());
+    /* A key held from the press that opened the dialog is not a press. */
+    opts.prev_enter = opts.prev_esc = opts.prev_mouse = 1;
 
     if (opts.return_state == GAMESTATE_MENU)
         opts.backdrop = load_menu_backdrop();
@@ -690,6 +727,8 @@ int Options_Init(TAK_Platform *platform) {
 
 void Options_Shutdown(void) {
     if (!opts.initialized) return;
+    if (opts.keys_open)    KeyScreen_Close();
+    if (opts.line_font)    Font_Free(opts.line_font);
     if (opts.sub_rt)       GUIRuntime_Destroy(opts.sub_rt);
     if (opts.shell_rt)     GUIRuntime_Destroy(opts.shell_rt);
     if (opts.tooltip_font) Font_Free(opts.tooltip_font);
@@ -711,6 +750,35 @@ int Options_Tick(TAK_Platform *platform, float frame_dt) {
         mx = -1; my = -1;
     }
     int mouse_down = SDL_GetMouseState(NULL, NULL) & SDL_BUTTON(SDL_BUTTON_LEFT);
+    const Uint8 *keys = SDL_GetKeyboardState(NULL);
+    int enter = keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER];
+    int esc = keys[SDL_SCANCODE_ESCAPE] != 0;
+
+    /* The key dialog stands where this one does and owns the frame. The
+     * frame it closes on is drawn here with no input, so the press that
+     * closed it presses nothing of this dialog's. */
+    if (opts.keys_open) {
+        SDL_Surface *under = UI_Offscreen();
+        if (opts.backdrop) Blit_RGBA(under, 0, 0, opts.backdrop, 640, 480);
+        if (KeyScreen_Tick(platform) && KeyScreen_IsOpen()) {
+            UI_Present(platform);
+            return GAMESTATE_OPTIONS;
+        }
+        opts.keys_open = 0;
+        if (KeyScreen_Kept()) opts.keys_saved = 1;
+        mx = -1; my = -1;
+        mouse_down = 0;
+        opts.prev_enter = opts.prev_esc = 1;
+        opts.prev_mouse = 0;
+    }
+    int enter_edge = enter && !opts.prev_enter;
+    int esc_edge = esc && !opts.prev_esc;
+    if (mouse_down && !opts.prev_mouse) opts.press_seen = 1;
+    int release = !mouse_down && opts.prev_mouse && opts.press_seen;
+    if (!mouse_down) opts.press_seen = 0;
+    opts.prev_enter = enter;
+    opts.prev_esc = esc;
+    opts.prev_mouse = mouse_down != 0;
 
     /* Volume slider: grabbing the track drags the value, and it follows
      * the pointer until the button comes up. The zone is a few pixels
@@ -792,11 +860,21 @@ int Options_Tick(TAK_Platform *platform, float frame_dt) {
         }
     }
 
-    const Uint8 *keys = SDL_GetKeyboardState(NULL);
-    /* The help strip spells the keys out: `#enter#Ok#esc#Cancel`. */
-    if (keys[SDL_SCANCODE_ESCAPE]) options_cancel();
-    else if (keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER])
-        options_confirm();
+    /* The Key Binds plate is no widget, so it is a rect and a release. */
+    SDL_Rect key_line;
+    int on_key_line = 0;
+    if (key_line_rect(&key_line)) {
+        SDL_Point pt = { mx, my };
+        on_key_line = SDL_PointInRect(&pt, &key_line);
+        if (on_key_line && release && !opts.dragging_volume && !opts.dragging_res)
+            open_key_binds();
+    }
+
+    /* The help strip spells the keys out: `#enter#Ok#esc#Cancel`. They
+     * answer on the press, and a dialog over this one takes it first. */
+    if (opts.keys_open)  { /* its first frame is the next one */ }
+    else if (esc_edge)   options_cancel();
+    else if (enter_edge) options_confirm();
 
     /* ── Render ──────────────────────────────────────────────────── */
     SDL_Surface *off = UI_Offscreen();
@@ -812,6 +890,14 @@ int Options_Tick(TAK_Platform *platform, float frame_dt) {
 
     GUIRuntime_Render(opts.shell_rt);
     if (opts.sub_rt) GUIRuntime_Render(opts.sub_rt);
+    if (key_line_rect(&key_line)) {
+        SDL_Rect face = { key_line.x + 1, key_line.y + 1, key_line.w - 2, key_line.h - 2 };
+        SDL_FillRect(off, &key_line, SDL_MapRGBA(off->format, 84, 78, 58, 255));
+        SDL_FillRect(off, &face, on_key_line ? SDL_MapRGBA(off->format, 74, 62, 40, 255)
+                                             : SDL_MapRGBA(off->format, 33, 28, 18, 255));
+        Font_DrawString(opts.line_font, off, key_line.x + 8,
+                        Font_CenterY(opts.line_font, key_line.y, key_line.h), KEY_LINE_TEXT);
+    }
 
     /* Tooltip for hovered widget on whichever layer. It goes in the dialog's
      * own HelpText widget, centred in it, the way the main menu does it — the
@@ -822,6 +908,7 @@ int Options_Tick(TAK_Platform *platform, float frame_dt) {
         if (!hw || !hw->tooltip[0]) hw = GUIRuntime_HoveredWidget(opts.shell_rt);
         const char *help = (hw && hw->tooltip[0]) ? hw->tooltip
                          : (opts.active_tab == TAB_VISUAL ? opts.res_note : NULL);
+        if (on_key_line) help = "Choose the keys of the battle";
         if (help && help[0]) {
             const GUIWidget *slot = GUIDialog_FindByName(&opts.shell, "HelpText");
             /* A line at a time, each centred, the block centred too. */

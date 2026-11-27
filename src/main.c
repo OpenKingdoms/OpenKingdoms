@@ -36,6 +36,7 @@
 #include "tak_platform.h"
 #include "tak_paths.h"
 #include "tak_settings.h"
+#include "tak_keybinds.h"
 #include "tak_gameloop.h"
 #include "tak_game_speed.h"
 #include "tak_memory.h"
@@ -933,6 +934,7 @@ int main(int argc, char *argv[]) {
     FILE *had_options = fopen(Settings_FilePath(), "r");
     if (had_options) fclose(had_options);
     Settings_Load();
+    Keybinds_Init();
     Camera_ResetDefaults();
 
     /* The scale and resolution the Visual options last kept, unless the

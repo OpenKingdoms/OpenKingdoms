@@ -207,7 +207,7 @@
  * place, standing orders and placed angles as the original's do. 81: a Shift
  * drag lays a line of buildings, and a summons without end refuses Shift
  * orders. 82: Ctrl+Shift puts an order in front of the queue. 83: a unit
- * under construction runs no scripts and delays threads as in the original. */
+ * stays cloaked by a neutral seat's units. */
 #define TAK_ENGINE_BUILD_ID           83
 
 #define TAK_NET_FRAME_HEADER          3u
