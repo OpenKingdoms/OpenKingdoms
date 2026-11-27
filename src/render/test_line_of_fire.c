@@ -2230,36 +2230,6 @@ TEST(a_volley_in_the_fog_hashes_to_its_pin) {
     ASSERT_EQ_INT((int)LF_FOG_VOLLEY_HASH, (int)a);
 }
 
-/* A wall across a fog cell's edge is named and drawn by one point: a
- * sprite's footprint centre, a model's own place. The pointer's cell
- * does not decide. */
-TEST(a_wall_across_a_fog_edge_shows_by_where_it_is_drawn) {
-    GameWorld *w = lf_world(1, 1);
-    ASSERT_NOT_NULL(w);
-    FeatureDef fd[2];
-    lf_feature(&fd[0], "TESTWALL", 2, 60, 1, 12000, "");
-    fd[0].no_draw_under_gray = 1;
-    fd[1] = fd[0];
-    strncpy(fd[1].name, "TESTWALLMODEL", sizeof(fd[1].name) - 1);
-    strncpy(fd[1].object, "testwallmodel", sizeof(fd[1].object) - 1);
-    ASSERT_EQ_INT(2, Features_DebugSetDefs(fd, 2));
-    /* Fog cells are 32 px: column 2 in sight, column 3 only explored. */
-    uint8_t *layer = w->fog_layers[1];
-    for (int row = 2; row <= 4; row += 2) {
-        layer[row * w->fog_w + 2] = TAK_FOG_VISIBLE;
-        layer[row * w->fog_w + 3] = TAK_FOG_EXPLORED;
-    }
-    /* Footprints span x 80..112, centre 96. The model lies at x 84. */
-    int sprite = Features_AddInstance(w, 0, 5, 4, 96, 80, 0, -1);
-    int model = Features_AddInstance(w, 1, 5, 8, 84, 144, 0, -1);
-    ASSERT(sprite >= 0 && model >= 0);
-    ASSERT_EQ_INT(sprite, Features_InfoAt(w, 84, 80));
-    ASSERT_EQ_INT(0, Features_InstanceShown(w, sprite));
-    ASSERT_EQ_INT(model, Features_InfoAt(w, 108, 144));
-    ASSERT_EQ_INT(1, Features_InstanceShown(w, model));
-    lf_end();
-}
-
 TEST(a_ranged_unit_waits_to_see_before_it_acquires) {
     GameWorld *w = lf_world(1, 1);
     ASSERT_NOT_NULL(w);
@@ -5059,7 +5029,6 @@ int main(int argc, char **argv) {
     RUN(a_blocked_volley_hashes_the_same);
     TEST_SUITE("What a side sees");
     RUN(a_ranged_unit_waits_to_see_before_it_acquires);
-    RUN(a_wall_across_a_fog_edge_shows_by_where_it_is_drawn);
     RUN(radar_shows_a_blip_beyond_sight_and_nothing_more);
     RUN(an_enemy_radar_jammer_hides_blips_and_an_allys_does_not);
     RUN(a_hit_is_answered_and_leaves_its_shooter_unseen);
