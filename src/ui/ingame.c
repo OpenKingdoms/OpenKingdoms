@@ -51,6 +51,7 @@
 #include "tak_view3d.h"
 #include "tak_view_shake.h"
 #include "tak_mission_script.h"
+#include "tak_map_scenario.h"
 #include "tak_briefing.h"
 #include "tak_music.h"
 #include "tak_order_overlay.h"
@@ -132,6 +133,8 @@ static struct {
      * how long it is readable. */
     uint32_t view3d_notice_until;
     TAK_Platform *platform;
+    /* The play area the last frame had, 0 before the first. */
+    int32_t last_view_w, last_view_h;
 } ig;
 
 /* A battle asked to open in the 3D view (the --view3d flag). */
@@ -498,6 +501,17 @@ static void InGame_StampStanding(GameWorld *world, int tick) {
     }
 }
 
+/* Under a scripted map a seat stands until its rules or an enemy's win
+ * call it, whatever it has left: the original skips its own checks
+ * while the map's script runs (legacy:206645). */
+static int scenario_standing(const GameWorld *world, int p) {
+    if (!player_slot_active(world, p) || world->stats[p].eliminated) return 0;
+    if (world->console.called[p] < 0) return 0;
+    for (int q = 1; q <= TAK_MAX_PLAYERS; q++)
+        if (world->console.called[q] > 0 && Units_PlayersAreEnemies(p, q)) return 0;
+    return 1;
+}
+
 static void InGame_EvaluateSkirmishRules(GameWorld *world) {
     if (!world) return;
     if (world->mission.objective_count > 0 ||
@@ -510,7 +524,8 @@ static void InGame_EvaluateSkirmishRules(GameWorld *world) {
     /* A player is named the tick their army goes, whatever the battle's
      * state. */
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
-        have[p] = player_units_present(world, p, units, unit_count);
+        have[p] = MapScenario_Active() ? scenario_standing(world, p)
+                                       : player_units_present(world, p, units, unit_count);
         if (ig.had_units[p] && have[p] <= 0) InGame_AnnounceFallen(world, p);
         ig.had_units[p] = (uint8_t)(have[p] > 0);
     }
@@ -800,6 +815,9 @@ static void InGame_SimulationStep(GameWorld *world) {
      * original sums its players' units at the top of its frame
      * (legacy:235842). */
     Units_RecomputeEconomy(world);
+    /* A scripted map's second, on the pool just summed: a held income
+     * stays held for everything that reads it this tick. */
+    MapScenario_Tick();
     double t0 = prof_now_ms();
     TAK_AI_TickSkirmish(world);
     double t1 = prof_now_ms();
@@ -1492,6 +1510,20 @@ static void ig_scroll_dir(const Uint8 *keys, int *out_dx, int *out_dy) {
 }
 
 /* Move the camera through the active view, which keeps it on the map. */
+/* A play area grown by a Resolution step or a resized window keeps the
+ * view inside the far edges, where every scroll keeps it. */
+static void ig_keep_view_on_map(GameWorld *world) {
+    int grew = ig.last_view_w && (world->viewport_w > ig.last_view_w ||
+                                  world->viewport_h > ig.last_view_h);
+    ig.last_view_w = world->viewport_w;
+    ig.last_view_h = world->viewport_h;
+    if (!grew) return;
+    int32_t max_x = world->map_pixels_w - world->viewport_w;
+    int32_t max_y = world->map_pixels_h - world->viewport_h;
+    if (max_x >= 0 && world->cam_x > max_x) world->cam_x = max_x;
+    if (max_y >= 0 && world->cam_y > max_y) world->cam_y = max_y;
+}
+
 static void ig_move_camera(GameWorld *world, int32_t dx, int32_t dy) {
     if (!world || (!dx && !dy)) return;
     ig_view()->scroll(world, dx, dy);
@@ -1539,7 +1571,7 @@ int  InGame_IsPaused(void) { return ig.paused; }
 
 void InGame_DebugToggleMenu(void) {
     if (InGameMenu_IsOpen()) InGameMenu_Close();
-    else (void)InGameMenu_Open();
+    else (void)InGameMenu_Open(ig.platform);
 }
 
 void InGame_DebugEscape(int down) {
@@ -2192,17 +2224,28 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
 #undef IG_PRESSED
 }
 
+/* The unit drawn under the pointer over the world, -1 for none, and 1
+ * when the pointer is over the world at all, at (x, y). */
+static int ig_pointer_unit(TAK_Platform *platform, GameWorld *world,
+                           int *unit, int32_t *x, int32_t *y) {
+    int mx = 0, my = 0;
+    *unit = -1;
+    if (platform->has_focus) SDL_GetMouseState(&mx, &my);
+    if (g_dbg_mouse_on) { mx = g_dbg_mouse_x; my = g_dbg_mouse_y; }
+    if (!platform->has_focus || Minimap_IsLarge() || InGameMenu_IsOpen() ||
+        Briefing_IsOpen() || ig.sd_ask || HUD_HitTest(mx, my, platform) ||
+        !ig_view()->pointer_to_world(world, platform, mx, my, x, y))
+        return 0;
+    *unit = ig_view()->pointer_to_unit(world, platform, mx, my);
+    return 1;
+}
+
 /* The unit, else the shown feature, under the pointer over the world,
  * for the info panel. A feature is named only where it is drawn. */
 static void ig_info_pointer(TAK_Platform *platform, GameWorld *world) {
-    int unit = -1, feature = -1, mx = 0, my = 0;
+    int unit = -1, feature = -1;
     int32_t x = 0, y = 0;
-    if (platform->has_focus) SDL_GetMouseState(&mx, &my);
-    if (g_dbg_mouse_on) { mx = g_dbg_mouse_x; my = g_dbg_mouse_y; }
-    if (platform->has_focus && !Minimap_IsLarge() && !InGameMenu_IsOpen() &&
-        !Briefing_IsOpen() && !ig.sd_ask && !HUD_HitTest(mx, my, platform) &&
-        ig_view()->pointer_to_world(world, platform, mx, my, &x, &y)) {
-        unit = ig_view()->pointer_to_unit(world, platform, mx, my);
+    if (ig_pointer_unit(platform, world, &unit, &x, &y)) {
         /* A wall under the pointer is passed over (reported from play). */
         int n = 0;
         const Unit *units = Units_GetActive(&n);
@@ -2254,6 +2297,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     /* HUD reserves the right sidebar + bottom strip; viewport_w/h
      * shrink to the visible game area for camera bounds + math. */
     HUD_Init(platform, world);
+    ig_keep_view_on_map(world);
 
     /* A match hears the wire before it runs a tick: the turns that
      * arrived this frame are what the next ticks are allowed to be.
@@ -2385,8 +2429,15 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * never while a chat line is being typed. */
     {
         const Uint8 *ks = SDL_GetKeyboardState(NULL);
-        OrderOverlay_SetShift(platform->has_focus && !Chat_IsOpen() &&
-                              (ks[SDL_SCANCODE_LSHIFT] || ks[SDL_SCANCODE_RSHIFT]));
+        int shift = platform->has_focus && !Chat_IsOpen() &&
+                    (ks[SDL_SCANCODE_LSHIFT] || ks[SDL_SCANCODE_RSHIFT]);
+        OrderOverlay_SetShift(shift);
+        /* The unit under the pointer is in focus too (legacy:238326).
+         * Only the classic view draws the overlay. */
+        int hover = -1;
+        int32_t hx = 0, hy = 0;
+        if (shift && !ig.view3d) (void)ig_pointer_unit(platform, world, &hover, &hx, &hy);
+        OrderOverlay_SetHover(hover);
     }
     int32_t shake_x = 0, shake_y = 0;
     ViewShake_Step(&shake_x, &shake_y);
@@ -2439,7 +2490,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         Chat_Expire(SDL_GetTicks());
         Chat_Draw(chat_off);
         Chat_DrawInput(chat_off);
-        if (ConsoleCmd_ClockOn()) {
+        if (ConsoleCmd_ClockOn() || MapScenario_ClockShown()) {
             char clock[48];
             ConsoleCmd_ClockText(clock, sizeof(clock), Units_SimTick());
             Chat_DrawClock(chat_off, clock);
@@ -2473,7 +2524,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
                                                        platform->text_in);
     if (platform->has_focus && !console_keys && InGame_MenuKey(keys, ig.prev_keys) &&
         !InGameMenu_IsOpen() && !ig.sd_ask) {
-        (void)InGameMenu_Open();
+        (void)InGameMenu_Open(platform);
     }
     if (InGameMenu_IsOpen()) {
         int next = InGameMenu_Tick(platform);
@@ -2755,6 +2806,7 @@ void InGame_Shutdown(void) {
      * starts in 2D, would hand its ghost to a view that is not up. */
     HUD_SetBuildGhostHook(NULL);
     OrderOverlay_SetShift(0);
+    OrderOverlay_SetHover(-1);
     g_request_view3d = 0;
     Translate_Free(&g_death_lines);
     /* A test's mouse goes with the battle it drove. */

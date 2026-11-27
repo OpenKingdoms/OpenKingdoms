@@ -1721,6 +1721,16 @@ int               Units_DebugGhostMatchesUnit(int handle,
 /* Set the veteran rank outright: experience becomes rank times the
  * kind's experiencepoints. */
 void              Units_DebugSetVeteranLevel(int handle, int level);
+/* The rank a map's script gives: half way into it, as the original's
+ * setter puts it, and none for a noveteran kind (legacy:232954). */
+void              Units_SetVeteranLevel(int handle, int level);
+/* A map script's own hands on a unit: a death as from a lethal hit, a
+ * heal held to full health, a hurt with no attacker, and its health
+ * scaled by a percent that may take it past full. */
+int               Units_ScriptKill(int handle);
+int               Units_ScriptHeal(int handle, int amount);
+int               Units_ScriptHarm(int handle, int amount);
+void              Units_ScaleHealth(int handle, int pct);
 
 /* Test hook: world heading (radians, 0 = north, +x = east at pi/2) that
  * a named mesh piece faces, its authored forward composed through the
@@ -2265,6 +2275,12 @@ int               Units_BeginBuildingForUnitFacing(int builder_handle,
 int               Units_OrderBuild(int builder_handle, int def_idx,
                                    int32_t world_x, int32_t world_y,
                                    int facing, int endless);
+/* Whether a placing click's order for def reaches this unit: a builder,
+ * held to its own list when it is limited (legacy:39200-39203) or when
+ * own_list is set. 1 for one that walks, 2 for a structure, 0 for neither. */
+#define UNITS_BUILD_TAKER_WALKS     1
+#define UNITS_BUILD_TAKER_STRUCTURE 2
+int               Units_BuildOrderTaker(int handle, int def_idx, int own_list);
 /* 1 when Ctrl on a walking builder's button summons def without end,
  * which takes bmcode 1 (legacy:150077-150084). */
 int               Units_DefCanRepeat(int def_idx);
@@ -2424,6 +2440,13 @@ void              Units_SnapBuildSite(int def_idx,
                                        int32_t *world_x, int32_t *world_y);
 void              Units_SnapBuildSiteFacing(int def_idx, int facing,
                                              int32_t *world_x, int32_t *world_y);
+/* Where a mission puts a unit of this type given a point in pixels. A
+ * placed unit's point is its centre (legacy:169600-169615) and a script's
+ * `create` names the top-left cell of its footprint (corner,
+ * legacy:178380-178385). A building then snaps onto the cells
+ * (legacy:219464-219481). */
+void              Units_MissionPlacePoint(int def_idx, int corner,
+                                          int32_t *world_x, int32_t *world_y);
 /* The cells a build of this def turned `facing` covers, the snap's own:
  * a walker's move class footprint, else its own, 2x2 when it names none. */
 void              Units_BuildSiteCells(int def_idx, int facing,

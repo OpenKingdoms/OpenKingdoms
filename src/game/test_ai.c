@@ -218,6 +218,10 @@ int Units_PlayersAreEnemies(int a, int b) {
     return ta != tb;
 }
 
+/* No neutral seat and no order list here: they are a campaign's. */
+int Units_HoldsFireOn(int attacker, int target) { (void)attacker; (void)target; return 0; }
+int MissionOrders_Holds(int handle) { (void)handle; return 0; }
+
 int Units_CanAttackTarget(int handle, int target_handle) {
     return handle >= 0 && target_handle >= 0 && handle != target_handle;
 }

@@ -63,6 +63,7 @@
 #include "tak_features.h"
 #include "tak_ai.h"
 #include "tak_mission_script.h"
+#include "tak_map_scenario.h"
 #include "tak_sim_hash.h"
 #include "tak_briefing.h"
 #include "tak_game_info.h"
@@ -3759,7 +3760,8 @@ TEST(the_game_options_are_kept_for_the_next_battle) {
     ASSERT_EQ_INT(!next.monarch_expendable, saved_death);
     ASSERT_EQ_INT(1, hosted);
     ASSERT_EQ_INT((int)(defaults.line_of_sight ? TAK_ROOMOPT_LINE_OF_SIGHT : 0u) |
-                  (int)TAK_ROOMOPT_MAP_REVEALED, (int)cr.options);
+                  (int)TAK_ROOMOPT_MAP_REVEALED | (int)TAK_ROOMOPT_MAP_SCRIPT,
+                  (int)cr.options);
     ASSERT_EQ_INT(900, (int)cr.unit_cap);
     ASSERT_EQ_INT(0, took);
     ASSERT_EQ_INT((int)TAK_ROOMOPT_LINE_OF_SIGHT, (int)e.value);
@@ -5022,6 +5024,7 @@ TEST(black_peace_follows_its_mission_file) {
     ASSERT_NOT_NULL(world);
     ASSERT_EQ_INT(0, InGame_Init(&platform));
     InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    uint32_t thinks = TAK_AI_DebugThinks(2);
 
     /* Player1 is "logo 1 taros", Player2 "logo 3 aramon", and seats 9
      * and 10 name no logo, so they take their own numbers from nought. */
@@ -5097,10 +5100,21 @@ TEST(black_peace_follows_its_mission_file) {
     ASSERT_EQ_INT(-1, Units_Spawn(Units_FindDefByName("TARDRAG"), 1, 1,
                                   128 * 16, 118 * 16));
 
-    /* Every mobile unit of the second seat gone is the win. */
+    /* The second seat, strategic, is the computer's, but not the builder
+     * its list tells to wait (legacy:177742, legacy:228755). */
     InGame_DebugRunSimTicks(30);
-    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    ASSERT(TAK_AI_DebugThinks(2) > thinks);
     units = Units_GetActive(&unit_count);
+    int mage = -1;
+    for (int i = 0; i < unit_count && mage < 0; i++)
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 2 &&
+            (int)units[i].def_idx == Units_FindDefByName("ARABUILD")) mage = i;
+    ASSERT(mage >= 0);
+    ASSERT_EQ_INT(1, MissionOrders_Holds(mage));
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)units[mage].cmd_kind);
+
+    /* Every mobile unit of the second seat gone is the win. */
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
     for (int i = 0; i < unit_count; i++) {
         const UnitDef *d = Units_GetDef((int)units[i].def_idx);
         if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 2 &&
@@ -20654,6 +20668,214 @@ TEST(a_match_world_rebuilt_from_a_snapshot_plays_on_alike) {
     VFS_Shutdown();
 }
 
+/* Units of a kind a player has standing, by unit name. */
+static int sm_count(int player, const char *name) {
+    int def = Units_FindDefByName(name), n = 0, c = 0;
+    const Unit *u = Units_GetActive(&n);
+    for (int i = 0; i < n; i++)
+        c += u[i].player_id == player && u[i].def_idx == def &&
+             u[i].alive == UNIT_ALIVE_ACTIVE;
+    return c;
+}
+
+/* King of the Hill in a match, built from START_GAME as a client builds
+ * it: each seat starts with its start's units from the map's .crt and
+ * no monarch, a rule sends a swordsman to its base every few seconds,
+ * a world rebuilt from a snapshot part way through plays on with the
+ * same hashes, the rules' timers included, and the other player's
+ * machine computes the same battle. */
+TEST(a_scripted_map_plays_its_script_in_a_match_and_through_a_snapshot) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    ASSERT_NOT_NULL(c);
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 21);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1000));
+    TAK_MsgStartGame sg;
+    memset(&sg, 0, sizeof sg);
+    sg.match_id = 12;
+    sg.seed = 777;
+    sg.your_seat = 0;
+    sg.turn_ticks = 3;
+    snprintf(sg.map_name, sizeof sg.map_name, "King of the Hill");
+    sg.options = TAK_ROOMOPT_LINE_OF_SIGHT | TAK_ROOMOPT_MAP_SCRIPT;
+    sg.slot[0].kind = TAK_NSLOT_HUMAN;
+    sg.slot[0].side = TAK_SIDE_ARAMON;
+    sg.slot[0].team = 1;
+    sg.slot[1].kind = TAK_NSLOT_HUMAN;
+    sg.slot[1].side = TAK_SIDE_ARAMON;
+    sg.slot[1].team = 2;
+    sg.slot[1].colour = 1;
+    sg.slot[2].kind = TAK_NSLOT_COMPUTER;
+    sg.slot[2].side = TAK_SIDE_ARAMON;
+    sg.slot[2].team = 3;
+    sg.slot[2].colour = 2;
+    n = TAK_Msg_StartGameEncode(&sg, msg, sizeof msg);
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+    ASSERT_EQ_INT(0, MP_BeginMatchWorld(&platform, &c->start));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, pl_run_loading(&platform, 900));
+    TAK_MsgGo go;
+    go.first_turn = 0;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1200));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 8));
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    /* Not a campaign mission: its units are the script's, so the
+     * computer seats play as in any match. */
+    ASSERT_EQ_INT(0, World_Get()->mission.objective_count);
+    ASSERT_EQ_INT(0, World_Get()->mission.placement_count);
+    /* The start's army, and no monarch: the script replaces the spawn. */
+    for (int p = 1; p <= 2; p++) {
+        if (end_find_monarch(p) >= 0) printf("(seat %d has a monarch) ", p);
+        ASSERT(end_find_monarch(p) < 0);
+        ASSERT_EQ_INT(4, sm_count(p, "ARAARCH"));
+        ASSERT_EQ_INT(2, sm_count(p, "ARABROAD"));
+        ASSERT_EQ_INT(2, sm_count(p, "ARAAT"));
+        ASSERT_EQ_INT(1, sm_count(p, "NPCFLAG"));
+        ASSERT_EQ_INT(0, sm_count(p, "ARASWORD"));
+    }
+    /* The second start's flag stands at ten times its hit points. */
+    {
+        int flag = Units_FindDefByName("NPCFLAG"), un = 0;
+        const Unit *u = Units_GetActive(&un);
+        for (int i = 0; i < un; i++)
+            if (u[i].def_idx == flag && u[i].player_id == 2)
+                ASSERT_EQ_INT(10 * u[i].max_health, u[i].health);
+    }
+    int32_t timer = 0;
+    ASSERT_EQ_INT(0, MapScenario_DebugTimer(1, 1, &timer));
+    ASSERT_EQ_INT(3, timer);
+
+    /* A swordsman for each seat by its fourth second, in its base. */
+    sr_turns(c, 0, 1200, UINT32_MAX, 0, 1300);
+    static SnapRun sent, played, rebuilt;
+    memset(&sent, 0, sizeof sent);
+    sr_run_to(c, &sent, 300);
+    ASSERT_EQ_INT(1, sm_count(1, "ARASWORD"));
+    ASSERT_EQ_INT(1, sm_count(2, "ARASWORD"));
+    {
+        int sword = Units_FindDefByName("ARASWORD"), un = 0;
+        const Unit *u = Units_GetActive(&un);
+        for (int i = 0; i < un; i++) {
+            if (u[i].def_idx != sword || u[i].player_id != 1) continue;
+            int cx = u[i].world_x / 16, cz = u[i].world_y / 16;
+            if (cx < 13 || cx > 19 || cz < 103 || cz > 109)
+                printf("(seat 1's swordsman at cell %d,%d) ", cx, cz);
+            ASSERT(cx >= 13 && cx <= 19 && cz >= 103 && cz <= 109);
+        }
+    }
+
+    /* A snapshot taken between two of its rule's seconds. */
+    sr_run_to(c, &sent, 600);
+    c->snap_asked = 78;
+    sr_run_to(c, &sent, 660);
+    for (int i = 0; i < 64 && c->snap_out; i++) {
+        (void)TAK_NetClient_SnapshotPump(c, 1u << 20);
+        sr_drain(c, &sent);
+    }
+    ASSERT_EQ_INT(660, (int)sent.snap_tick);
+    memset(&played, 0, sizeof played);
+    sr_run_to(c, &played, 1800);
+    int swords1 = sm_count(1, "ARASWORD");
+    ASSERT(swords1 >= 4);
+    ASSERT_EQ_INT(0, MapScenario_DebugTimer(1, 1, &timer));
+    int32_t timer_played = timer;
+
+    for (uint32_t off = 0; off < sent.snap_len; off += TAK_NET_SNAP_CHUNK) {
+        TAK_MsgSnapData d;
+        d.snap_id = 6;
+        d.tick = sent.snap_tick;
+        d.total = sent.snap_len;
+        d.offset = off;
+        uint32_t left = sent.snap_len - off;
+        d.len = (uint16_t)(left < TAK_NET_SNAP_CHUNK ? left : TAK_NET_SNAP_CHUNK);
+        d.data = sent.snap + off;
+        n = TAK_Msg_SnapDataEncode(&d, msg, sizeof msg);
+        ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 2000));
+    }
+    memset(&rebuilt, 0, sizeof rebuilt);
+    NetSession_Tick(2000);
+    sr_drain(c, &rebuilt);
+    ASSERT_EQ_INT(1, rebuilt.results);
+    ASSERT_EQ_INT(0, rebuilt.refusals);
+    go.first_turn = 220;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 2100));
+    TAK_Match_End();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    ASSERT_EQ_INT(0, MapScenario_Active());
+    ASSERT_EQ_INT(0, MP_RebuildMatchWorld(&platform));
+    ASSERT_EQ_INT(1, MP_RebuiltFromSnapshot());
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 900));
+    ASSERT_EQ_INT(660, (int)TAK_CmdQueue_Tick());
+    ASSERT_EQ_INT(1, MapScenario_Active());
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    sr_turns(c, 220, 1200, UINT32_MAX, 0, 2200);
+    sr_run_to(c, &rebuilt, 1800);
+    ASSERT_EQ_INT(0, rebuilt.refusals);
+    for (int k = 720 / 60 - 1; k < 1800 / 60; k++) {
+        ASSERT(played.hash[k] != 0);
+        ASSERT_EQ_INT((int)played.hash[k], (int)rebuilt.hash[k]);
+    }
+    ASSERT_EQ_INT(swords1, sm_count(1, "ARASWORD"));
+    ASSERT_EQ_INT(0, MapScenario_DebugTimer(1, 1, &timer));
+    ASSERT_EQ_INT(timer_played, timer);
+
+    /* The second seat's machine, from the same START_GAME. */
+    TAK_Match_End();
+    NetSession_Disconnect();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    NetSession_BeginWithoutLink("Other");
+    c = NetSession_Client();
+    ASSERT_NOT_NULL(c);
+    n = sg_encode_welcome(msg, sizeof msg, 22);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 3000));
+    sg.your_seat = 1;
+    n = TAK_Msg_StartGameEncode(&sg, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 3100));
+    ASSERT_EQ_INT(0, MP_BeginMatchWorld(&platform, &c->start));
+    ASSERT_EQ_INT(2, Units_LocalPlayer());
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, pl_run_loading(&platform, 900));
+    go.first_turn = 0;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 3200));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 8));
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    sr_turns(c, 0, 1200, UINT32_MAX, 0, 3300);
+    static SnapRun other;
+    memset(&other, 0, sizeof other);
+    sr_run_to(c, &other, 1800);
+    for (int k = 0; k < 1800 / 60; k++) {
+        uint32_t want = played.hash[k] ? played.hash[k] : sent.hash[k];
+        ASSERT(want != 0);
+        ASSERT_EQ_INT((int)want, (int)other.hash[k]);
+    }
+
+    tak_free(sent.snap);
+    TAK_Match_End();
+    NetSession_Disconnect();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    Settings_SetStr("RejoinMatch", "");
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A beaten seat's match played as frames, the monarch falling at one
  * second. look_around presses Tab, scrolls and clicks as a watcher does.
  * Fills hash[k] with the hash it reported for tick 60 * (k + 1) and
@@ -23731,6 +23953,17 @@ TEST(f1_opens_the_in_game_menu_with_the_shipped_buttons) {
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, igm_frame(&platform, &timer));
     ASSERT_EQ_INT(1, InGameMenu_IsOpen());
 
+    /* Its Options carry the Resolution slider's sizes as the menu's do,
+     * and the battle takes a step at once (legacy:157711-157721). */
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_Press("Options"));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Visual"));
+    ASSERT_EQ_INT(HUD_SCALE_FIT, platform.scale_mode);
+    ASSERT_EQ_INT(1, Options_ClickWidget("incbutton"));
+    ASSERT_EQ_INT(HUD_SCALE_ORIGINAL, platform.scale_mode);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, igm_frame(&platform, &timer));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Cancel"));
+    ASSERT_EQ_INT(HUD_SCALE_FIT, platform.scale_mode);
+
     igm_teardown(&platform);
 }
 
@@ -26184,6 +26417,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_seat_beaten_in_a_match_watches_the_rest_of_it);
     RUN_UI_TEST(a_beaten_seat_looking_around_keeps_the_battles_hash);
     RUN_UI_TEST(a_match_world_rebuilt_from_a_snapshot_plays_on_alike);
+    RUN_UI_TEST(a_scripted_map_plays_its_script_in_a_match_and_through_a_snapshot);
     RUN_UI_TEST(mp_room_follows_the_servers_later_snapshot);
     RUN_UI_TEST(mp_room_builds_the_world_the_server_described);
     RUN_UI_TEST(mp_room_a_press_on_another_players_row_sends_nothing);

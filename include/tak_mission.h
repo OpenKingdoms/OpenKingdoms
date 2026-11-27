@@ -147,6 +147,9 @@ typedef struct MissionData {
     /* The GlobalHeader mapping key. 1 starts the map black, anything
      * else starts it explored (legacy:168883). */
     int  mapping;
+    /* The computer player's profile, ai\<ai_profile>.txt, empty for the
+     * default (legacy:169124-169128). */
+    char ai_profile[32];
     MissionPlacement *placements;
     int placement_count;
     MissionObjective *objectives;

@@ -62,7 +62,9 @@ enum {
     /* The battle read its models from the archives alone, as a match
      * does and as any battle does with none in the game folder's
      * objects3d. */
-    TAK_REPLAYF_ARCHIVE_MODELS = 0x08
+    TAK_REPLAYF_ARCHIVE_MODELS = 0x08,
+    /* The match's Use Map Script, which is cfg.map_script. */
+    TAK_REPLAYF_MAP_SCRIPT = 0x10
 };
 
 typedef struct TAK_ReplayHeader {

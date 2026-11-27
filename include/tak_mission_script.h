@@ -61,6 +61,9 @@ int  MissionOrders_Give(int handle, const char *text);
 void MissionOrders_NameUnit(const char *ident, int handle);
 /* 1 while the unit still has orders to work through. */
 int  MissionOrders_Running(int handle);
+/* 1 while an order list keeps the unit from the computer player: from
+ * the list's first order to its end, or to its `s` (legacy:228755-228765). */
+int  MissionOrders_Holds(int handle);
 /* Orders the lists have finished since Begin, for tests and probes. */
 int  MissionOrders_DebugDone(void);
 

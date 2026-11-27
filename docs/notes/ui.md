@@ -285,8 +285,17 @@ A click with Ctrl changes the order in hand and keeps the queued ones
 behind it, which the manual gives as the way to send a builder
 elsewhere without losing its build queue.
 
-While Shift is held the engine draws each selected unit's orders,
-which the original does not do, see D-031.
+While Shift is held the original draws the orders of every unit of the
+player's that is selected, under the pointer, followed by the camera or
+the one unit selected (legacy:210741-210744, legacy:238325-238346). A
+build order whose frame is not up shows as a ghost of the building at
+its spot (legacy:179596-179649). When the unit under the pointer, the
+one followed or the one unit selected has a build list, every other unit
+of the player's shows its queued buildings as well
+(legacy:238305-238307, legacy:238344). The manual says as much for the
+selected unit: "If you hold the Shift button down, you'll see ghost
+images of that summoning unit's queued tasks." The engine has no unit the
+camera follows, and how it draws the lines is D-031.
 
 ## Veteran rank
 

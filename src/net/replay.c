@@ -39,7 +39,7 @@ static void set_err(char *err, size_t cap, const char *msg) {
 #define TAK_REPLAY_AI_HARDEST     3
 #define TAK_REPLAY_TURN_TICKS_MAX 60
 #define TAK_REPLAYF_KNOWN (TAK_REPLAYF_MATCH | TAK_REPLAYF_MAP_FP | TAK_REPLAYF_FINISHED | \
-                           TAK_REPLAYF_ARCHIVE_MODELS)
+                           TAK_REPLAYF_ARCHIVE_MODELS | TAK_REPLAYF_MAP_SCRIPT)
 
 /* Printable text, and for a map name one that stays a name: it becomes
  * a path the map is looked up by. */
@@ -65,7 +65,8 @@ static void header_encode(const TAK_ReplayHeader *h, uint8_t out[TAK_REPLAY_HEAD
     TAK_BW_U64(&w, h->data_content);
     for (int g = 0; g < TAK_DATA_GROUP_COUNT; g++) TAK_BW_U64(&w, h->data_group[g]);
     TAK_BW_Bytes(&w, h->map_fp, sizeof h->map_fp);
-    TAK_BW_U8(&w, h->flags);
+    TAK_BW_U8(&w, (uint8_t)((h->flags & ~TAK_REPLAYF_MAP_SCRIPT) |
+                            (h->cfg.map_script ? TAK_REPLAYF_MAP_SCRIPT : 0)));
     TAK_BW_U8(&w, h->local_seat);
     TAK_BW_U8(&w, h->turn_ticks);
     /* Once a spare byte: the remastered battlefield rules (D-036). */
@@ -127,6 +128,7 @@ static int header_decode(const uint8_t in[TAK_REPLAY_HEADER_BYTES],
     for (int g = 0; g < TAK_DATA_GROUP_COUNT; g++) h->data_group[g] = TAK_BR_U64(&r);
     TAK_BR_Bytes(&r, h->map_fp, sizeof h->map_fp);
     h->flags = TAK_BR_U8(&r);
+    h->cfg.map_script = (h->flags & TAK_REPLAYF_MAP_SCRIPT) != 0;
     h->local_seat = TAK_BR_U8(&r);
     h->turn_ticks = TAK_BR_U8(&r);
     h->cfg.remastered = TAK_BR_U8(&r);

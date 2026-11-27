@@ -45,6 +45,7 @@ TAK_DisplayConfig TAK_DisplayConfig_Default(void) {
 #endif
     c.scale_mode      = HUD_SCALE_ORIGINAL;
     c.pixel_size      = 0;
+    c.hold_size       = 0;
     return c;
 }
 
@@ -74,6 +75,14 @@ EM_JS(double, web_device_pixel_ratio, (void), {
     return window.devicePixelRatio || 1;
 });
 
+/* The screen's size in screen pixels, about. A zoomed out page has a
+ * ratio under one on a screen that has not shrunk. */
+EM_JS(int, web_screen_px, (int height), {
+    var dpr = Math.max(1, window.devicePixelRatio || 1);
+    var s = window.screen || {};
+    return Math.floor((height ? s.height : s.width) * dpr) || 0;
+});
+
 /* A press shows which of Shift, Ctrl and Alt are really down. One whose
  * release the page never saw, which an input method can swallow, is let
  * go before SDL hears the press, so it cannot stay held. SDL drops a
@@ -101,6 +110,7 @@ EM_JS(void, web_canvas_css, (int original, int gw, int gh, int k), {
     var c = Module['canvas'];
     if (!c) return;
     var dpr = window.devicePixelRatio || 1;
+    c.style.removeProperty('image-rendering');
     if (original) {
         c.classList.add('px');
         c.style.setProperty('width', (gw * k / dpr) + 'px', 'important');
@@ -110,6 +120,22 @@ EM_JS(void, web_canvas_css, (int original, int gw, int gh, int k), {
         c.style.removeProperty('width');
         c.style.removeProperty('height');
     }
+});
+
+/* A held size is scaled to fit the page with its shape kept. From two
+ * screen pixels a game pixel up it is drawn unsmoothed, where a column a
+ * pixel wider than the next hardly shows, and below that smoothed. */
+EM_JS(void, web_canvas_held, (int w, int h), {
+    var c = Module['canvas'];
+    if (!c) return;
+    var dpr = window.devicePixelRatio || 1;
+    var s = Math.min(window.innerWidth * dpr / w, window.innerHeight * dpr / h);
+    if (!(s > 0)) return;
+    c.classList.add('px');
+    c.style.setProperty('width', (w * s / dpr) + 'px', 'important');
+    c.style.setProperty('height', (h * s / dpr) + 'px', 'important');
+    if (s >= 2 || s === Math.floor(s)) c.style.removeProperty('image-rendering');
+    else c.style.setProperty('image-rendering', 'auto');
 });
 
 /* The nearest whole number of screen pixels to a CSS pixel, so a game
@@ -137,8 +163,13 @@ static void web_size_canvas(TAK_Platform *plat) {
         int k = web_pixel_size(plat);
         int gw = web_page_px(k, 0), gh = web_page_px(k, 1);
         if (gw < 1 || gh < 1) return;
-        web_canvas_css(1, gw, gh, k);
-        SDL_SetWindowSize(plat->window, gw, gh);
+        if (plat->held_w > 0 && plat->held_h > 0) {
+            web_canvas_held(plat->held_w, plat->held_h);
+            SDL_SetWindowSize(plat->window, plat->held_w, plat->held_h);
+        } else {
+            web_canvas_css(1, gw, gh, k);
+            SDL_SetWindowSize(plat->window, gw, gh);
+        }
         g_web_gw = gw;
         g_web_gh = gh;
         g_web_dpr = web_device_pixel_ratio();
@@ -337,6 +368,13 @@ int TAK_Platform_Init(TAK_Platform *plat, const TAK_DisplayConfig *cfg) {
     plat->vsync           = cfg->vsync;
     plat->scale_mode      = cfg->scale_mode;
     plat->pixel_size      = cfg->pixel_size;
+#ifdef __EMSCRIPTEN__
+    if (cfg->hold_size && cfg->window_w >= HUD_AUTHORED_W &&
+        cfg->window_h >= HUD_AUTHORED_H) {
+        plat->held_w = cfg->window_w;
+        plat->held_h = cfg->window_h;
+    }
+#endif
 
     /* Pull the real window size — fullscreen-desktop or HiDPI may have
      * given us something other than what we requested. */
@@ -484,15 +522,31 @@ int TAK_Platform_PumpEvents(TAK_Platform *plat) {
 
 void TAK_Platform_ToggleFullscreen(TAK_Platform *plat) {
     if (!plat || !plat->window) return;
+#ifdef __EMSCRIPTEN__
+    /* The page takes the screen rather than the canvas alone, so every
+     * scale and Resolution stop follows it as it follows a resized page.
+     * The request waits for the key's own event if it has to. */
+    EmscriptenFullscreenChangeEvent now;
+    if (emscripten_get_fullscreen_status(&now) == EMSCRIPTEN_RESULT_SUCCESS &&
+        now.isFullscreen) {
+        emscripten_exit_fullscreen();
+        plat->fullscreen = 0;
+    } else {
+        EmscriptenFullscreenStrategy s;
+        memset(&s, 0, sizeof(s));
+        s.scaleMode = EMSCRIPTEN_FULLSCREEN_SCALE_DEFAULT;
+        s.canvasResolutionScaleMode = EMSCRIPTEN_FULLSCREEN_CANVAS_SCALE_NONE;
+        s.filteringMode = EMSCRIPTEN_FULLSCREEN_FILTERING_DEFAULT;
+        plat->fullscreen = emscripten_request_fullscreen_strategy("html", 1, &s) >= 0;
+    }
+#else
     plat->fullscreen = !plat->fullscreen;
     SDL_SetWindowFullscreen(plat->window,
         plat->fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
     SDL_GetWindowSize(plat->window, &plat->window_w, &plat->window_h);
     recompute_layout(plat);
-#ifdef __EMSCRIPTEN__
-    web_size_canvas(plat);
-#endif
     apply_canvas_filter(plat);
+#endif
 }
 
 void TAK_Platform_UpdateCanvas(TAK_Platform *plat, SDL_Surface *canvas) {
@@ -558,11 +612,27 @@ void TAK_Platform_BattleCanvasSize(const TAK_Platform *plat, int *w, int *h) {
 
 int TAK_Platform_PixelSize(const TAK_Platform *plat) {
 #ifdef __EMSCRIPTEN__
+    if (plat && plat->held_w > 0) return 0;
     return plat ? web_pixel_size(plat) : 1;
 #else
     (void)plat;
     return 1;
 #endif
+}
+
+void TAK_Platform_HeldSize(const TAK_Platform *plat, int *w, int *h) {
+    int hw = 0, hh = 0;
+    if (plat) {
+#ifdef __EMSCRIPTEN__
+        hw = plat->held_w;
+        hh = plat->held_h;
+#else
+        hw = plat->window_w;
+        hh = plat->window_h;
+#endif
+    }
+    if (w) *w = hw;
+    if (h) *h = hh;
 }
 
 /* Kept in order, smallest width first, without repeats. */
@@ -587,8 +657,24 @@ int TAK_Platform_Resolutions(const TAK_Platform *plat, TAK_Resolution *out,
     if (!plat || !out || cap <= 0) return 0;
     int n = 0;
 #ifdef __EMSCRIPTEN__
+    /* The page's own stops come first and win a size two stops share. */
     for (int k = 1; k <= 4; k++)
         n = add_resolution(out, n, cap, web_page_px(k, 0), web_page_px(k, 1), k);
+    /* A page has no display modes, so it offers the sizes a display
+     * usually lists, from 640x480 up like the original's list
+     * (legacy:157567-157579), that the screen could show whole. */
+    static const int modes[][2] = {
+        {  640,  480 }, {  800,  600 }, { 1024,  768 }, { 1152,  864 },
+        { 1280,  720 }, { 1280,  960 }, { 1280, 1024 }, { 1366,  768 },
+        { 1600,  900 }, { 1600, 1200 }, { 1920, 1080 }, { 1920, 1200 },
+        { 2560, 1440 }, { 3840, 2160 },
+    };
+    int sw = web_screen_px(0), sh = web_screen_px(1);
+    for (int i = 0; i < (int)(sizeof(modes) / sizeof(modes[0])); i++)
+        if (modes[i][0] <= sw && modes[i][1] <= sh)
+            n = add_resolution(out, n, cap, modes[i][0], modes[i][1], 0);
+    if (plat->held_w > 0)
+        n = add_resolution(out, n, cap, plat->held_w, plat->held_h, 0);
 #else
     /* Windowed, the modes that fit the screen size the window. In
      * fullscreen every mode is offered and a smaller one is a real mode
@@ -614,8 +700,17 @@ int TAK_Platform_Resolutions(const TAK_Platform *plat, TAK_Resolution *out,
 
 int TAK_Platform_SetWindowSize(TAK_Platform *plat, int w, int h) {
 #ifdef __EMSCRIPTEN__
-    (void)plat; (void)w; (void)h;
-    return -1;
+    if (!plat || !plat->window) return -1;
+    if (w == 0 && h == 0) {
+        plat->held_w = plat->held_h = 0;
+    } else if (w >= HUD_AUTHORED_W && h >= HUD_AUTHORED_H) {
+        plat->held_w = w;
+        plat->held_h = h;
+    } else {
+        return -1;
+    }
+    web_size_canvas(plat);
+    return 0;
 #else
     if (!plat || !plat->window || w <= 0 || h <= 0) return -1;
     int disp = SDL_GetWindowDisplayIndex(plat->window);
