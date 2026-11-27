@@ -51,6 +51,7 @@
 #include "tak_view3d.h"
 #include "tak_view_shake.h"
 #include "tak_mission_script.h"
+#include "tak_map_scenario.h"
 #include "tak_briefing.h"
 #include "tak_music.h"
 #include "tak_order_overlay.h"
@@ -498,6 +499,17 @@ static void InGame_StampStanding(GameWorld *world, int tick) {
     }
 }
 
+/* Under a scripted map a seat stands until its rules or an enemy's win
+ * call it, whatever it has left: the original skips its own checks
+ * while the map's script runs (legacy:206645). */
+static int scenario_standing(const GameWorld *world, int p) {
+    if (!player_slot_active(world, p) || world->stats[p].eliminated) return 0;
+    if (world->console.called[p] < 0) return 0;
+    for (int q = 1; q <= TAK_MAX_PLAYERS; q++)
+        if (world->console.called[q] > 0 && Units_PlayersAreEnemies(p, q)) return 0;
+    return 1;
+}
+
 static void InGame_EvaluateSkirmishRules(GameWorld *world) {
     if (!world) return;
     if (world->mission.objective_count > 0 ||
@@ -510,7 +522,8 @@ static void InGame_EvaluateSkirmishRules(GameWorld *world) {
     /* A player is named the tick their army goes, whatever the battle's
      * state. */
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
-        have[p] = player_units_present(world, p, units, unit_count);
+        have[p] = MapScenario_Active() ? scenario_standing(world, p)
+                                       : player_units_present(world, p, units, unit_count);
         if (ig.had_units[p] && have[p] <= 0) InGame_AnnounceFallen(world, p);
         ig.had_units[p] = (uint8_t)(have[p] > 0);
     }
@@ -800,6 +813,9 @@ static void InGame_SimulationStep(GameWorld *world) {
      * original sums its players' units at the top of its frame
      * (legacy:235842). */
     Units_RecomputeEconomy(world);
+    /* A scripted map's second, on the pool just summed: a held income
+     * stays held for everything that reads it this tick. */
+    MapScenario_Tick();
     double t0 = prof_now_ms();
     TAK_AI_TickSkirmish(world);
     double t1 = prof_now_ms();
@@ -2438,7 +2454,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         Chat_Expire(SDL_GetTicks());
         Chat_Draw(chat_off);
         Chat_DrawInput(chat_off);
-        if (ConsoleCmd_ClockOn()) {
+        if (ConsoleCmd_ClockOn() || MapScenario_ClockShown()) {
             char clock[48];
             ConsoleCmd_ClockText(clock, sizeof(clock), Units_SimTick());
             Chat_DrawClock(chat_off, clock);

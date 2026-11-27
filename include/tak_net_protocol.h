@@ -437,6 +437,9 @@ typedef enum TAK_NetPaceReason {
  * like any other, and the engine build a room needs keeps a build
  * without them out. */
 #define TAK_ROOMOPT_REMASTERED        0x0080u
+/* Use Map Script: a scripted map plays its .crt (legacy:139234). On
+ * when a room opens, as the original sets it for such a map. */
+#define TAK_ROOMOPT_MAP_SCRIPT        0x0100u
 
 /* HELLO flag bits. */
 #define TAK_HELLOF_IRON_PLAGUE    0x01u

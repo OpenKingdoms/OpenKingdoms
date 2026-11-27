@@ -1877,4 +1877,21 @@ pull request, not here.
   E arms Resurrect in the original. `test_keybinds`. The manual is
   silent.
 
+## D-058: A scripted map's rules run on every machine
+
+- Change: every seat's rules run on every machine in seat order, as
+  part of the lockstep simulation. A win the rules call for a seat
+  beats each seat at war with it, so the match ends. A kill is tallied
+  when the blow lands and a loss when the unit's record ends. The
+  chance condition draws from the simulation's generator. A health,
+  armour or attack scale of 0 leaves the unit as authored. Use Map
+  Script is on when a room opens and keeps the host's choice from map
+  to map.
+- Why: the original ran each machine's own seats, let the network carry
+  what they did, and ended only the winner's game. Lockstep needs one
+  result on every machine.
+- Citation: legacy:173086-173338, legacy:206542-206576, legacy:173375.
+  `a_scripted_map_plays_its_script_in_a_match_and_through_a_snapshot`.
+  The manual is silent.
+
 *(More entries added as deviations land.)*

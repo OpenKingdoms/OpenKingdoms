@@ -54,6 +54,7 @@
 #include "tak_palette.h"
 #include "tak_ui.h"
 #include "tak_view_shake.h"
+#include "tak_map_scenario.h"
 #include "tak_gl3d.h"
 #include <limits.h>
 #include <stdio.h>
@@ -2187,6 +2188,7 @@ static void credit_kill_tally(Unit *shooter, int killer_player, const Unit *vict
     if (victim->player_id == killer_player) return;
     const UnitDef *vdef = Units_GetDef(victim->def_idx);
     if (!vdef) return;
+    MapScenario_NoteKill(killer_player, victim->def_idx);
     /* An unfinished victim earns nothing: no rank, no tally, and no
      * kill, score or bounty for the player (legacy:227307-227326). */
     if (victim->under_construction) return;
@@ -4549,6 +4551,15 @@ int Units_GetVeteranLevel(int handle) {
     if (lvl < 0) lvl = 0;
     if (lvl > 10) lvl = 10;
     return lvl;
+}
+
+void Units_SetVeteranLevel(int handle, int level) {
+    if (handle < 0 || handle >= g_unit_count) return;
+    Unit *u = &g_units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d || d->noveteran || d->kill_xp_value <= 0) return;
+    if (level < 0) level = 0;
+    u->experience_pts = (int32_t)(((int64_t)level * 2 + 1) * d->kill_xp_value / 2);
 }
 
 void Units_DebugSetVeteranLevel(int handle, int level) {
@@ -12136,6 +12147,47 @@ int Units_DebugKillHandle(int handle) {
     return handle;
 }
 
+int Units_ScriptKill(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return 0;
+    u->health = 0;
+    apply_killed(u, handle);
+    return 1;
+}
+
+/* The script's heal is capped at full health and its harm has no
+ * attacker, both by a 16 bit amount (legacy:233751-233761). */
+int Units_ScriptHeal(int handle, int amount) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return 0;
+    int64_t hp = (int64_t)u->health + (amount & 0xffff);
+    u->health = hp < u->max_health ? (int32_t)hp : u->max_health;
+    return 1;
+}
+
+int Units_ScriptHarm(int handle, int amount) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return 0;
+    u->health -= amount & 0xffff;
+    if (u->health <= 0) {
+        u->health = 0;
+        apply_killed(u, handle);
+    }
+    return 1;
+}
+
+void Units_ScaleHealth(int handle, int pct) {
+    if (handle < 0 || handle >= g_unit_count) return;
+    Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE || pct < 0) return;
+    int64_t hp = (int64_t)u->health * pct / 100;
+    if (hp > 0x7fffffff) hp = 0x7fffffff;
+    u->health = hp < 1 ? 1 : (int32_t)hp;
+}
+
 /* ── Combat + animation tick ──────────────────────────────────────
  *
  * Per recon (the legacy reference):
@@ -12655,6 +12707,8 @@ static void unit_record_ends(const Unit *u) {
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (w && d && w->mission.objective_count > 0)
         Mission_NoteUnitGone(&w->mission, d->unitname, u->player_id);
+    /* A scripted map's loss tally, at the same moment (legacy:227287). */
+    MapScenario_NoteLoss(u->player_id, u->def_idx);
 }
 
 /* Take a unit off the map with no death sequence: the original's death

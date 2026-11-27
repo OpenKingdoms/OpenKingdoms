@@ -256,6 +256,36 @@ save, and load. Victory needs the whole victory list at once
 playing again each time a save is loaded. A save keeps the flags and
 not the objectives, see [saves.md](saves.md).
 
+## Scripted maps
+
+A map whose `.ota` header says `hasscenario=1` (legacy:169012) carries a
+script in its `.crt`: the units each start begins with, named areas,
+and rules of conditions and actions. Ten base maps, King of the Hill
+among them, and two Darien Crusades packs have one. Other maps ship a
+`.crt` too, and it is never read. The original runs the script only in
+game mode 3 with the room's Use Map Script on (legacy:177664-177693),
+which turns on when the host picks such a map (legacy:138696). A
+skirmish plays the map plain with monarchs.
+
+The file is a float 1.0, then lists each led by a count: per kind
+scales (0x110 bytes: name, then armour, attack and rank percent at
++0x104), start units (0x238 bytes: name, ident, cell x at +0x200 and z
+at +0x208, start at +0x20c, health, armour and attack percent, rank at
++0x220), nine rule sections (every player, then starts 1 to 8), and the
+areas (0x110 bytes: name and a cell box) (legacy:172631-173084). A
+condition or action is a type and five 64 byte text fields. Anywhere
+is an area of its own ahead of the file's.
+
+At game start the start units replace the monarchs, each seat gets the
+rules of section 0 and of its own start, and a counter `s` holds its
+side (legacy:173086-173338). Once a game second the timers step and
+each seat not beaten runs its rules in order: every condition must
+hold, then every action runs (legacy:171151-171179). The 27
+conditions are at legacy:171181-171415 and the 27 actions at
+legacy:171416-172122. While the script runs the usual verdict is not
+read (legacy:206645), and a loss it calls removes the seat's army
+(legacy:206558-206576). D-058 lists where ours differs.
+
 ## A fallen player
 
 When the last unit of a player is gone, in a skirmish or a match, the

@@ -25,6 +25,7 @@
 #include "tak_economy.h"
 #include "tak_features.h"
 #include "tak_map_fingerprint.h"
+#include "tak_map_scenario.h"
 #include "tak_memory.h"
 #include "tak_occupancy.h"
 #include "tak_savefile.h"
@@ -58,6 +59,7 @@ _Static_assert(CFGB_END == TAK_CFGB_BYTES, "CFGB layout and width disagree");
 #define CFGB_WRITE_BYTES    (CFGB_FLAGS + 1u)
 #define CFGB_F_NUMBERED     0x01u
 #define CFGB_F_REMASTERED   0x02u
+#define CFGB_F_MAP_SCRIPT   0x04u
 _Static_assert(CFGB_WRITE_BYTES == TAK_CFGB_WRITE_BYTES, "CFGB tail and width disagree");
 
 /* WRLD, the world scalars and the per player tallies. */
@@ -666,6 +668,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_OCCU 1
 #define VER_CMDQ 2
 #define VER_MSCR 1
+#define VER_SCEN 1
 #define VER_BREC 1
 
 /* ── small helpers ────────────────────────────────────────────────── */
@@ -2717,7 +2720,8 @@ static void encode_cfgb(uint8_t *p, const BattleConfig *cfg) {
         p[CFGB_STARTS + i] = (uint8_t)(sp > 0 && sp <= 255 ? sp : 0);
     }
     p[CFGB_FLAGS] = (uint8_t)((cfg->numbered_starts ? CFGB_F_NUMBERED : 0) |
-                              (cfg->remastered ? CFGB_F_REMASTERED : 0));
+                              (cfg->remastered ? CFGB_F_REMASTERED : 0) |
+                              (cfg->map_script ? CFGB_F_MAP_SCRIPT : 0));
 }
 
 static void decode_cfgb(const uint8_t *p, size_t len, BattleConfig *cfg) {
@@ -2749,6 +2753,7 @@ static void decode_cfgb(const uint8_t *p, size_t len, BattleConfig *cfg) {
             cfg->players[i].start_pos = p[CFGB_STARTS + i];
         cfg->numbered_starts = (p[CFGB_FLAGS] & CFGB_F_NUMBERED) ? 1 : 0;
         cfg->remastered = (p[CFGB_FLAGS] & CFGB_F_REMASTERED) ? 1 : 0;
+        cfg->map_script = (p[CFGB_FLAGS] & CFGB_F_MAP_SCRIPT) ? 1 : 0;
     } else {
         /* Saved before claims: the seats stand where they were dealt then. */
         cfg->numbered_starts = 1;
@@ -3025,6 +3030,8 @@ static TAK_SaveWriter *save_compose(int keep, char *err, size_t err_cap) {
     uint8_t *ai_bytes = NULL;
     uint8_t *mscr = NULL;
     unsigned mscr_len = 0;
+    uint8_t *scen = NULL;
+    unsigned scen_len = 0;
     Buf paths = { NULL, 0, 0, 0 };
     Buf cob = { NULL, 0, 0, 0 };
     Buf fog = { NULL, 0, 0, 0 };
@@ -3096,6 +3103,12 @@ static TAK_SaveWriter *save_compose(int keep, char *err, size_t err_cap) {
             if (mscr) MissionScript_SaveState(mscr);
             else oom = 1;
         }
+        scen_len = MapScenario_SaveSize();
+        if (scen_len > 0) {
+            scen = (uint8_t *)tak_malloc(scen_len);
+            if (scen) MapScenario_SaveState(scen);
+            else oom = 1;
+        }
     }
     defords_free(&ords);
 
@@ -3111,6 +3124,7 @@ static TAK_SaveWriter *save_compose(int keep, char *err, size_t err_cap) {
         tak_free(feat_recs);
         tak_free(ai_bytes);
         tak_free(mscr);
+        tak_free(scen);
         buf_free(&paths);
         buf_free(&cob);
         buf_free(&fog);
@@ -3174,6 +3188,10 @@ static TAK_SaveWriter *save_compose(int keep, char *err, size_t err_cap) {
         rc = Save_AddSection(writer, TAK_SECT_MSCR, VER_MSCR,
                              TAK_SECT_F_REQUIRED, mscr, mscr_len);
     }
+    if (rc == 0 && scen_len > 0) {
+        rc = Save_AddSection(writer, TAK_SECT_SCEN, VER_SCEN,
+                             TAK_SECT_F_REQUIRED, scen, scen_len);
+    }
     /* The end screen's record. Nothing in the simulation reads it, so
      * an older reader may skip it. */
     if (rc == 0) {
@@ -3214,6 +3232,7 @@ static TAK_SaveWriter *save_compose(int keep, char *err, size_t err_cap) {
     tak_free(feat_recs);
     tak_free(ai_bytes);
     tak_free(mscr);
+    tak_free(scen);
     buf_free(&paths);
     buf_free(&cob);
     buf_free(&fog);
@@ -3289,6 +3308,7 @@ static void declare_known(TAK_SaveReader *r) {
     Save_DeclareKnown(r, TAK_SECT_OCCU, VER_OCCU);
     Save_DeclareKnown(r, TAK_SECT_CMDQ, VER_CMDQ);
     Save_DeclareKnown(r, TAK_SECT_MSCR, VER_MSCR);
+    Save_DeclareKnown(r, TAK_SECT_SCEN, VER_SCEN);
     Save_DeclareKnown(r, TAK_SECT_BREC, VER_BREC);
 }
 
@@ -3760,6 +3780,19 @@ int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap) {
         }
     } else if (MissionScript_Active()) {
         MissionScript_End();
+    }
+    /* A scripted map's rules the same way: the file's are read again by
+     * the loading screen, where they had got to comes from the save. */
+    const uint8_t *scen = (const uint8_t *)Save_Section(sg->reader, TAK_SECT_SCEN,
+                                                        NULL, &len);
+    if (scen) {
+        if (MapScenario_LoadState(scen, (unsigned int)len) != 0) {
+            set_err(err, err_cap, "This save is missing what its map's "
+                                  "script was doing.");
+            return apply_refused(w);
+        }
+    } else if (MapScenario_Active()) {
+        MapScenario_End();
     }
 
     /* Last, because the spatial grid reads every restored unit's final

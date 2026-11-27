@@ -46,6 +46,7 @@
 #include "tak_loading.h"
 #include "tak_sim_hash.h"
 #include "tak_obj3d.h"
+#include "tak_map_scenario.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -91,11 +92,25 @@ static const struct { const char *widget; uint32_t bit; } mp_rules[] = {
     { "SlowGame",       TAK_ROOMOPT_SLOW_GAME },
     { "Crusades",       TAK_ROOMOPT_CRUSADES_BALANCE },
     { "Remastered",     TAK_ROOMOPT_REMASTERED },
+    { "MapScript",      TAK_ROOMOPT_MAP_SCRIPT },
 };
 #define MP_RULES ((int)(sizeof mp_rules / sizeof mp_rules[0]))
 
 static const TAK_MsgRoomState *mp_room_state(void);
 static int mp_row_of(const GUIWidget *w);
+
+/* Use Map Script reads ticked only on a map with a script, and cannot
+ * be ticked on another (legacy:139516-139526). */
+static int mp_map_has_script(const char *map) {
+    static char seen[96];
+    static int has;
+    if (!map || !map[0]) return 0;
+    if (tak_stricmp(seen, map) != 0) {
+        snprintf(seen, sizeof seen, "%s", map);
+        has = MapScenario_MapHasScript(map);
+    }
+    return has;
+}
 
 /* The side's team logo sheet, one frame per colour, decoded once.
  * Loaded the way the skirmish screen loads it. */
@@ -492,6 +507,8 @@ static int mp_on_click(SimpleScreen *s, const char *name, int widget_index) {
         for (int i = 0; i < MP_RULES; i++) {
             if (tak_stricmp(name, mp_rules[i].widget) != 0) continue;
             if (!mp_is_host()) { mp_say("Only the host changes the rules."); return 1; }
+            if (mp_rules[i].bit == TAK_ROOMOPT_MAP_SCRIPT &&
+                !mp_map_has_script(c->room.map_name)) return 1;
             mp_edit_room(TAK_EDIT_OPTIONS, c->room.options ^ mp_rules[i].bit);
             return 1;
         }
@@ -677,8 +694,9 @@ static void mp_fill_room_fields(void) {
     if (!rs || !mp.rt) return;
     mp_keep_rules(rs);
     for (int i = 0; i < MP_RULES; i++) {
-        GUIRuntime_SetFrameOverride(mp.rt, mp_rules[i].widget,
-                                    (rs->options & mp_rules[i].bit) ? 4 : 3);
+        int on = (rs->options & mp_rules[i].bit) != 0;
+        if (mp_rules[i].bit == TAK_ROOMOPT_MAP_SCRIPT) on = on && mp_map_has_script(rs->map_name);
+        GUIRuntime_SetFrameOverride(mp.rt, mp_rules[i].widget, on ? 4 : 3);
     }
     char units[16];
     snprintf(units, sizeof units, "%u", (unsigned)rs->unit_cap);
@@ -768,10 +786,14 @@ static void mp_pick_first_map(void) {
 /* The remastered battlefield row under the original's rules (D-036). */
 static void mp_add_rows(SimpleScreen *s) {
     /* Iron Plague's file names its row CrusadesBalance. */
+    /* Use Map Script heads the column and the new row goes at its foot,
+     * placed by the rows under it as before. */
     const char *rows[MP_RULES + 1];
-    for (int i = 0; i < MP_RULES; i++) rows[i] = mp_rules[i].widget;
-    rows[MP_RULES] = "CrusadesBalance";
-    GUIDialog_AddOptionRow(&s->dialog, rows, MP_RULES + 1, "Remastered",
+    int n = 0;
+    for (int i = 0; i < MP_RULES; i++)
+        if (mp_rules[i].bit != TAK_ROOMOPT_MAP_SCRIPT) rows[n++] = mp_rules[i].widget;
+    rows[n++] = "CrusadesBalance";
+    GUIDialog_AddOptionRow(&s->dialog, rows, n, "Remastered",
                            TAK_REMASTERED_CAPTION, TAK_REMASTERED_TOOLTIP);
 }
 
@@ -857,6 +879,7 @@ static void mp_rules_to_config(uint32_t options, BattleConfig *cfg) {
     cfg->slow_game              = (options & TAK_ROOMOPT_SLOW_GAME) != 0;
     cfg->crusades_balance       = (options & TAK_ROOMOPT_CRUSADES_BALANCE) != 0;
     cfg->remastered             = (options & TAK_ROOMOPT_REMASTERED) != 0;
+    cfg->map_script             = (options & TAK_ROOMOPT_MAP_SCRIPT) != 0;
 }
 
 /* The battle the server just described, in the terms a world is built

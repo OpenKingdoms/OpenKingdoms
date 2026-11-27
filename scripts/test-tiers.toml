@@ -241,6 +241,7 @@ ui = [
   ["the_lobbies_offer_the_remastered_battlefield", 1],
   ["select_game_hosting_a_game_names_the_rules_it_plays_by", 1],
   ["a_match_world_rebuilt_from_a_snapshot_plays_on_alike", 1],
+  ["a_scripted_map_plays_its_script_in_a_match_and_through_a_snapshot", 1],
   ["loading_with_no_world_goes_back_rather_than_holding_the_bar", 1],
   ["an_earthquake_shakes_the_view", 1],
   ["cannoneer_uphill_shell_leaves_the_muzzle_and_lands_on_the_aim", 1],
@@ -299,6 +300,15 @@ ui = [
   ["seventeen_swordsmen_win_takmission32_through_a_save", 1],
   ["end_screen_takes_a_won_mission_to_the_book_of_deeds", 1],
   ["end_screen_shows_defeat_when_a_missions_army_dies", 1],
+]
+
+[[tier1]]
+name = "scripted maps"
+paths = ["src/game/map_scenario.c"]
+ctest = "^(test_build_facing|test_capture|test_command_pipeline|test_line_of_fire|test_movement|test_orders|test_render_cache|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
+ui = [
+  ["a_scripted_map_plays_its_script_in_a_match_and_through_a_snapshot", 1],
+  ["a_match_world_rebuilt_from_a_snapshot_plays_on_alike", 1],
 ]
 
 [[tier1]]
