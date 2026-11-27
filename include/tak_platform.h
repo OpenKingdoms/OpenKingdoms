@@ -188,19 +188,17 @@ int TAK_Platform_PixelSize(const TAK_Platform *plat);
  * desktop, in a browser the held size or 0 x 0 for the page's own. */
 void TAK_Platform_HeldSize(const TAK_Platform *plat, int *w, int *h);
 
-/* The sizes Original can run at here, smallest first, at most cap. On
- * the desktop: the display's modes from 640x480 up that fit the screen,
- * plus the window as it is. In a browser: the page at each pixel size
- * that leaves at least 640x480, then the common display sizes up to the
- * screen's, which the page holds. */
+/* The sizes Original can run at here, smallest first, at most cap: on
+ * the desktop the display's modes from 640x480 up that fit the screen
+ * and the window as it is, in a browser the page at each pixel size
+ * that leaves 640x480 and the usual sizes up to the screen's. */
 int TAK_Platform_Resolutions(const TAK_Platform *plat, TAK_Resolution *out,
                              int cap);
 
-/* Set a windowed desktop window to w x h pixels, centred on its own
- * display. In fullscreen, the desktop's size keeps the desktop and any
- * other size changes the display mode. In a browser the battle is drawn
- * at w x h and the page shows it scaled to fit, and 0 x 0 goes back to
- * the page's own size. Returns -1 when the mode will not take. */
+/* Size a windowed desktop window, centred on its display, or in
+ * fullscreen change the display mode unless w x h is the desktop's. In a
+ * browser the battle draws at w x h scaled to fit the page, and 0 x 0
+ * follows the page again. Returns -1 when the size will not take. */
 int TAK_Platform_SetWindowSize(TAK_Platform *plat, int w, int h);
 
 #endif /* TAK_PLATFORM_H */

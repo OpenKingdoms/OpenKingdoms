@@ -475,13 +475,14 @@ static int res_live(void) {
 static int res_stops(void) { return opts.res_n + 1; }
 
 /* A stop is current when the platform stands on it: a page stop by its
- * pixel size, any other by the size it asked for. */
+ * pixel size, or any stop by the size last asked for. A held size the
+ * page happens to match stands on the page's stop, which won the list. */
 static int res_is_current(const TAK_Resolution *r) {
     TAK_Platform *p = opts.platform;
     int hw = 0, hh = 0;
     TAK_Platform_HeldSize(p, &hw, &hh);
-    return r->pixel_size > 0 ? r->pixel_size == TAK_Platform_PixelSize(p)
-                             : (r->w == hw && r->h == hh);
+    if (r->pixel_size > 0 && r->pixel_size == TAK_Platform_PixelSize(p)) return 1;
+    return r->w == hw && r->h == hh;
 }
 
 static int res_current_stop(void) {

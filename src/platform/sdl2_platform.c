@@ -75,9 +75,10 @@ EM_JS(double, web_device_pixel_ratio, (void), {
     return window.devicePixelRatio || 1;
 });
 
-/* The screen's size in screen pixels. */
+/* The screen's size in screen pixels, about. A zoomed out page has a
+ * ratio under one on a screen that has not shrunk. */
 EM_JS(int, web_screen_px, (int height), {
-    var dpr = window.devicePixelRatio || 1;
+    var dpr = Math.max(1, window.devicePixelRatio || 1);
     var s = window.screen || {};
     return Math.floor((height ? s.height : s.width) * dpr) || 0;
 });
@@ -122,8 +123,8 @@ EM_JS(void, web_canvas_css, (int original, int gw, int gh, int k), {
 });
 
 /* A held size is scaled to fit the page with its shape kept. From two
- * screen pixels a game pixel up it is drawn without smoothing, below
- * that smoothed, so no column comes out doubled beside a single one. */
+ * screen pixels a game pixel up it is drawn unsmoothed, where a column a
+ * pixel wider than the next hardly shows, and below that smoothed. */
 EM_JS(void, web_canvas_held, (int w, int h), {
     var c = Module['canvas'];
     if (!c) return;
@@ -644,14 +645,11 @@ int TAK_Platform_Resolutions(const TAK_Platform *plat, TAK_Resolution *out,
     if (!plat || !out || cap <= 0) return 0;
     int n = 0;
 #ifdef __EMSCRIPTEN__
-    /* Where two stops share a size the first added stands: the size held
-     * now, then the page's own. */
-    if (plat->held_w > 0)
-        n = add_resolution(out, n, cap, plat->held_w, plat->held_h, 0);
+    /* The page's own stops come first and win a size two stops share. */
     for (int k = 1; k <= 4; k++)
         n = add_resolution(out, n, cap, web_page_px(k, 0), web_page_px(k, 1), k);
-    /* A page has no display modes, so it offers the sizes a desktop
-     * lists from 640x480 up, as the original's list does
+    /* A page has no display modes, so it offers the sizes a display
+     * usually lists, from 640x480 up like the original's list
      * (legacy:157567-157579), that the screen could show whole. */
     static const int modes[][2] = {
         {  640,  480 }, {  800,  600 }, { 1024,  768 }, { 1152,  864 },
@@ -663,6 +661,8 @@ int TAK_Platform_Resolutions(const TAK_Platform *plat, TAK_Resolution *out,
     for (int i = 0; i < (int)(sizeof(modes) / sizeof(modes[0])); i++)
         if (modes[i][0] <= sw && modes[i][1] <= sh)
             n = add_resolution(out, n, cap, modes[i][0], modes[i][1], 0);
+    if (plat->held_w > 0)
+        n = add_resolution(out, n, cap, plat->held_w, plat->held_h, 0);
 #else
     /* Windowed, the modes that fit the screen size the window. In
      * fullscreen every mode is offered and a smaller one is a real mode

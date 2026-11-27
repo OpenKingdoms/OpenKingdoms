@@ -341,7 +341,8 @@ static void draw_help_strip(void) {
 int InGameMenu_Tick(TAK_Platform *platform) {
     if (!m.open || !m.rt) return GAMESTATE_IN_GAME;
     if (platform) m.platform = platform;
-    place_dialog();
+    /* The save and information dialogs over it place themselves once. */
+    if (!m.browser_open && !m.info_open) place_dialog();
 
     int focus = platform && platform->has_focus;
     const Uint8 *keys = SDL_GetKeyboardState(NULL);
