@@ -393,6 +393,9 @@ int TAK_Platform_PumpEvents(TAK_Platform *plat) {
     plat->pressed_enter = 0;
     plat->pressed_escape = 0;
     plat->pressed_backspace = 0;
+    plat->pressed_up = plat->pressed_down = 0;
+    plat->pressed_page_up = plat->pressed_page_down = 0;
+    plat->pressed_home = plat->pressed_end = 0;
     plat->pressed_mouse_left = 0;
     plat->wheel_dy = 0;
     SDL_Event ev;
@@ -420,6 +423,15 @@ int TAK_Platform_PumpEvents(TAK_Platform *plat) {
                 (ev.key.keysym.mod & KMOD_ALT)) {
                 TAK_Platform_ToggleFullscreen(plat);
                 break;
+            }
+            switch (ev.key.keysym.scancode) {
+            case SDL_SCANCODE_UP:       if (plat->pressed_up < 255) plat->pressed_up++; break;
+            case SDL_SCANCODE_DOWN:     if (plat->pressed_down < 255) plat->pressed_down++; break;
+            case SDL_SCANCODE_PAGEUP:   if (plat->pressed_page_up < 255) plat->pressed_page_up++; break;
+            case SDL_SCANCODE_PAGEDOWN: if (plat->pressed_page_down < 255) plat->pressed_page_down++; break;
+            case SDL_SCANCODE_HOME:     if (plat->pressed_home < 255) plat->pressed_home++; break;
+            case SDL_SCANCODE_END:      if (plat->pressed_end < 255) plat->pressed_end++; break;
+            default: break;
             }
             if (ev.key.repeat) break;
             switch (ev.key.keysym.scancode) {
