@@ -9,8 +9,8 @@
  * The original does not test scancodes in the battle loop at all. A key
  * reaches a binding table built from Keys.TDF, the table names a
  * command, and the command runs (legacy:242938, legacy:122813-122845).
- * Until that layer exists, the bindings live here, in one place a test
- * can press.
+ * Here the table is tak_keybinds.h, and each decoder below asks it. The
+ * keys the comments name are the Standard scheme's.
  */
 
 typedef enum InGameSpeedKey {
@@ -41,6 +41,15 @@ int  InGame_TurnKey(const uint8_t *keys, const uint8_t *prev, int view3d);
  * Alt is left to the debug tools. */
 int  InGame_WatchKey(const uint8_t *keys, const uint8_t *prev);
 
+/* V switches between the classic view and the 3D view, and the grave
+ * key shows or hides the damage bars (keys.tdf SYMBOL_60 and SYMBOL_7E). */
+int  InGame_ViewKey(const uint8_t *keys, const uint8_t *prev);
+int  InGame_DamageBarsKey(const uint8_t *keys, const uint8_t *prev);
+
+/* The way the held scroll keys ask the camera to go, -1, 0 or 1 an
+ * axis: the arrows, and W, A, S and D beside them (D-050). */
+void InGame_PanKeys(const uint8_t *keys, int *dx, int *dy);
+
 /* The view a watcher's Tab moves to: from the whole map to the first
  * player in the battle, from each player to the next, and from the last
  * back to the whole map. `open` has bit p set for each player p, 1 to 8,
@@ -65,12 +74,12 @@ typedef struct InGameSelectKey {
 
 InGameSelectKey InGame_SelectKey(const uint8_t *keys, const uint8_t *prev);
 
-/* M held without Ctrl or Alt: a box drag leaves your monarch out. Ctrl+M
- * stays the select key. M is also Move, which arms on the press. */
+/* The Move key, M, held without Ctrl or Alt: a box drag leaves your
+ * monarch out. Ctrl+M stays the select key. Move arms on the press. */
 int  InGame_BoxSkipsMonarchKey(const uint8_t *keys);
 
-/* Keys.TDF's UnitCommand letters, read by scancode, with Attack on B and
- * Stop on N since W, A, S and D pan (D-050). Shift is the upper case and
+/* Keys.TDF's UnitCommand letters, with Attack on B and Stop on N since
+ * W, A, S and D pan (D-050). Shift is the upper case and
  * means the same, and Ctrl, Alt or Cmd makes a letter no order. */
 typedef enum InGameOrderKey {
     IG_ORDER_NONE = 0,
@@ -83,7 +92,8 @@ typedef enum InGameOrderKey {
     IG_ORDER_HEAL,
     IG_ORDER_CLEAR,
     IG_ORDER_STOP,
-    IG_ORDER_GATE
+    IG_ORDER_GATE,
+    IG_ORDER_RESURRECT   /* E, which Keys.TDF leaves empty: see D-057 */
 } InGameOrderKey;
 
 /* The order key that went down this frame, or IG_ORDER_NONE. */

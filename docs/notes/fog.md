@@ -119,7 +119,12 @@ explored map (legacy:206877-206884). The minimap's marks, under Radar
 below, and a positional sound apply the same rule to a single fog
 cell. An enemy standing on ground the player walked past long ago
 therefore draws, and an enemy on ground the player has never been near
-does not.
+does not. A feature draws on any explored ground, except one whose
+TDF sets `nodrawundergray`, the walls, which draws only in sight
+(legacy:127367, legacy:210620-210624). The original also draws a wall
+its viewer owns, and looks at two corners of the footprint
+(legacy:206744-206790). The engine's features have no owner, and it
+looks at the point a feature is drawn from.
 
 The fog overlay sorts every cell into three levels
 (legacy:130295-130310). A clear explored bit gives opaque black in

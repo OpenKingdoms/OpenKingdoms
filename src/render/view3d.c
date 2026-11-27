@@ -19,6 +19,7 @@
 #include "tak_terrain.h"
 #include "tak_unit.h"
 #include "tak_hud.h"
+#include "tak_keybinds.h"
 #include "tak_features.h"
 #include "tak_fog.h"
 #include "tak_hpi.h"
@@ -1066,7 +1067,7 @@ static void draw_features(const GameWorld *world, const float planes[6][4]) {
         const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
         if (!fd) continue;
         if (fd->object[0]) {
-            if (Fog_StateAt(world, mf->world_x, mf->world_y) == TAK_FOG_UNEXPLORED) continue;
+            if (!Features_InstanceShown(world, i)) continue;
             int c = (mf->color_idx >= 0 && mf->color_idx <= 11) ? mf->color_idx : 0;
             const GpuModel *m = ModelStore_GetPainted(fd->object, c,
                                                       Units_FeaturePaint(fd));
@@ -1084,7 +1085,7 @@ static void draw_features(const GameWorld *world, const float planes[6][4]) {
         Features_InstanceFootprint(world, i, &fp_x, &fp_z);
         int32_t wx = mf->tile_x * 16 + fp_x * 8;
         int32_t wy = mf->tile_z * 16 + fp_z * 8;
-        if (Fog_StateAt(world, wx, wy) == TAK_FOG_UNEXPLORED) continue;
+        if (!Features_InstanceShown(world, i)) continue;
         /* A sprite has no object name to find a model by, so an
          * artist's model for it goes by the sequence name: the standing
          * stones around a mana site are models3d/verhenge01.glb and so
@@ -1801,13 +1802,20 @@ void View3D_Input(GameWorld *world, const TAK_Platform *plat,
         retarget_from_classic(world, 0);
     float dyaw = 0.0f, dpitch = 0.0f, zoom = 1.0f;
     const float turn = 1.7f * frame_dt, tilt = 1.1f * frame_dt;
-    if (keys[SDL_SCANCODE_Q]) dyaw += turn;
-    if (keys[SDL_SCANCODE_E]) dyaw -= turn;
-    /* R turns an armed building instead while one is placed. */
-    if (keys[SDL_SCANCODE_R] && HUD_GetBuildPlacementDefIdx() < 0) dpitch -= tilt;
-    if (keys[SDL_SCANCODE_F]) dpitch += tilt;
-    if (keys[SDL_SCANCODE_Z]) zoom *= powf(0.35f, frame_dt);
-    if (keys[SDL_SCANCODE_X]) zoom *= powf(1.0f / 0.35f, frame_dt);
+    /* A turn key turns an armed building instead while one is placed. */
+    uint8_t cam_keys[SDL_NUM_SCANCODES];
+    if (HUD_GetBuildPlacementDefIdx() >= 0) {
+        memcpy(cam_keys, keys, sizeof(cam_keys));
+        Keybinds_ReleaseHeld(KA_TURN_BUILDING_CW, cam_keys);
+        Keybinds_ReleaseHeld(KA_TURN_BUILDING_CCW, cam_keys);
+        keys = cam_keys;
+    }
+    if (Keybinds_Held(KA_CAM_TURN_LEFT, keys))  dyaw += turn;
+    if (Keybinds_Held(KA_CAM_TURN_RIGHT, keys)) dyaw -= turn;
+    if (Keybinds_Held(KA_CAM_TILT_UP, keys))    dpitch -= tilt;
+    if (Keybinds_Held(KA_CAM_TILT_DOWN, keys))  dpitch += tilt;
+    if (Keybinds_Held(KA_CAM_ZOOM_IN, keys))    zoom *= powf(0.35f, frame_dt);
+    if (Keybinds_Held(KA_CAM_ZOOM_OUT, keys))   zoom *= powf(1.0f / 0.35f, frame_dt);
     if (wheel_dy) zoom *= powf(0.82f, (float)wheel_dy);
     if (middle_down) {
         if (v.dragging) {
@@ -1820,7 +1828,7 @@ void View3D_Input(GameWorld *world, const TAK_Platform *plat,
     } else {
         v.dragging = 0;
     }
-    if (keys[SDL_SCANCODE_HOME] && prev_keys && !prev_keys[SDL_SCANCODE_HOME]) {
+    if (Keybinds_Pressed(KA_CAM_RESET, keys, prev_keys)) {
         Camera3D_ClassicPreset(&v.cam, v.cam.target_x, v.cam.target_z,
                                v.viewport.w, v.viewport.h);
     }

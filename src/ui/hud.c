@@ -26,6 +26,7 @@
 #include "tak_battle_config.h"
 #include "tak_fog.h"
 #include "tak_unit.h"
+#include "tak_keybinds.h"
 #include "tak_command_emit.h"
 #include "tak_game_sound.h"
 #include "tak_font.h"
@@ -118,6 +119,8 @@ static int hud_mode_shown(int mode) {
         case HUD_CMD_LOAD:    return (caps & (UNIT_CAP_LOAD | UNIT_CAP_TRANSPORT)) != 0;
         case HUD_CMD_UNLOAD:  return (caps & UNIT_CAP_TRANSPORT) != 0;
         case HUD_CMD_CLEAR:   return (caps & UNIT_CAP_RECLAIM) != 0;
+        case HUD_CMD_RESURRECT:
+            return (caps & (UNIT_CAP_RESURRECT | UNIT_CAP_ANIMATE)) != 0;
         case HUD_CMD_ACTIVATE:
         case HUD_CMD_DEACTIVATE:
             /* The onoffable pair (legacy:150430-150436, 150930-150950). */
@@ -661,6 +664,7 @@ static void hud_load_cursors(TAK_Platform *plat) {
             { HUD_CUR_RED,    { "cursorred",    "red",     NULL } },
             { HUD_CUR_TOOFAR, { "cursortoofar", "toofar",  NULL } },
             { HUD_CUR_REVIVE, { "cursorrevive", NULL,      NULL } },
+            { HUD_CMD_RESURRECT, { "cursorrevive", NULL,   NULL } },
         };
         for (size_t c = 0; c < sizeof ctx / sizeof ctx[0]; c++) {
             int e = -1;
@@ -1623,11 +1627,31 @@ int HUD_BuildPlacementRepeats(void) {
     return g_cmd_mode == HUD_CMD_PLACE_BUILD && g_build_repeat;
 }
 
+/* The keys of a turn action as the hint names them, "R or ]". */
+static void hud_turn_keys(KeyAction a, char *out, size_t cap) {
+    out[0] = '\0';
+    for (int s = 0; s < KEYBIND_SLOTS; s++) {
+        KeyChord c = Keybinds_Get(a, s);
+        char text[32];
+        if (!c.key) continue;
+        Keybinds_ChordText(c, 0, text, (int)sizeof(text));
+        size_t n = strlen(out);
+        snprintf(out + n, cap - n, "%s%s", n ? " or " : "", text);
+    }
+}
+
 const char *HUD_BuildHint(void) {
     if (!g_build_turn_allowed || HUD_GetBuildPlacementDefIdx() < 0 ||
         !Units_DefCanTurn(HUD_GetBuildPlacementDefIdx()))
         return NULL;
-    return "R or ] turns it, Shift+R or [ turns it back";
+    static char hint[96];
+    char cw[40], ccw[40];
+    hud_turn_keys(KA_TURN_BUILDING_CW, cw, sizeof(cw));
+    hud_turn_keys(KA_TURN_BUILDING_CCW, ccw, sizeof(ccw));
+    if (!cw[0] && !ccw[0]) return NULL;
+    snprintf(hint, sizeof(hint), "%s turns it, %s turns it back",
+             cw[0] ? cw : "No key", ccw[0] ? ccw : "no key");
+    return hint;
 }
 
 void HUD_SetBuildTurning(int allowed) {
@@ -1667,6 +1691,7 @@ int HUD_IsTargetingMode(int mode) {
         case HUD_CMD_UNLOAD:
         case HUD_CMD_HEAL:
         case HUD_CMD_CLEAR:
+        case HUD_CMD_RESURRECT:
         case HUD_CMD_PLACE_BUILD:
             return 1;
         default:
@@ -1878,8 +1903,15 @@ static void hud_press_button(int mode, const char *widget_name) {
     HUD_TriggerCommand(mode);
 }
 
+int HUD_OrderShown(int mode) { return hud_mode_shown(mode); }
+
 int HUD_PressOrder(int mode) {
     if (!hud_mode_shown(mode)) return 0;
+    /* No button to press: the key arms it and a second press disarms. */
+    if (mode == HUD_CMD_RESURRECT) {
+        g_cmd_mode = (g_cmd_mode == mode) ? HUD_CMD_NONE : mode;
+        return 1;
+    }
     for (size_t i = 0; i < HUD_NUM_BUTTON_BINDINGS; i++) {
         if (g_button_bindings[i].mode != mode) continue;
         hud_press_button(mode, g_button_bindings[i].widget_name);

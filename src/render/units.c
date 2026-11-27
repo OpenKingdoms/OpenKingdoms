@@ -421,6 +421,8 @@ static void occ_refresh(int handle);
 static void occ_sync_mobile(int handle);
 static int  unit_spawn_facing(int def_idx, int player_id, int color_idx,
                               int32_t x, int32_t y, int facing);
+/* Set around one call that makes a build frame, so its Create sees one. */
+static int  g_spawn_frame;
 static void unit_half_extent(const Unit *u, const UnitDef *d, int dflt,
                              int *hx, int *hz);
 
@@ -7607,10 +7609,12 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
     /* A product leaves the yard as a unit and never stands turned. */
     facing = factory_production ? 0 : Units_DefFacing(building_def_idx, facing);
 
+    g_spawn_frame = 1;
     int new_handle = unit_spawn_facing(building_def_idx,
                                        u->player_id,
                                        u->team_color_idx,
                                        world_x, world_y, facing);
+    g_spawn_frame = 0;
     if (new_handle < 0) return -1;
 
     Unit *bu = &g_units[new_handle];
@@ -11196,6 +11200,12 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->carry_seq = 0;
     u->carry_next = 0;
     u->under_construction = 0;
+    /* A frame is one before its Create runs, so a script waiting on
+     * BUILD_PERCENT_LEFT waits (legacy:226599-226608, legacy:226779). */
+    if (g_spawn_frame) {
+        u->under_construction = 1;
+        u->health = 1;
+    }
     u->build_hp_accum = 0.0f;
     u->heal_frac_256 = 0;
     u->attack_pct = 100;
@@ -16785,7 +16795,8 @@ static void cloak_hold(Unit *u, const UnitDef *def, int ticks) {
 static int g_cloak_near[TAK_MAX_UNITS];
 
 /* An enemy its side sees, built and not cloaked itself, inside
- * mincloakdistance (legacy:20826-20845, legacy:20536-20540). */
+ * mincloakdistance (legacy:20826-20845, legacy:20536-20540). A neutral
+ * seat is none, since every seat counts it an ally (legacy:177727-177734). */
 static int cloak_enemy_near(const Unit *u, const UnitDef *def) {
     int r = def->min_cloak_distance;
     if (r <= 0) return 0;
@@ -16797,7 +16808,9 @@ static int cloak_enemy_near(const Unit *u, const UnitDef *def) {
         const Unit *t = &g_units[n < 0 ? k : g_cloak_near[k]];
         if (t->alive != UNIT_ALIVE_ACTIVE || t->under_construction || t->cloaked)
             continue;
-        if (!unit_players_are_enemies(u->player_id, t->player_id)) continue;
+        if (!unit_players_are_enemies(u->player_id, t->player_id) ||
+            Units_HoldsFireOn(u->player_id, t->player_id))
+            continue;
         int64_t dx = (int64_t)t->world_x - u->world_x;
         int64_t dy = (int64_t)t->world_y - u->world_y;
         if (dx * dx + dy * dy > r2) continue;
@@ -22823,8 +22836,7 @@ static void submit_corpse_models(TAK_Platform *plat,
         if (!fd || !fd->object[0]) continue;
         if (mf->world_x < left || mf->world_x > right) continue;
         if (mf->world_y < top  || mf->world_y > bottom) continue;
-        if (Fog_StateAt(world, mf->world_x, mf->world_y) == TAK_FOG_UNEXPLORED)
-            continue;
+        if (!Features_InstanceShown(world, i)) continue;
         int c = (mf->color_idx >= 0 && mf->color_idx <= 11) ? mf->color_idx : 0;
         g_proj_draw[n] = i;
         g_proj_key[n]  = mf->global_idx * 12 + c;
@@ -23907,7 +23919,7 @@ static int feature_screen_anchor(const struct GameWorld *world, int i,
     if (sx < -128 || sy < -128 ||
         sx > world->viewport_w + 128 ||
         sy > world->viewport_h + 128) return 0;
-    if (Fog_StateAt(world, wx, wy) == TAK_FOG_UNEXPLORED) return 0;
+    if (!Features_InstanceShown(world, i)) return 0;
     *out_sx = sx;
     *out_sy = sy;
     return 1;
@@ -24872,7 +24884,7 @@ static void render_feature_shadows(const struct GameWorld *world, TAK_Platform *
             mf->world_x > world->cam_x + world->viewport_w + margin) continue;
         if (mf->world_y < world->cam_y - margin ||
             mf->world_y > world->cam_y + world->viewport_h + margin) continue;
-        if (Fog_StateAt(world, mf->world_x, mf->world_y) == TAK_FOG_UNEXPLORED) continue;
+        if (!Features_InstanceShown(world, i)) continue;
         const int c = (mf->color_idx >= 0 && mf->color_idx <= 11) ? mf->color_idx : 0;
         const UnitMesh *m = corpse_model_mesh(mf->global_idx, c);
         if (!m || m->vert_count == 0 || ensure_scratch(m->vert_count, m->tri_count * 3) != 0)

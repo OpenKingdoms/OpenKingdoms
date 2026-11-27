@@ -32,6 +32,7 @@ typedef struct FeatureDef {
     char     seqname_shad[40];
     int      shadtrans;
     int      no_shadow;
+    int      no_draw_under_gray;
     /* `object` names a 3DO instead of a GAF sequence. Corpses are
      * models, not sprites, and the two keys are exclusive: the loader
      * reads `object` first and only falls back to filename/seqname
@@ -136,6 +137,10 @@ int  Features_InstanceHealth(const struct GameWorld *world, int idx,
 /* Centre of instance `idx` in world pixels. Returns 0 on success. */
 int  Features_InstanceCentre(const struct GameWorld *world, int idx,
                              int32_t *out_x, int32_t *out_y);
+
+/* Whether the fog lets instance `idx` be drawn, tested where it is
+ * drawn: a model at its own place, a sprite on its footprint's centre. */
+int  Features_InstanceShown(const struct GameWorld *world, int idx);
 
 /* Index into world->features of the resurrectable (or animatable)
  * instance whose footprint covers (world_x, world_y), or -1. The
