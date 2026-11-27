@@ -1815,6 +1815,33 @@ TEST(the_shift_overlay_draws_only_while_shift_is_held) {
     SDL_RenderFlush(r);
     ASSERT_EQ_INT(0, oq_lit_pixels(surf));
 
+    /* A builder in focus, the one selected or the one under the pointer,
+     * shows every builder of yours' buildings (legacy:238278-238350). */
+    const int hall = OQ_HALL;
+    Units_DebugSetBuildables(OQ_BUILDER, &hall, 1);
+    int b[3];
+    for (int k = 0; k < 3; k++) {
+        b[k] = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 120 + 120 * k, OQ_CY + 60);
+        ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, b[k], OQ_CX - 120 + 120 * k,
+                                    OQ_CY + 150, -1, OQ_HALL, 0));
+    }
+    int theirs = Units_Spawn(OQ_BUILDER, 2, 1, OQ_CX, OQ_CY - 60);
+    ASSERT_EQ_INT(1, Units_OrderBuild(theirs, OQ_HALL, OQ_CX, OQ_CY - 150, 0, 0));
+    Units_SelectSingle(b[0]);
+    OrderOverlay_Draw(w, &plat);
+    ASSERT_EQ_INT(3, OrderOverlay_DebugGhosts());
+    Units_SelectSingle(s);
+    OrderOverlay_Draw(w, &plat);
+    ASSERT_EQ_INT(0, OrderOverlay_DebugGhosts());
+    OrderOverlay_SetHover(b[2]);
+    OrderOverlay_Draw(w, &plat);
+    ASSERT_EQ_INT(3, OrderOverlay_DebugGhosts());
+    OrderOverlay_SetHover(-1);
+    Units_SelectSingle(b[0]);
+    Units_SelectAdd(b[1]);
+    OrderOverlay_Draw(w, &plat);
+    ASSERT_EQ_INT(2, OrderOverlay_DebugGhosts());
+
     OrderOverlay_SetShift(0);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);

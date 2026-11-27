@@ -1460,14 +1460,19 @@ pull request, not here.
 ## D-031: Shift shows the selection's orders
 
 - Change: while Shift is held, the classic view draws a line from each
-  of your selected units through its orders, with a marker for each
-  move, attack target, patrol and its way round, and rally point, and a
-  queued building as a ghost at its spot and facing. Other players'
-  units show nothing, and a target you cannot see gives nothing away.
+  of your selected units, and from your unit under the pointer, through
+  its orders, with a marker for each move, attack target, patrol and its
+  way round, and rally point. The look of the lines and markers is ours.
+  Other players' units show nothing, and a target you cannot see gives
+  nothing away.
 - Why: Shift queues orders (manual section IV), and a player cannot tell
   what is lined up without a picture, as Beyond All Reason draws one.
-- Citation: no such drawing was found in the original.
-  docs/notes/ui.md, "Shift orders".
+- Citation: the original draws the orders of the same units while Shift
+  is held, with each queued building as a ghost, and every unit's queued
+  buildings when a builder is in focus (legacy:210741-210744,
+  legacy:238278-238350). The manual's Conjuring Structures says Shift
+  shows the summoning unit's queued tasks as ghosts. docs/notes/ui.md,
+  "Shift orders".
 
 ## D-032: Battles are recorded, and the main menu plays them back
 
