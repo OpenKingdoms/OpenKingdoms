@@ -1083,10 +1083,12 @@ int main(int argc, char *argv[]) {
     InGame_RequestView3D(g_start_view3d);
 
     /* --mission goes straight to loading. A capture has no use for the
-     * mission's clip, so it is not played. */
+     * mission's clips, so they are not played and the request is
+     * dropped. */
     if (g_mission_arg) {
         int next = Story_StartMissionFile(&g_app.platform, g_mission_arg);
         g_app.state = next == GAMESTATE_CREDITS ? GAMESTATE_GAME_LOADING : next;
+        Credits_Request(NULL, GAMESTATE_MENU);
     }
 
     /* --perf-probe owns the battle: build it here and go straight

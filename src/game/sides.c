@@ -90,6 +90,13 @@ static void sd_read_side(TDFFile *tdf, TakSideInfo *s) {
     if (TDF_ReadString(tdf, "frozengaf", "")[0])
         sd_copy(s->frozenanim, sizeof(s->frozenanim),
                 TDF_ReadString(tdf, "frozenanim", ""));
+    /* The alarm a unit of the side raises when hit off screen, and the
+     * seconds between two, 30 when absent (legacy:164683-164710). */
+    sd_copy(s->underattack_sound, sizeof(s->underattack_sound),
+            TDF_ReadString(tdf, "underattack_sound", ""));
+    s->underattack_delay = TDF_ReadFloat(tdf, "underattack_delay", 30.0f);
+    if (!(s->underattack_delay >= 0.0f)) s->underattack_delay = 0.0f;
+    if (s->underattack_delay > 86400.0f) s->underattack_delay = 86400.0f;
     s->music_track_count = sd_read_tracks(TDF_ReadString(tdf, "musictracks", ""),
                                           s->music_tracks, 16);
     int rgb[3] = { 255, 255, 255 };

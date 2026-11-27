@@ -575,6 +575,17 @@ int Story_MissionClip(const char *stem, int after, char *out, size_t cap) {
     return BinkPlayer_ClipExists(out);
 }
 
+/* The kingdom's shield, Movies\<side name>.bik, that the original
+ * plays as a campaign mission starts, ahead of the mission's own clip
+ * (legacy:241639-241662). The side is the one Player1's line names, the
+ * first side when it names none (legacy:169018, legacy:169026-169095). */
+static int story_shield_clip(int side, char *out, size_t cap) {
+    const TakSideInfo *si = Sides_Get(side);
+    if (!si || !si->name[0]) return 0;
+    snprintf(out, cap, "Movies/%s.bik", si->name);
+    return BinkPlayer_ClipExists(out);
+}
+
 static int story_begin(TAK_Platform *platform, const char *mission_file) {
     StoryMission m;
     memset(&m, 0, sizeof(m));
@@ -587,11 +598,14 @@ static int story_begin(TAK_Platform *platform, const char *mission_file) {
 
     char kingdom[32];
     kingdom[0] = '\0';
+    int shield_side = 0;
     MissionData mission;
     char path[160];
     snprintf(path, sizeof(path), "missions/missions/%s", m.file);
     if (Mission_LoadOTA(path, &mission) == 0) {
         lower_copy(kingdom, sizeof(kingdom), mission.kingdom);
+        int first = Sides_FindInText(mission.player_lines[1]);
+        if (first >= 0) shield_side = first;
         for (int p = 1; p <= TAK_MAX_PLAYERS && p < TAK_MISSION_PLAYER_LINES; p++) {
             int side = Sides_FindInText(mission.player_lines[p]);
             if (side >= 0)
@@ -610,10 +624,15 @@ static int story_begin(TAK_Platform *platform, const char *mission_file) {
     WebStats_Mission(Story_CampaignName(Story_SelectedCampaign()), m.stem);
     fprintf(stderr, "Story: launching %s (%s) as side %d\n", m.stem,
             kingdom, cfg.players[0].side);
-    /* A mission with a clip is loaded by way of it. */
-    char clip[160];
-    if (Story_MissionClip(m.stem, 0, clip, sizeof(clip))) {
-        Credits_Request(clip, GAMESTATE_GAME_LOADING);
+    /* A mission is loaded by way of its shield and its clip, whichever
+     * the install has. */
+    char shield[64], clip[160];
+    int has_shield = story_shield_clip(shield_side, shield, sizeof(shield));
+    int has_clip = Story_MissionClip(m.stem, 0, clip, sizeof(clip));
+    if (has_shield || has_clip) {
+        Credits_RequestPair(has_shield ? shield : clip,
+                            has_shield && has_clip ? clip : NULL,
+                            GAMESTATE_GAME_LOADING);
         return GAMESTATE_CREDITS;
     }
     return GAMESTATE_GAME_LOADING;

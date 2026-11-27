@@ -9051,7 +9051,9 @@ static int story_next_is_loading(int next) {
  * Movies\Post<stem>.bik after it (legacy:168719). The install has one
  * before every mission of the first campaign and one after the last of
  * Aramon's. Starting a mission that has one goes to the clip, and the
- * clip hands over to loading. */
+ * clip hands over to loading. Issue #538: the kingdom's shield plays
+ * first, Movies\<side>.bik for the side Player1 plays
+ * (legacy:241639-241662). */
 TEST(story_a_mission_with_a_clip_plays_it_first) {
     if (setup_vfs() != 0) SKIP("no data dir");
     char clip[160];
@@ -9069,9 +9071,11 @@ TEST(story_a_mission_with_a_clip_plays_it_first) {
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
     int next = Story_StartMission(&platform, 0);
     ASSERT_EQ_INT(GAMESTATE_CREDITS, next);
-    ASSERT_EQ_STR("Movies/takmission01_mt.bik", Credits_RequestedClip());
+    ASSERT_EQ_STR("Movies/ARAMON.bik", Credits_RequestedClip());
+    ASSERT_EQ_STR("Movies/takmission01_mt.bik", Credits_RequestedThen());
     ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, Credits_RequestedState());
     /* The mission is set up behind the clip, not after it. */
     GameWorld *world = World_Get();
@@ -9080,8 +9084,26 @@ TEST(story_a_mission_with_a_clip_plays_it_first) {
     /* And the clip screen opens it and goes where it was told. */
     ASSERT_EQ_INT(0, Credits_Init(&platform));
     ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, Credits_ReturnState());
+    ASSERT_EQ_STR("", Credits_RequestedThen());
+    Credits_Shutdown();
+    /* The second clip plays when the first ends: a tick a frame, so the
+     * pair takes the ticks of both shields, 105 and 126 frames. */
+    Credits_RequestPair("Movies/ARAMON.bik", "Movies/ZHON.bik", GAMESTATE_CAMPAIGN);
+    ASSERT_EQ_INT(0, Credits_Init(&platform));
+    int ticks = 0;
+    next = GAMESTATE_CREDITS;
+    while (next == GAMESTATE_CREDITS && ticks++ < 1000)
+        next = Credits_Tick(&platform, 1.0f);
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, next);
+    printf("(%d ticks) ", ticks);
+    ASSERT(ticks >= 200 && ticks < 300);
+    Credits_Shutdown();
+    /* A first clip the install lacks leaves the second. */
+    Credits_RequestPair("Movies/NOSUCHSIDE.bik", "Movies/ZHON.bik", GAMESTATE_CAMPAIGN);
+    ASSERT_EQ_INT(0, Credits_Init(&platform));
     Credits_Shutdown();
     World_End(&platform);
+    UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
 }
@@ -9108,7 +9130,7 @@ TEST(the_next_chapter_plays_its_clip_after_a_win) {
     /* Chapter one goes by way of its clip. */
     int next = Story_StartMission(&platform, 0);
     ASSERT_EQ_INT(GAMESTATE_CREDITS, next);
-    ASSERT_EQ_STR("Movies/takmission01_mt.bik", Credits_RequestedClip());
+    ASSERT_EQ_STR("Movies/takmission01_mt.bik", Credits_RequestedThen());
     ASSERT_EQ_INT(0, Credits_Init(&platform));
     ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, Credits_ReturnState());
     Credits_Shutdown();
@@ -9140,7 +9162,7 @@ TEST(the_next_chapter_plays_its_clip_after_a_win) {
     ASSERT_EQ_INT(1, Story_SelectedChapter());
     next = Story_StartMission(&platform, Story_SelectedChapter());
     ASSERT_EQ_INT(GAMESTATE_CREDITS, next);
-    ASSERT_EQ_STR("Movies/takmission02_mt.bik", Credits_RequestedClip());
+    ASSERT_EQ_STR("Movies/takmission02_mt.bik", Credits_RequestedThen());
     ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, Credits_RequestedState());
     ASSERT_EQ_INT(0, Credits_Init(&platform));
     ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, Credits_ReturnState());
@@ -9173,6 +9195,10 @@ TEST(a_mission_gives_each_player_the_side_its_line_names) {
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
 
     int ip_next = Story_StartMissionFile(&platform, "takx03_ph.ota");
+    /* The player's side is the shield shown first. */
+    char ip_shield[64];
+    snprintf(ip_shield, sizeof(ip_shield), "%s", Credits_RequestedClip());
+    int has_creon_shield = BinkPlayer_ClipExists("Movies/CREON.bik");
     GameWorld *world = World_Get();
     int creon = world ? world->cfg.players[0].side : -1;
     int veruna = world ? world->cfg.players[1].side : -1;
@@ -9191,6 +9217,7 @@ TEST(a_mission_gives_each_player_the_side_its_line_names) {
     ASSERT_EQ_INT(TAK_SIDE_VERUNA, veruna);
     ASSERT_EQ_INT(TAK_SIDE_ARAMON, aramon);
     ASSERT_EQ_INT(TAK_SIDE_TAROS, taros);
+    if (has_creon_shield) ASSERT_EQ_STR("Movies/CREON.bik", ip_shield);
 }
 
 /* The campaign list is a scan of camps\*.tdf named through the
@@ -22385,9 +22412,10 @@ TEST(sound_orders_voice_the_unit_flat) {
     sfx_teardown(&platform);
 }
 
-/* A unit of the player hit by someone else raises the kingdom's alarm
- * from sidedata, once per underattack_delay, unless it is selected.
- * The monarch raises AlarmMon on its own timer (legacy:15218-15235). */
+/* A unit of the player hit by someone else raises its side's alarm
+ * from sidedata, once per underattack_delay, only while it is off
+ * screen, selected or not. The monarch raises AlarmMon on its own timer
+ * (legacy:15223-15234, issue #535). */
 TEST(sound_alarms_when_own_units_are_hit) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -22429,14 +22457,29 @@ TEST(sound_alarms_when_own_units_are_hit) {
     Timer_Init(&timer);
     timer.max_ticks_per_frame = 30;
     units = Units_GetActive(&unit_count);
+    const int32_t kx = units[knight].world_x, ky = units[knight].world_y;
     int hp0 = units[knight].health;
     int hits = 0;
+    /* In view and not selected: the player sees the fight, no alarm. */
+    for (int i = 0; i < 1200 && hits < 1; i++) {
+        sfx_look_at(world, kx, ky);
+        sfx_run_frames(&platform, &timer, 1);
+        units = Units_GetActive(&unit_count);
+        if (units[knight].health < hp0) { hits++; hp0 = units[knight].health; }
+    }
+    ASSERT_EQ_INT(1, hits);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("AlarmAra"));
+    /* Out of view and selected: the alarm. */
+    Units_SelectSingle(knight);
+    hits = 0;
     for (int i = 0; i < 1200 && hits < 2; i++) {
+        sfx_look_at(world, cx, cy);
         sfx_run_frames(&platform, &timer, 1);
         units = Units_GetActive(&unit_count);
         if (units[knight].health < hp0) { hits++; hp0 = units[knight].health; }
     }
     ASSERT_EQ_INT(2, hits);
+    Units_SelectSingle(-1);
     /* Two hits inside the thirty second window: one alarm. */
     ASSERT_EQ_INT(1, GameSound_DebugCountPrefix("AlarmAra"));
     const GameSoundEvent *ev = GameSound_DebugEvent(GameSound_DebugFindPrefix("AlarmAra"));

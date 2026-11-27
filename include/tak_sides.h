@@ -30,6 +30,10 @@ typedef struct TakSideInfo {
      * stonegaf and frozengaf, "" without both keys (legacy:164739-164756). */
     char stoneanim[32];             /* "basiliskstone" */
     char frozenanim[32];            /* "creonice" */
+    /* underattack_sound and underattack_delay, the alarm a hit unit of
+     * the side raises off screen and its seconds apart. */
+    char  underattack_sound[32];    /* "AlarmAra" */
+    float underattack_delay;        /* 30 when absent */
     /* musictracks, the numbers of the Music\TrackN.wav files a battle
      * on this side plays, in a random order (legacy:164711). */
     int  music_tracks[16];
