@@ -17,6 +17,7 @@
 #include "tak_hud.h"
 #include "tak_translate.h"
 #include "tak_ui.h"
+#include "tak_unit.h"
 #include "tak_util.h"
 #include "tak_world.h"
 
@@ -243,6 +244,7 @@ int GameInfo_Open(const struct GameWorld *world) {
         gi.cfg = world->cfg;
         snprintf(gi.map_name, sizeof(gi.map_name), "%s", world->map_name);
         gi.is_campaign = world->mission.path[0] != 0;
+        gi.cfg.units_per_side = Units_SeatUnitCap();
         if (gi.is_campaign) {
             (void)Briefing_LoadText(world->map_name, gi.mission_text, sizeof(gi.mission_text));
         }

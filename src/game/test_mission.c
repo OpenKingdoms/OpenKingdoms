@@ -224,6 +224,23 @@ TEST(campaign_missions_read_the_mapping_key) {
     ASSERT_EQ_INT(33, off);
 }
 
+/* maxunits is the mission's units per player, 100 to 500 in the
+ * campaign. */
+TEST(campaign_missions_read_maxunits) {
+    static const struct { const char *path; int want; } k[] = {
+        { "missions/missions/takmission01_mt.ota", 200 },
+        { "missions/missions/takmission06_ph.ota", 100 },
+        { "missions/missions/takmission42_dh.ota", 500 },
+    };
+    ensure_vfs();
+    for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+        MissionData mission;
+        ASSERT_EQ_INT(0, Mission_LoadOTA(k[i].path, &mission));
+        ASSERT_EQ_INT(k[i].want, mission.max_units);
+        Mission_Free(&mission);
+    }
+}
+
 TEST(missing_mission_fails_cleanly) {
     MissionData mission;
     ensure_vfs();
@@ -944,6 +961,7 @@ int main(int argc, char **argv) {
     TEST_SUITE("Mission OTA parser");
     RUN(loads_known_campaign_mission);
     RUN(campaign_missions_read_the_mapping_key);
+    RUN(campaign_missions_read_maxunits);
     RUN(missing_mission_fails_cleanly);
     RUN(parses_initial_mission_command_language);
     RUN(campaign_corpus_placements_parse);

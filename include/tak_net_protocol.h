@@ -216,8 +216,9 @@
  * mission's strategic second seat once order lists let its units go. 87:
  * a scripted map in a match plays its start units and rules. 88: every
  * builder of a group told to build takes the order. 89: a computer cut
- * off by water crosses past waders, with its fleet and safer flights. */
-#define TAK_ENGINE_BUILD_ID           89
+ * off by water crosses past waders, with its fleet and safer flights.
+ * 90: a type's totalallowed and a mission's maxunits cap the units made. */
+#define TAK_ENGINE_BUILD_ID           90
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

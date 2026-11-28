@@ -31,7 +31,8 @@ pull request, not here.
 
 - Change: The per-player unit cap ranges 200 to 2000 with a default of
   2000 (TAK_UNITS_PER_SIDE_MIN/MAX/DEFAULT in
-  `include/tak_battle_config.h`).
+  `include/tak_battle_config.h`). A campaign mission takes its own
+  `maxunits`, 100 to 500, as the original does.
 - Why: The original's cap of 500 came from 1999 memory and CPU limits.
   Large late-game armies are part of the appeal.
 - Citation: The original's setup screen slider ran 20 to 500 (the

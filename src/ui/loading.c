@@ -844,7 +844,7 @@ static void loading_advance_step(TAK_Platform *platform) {
             MissionScript_SetSoundHook(mission_script_sound);
             MissionScript_SetManaHook(mission_seat_mana);
             MissionScript_Begin(stem, Units_LocalPlayer(), 0);
-            MissionScript_SetUnitLimit(world->cfg.units_per_side);
+            MissionScript_SetUnitLimit(Units_SeatUnitCap());
         }
         /* A scripted map in a match plays its .crt, new or out of a
          * save, in place of the monarchs (legacy:177664-177693). */
@@ -875,9 +875,11 @@ static void loading_advance_step(TAK_Platform *platform) {
                         p->unitname, p->section);
                     continue;
                 }
+                /* takmission18_ph places 168 units for a seat its maxunits
+                 * caps at 150, so a placement is made whatever the caps. */
                 int32_t px = p->x * 16, pz = p->z * 16;
                 Units_MissionPlacePoint(def, 0, &px, &pz);
-                int handle = Units_Spawn(def, p->player, color, px, pz);
+                int handle = Units_SpawnUncapped(def, p->player, color, px, pz);
                 if (handle >= 0) {
                     if (handles) handles[i] = handle;
                     float heading = Mission_AngleToHeading(p->angle);

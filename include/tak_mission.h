@@ -150,6 +150,9 @@ typedef struct MissionData {
     /* The computer player's profile, ai\<ai_profile>.txt, empty for the
      * default (legacy:169124-169128). */
     char ai_profile[32];
+    /* The GlobalHeader maxunits key, the mission's units per player.
+     * 0 when the file has none, and the lobby's setting holds. */
+    int  max_units;
     MissionPlacement *placements;
     int placement_count;
     MissionObjective *objectives;

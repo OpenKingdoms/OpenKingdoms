@@ -2339,6 +2339,8 @@ static int g_side_live[TAK_MAX_PLAYERS + 1];
  * frame, round and round, so a small side looks every frame
  * (legacy:18985-18996). */
 static int unit_pass_turn(const Unit *u) {
+    /* The lobby's units per side, also in a mission: whether the
+     * original reads the mission's maxunits here is not known. */
     const GameWorld *w = World_Get();
     int cap = w && w->cfg.units_per_side > 0 ? w->cfg.units_per_side
                                               : TAK_UNITS_PER_SIDE_DEFAULT;
@@ -7824,9 +7826,11 @@ static int factory_in_hand(const Unit *f) {
  * started, so a product that cannot be placed is not lost. */
 static int factory_start_next(int fh) {
     Unit *f = &g_units[fh];
-    /* A type the mission bars is never made, so a queue a save from
-     * before the roster holds moves on past it. */
-    while (f->prod_queue_len > 0 && unit_def_barred(f->prod_queue[0]))
+    /* A run of a type the mission bars, or of one at its totalallowed,
+     * goes, so what is queued behind it is made. */
+    while (f->prod_queue_len > 0 &&
+           (unit_def_barred(f->prod_queue[0]) ||
+            Units_TypeCapReached(f->player_id, f->prod_queue[0])))
         prod_drop_run(f, 0);
     if (f->prod_queue_len == 0 || f->under_construction) return 0;
     if (factory_in_hand(f) >= 0 || !factory_ready(f)) return 0;
@@ -8410,6 +8414,8 @@ int Units_FactoryAdd(int factory_handle, int def_idx, int count, int unfinished)
     const UnitDef *pd = Units_GetDef(def_idx);
     if (!unit_def_is_factory(Units_GetDef(f->def_idx)) || !pd ||
         !(pd->max_velocity > 0.0f)) return -1;
+    /* The build button is out while the seat owns totalallowed. */
+    if (Units_TypeCapReached(f->player_id, def_idx)) return -1;
     int endless = (unsigned)count >= UNIT_PROD_ENDLESS;
     int n = f->prod_queue_len;
     /* Nothing goes behind a run without end (legacy:181811-181813). */
@@ -9199,6 +9205,10 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     if (out->cloak_cost_per_sec > 0.0f && out->min_cloak_distance == 0)
         out->min_cloak_distance = 80;
     out->init_cloaked = (uint8_t)(TDF_ReadInt(tdf, "init_cloaked", 0) & 1);
+    {
+        int cap = TDF_ReadInt(tdf, "totalallowed", 0);
+        out->total_allowed = (int16_t)(cap > 0 ? (cap < 32767 ? cap : 32767) : 0);
+    }
     if (out->cloak_cost_per_sec > 0.0f) out->cap_flags |= UNIT_CAP_CLOAK;
     if (TDF_ReadInt(tdf, "cantransport",   0)) out->cap_flags |= UNIT_CAP_TRANSPORT;
     if (TDF_ReadInt(tdf, "builder",        0)) out->cap_flags |= UNIT_CAP_BUILDER;
@@ -10862,20 +10872,40 @@ static int32_t cob_host_call_function(void *user, int fn_id,
  * never runs out of TAK_MAX_UNITS slots. Deaths happen in the simulation
  * step, so every machine picks the same slot. */
 
-/* A seat at the lobby's units-per-player limit makes no more units. */
-static int unit_seat_at_limit(int player_id) {
+int Units_SeatUnitCap(void) {
     const GameWorld *w = World_Get();
-    int cap = w ? w->cfg.units_per_side : 0;
-    if (cap <= 0) return 0;
+    if (!w) return 0;
+    if (w->mission.path[0] && w->mission.max_units > 0) return w->mission.max_units;
+    return w->cfg.units_per_side;
+}
+
+/* A seat's units of def_idx, or of every type for -1, frames counted. */
+static int unit_seat_owns(int player_id, int def_idx) {
     int n = 0;
     for (int i = 0; i < g_unit_count; i++) {
         const Unit *o = &g_units[i];
         if (o->player_id == player_id &&
+            (def_idx < 0 || o->def_idx == def_idx) &&
             (o->alive == UNIT_ALIVE_ACTIVE ||
              o->alive == UNIT_ALIVE_TRANSPORTED)) n++;
     }
-    return n >= cap;
+    return n;
 }
+
+/* A seat at its units-per-player limit makes no more units. */
+static int unit_seat_at_limit(int player_id) {
+    int cap = Units_SeatUnitCap();
+    return cap > 0 && unit_seat_owns(player_id, -1) >= cap;
+}
+
+int Units_TypeCapReached(int player_id, int def_idx) {
+    if (def_idx < 0 || def_idx >= g_def_count) return 0;
+    int cap = g_defs[def_idx].total_allowed;
+    return cap > 0 && unit_seat_owns(player_id, def_idx) >= cap;
+}
+
+/* Set only around a mission's start placements. */
+static int g_spawn_uncapped;
 
 static int unit_free_slot(void) {
     for (int i = 0; i < g_unit_count; i++) {
@@ -11105,12 +11135,24 @@ static int unit_spawn_facing(int def_idx, int player_id, int color_idx,
     return h;
 }
 
+int Units_SpawnUncapped(int def_idx, int player_id, int team_color_idx,
+                        int32_t world_x, int32_t world_y) {
+    g_spawn_uncapped = 1;
+    int h = Units_Spawn(def_idx, player_id, team_color_idx, world_x, world_y);
+    g_spawn_uncapped = 0;
+    return h;
+}
+
 int Units_Spawn(int def_idx, int player_id, int team_color_idx,
                 int32_t world_x, int32_t world_y) {
     if (def_idx < 0 || def_idx >= g_def_count) return -1;
     /* A type the mission leaves out is never made (legacy:226872-226874). */
     if (g_defs[def_idx].mission_barred) { g_unit_spawn_fails++; return -1; }
-    if (unit_seat_at_limit(player_id)) { g_unit_spawn_fails++; return -1; }
+    if (!g_spawn_uncapped && (unit_seat_at_limit(player_id) ||
+                              Units_TypeCapReached(player_id, def_idx))) {
+        g_unit_spawn_fails++;
+        return -1;
+    }
     int slot = unit_free_slot();
     if (slot < 0) { g_unit_spawn_fails++; return -1; }
     if (team_color_idx < 0 || team_color_idx > 11) team_color_idx = 0;
