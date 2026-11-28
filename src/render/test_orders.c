@@ -330,7 +330,6 @@ TEST(a_type_at_its_total_allowed_is_not_made) {
     oq_end();
 }
 
-/* A mission's maxunits is the seat's limit in place of the lobby's. */
 /* A run queued below the cap is dropped once the cap is met, so the
  * queue behind it goes on. */
 TEST(a_run_past_its_total_allowed_leaves_the_queue_moving) {
@@ -347,6 +346,7 @@ TEST(a_run_past_its_total_allowed_leaves_the_queue_moving) {
     oq_end();
 }
 
+/* A mission's maxunits is the seat's limit in place of the lobby's. */
 TEST(a_missions_maxunits_is_the_seats_limit) {
     GameWorld *w = oq_world();
     ASSERT_NOT_NULL(w);

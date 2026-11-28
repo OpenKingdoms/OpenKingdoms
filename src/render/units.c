@@ -7826,14 +7826,11 @@ static int factory_in_hand(const Unit *f) {
  * started, so a product that cannot be placed is not lost. */
 static int factory_start_next(int fh) {
     Unit *f = &g_units[fh];
-    /* A type the mission bars is never made, so a queue a save from
-     * before the roster holds moves on past it. */
-    while (f->prod_queue_len > 0 && unit_def_barred(f->prod_queue[0]))
-        prod_drop_run(f, 0);
-    /* A run of a type at its totalallowed goes, so what is queued
-     * behind it is made. */
+    /* A run of a type the mission bars, or of one at its totalallowed,
+     * goes, so what is queued behind it is made. */
     while (f->prod_queue_len > 0 &&
-           Units_TypeCapReached(f->player_id, f->prod_queue[0]))
+           (unit_def_barred(f->prod_queue[0]) ||
+            Units_TypeCapReached(f->player_id, f->prod_queue[0])))
         prod_drop_run(f, 0);
     if (f->prod_queue_len == 0 || f->under_construction) return 0;
     if (factory_in_hand(f) >= 0 || !factory_ready(f)) return 0;
